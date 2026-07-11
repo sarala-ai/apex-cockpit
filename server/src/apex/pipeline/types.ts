@@ -72,6 +72,11 @@ export interface Task {
   workflow: string;
   /** Free-form params handed to the workflow. */
   params: Record<string, string>;
+  /**
+   * APEX execution mode: 'plan' (dry-run, default — nothing is provisioned) or
+   * 'apply' (real execution). Defaults to 'plan' for safety; 'apply' is opt-in.
+   */
+  executionMode?: 'plan' | 'apply';
   status: 'pending' | 'running' | 'passed' | 'failed';
 }
 

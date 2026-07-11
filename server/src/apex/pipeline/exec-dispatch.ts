@@ -39,7 +39,9 @@ function taskFromCaseFields(caseId: string, fields: Record<string, unknown>): Ta
     fields.workflowParams && typeof fields.workflowParams === "object" && !Array.isArray(fields.workflowParams)
       ? (fields.workflowParams as Record<string, string>)
       : {};
-  return { id: caseId, title: `execute ${workflow}`, workflow, params, status: "pending" };
+  // Default to 'plan' (dry-run) for safety; 'apply' is opt-in via the case field.
+  const executionMode = fields.executionMode === "apply" ? "apply" : "plan";
+  return { id: caseId, title: `execute ${workflow}`, workflow, params, executionMode, status: "pending" };
 }
 
 export class ExecDispatcher {
@@ -73,11 +75,16 @@ export class ExecDispatcher {
     };
 
     const task = taskFromCaseFields(input.caseId, fields);
-    onData(`▶ ${task.title} (apex run ${task.workflow})\n`);
-    const r = await this.runner.run(task, onData);
+    // apex picks its provider from a project `.apex/settings.yaml` found by
+    // walking up from cwd — run it in the case's workspace (its repo checkout,
+    // which carries the right provider settings) when known.
+    const cwd = typeof fields.workspacePath === "string" && fields.workspacePath ? fields.workspacePath : undefined;
+    onData(`▶ ${task.title} (apex run workflow run --workflow ${task.workflow} --execution-mode ${task.executionMode ?? "plan"})\n`);
+    const r = await this.runner.run(task, onData, cwd);
 
-    // Persist the log + terminal status onto the case fields (the fork's case
-    // log surface for this interim slice).
+    // Persist the log + terminal status + structured result onto the case fields
+    // (the fork's case log surface for this interim slice). `executionResult`
+    // carries the parsed plan/apply summary (steps, resources, mode) for the UI.
     await svc.patchCaseContent({
       companyId: input.companyId,
       caseId: input.caseId,
@@ -85,6 +92,7 @@ export class ExecDispatcher {
         ...fields,
         executionLog: log,
         executionStatus: r.ok ? "passed" : "failed",
+        ...(r.result ? { executionResult: r.result } : {}),
         ...(r.ok ? {} : { executionFailure: r.message ?? "step failed" }),
       },
       expectedVersion: version,
