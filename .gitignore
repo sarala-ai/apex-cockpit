@@ -66,3 +66,6 @@ tests/storybook-visual/playwright-report/
 .superpowers/
 .claude/worktrees/
 .herenow
+
+# apex-tower: local APEX CLI venv installed by scripts/run-tower.sh
+.venv-apex/
