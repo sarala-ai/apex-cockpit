@@ -68,30 +68,40 @@ Options: Cloud Run **job** (ephemeral, one-shot) vs Compute Engine **instance**
 **Cloud Run job is deferred**, not rejected — it's the right target later for a
 fully-detached, single-shot workflow run (no agent loop, no shared workspace).
 
-## 4. Decision 2 — apex CLI delivery: **pre-baked `apex-base` image, version-pinned**
+## 4. Decision 2 — apex CLI delivery: **install at instance boot (defer the image)**
 
-Options: install apex per-lease vs pre-bake into the instance image.
+Options: install apex at boot (startup script) vs pre-bake into an image.
 
-**Chosen: a versioned `apex-base` image with the apex CLI pre-installed.**
-- Built from the **private Sarala AR** using the same keyring/gcloud auth path as
-  CI and `run-tower.sh` (`keyrings.google-artifactregistry-auth` + ADC).
-- **Version attribution:** image tag tracks the apex release — build arg
-  `APEX_VERSION=X.Y.Z` → `pip install apex-platform==X.Y.Z` → image tagged
-  `apex-base:X.Y.Z`. The environment's `config.apexVersion` selects the tag, so a
-  remote run is reproducible against a known apex.
-- Per-lease install is rejected: it re-auths to the AR and re-installs on every
-  instance boot (slow, more failure surface). Pre-bake once.
-- Where it's built: apex-tower's build pipeline (it owns the tower runtime), NOT
-  the apex repo (apex publishes the *package*; the tower composes the *image*).
+**Chosen (revised): install apex at instance boot, via the same AR-pull as
+`run-tower.sh`.** Reasoning:
+- A pre-baked image is an **optimization** (faster lease start, immutable runtime)
+  that carries standing cost — a Dockerfile + build pipeline + a container registry +
+  keeping the image version-synced with every apex release. We are at "make remote
+  execution work at all," not "optimize a remote fleet," and the remote path is
+  itself unvalidated. That's premature infrastructure.
+- Instead, the provider's `AcquireLease` gives the GCE instance a **startup script**
+  that installs `apex-platform==<version>` from the private AR using the exact
+  `run-tower.sh` mechanism (gcloud ADC → `keyrings.google-artifactregistry-auth` →
+  pip). Zero new infra, reuses proven code. The instance's **attached service
+  account** (§5) provides the ADC at boot — no forwarded creds.
+- **Version attribution** still holds: the env's `config.apexVersion` is the pinned
+  `apex-platform==X.Y.Z` the startup script installs, so a remote run is reproducible
+  against a known apex.
+- **Pre-baking is a deferred drop-in optimization**, not rejected: when per-boot
+  install latency or fleet scale bites, bake an `apex-base` image behind the *same*
+  provider (the startup script becomes "the image already has it"). A first sketch of
+  that image (`docker/agent-runtime/Dockerfile.apex`) was written and removed as
+  premature; recreate it from this note when the optimization is justified.
 
 ## 5. Remote auth — attached service account, NOT forwarded user creds
 
 This is the credential-boundary point from the dev-container discussion, made
 concrete. The GCE instance runs with an **attached GCP service account** (its own
 identity) — the tower does **not** forward the operator's `gcloud` creds into it.
-The instance's apex uses ADC from the attached SA to touch GCP + pull nothing at
-runtime (apex is pre-baked). This is the "sandbox gets its own short-lived scoped
-identity" pattern; the operator's local gcloud stays on the operator's machine and
+The instance's apex uses ADC from the attached SA to touch GCP — and the same ADC
+lets the boot-time startup script (§4) pull apex from the AR. This is the "sandbox
+gets its own short-lived scoped identity" pattern; the operator's local gcloud stays
+on the operator's machine and
 is only used for the **local** driver path.
 
 ## 6. JSON contract the `run` path must emit  (→ the apex enhancement)
@@ -133,13 +143,15 @@ result (§6) is emitted on a separate fd or as the final stdout line so streamin
 
 ## 8. Build order
 
-1. **Local path first** — wire the pipeline's execute step to the fork's built-in
-   `local` driver running `apex run … --output json`; port `LocalRunner`'s spawn/
-   stream/result-map. Unblocks end-to-end runs on the dev host now.
-2. **apex `run --output json`** — the §6 enhancement, in the apex repo, released +
-   pinned.
-3. **`apex-base` image** — §4, built + pushed, version-pinned.
-4. **`apex-gcp` plugin** — §2 contract, remote GCE lifecycle, against the image.
+1. **Local path first** — ✅ done. `LocalRunner` runs `apex --output json run
+   workflow run …`, parses the structured result, streams stderr progress, threads
+   executionMode/provider. Validated end-to-end against real apex.
+2. **apex `run --output json`** — ✅ shipped in apex 0.4.2 (turned out to exist as
+   `run workflow run`; the release cleaned JSON stdout so results are parseable).
+3. ~~`apex-base` image~~ — **deferred** (§4): the remote provider installs apex at
+   instance boot via the `run-tower.sh` AR-pull; pre-bake later as an optimization.
+4. **`apex-gcp` plugin** — §2 contract, remote GCE lifecycle; the startup script
+   installs apex at boot (§4).
 5. **CompanyEnvironments UI** — expose `apex-gcp` as a sandbox provider choice
    (`ui/src/pages/CompanyEnvironments.tsx` already renders provider config from the
    manifest `configSchema` — likely zero new UI).
