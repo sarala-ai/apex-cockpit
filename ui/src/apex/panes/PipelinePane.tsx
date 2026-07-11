@@ -13,7 +13,9 @@ import {
   type Ticket,
 } from '@/apex/api';
 
-const DEFAULT_REPO = 'sarala-ai/apex';
+// No hardcoded repo — the user selects/adds one via the UI (from the discovered
+// GitHub org's repos). Empty until chosen.
+const DEFAULT_REPO = '';
 
 // The linear happy-path stages, for the timeline. `failed` is shown inline.
 const STAGES: Stage[] = [

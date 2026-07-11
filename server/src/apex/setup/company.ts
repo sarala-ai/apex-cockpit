@@ -2,7 +2,7 @@
  * Org + Company registry (spec 003 draft).
  *
  * Three-tier tenancy that mirrors provider reality:
- *   Org (Sarala) → Company (FinPilot/Bloom/APEX) → GCP projects + repo
+ *   Org (holding entity) → Company (product / business unit) → GCP projects + repo
  *
  * - Org = the provider-level organization: the Google Cloud Organization AND the
  *   GitHub Organization. Connected ONCE (the one-time setup); loads all projects
@@ -19,14 +19,14 @@ import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import type { CloudProvider } from './cloud.js';
 
-/** The one-time provider-org linkage. There is one per holding entity (Sarala). */
+/** The one-time provider-org linkage. One per holding entity. */
 export interface Org {
   id: string;
-  name: string; // e.g. "Sarala"
+  name: string; // holding-org name, derived from discovery (the Google org display name)
   provider: CloudProvider;
   /** Google Cloud Organization this org is linked to. */
   googleOrg?: { id: string; displayName: string };
-  /** GitHub Organization login (e.g. "sarala-ai"). */
+  /** GitHub Organization login. */
   githubOrg?: string;
   createdAt: string;
 }

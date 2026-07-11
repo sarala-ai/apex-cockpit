@@ -15,7 +15,8 @@ import {
   type TokensResponse,
 } from '@/apex/api';
 
-const DEFAULT_REPO = 'sarala-ai/apex';
+// No hardcoded repo — selected/added via the UI (from the discovered org's repos).
+const DEFAULT_REPO = '';
 
 /** Generic async loader hook for a card. */
 function useCard<T>(load: () => Promise<T>) {

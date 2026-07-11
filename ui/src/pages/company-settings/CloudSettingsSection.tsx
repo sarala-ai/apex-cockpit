@@ -8,8 +8,9 @@
 //   - bind the GCP projects + GitHub repos that product runs on, persisted into
 //     the product's `projects.env` jsonb (no schema change).
 //
-// Org modeling stays minimal per the doc: a single implicit Org "Sarala"; a
-// company row = one of our GCP-backed products; no `orgs` table.
+// Org modeling stays minimal per the doc: a single implicit Org (the holding
+// entity, discovered from the connected Google/GitHub org); a company row = one
+// GCP-backed product; no `orgs` table.
 
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";

@@ -30,7 +30,7 @@ await app.register(websocket, {
 
 // Map a ticket's repo (owner/name) to its local monorepo checkout so coordinators
 // can ground their drafts in the code. Undefined when no local checkout exists.
-const reposRoot = process.env.APEX_TOWER_REPOS_ROOT ?? join(homedir(), 'Dev', 'repos', 'sarala_org');
+const reposRoot = process.env.APEX_TOWER_REPOS_ROOT ?? process.cwd();
 const resolveCwd = (ticket: Ticket): string | undefined => {
   const name = ticket.repo.split('/').pop();
   if (!name) return undefined;
@@ -182,7 +182,7 @@ app.get('/setup/github/repos', async (req) => {
   return r.ok ? { repos: r.value, source: r.source } : { repos: [], source: r.source, note: r.message };
 });
 
-// --- Orgs (the one-time provider-org linkage — Sarala) ----------------------
+// --- Orgs (the one-time provider-org linkage) -------------------------------
 app.get('/orgs', async () => ({ orgs: await orgStore.list() }));
 app.get('/orgs/:id', async (req, reply) => {
   const { id } = req.params as { id: string };
