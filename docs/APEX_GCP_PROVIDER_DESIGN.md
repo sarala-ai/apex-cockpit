@@ -144,7 +144,24 @@ result (§6) is emitted on a separate fd or as the final stdout line so streamin
    (`ui/src/pages/CompanyEnvironments.tsx` already renders provider config from the
    manifest `configSchema` — likely zero new UI).
 
-## 8a. Scope boundaries — what `apex-gcp` is NOT
+## 8a. Naming — `apex-gcp`, and the two "GCP"s
+
+Locked name: **`apex-gcp`** = an *apex-flavored GCP execution environment* (the
+`apex-base` image on GCP compute — where apex runs). Do NOT confuse with apex's
+internal `providers/gcp` (in the apex CLI), which is apex *targeting* GCP resources
+(what apex provisions). Same cloud, different layers:
+
+| Name | Layer | Means |
+|---|---|---|
+| apex `providers/gcp` (apex repo) | IaC target | what apex provisions on GCP |
+| `apex-gcp` (this plugin) | execution host | where apex/agent work runs |
+
+Not `apex-cloud`: it's GCP-only today (tower is GCP-first), "cloud" reads like a
+hosted-apex SaaS, and a future AWS host would be a sibling `apex-aws` provider
+(per-backend, matching the fork's `modal`/`e2b`/`exe-dev` convention) rather than a
+cloud-switch inside one fat provider.
+
+## 8b. Scope boundaries — what `apex-gcp` is NOT
 
 - **apex is not a plugin.** `apex-gcp` is a plugin (kind: `sandbox_provider`); apex
   itself is the **substrate** — a CLI baked into the `apex-base` image, invoked via
