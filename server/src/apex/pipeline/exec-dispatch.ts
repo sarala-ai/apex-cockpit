@@ -41,7 +41,9 @@ function taskFromCaseFields(caseId: string, fields: Record<string, unknown>): Ta
       : {};
   // Default to 'plan' (dry-run) for safety; 'apply' is opt-in via the case field.
   const executionMode = fields.executionMode === "apply" ? "apply" : "plan";
-  return { id: caseId, title: `execute ${workflow}`, workflow, params, executionMode, status: "pending" };
+  // Provider (e.g. 'gcp') selects which apex resource-servers load, cwd-independent.
+  const provider = typeof fields.provider === "string" && fields.provider ? fields.provider : undefined;
+  return { id: caseId, title: `execute ${workflow}`, workflow, params, executionMode, provider, status: "pending" };
 }
 
 export class ExecDispatcher {

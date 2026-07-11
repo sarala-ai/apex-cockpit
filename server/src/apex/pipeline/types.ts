@@ -77,6 +77,12 @@ export interface Task {
    * 'apply' (real execution). Defaults to 'plan' for safety; 'apply' is opt-in.
    */
   executionMode?: 'plan' | 'apply';
+  /**
+   * Cloud provider for this workflow (e.g. 'gcp', 'aws'). Sets APEX_CLOUD_PROVIDER
+   * so apex loads the right resource-servers regardless of cwd. Omit to let apex
+   * resolve it from the workspace's `.apex/settings.yaml`.
+   */
+  provider?: string;
   status: 'pending' | 'running' | 'passed' | 'failed';
 }
 

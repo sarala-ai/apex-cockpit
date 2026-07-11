@@ -38,12 +38,11 @@ export interface ExecutionRunner {
    * (apex writes its setup/run banner to stderr in `--output json` mode) for
    * streaming to the cockpit; the structured result is parsed from stdout.
    *
-   * `cwd` is the directory apex runs in — REQUIRED for correct provider
-   * selection. apex walks UP from cwd to find a project `.apex/settings.yaml`
-   * (else falls back to ~/.apex/settings.yaml, else provider 'aws'); that
-   * `default_provider` filters which resource-servers load. Run from a dir
-   * whose project settings select the wrong provider and the workflow fails
-   * with "Server '<x>' not found" (e.g. a gcp workflow under an aws default).
+   * Provider selection: apex loads resource-servers by provider. Set it
+   * explicitly via `task.provider` (→ APEX_CLOUD_PROVIDER) for a cwd-independent
+   * result; otherwise apex walks UP from `cwd` for a project `.apex/settings.yaml`
+   * (else ~/.apex/settings.yaml, else 'aws'). The wrong provider fails the run
+   * with "Server '<x>' not found" (e.g. a gcp workflow resolved under aws).
    */
   run(task: Task, onData: (chunk: string) => void, cwd?: string): Promise<StepResult>;
 }
@@ -113,8 +112,17 @@ export class LocalRunner implements ExecutionRunner {
       };
       let child;
       try {
-        // cwd matters: apex discovers its provider/config relative to it.
-        child = spawn(this.apexBin, args, { stdio: ['ignore', 'pipe', 'pipe'], ...(cwd ? { cwd } : {}) });
+        // Set the provider explicitly (APEX_CLOUD_PROVIDER) when known so apex
+        // loads the right resource-servers independent of cwd; still pass cwd so
+        // apex can fall back to the workspace's `.apex/settings.yaml`.
+        const env = task.provider
+          ? { ...process.env, APEX_CLOUD_PROVIDER: task.provider }
+          : process.env;
+        child = spawn(this.apexBin, args, {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env,
+          ...(cwd ? { cwd } : {}),
+        });
       } catch (e) {
         return done({ ok: false, message: `could not spawn ${this.apexBin}: ${String(e)}` });
       }
