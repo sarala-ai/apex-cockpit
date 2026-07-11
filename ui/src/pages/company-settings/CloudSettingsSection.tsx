@@ -27,6 +27,7 @@ import { projectsApi } from "../../api/projects";
 import { queryKeys } from "../../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/apex/status-badge";
+import { GcloudAuthBanner } from "@/apex/GcloudAuthBanner";
 
 function AuthRow({ ok, label, who }: { ok: boolean; label: string; who: string | null }) {
   return (
@@ -123,15 +124,18 @@ export function CloudSettingsSection({ companyId }: { companyId: string }) {
           <code>gh</code> auth; nothing is provisioned here.
         </p>
 
-        {/* Auth status */}
+        {/* Session-expiry prompt (renders only when a credential is missing/expired) */}
+        <GcloudAuthBanner />
+
+        {/* Auth status — "ok" means authed AND token still live */}
         <div className="space-y-1.5">
           <AuthRow
-            ok={!!authQuery.data?.google.authed}
+            ok={!!authQuery.data?.google.authed && !!authQuery.data?.google.live}
             label="Google Cloud"
             who={authQuery.data?.google.account ?? null}
           />
           <AuthRow
-            ok={!!authQuery.data?.github.authed}
+            ok={!!authQuery.data?.github.authed && !!authQuery.data?.github.live}
             label="GitHub"
             who={authQuery.data?.github.user ?? null}
           />

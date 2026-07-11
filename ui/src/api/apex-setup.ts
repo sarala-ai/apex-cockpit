@@ -17,8 +17,10 @@ import type { AgentEnvConfig } from "@paperclipai/shared";
 import { api } from "./client";
 
 export interface AuthStatus {
-  google: { authed: boolean; account: string | null };
-  github: { authed: boolean; user: string | null };
+  // `authed` = account configured; `live` = token currently usable (not expired).
+  // authed-but-not-live drives the UI's "session expired, re-authenticate" prompt.
+  google: { authed: boolean; account: string | null; live: boolean };
+  github: { authed: boolean; user: string | null; live: boolean };
 }
 export interface GcpProject {
   projectId: string;

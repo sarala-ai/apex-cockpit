@@ -14,8 +14,11 @@ import { run } from '../exec.js';
 export type CloudProvider = 'google';
 
 export interface AuthStatus {
-  google: { authed: boolean; account: string | null };
-  github: { authed: boolean; user: string | null };
+  // `authed` = an account is configured; `live` = its token is currently usable
+  // (not expired). A session can be authed-but-not-live once the token lapses,
+  // which is the signal the UI uses to prompt an interactive re-auth.
+  google: { authed: boolean; account: string | null; live: boolean };
+  github: { authed: boolean; user: string | null; live: boolean };
 }
 
 export interface GcpProject {
@@ -38,10 +41,20 @@ export interface GhRepo {
   url: string;
 }
 
-/** Check whether gcloud and gh are authenticated, and as whom. Never throws. */
+/**
+ * Check whether gcloud and gh are authenticated, and as whom. Never throws.
+ *
+ * `authed` reflects a configured account; `live` reflects a currently-usable
+ * token. For gcloud these differ — `config get-value account` still returns the
+ * account after the token expires, so we separately probe `auth print-access-token`
+ * (which silently refreshes when a refresh token is valid and only fails on true
+ * session expiry). For gh, `api user` hits the network, so its success already
+ * means live.
+ */
 export async function checkAuth(): Promise<AuthStatus> {
-  const [gcloudAcct, ghUser] = await Promise.all([
+  const [gcloudAcct, gcloudToken, ghUser] = await Promise.all([
     run('gcloud', ['config', 'get-value', 'account'], 10000),
+    run('gcloud', ['auth', 'print-access-token'], 10000),
     run('gh', ['api', 'user', '--jq', '.login'], 10000),
   ]);
 
@@ -49,13 +62,20 @@ export async function checkAuth(): Promise<AuthStatus> {
     gcloudAcct.status === 'ok' && gcloudAcct.stdout.trim() && gcloudAcct.stdout.trim() !== '(unset)'
       ? gcloudAcct.stdout.trim()
       : null;
+  const googleLive = gcloudToken.status === 'ok' && gcloudToken.stdout.trim().length > 0;
   const user = ghUser.status === 'ok' && ghUser.stdout.trim() ? ghUser.stdout.trim() : null;
 
   return {
-    google: { authed: account !== null, account },
-    github: { authed: user !== null, user },
+    google: { authed: account !== null, account, live: googleLive },
+    github: { authed: user !== null, user, live: user !== null },
   };
 }
+
+// Note: interactive re-auth is intentionally NOT done server-side in local dev.
+// `checkAuth().google.live === false` signals expiry; the UI prompts the operator
+// to run `gcloud auth login` (or re-run scripts/run-tower.sh). A future hosted
+// deployment replaces that guidance with an in-app OAuth redirect + per-user token
+// store behind the same detect→prompt seam.
 
 function parseJson<T>(res: Awaited<ReturnType<typeof run>>, source: string): Result<T> & { source: string } {
   if (res.status === 'missing') {
