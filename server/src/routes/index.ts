@@ -25,3 +25,4 @@ export { instanceSettingsRoutes } from "./instance-settings.js";
 export { instanceDatabaseBackupRoutes } from "./instance-database-backups.js";
 export { cloudUpstreamRoutes } from "./cloud-upstreams.js";
 export { apexSetupRoutes } from "./apex-setup.js";
+export { apexPipelineRoutes } from "./apex-pipeline.js";

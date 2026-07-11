@@ -13,6 +13,10 @@ export type CreateApproval = z.infer<typeof createApprovalSchema>;
 
 export const resolveApprovalSchema = z.object({
   decisionNote: multilineTextSchema.optional().nullable(),
+  // apex-tower (Task 2 §2b): our gate `edit` decision has no fork analog. An
+  // approve carrying `editedBody` revises the case's spec/plan artifact in place
+  // before the gate advances it. Ignored for non-`pipeline_gate` approvals.
+  editedBody: multilineTextSchema.optional().nullable(),
 });
 
 export type ResolveApproval = z.infer<typeof resolveApprovalSchema>;

@@ -21,6 +21,20 @@ import {
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { redactEventPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { resolveGateApproval } from "../apex/pipeline/gate-bridge.js";
+import type { PipelineActor } from "../services/pipelines.js";
+
+/** apex-tower (Task 2 §2b): a pipeline actor from the approving/rejecting board user. */
+function gateActor(req: Request): PipelineActor {
+  const info = getActorInfo(req);
+  if (info.actorType === "agent" && info.agentId && info.runId) {
+    return { type: "agent", agentId: info.agentId, runId: info.runId };
+  }
+  if (info.actorType === "user") {
+    return { type: "user", userId: info.actorId };
+  }
+  return { type: "system" };
+}
 
 function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
   return {
@@ -203,6 +217,27 @@ export function approvalRoutes(
     const decidedByUserId = req.actor.userId ?? "board";
     const { approval, applied } = await svc.approve(id, decidedByUserId, req.body.decisionNote);
 
+    // apex-tower (Task 2 §2b): a gate approval drives our case transition. The
+    // `editedBody` (our `edit` decision) is applied as part of the advance.
+    if (applied && approval.type === "pipeline_gate") {
+      const gate = await resolveGateApproval(db, {
+        companyId: approval.companyId,
+        payload: approval.payload,
+        decision: "approve",
+        editedBody: req.body.editedBody ?? null,
+        actor: gateActor(req),
+      });
+      await logActivity(db, {
+        companyId: approval.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "approval.gate_advanced",
+        entityType: "approval",
+        entityId: approval.id,
+        details: { transitioned: gate.transitioned, toStageKey: gate.toStageKey ?? null, note: gate.note ?? null },
+      });
+    }
+
     if (applied) {
       const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
       const linkedIssueIds = linkedIssues.map((issue) => issue.id);
@@ -298,6 +333,25 @@ export function approvalRoutes(
     }
     const decidedByUserId = req.actor.userId ?? "board";
     const { approval, applied } = await svc.reject(id, decidedByUserId, req.body.decisionNote);
+
+    // apex-tower (Task 2 §2b): a rejected gate moves the case to `failed`.
+    if (applied && approval.type === "pipeline_gate") {
+      const gate = await resolveGateApproval(db, {
+        companyId: approval.companyId,
+        payload: approval.payload,
+        decision: "reject",
+        actor: gateActor(req),
+      });
+      await logActivity(db, {
+        companyId: approval.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "approval.gate_rejected",
+        entityType: "approval",
+        entityId: approval.id,
+        details: { transitioned: gate.transitioned, toStageKey: gate.toStageKey ?? null, note: gate.note ?? null },
+      });
+    }
 
     if (applied) {
       await logActivity(db, {

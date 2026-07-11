@@ -593,6 +593,8 @@ export const APPROVAL_TYPES = [
   "approve_ceo_strategy",
   "budget_override_required",
   "request_board_approval",
+  // apex-tower (Task 2 §2b): a ticket-lifecycle HITL gate (spec/plan/pr review).
+  "pipeline_gate",
 ] as const;
 export type ApprovalType = (typeof APPROVAL_TYPES)[number];
 
