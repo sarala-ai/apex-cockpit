@@ -10,7 +10,7 @@ import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { GoalProperties } from "../components/GoalProperties";
-import { GoalTree } from "../components/GoalTree";
+import { GoalHierarchyList } from "../components/GoalHierarchyList";
 import { StatusBadge } from "../components/StatusBadge";
 import { InlineEditor } from "../components/InlineEditor";
 import { EntityRow } from "../components/EntityRow";
@@ -200,7 +200,7 @@ export function GoalDetail() {
           {childGoals.length === 0 ? (
             <p className="text-sm text-muted-foreground">No sub-goals.</p>
           ) : (
-            <GoalTree goals={childGoals} goalLink={(g) => `/goals/${g.id}`} />
+            <GoalHierarchyList goals={childGoals} goalLink={(g) => `/goals/${g.id}`} />
           )}
         </TabsContent>
 

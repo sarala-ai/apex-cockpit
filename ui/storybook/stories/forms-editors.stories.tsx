@@ -1,6 +1,6 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import type { Agent, CompanySecret, EnvBinding, Project, RoutineVariable } from "@paperclipai/shared";
+import type { CompanySecret, EnvBinding, Project, RoutineVariable } from "@paperclipai/shared";
 import { Code2, FileText, ListPlus, RotateCcw, Table2 } from "lucide-react";
 import { EnvironmentVariablesEditor } from "@/components/environment-variables-editor";
 import { ExecutionParticipantPicker } from "@/components/ExecutionParticipantPicker";
@@ -10,7 +10,6 @@ import { InlineEntitySelector, type InlineEntityOption } from "@/components/Inli
 import { JsonSchemaForm, type JsonSchemaNode, getDefaultValues } from "@/components/JsonSchemaForm";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { MarkdownEditor, type MentionOption } from "@/components/MarkdownEditor";
-import { ReportsToPicker } from "@/components/ReportsToPicker";
 import {
   RoutineRunVariablesDialog,
   type RoutineRunDialogSubmitData,
@@ -558,26 +557,12 @@ function PickerGallery() {
       }),
     }),
   );
-  const [manager, setManager] = useState<string | null>("agent-cto");
   const [selectorValue, setSelectorValue] = useState("project-board-ui");
-  const agentsWithTerminated: Agent[] = useMemo(
-    () => [
-      ...storybookAgents,
-      {
-        ...storybookAgents[1]!,
-        id: "agent-legacy",
-        name: "LegacyReviewer",
-        status: "terminated",
-        reportsTo: null,
-      },
-    ],
-    [],
-  );
 
   return (
     <Section
       eyebrow="Pickers"
-      title="Execution participants, reporting hierarchy, and inline entity selection"
+      title="Execution participants and inline entity selection"
       description="Closed trigger states stay compact, while the dropdowns are interactive for search and selection review."
     >
       <div className="grid gap-4 xl:grid-cols-3">
@@ -597,12 +582,6 @@ function PickerGallery() {
               currentUserId="user-board"
               onUpdate={(patch) => setIssue((current) => ({ ...current, ...patch }))}
             />
-          </div>
-        </StatePanel>
-        <StatePanel label="ReportsToPicker" detail="Selected manager, CEO disabled state, and filtered hierarchy choices.">
-          <div className="flex flex-wrap gap-3">
-            <ReportsToPicker agents={agentsWithTerminated} value={manager} onChange={setManager} excludeAgentIds={["agent-codex"]} />
-            <ReportsToPicker agents={agentsWithTerminated} value={null} onChange={() => undefined} disabled />
           </div>
         </StatePanel>
         <StatePanel label="InlineEntitySelector" detail="Search/select dropdown for issue, project, and agent entities.">

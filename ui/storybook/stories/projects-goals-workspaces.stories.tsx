@@ -4,7 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { Goal, Project } from "@paperclipai/shared";
 import { Archive, Boxes, FolderGit2, GitBranch, Network, Play, RotateCcw, Square } from "lucide-react";
 import { GoalProperties } from "@/components/GoalProperties";
-import { GoalTree } from "@/components/GoalTree";
+import { GoalHierarchyList } from "@/components/GoalHierarchyList";
 import { ProjectProperties, type ProjectConfigFieldKey, type ProjectFieldSaveState } from "@/components/ProjectProperties";
 import { ProjectWorkspacesContent } from "@/components/ProjectWorkspacesContent";
 import { ProjectWorkspaceSummaryCard } from "@/components/ProjectWorkspaceSummaryCard";
@@ -287,13 +287,13 @@ function GoalPropertiesMatrix() {
   );
 }
 
-function GoalTreeMatrix() {
+function GoalHierarchyListMatrix() {
   const [selectedGoal, setSelectedGoal] = useState<Goal | null>(storybookGoals[1] ?? null);
 
   return (
     <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
       <div className="overflow-hidden rounded-lg border border-border bg-background">
-        <GoalTree
+        <GoalHierarchyList
           goals={storybookGoals}
           onSelect={setSelectedGoal}
         />
@@ -479,8 +479,8 @@ function ProjectsGoalsWorkspacesStories() {
             <GoalPropertiesMatrix />
           </Section>
 
-          <Section eyebrow="GoalTree" title="Hierarchical goal tree with expand/collapse and progress sidecar">
-            <GoalTreeMatrix />
+          <Section eyebrow="GoalHierarchyList" title="Hierarchical goal list with expand/collapse and progress sidecar">
+            <GoalHierarchyListMatrix />
           </Section>
 
           <Section eyebrow="WorkspaceRuntimeControls" title="Runtime start, stop, restart, and disabled command states">

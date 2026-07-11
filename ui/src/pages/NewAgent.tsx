@@ -29,14 +29,51 @@ import { defaultCreateValues } from "../components/agent-config-defaults";
 import { getUIAdapter, listUIAdapters } from "../adapters";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { isValidAdapterType } from "../adapters/metadata";
-import { ReportsToPicker } from "../components/ReportsToPicker";
-import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
+import { buildNewAgentRuntimeConfig } from "../lib/new-agent-runtime-config";
 import { TrustPresetSection } from "../components/TrustPresetSection";
 import { buildPermissionsForTrustPreset, getTrustPreset } from "../lib/trust-policy-ui";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
+
+function buildNewAgentPayload(input: {
+  name: string;
+  effectiveRole: string;
+  title?: string;
+  selectedSkillKeys?: string[];
+  configValues: CreateConfigValues;
+  adapterConfig: Record<string, unknown>;
+  permissions?: Partial<AgentPermissions>;
+}) {
+  const {
+    name,
+    effectiveRole,
+    title,
+    selectedSkillKeys = [],
+    configValues,
+    adapterConfig,
+    permissions,
+  } = input;
+
+  return {
+    name: name.trim(),
+    role: effectiveRole,
+    ...(title?.trim() ? { title: title.trim() } : {}),
+    ...(selectedSkillKeys.length > 0 ? { desiredSkills: selectedSkillKeys } : {}),
+    adapterType: configValues.adapterType,
+    defaultEnvironmentId: configValues.defaultEnvironmentId ?? null,
+    adapterConfig,
+    runtimeConfig: buildNewAgentRuntimeConfig({
+      heartbeatEnabled: configValues.heartbeatEnabled,
+      intervalSec: configValues.intervalSec,
+      cheapModel: configValues.cheapModel,
+      cheapModelEnabled: configValues.cheapModelEnabled,
+    }),
+    budgetMonthlyCents: 0,
+    ...(permissions ? { permissions } : {}),
+  };
+}
 
 function createValuesForAdapterType(
   adapterType: CreateConfigValues["adapterType"],
@@ -67,7 +104,6 @@ export function NewAgent() {
   const [name, setName] = useState("");
   const [title, setTitle] = useState("");
   const [role, setRole] = useState("general");
-  const [reportsTo, setReportsTo] = useState<string | null>(null);
   const [configValues, setConfigValues] = useState<CreateConfigValues>(defaultCreateValues);
   const [permissions, setPermissions] = useState<Partial<AgentPermissions>>(
     buildPermissionsForTrustPreset(null, "standard"),
@@ -168,11 +204,10 @@ export function NewAgent() {
       }
     }
     createAgent.mutate(
-      buildNewAgentHirePayload({
+      buildNewAgentPayload({
         name,
         effectiveRole,
         title,
-        reportsTo,
         selectedSkillKeys,
         configValues,
         adapterConfig: buildAdapterConfig(),
@@ -238,7 +273,7 @@ export function NewAgent() {
           />
         </div>
 
-        {/* Property chips: Role + Reports To */}
+        {/* Property chips: Role */}
         <div className="flex items-center gap-1.5 px-4 py-2 border-t border-border flex-wrap">
           <Popover open={roleOpen} onOpenChange={setRoleOpen}>
             <PopoverTrigger asChild>
@@ -268,13 +303,6 @@ export function NewAgent() {
               ))}
             </PopoverContent>
           </Popover>
-
-          <ReportsToPicker
-            agents={agents ?? []}
-            value={reportsTo}
-            onChange={setReportsTo}
-            disabled={isFirstAgent}
-          />
         </div>
 
         <div className="border-t border-border px-4 py-4">

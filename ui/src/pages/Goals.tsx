@@ -5,7 +5,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
-import { GoalTree } from "../components/GoalTree";
+import { GoalHierarchyList } from "../components/GoalHierarchyList";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Button } from "@/components/ui/button";
@@ -55,7 +55,7 @@ export function Goals() {
               New Goal
             </Button>
           </div>
-          <GoalTree goals={goals} goalLink={(goal) => `/goals/${goal.id}`} />
+          <GoalHierarchyList goals={goals} goalLink={(goal) => `/goals/${goal.id}`} />
         </>
       )}
     </div>

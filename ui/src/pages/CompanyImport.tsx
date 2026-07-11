@@ -709,7 +709,7 @@ export function CompanyImport() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Org Chart", href: "/org" },
+      { label: "Agents", href: "/agents" },
       { label: "Import" },
     ]);
   }, [setBreadcrumbs]);

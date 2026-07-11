@@ -5,13 +5,13 @@ import { ChevronRight } from "lucide-react";
 import { cn } from "../lib/utils";
 import { useState } from "react";
 
-interface GoalTreeProps {
+interface GoalHierarchyListProps {
   goals: Goal[];
   goalLink?: (goal: Goal) => string;
   onSelect?: (goal: Goal) => void;
 }
 
-interface GoalNodeProps {
+interface GoalHierarchyNodeProps {
   goal: Goal;
   children: Goal[];
   allGoals: Goal[];
@@ -20,7 +20,7 @@ interface GoalNodeProps {
   onSelect?: (goal: Goal) => void;
 }
 
-function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalNodeProps) {
+function GoalHierarchyNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalHierarchyNodeProps) {
   const [expanded, setExpanded] = useState(true);
   const hasChildren = children.length > 0;
   const link = goalLink?.(goal);
@@ -77,7 +77,7 @@ function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalN
       {hasChildren && expanded && (
         <div>
           {children.map((child) => (
-            <GoalNode
+            <GoalHierarchyNode
               key={child.id}
               goal={child}
               children={allGoals.filter((g) => g.parentId === child.id)}
@@ -93,7 +93,7 @@ function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalN
   );
 }
 
-export function GoalTree({ goals, goalLink, onSelect }: GoalTreeProps) {
+export function GoalHierarchyList({ goals, goalLink, onSelect }: GoalHierarchyListProps) {
   const goalIds = new Set(goals.map((g) => g.id));
   const roots = goals.filter((g) => !g.parentId || !goalIds.has(g.parentId));
 
@@ -104,7 +104,7 @@ export function GoalTree({ goals, goalLink, onSelect }: GoalTreeProps) {
   return (
     <div className="border border-border py-1">
       {roots.map((goal) => (
-        <GoalNode
+        <GoalHierarchyNode
           key={goal.id}
           goal={goal}
           children={goals.filter((g) => g.parentId === goal.id)}
