@@ -20,6 +20,16 @@ ports directly into the local-equivalent path; RemoteRunner becomes the actual n
 work once we need remote GCP execution."* So **`apex-gcp` is remote-only**; the
 local path rides the fork's existing `local` driver.
 
+**What `apex-gcp` is (scope correction):** a **general GCP agent-execution
+environment**, NOT an apex-workflow dispatcher. `onEnvironmentExecute` runs
+arbitrary commands — the whole agent workload (git, edit, build, test, coding-agent
+actions) runs *in this one sandbox*. What makes it "apex" is the **image**
+(`apex-base`, §4): the apex CLI + toolchain are pre-baked, so the infra-executing
+stage can call `apex run` there alongside everything else. Restricting execution to
+workflows would split the agent's work across two execution planes and defeat the
+point of an isolated environment. `apex run --output json` (§6) is the structured-
+output contract for *that one command*, not the definition of the environment.
+
 ## 2. The contract `apex-gcp` implements
 
 A sandbox provider is a plugin declaring `environmentDrivers: [{ driverKey:
@@ -35,7 +45,7 @@ params/results in `packages/plugins/sdk/src/protocol.ts:554-648`):
 - `onEnvironmentAcquireLease` → `PluginEnvironmentLease { providerLeaseId, metadata, expiresAt }` — provision or reuse the GCP compute; `providerLeaseId` = instance name.
 - `onEnvironmentResumeLease` — reconnect to an existing instance by lease id.
 - `onEnvironmentRealizeWorkspace` → `{ cwd, metadata }` — clone/sync the repo on the instance, return the remote working dir.
-- `onEnvironmentExecute(params)` → `PluginEnvironmentExecuteResult { exitCode, signal, timedOut, stdout, stderr, metadata }` — **run `apex run <wf> --output json` on the instance, capture output.**
+- `onEnvironmentExecute(params)` → `PluginEnvironmentExecuteResult { exitCode, signal, timedOut, stdout, stderr, metadata }` — **generic command execution.** Runs whatever the pipeline/agent dispatches in the sandbox (git, build, test, the coding agent's shell actions) — `apex run` is just the command the *infra-executing* stage issues, not the provider's only job. See §6a.
 - `onEnvironmentReleaseLease` / `onEnvironmentDestroyLease` — stop/suspend (if `reuseLease`) or force-delete.
 - interactive-setup handlers — not needed (skip; only if `supportsInteractiveSetup`).
 
@@ -86,6 +96,11 @@ is only used for the **local** driver path.
 
 ## 6. JSON contract the `run` path must emit  (→ the apex enhancement)
 
+Scope (§6a): this is the structured-output contract for the **`apex run` command
+specifically** — one of the many commands the environment executes (§2) — so the
+cockpit can render infra results. Every *other* command the sandbox runs is plain
+stdout/exit-code; only apex needs a machine-readable result.
+
 `apex` already supports `--output json` at the group level (`apex_cli.py:44,93`),
 honored richly by `apex state` and `apex validate`. The gap: the **run path** must
 emit a structured result the provider can parse into `metadata` and the cockpit can
@@ -128,6 +143,22 @@ result (§6) is emitted on a separate fd or as the final stdout line so streamin
 5. **CompanyEnvironments UI** — expose `apex-gcp` as a sandbox provider choice
    (`ui/src/pages/CompanyEnvironments.tsx` already renders provider config from the
    manifest `configSchema` — likely zero new UI).
+
+## 8a. Scope boundaries — what `apex-gcp` is NOT
+
+- **apex is not a plugin.** `apex-gcp` is a plugin (kind: `sandbox_provider`); apex
+  itself is the **substrate** — a CLI baked into the `apex-base` image, invoked via
+  the generic execute path like git/node. It maps to no fork plugin "kind" and
+  shouldn't. The plugin gives the tower a *place* to run apex; it isn't apex.
+- **apex's own docker/GCP integration tests do NOT collapse into the plugin.** They
+  stay in apex's repo CI (testing apex against dockerized/emulated GCP). Coupling
+  the tower's runtime plugin to apex's test harness would point the dependency arrow
+  backwards. What legitimately shares is the **`apex-base` image artifact** — apex CI
+  and `apex-gcp` can validate/build on the same image — not the execution machinery.
+- **Docker-in-the-environment is an image capability, not a scope expansion.** If
+  agent work inside the sandbox needs docker (apex workflows that shell docker, or
+  tests), the instance/image provides it (§4) — that's not a reason to absorb apex's
+  test suite.
 
 ## 9. Open questions
 
