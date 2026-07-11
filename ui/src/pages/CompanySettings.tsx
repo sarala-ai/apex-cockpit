@@ -17,6 +17,7 @@ import {
   Field,
   ToggleField,
 } from "../components/agent-config-primitives";
+import { CloudSettingsSection } from "./company-settings/CloudSettingsSection";
 
 const BYTES_PER_MIB = 1024 * 1024;
 const DEFAULT_COMPANY_ATTACHMENT_MAX_MIB = DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES / BYTES_PER_MIB;
@@ -349,6 +350,9 @@ export function CompanySettings() {
           )}
         </div>
       )}
+
+      {/* Cloud (APEX — GCP/repo binding) */}
+      {selectedCompanyId && <CloudSettingsSection companyId={selectedCompanyId} />}
 
       {/* Hiring */}
       <div className="space-y-4" data-testid="company-settings-team-section">
