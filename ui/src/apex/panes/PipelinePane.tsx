@@ -2,6 +2,7 @@ import { CheckCircle2, ChevronRight, CircleDot, Pencil, Play, Ticket as TicketIc
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { StatusBadge } from '@/apex/status-badge';
 import {
   api,
   stepUrl,
@@ -10,7 +11,7 @@ import {
   type Stage,
   type Task,
   type Ticket,
-} from '@/lib/api';
+} from '@/apex/api';
 
 const DEFAULT_REPO = 'sarala-ai/apex';
 
@@ -348,9 +349,9 @@ export function PipelinePane() {
                   <a href={selected.ticket.url} target="_blank" rel="noreferrer" className="truncate hover:underline">
                     {selected.ticket.title}
                   </a>
-                  <Badge variant={selected.stage === 'failed' ? 'danger' : selected.stage === 'done' ? 'success' : 'info'}>
+                  <StatusBadge variant={selected.stage === 'failed' ? 'danger' : selected.stage === 'done' ? 'success' : 'info'}>
                     {label(selected.stage)}
-                  </Badge>
+                  </StatusBadge>
                 </CardTitle>
                 <Timeline run={selected} />
               </CardHeader>
@@ -411,7 +412,7 @@ export function PipelinePane() {
                         <span className="truncate">
                           {t.title} <span className="text-muted-foreground/60">→ apex {t.workflow}</span>
                         </span>
-                        <Badge variant={taskVariant(t.status)}>{t.status}</Badge>
+                        <StatusBadge variant={taskVariant(t.status)}>{t.status}</StatusBadge>
                       </li>
                     ))}
                   </ul>
@@ -430,7 +431,7 @@ export function PipelinePane() {
                       <li key={i} className="flex items-center justify-between gap-2">
                         <span>{label(g.stage)}</span>
                         <span className="flex items-center gap-2 text-muted-foreground">
-                          <Badge variant={g.decision.kind === 'reject' ? 'danger' : 'default'}>{g.decision.kind}</Badge>
+                          <StatusBadge variant={g.decision.kind === 'reject' ? 'danger' : 'default'}>{g.decision.kind}</StatusBadge>
                           {new Date(g.at).toLocaleTimeString()}
                         </span>
                       </li>

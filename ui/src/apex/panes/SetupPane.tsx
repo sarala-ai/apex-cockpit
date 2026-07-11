@@ -2,6 +2,7 @@ import { Building2, CheckCircle2, Cloud, Github, Plus, XCircle } from 'lucide-re
 import { useCallback, useEffect, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { StatusBadge } from '@/apex/status-badge';
 import {
   api,
   type AuthStatus,
@@ -11,7 +12,7 @@ import {
   type GhOrg,
   type GhRepo,
   type Org,
-} from '@/lib/api';
+} from '@/apex/api';
 
 function AuthRow({ ok, label, who }: { ok: boolean; label: string; who: string | null }) {
   return (
@@ -225,7 +226,7 @@ export function SetupPane() {
                 <li key={c.id} className="rounded border p-2 text-xs">
                   <div className="font-medium">{c.name}</div>
                   <div className="mt-1 flex flex-wrap gap-1">
-                    {c.gcpProjects.map((p) => <Badge key={p} variant="info">{p}</Badge>)}
+                    {c.gcpProjects.map((p) => <StatusBadge key={p} variant="info">{p}</StatusBadge>)}
                     {c.githubRepos.map((r) => <Badge key={r} variant="default">{r.split('/').pop()}</Badge>)}
                   </div>
                 </li>

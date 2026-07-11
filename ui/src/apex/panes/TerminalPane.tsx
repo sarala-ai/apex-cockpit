@@ -2,7 +2,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { useEffect, useRef, useState } from 'react';
-import { ptyUrl } from '@/lib/api';
+import { ptyUrl } from '@/apex/api';
 
 type Status = 'connecting' | 'connected' | 'closed' | 'error';
 

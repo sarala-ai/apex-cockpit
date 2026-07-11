@@ -7,12 +7,13 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
+import { StatusBadge } from '@/apex/status-badge';
 import {
   api,
   type ApexRunsResponse,
   type CiRunsResponse,
   type TokensResponse,
-} from '@/lib/api';
+} from '@/apex/api';
 
 const DEFAULT_REPO = 'sarala-ai/apex';
 
@@ -132,7 +133,7 @@ function ApexCard() {
               </span>
               <span className="flex shrink-0 items-center gap-1.5">
                 <Badge variant="default">{r.mode}</Badge>
-                <Badge variant={statusVariant(r.status)}>{r.status}</Badge>
+                <StatusBadge variant={statusVariant(r.status)}>{r.status}</StatusBadge>
               </span>
             </li>
           ))}
@@ -167,9 +168,9 @@ function CiCard() {
               <span className="truncate" title={r.displayTitle}>
                 {r.workflowName}
               </span>
-              <Badge variant={statusVariant(r.status, r.conclusion)}>
+              <StatusBadge variant={statusVariant(r.status, r.conclusion)}>
                 {r.conclusion || r.status}
-              </Badge>
+              </StatusBadge>
             </li>
           ))}
         </ul>
