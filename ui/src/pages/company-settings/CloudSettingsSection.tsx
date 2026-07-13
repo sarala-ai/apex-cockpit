@@ -29,9 +29,9 @@ import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/apex/status-badge";
 import { GcloudAuthBanner } from "@/apex/GcloudAuthBanner";
 
-function AuthRow({ ok, label, who }: { ok: boolean; label: string; who: string | null }) {
+function AuthRow({ ok, label, who, testId }: { ok: boolean; label: string; who: string | null; testId?: string }) {
   return (
-    <div className="flex items-center gap-2 text-sm">
+    <div className="flex items-center gap-2 text-sm" data-testid={testId}>
       {ok ? (
         <CheckCircle2 className="h-4 w-4 text-emerald-500" />
       ) : (
@@ -113,7 +113,7 @@ export function CloudSettingsSection({ companyId }: { companyId: string }) {
   const discoveryNote = gcpProjectsQuery.data?.note ?? reposQuery.data?.note ?? null;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4" data-testid="apex-cloud-section">
       <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
         Cloud
       </div>
@@ -130,11 +130,13 @@ export function CloudSettingsSection({ companyId }: { companyId: string }) {
         {/* Auth status — "ok" means authed AND token still live */}
         <div className="space-y-1.5">
           <AuthRow
+            testId="apex-auth-google"
             ok={!!authQuery.data?.google.authed && !!authQuery.data?.google.live}
             label="Google Cloud"
             who={authQuery.data?.google.account ?? null}
           />
           <AuthRow
+            testId="apex-auth-github"
             ok={!!authQuery.data?.github.authed && !!authQuery.data?.github.live}
             label="GitHub"
             who={authQuery.data?.github.user ?? null}
@@ -146,6 +148,7 @@ export function CloudSettingsSection({ companyId }: { companyId: string }) {
           <label className="block text-sm">
             <span className="text-muted-foreground">Product</span>
             <select
+              data-testid="apex-product-picker"
               value={selectedProjectId}
               onChange={(e) => selectProject(e.target.value)}
               className="mt-1 w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
