@@ -223,13 +223,45 @@ function StepBody({
     case "oauthClient":
       return (
         <GuidedStep
-          description="One Google OAuth client (Web app) backs both SSO and per-user Workspace access. Provision it via the APEX workflow, then it's detected here."
+          description="One Google OAuth client (Web app) backs both SSO and per-user Workspace access. Enabling APIs + creating the client are scriptable (the APEX workflow does them); the consent screen has a console step, and you consent to your own account later — no service account, no delegation."
           instructions={[
-            "In a GCP project: enable the Gmail, Docs, Sheets and Drive APIs.",
-            "OAuth consent screen = Internal (sarala.ai); add the Workspace scopes.",
-            "Create one OAuth 2.0 Client (Web app) → client id + secret; store the secret in Secret Manager.",
+            <span key="apis">
+              <b>Enable APIs</b> in the project: <code>gmail</code>, <code>docs</code>,{" "}
+              <code>sheets</code>, <code>drive</code>.googleapis.com
+            </span>,
+            <div key="scopes">
+              <b>OAuth consent screen → Internal</b> (sarala.ai). Required scopes:
+              <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs">
+                <li key="id">
+                  <code>openid</code> · <code>userinfo.email</code> · <code>userinfo.profile</code> — identity / SSO
+                </li>
+                <li key="gmail">
+                  <code>gmail.modify</code> — Gmail read / send / modify
+                </li>
+                <li key="docs">
+                  <code>documents</code> — Google Docs
+                </li>
+                <li key="sheets">
+                  <code>spreadsheets</code> — Google Sheets
+                </li>
+                <li key="drive">
+                  <code>drive.file</code> — Drive (per-file)
+                </li>
+              </ul>
+            </div>,
+            <span key="client">
+              Create one <b>OAuth 2.0 Client (Web application)</b>. Authorized redirect URIs:{" "}
+              <code>http://localhost:8001/oauth2callback</code> (dev) + your planned cloud URL.
+            </span>,
+            <span key="secret">
+              Copy the <b>client id + secret</b> → store the secret in Secret Manager (the APEX
+              workflow does this). Requires the <code>iam.oauthClientAdmin</code> role for the API path.
+            </span>,
           ]}
-          deepLink={{ href: "https://console.cloud.google.com/apis/credentials", label: "Open GCP Credentials" }}
+          deepLink={{
+            href: "https://console.cloud.google.com/apis/credentials",
+            label: "Open GCP Credentials →",
+          }}
           command="apex run workflow run --workflow gateway-oauth-bootstrap --execution-mode apply"
           done={done}
           onRecheck={onRecheck}
