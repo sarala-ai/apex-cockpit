@@ -26,5 +26,6 @@ export { instanceDatabaseBackupRoutes } from "./instance-database-backups.js";
 export { cloudUpstreamRoutes } from "./cloud-upstreams.js";
 export { apexSetupRoutes } from "./apex-setup.js";
 export { apexScopingRoutes } from "./apex-scoping.js";
+export { apexSetupStateRoutes } from "./apex-setup-state.js";
 export { apexObserveRoutes } from "./apex-observe.js";
 export { apexPipelineRoutes } from "./apex-pipeline.js";

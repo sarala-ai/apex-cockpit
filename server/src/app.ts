@@ -20,6 +20,7 @@ import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
 import { apexSetupRoutes } from "./routes/apex-setup.js";
 import { apexScopingRoutes } from "./routes/apex-scoping.js";
+import { apexSetupStateRoutes } from "./routes/apex-setup-state.js";
 import { apexObserveRoutes } from "./routes/apex-observe.js";
 import { apexPipelineRoutes } from "./routes/apex-pipeline.js";
 import { issueRoutes } from "./routes/issues.js";
@@ -241,6 +242,7 @@ export async function createApp(
   api.use(projectRoutes(db));
   api.use(apexSetupRoutes());
   api.use(apexScopingRoutes(db));
+  api.use(apexSetupStateRoutes(db));
   api.use(apexObserveRoutes());
   api.use(issueRoutes(db, opts.storageService, {
     feedbackExportService: opts.feedbackExportService,
