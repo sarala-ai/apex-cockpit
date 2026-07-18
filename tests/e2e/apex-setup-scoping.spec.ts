@@ -68,31 +68,26 @@ test.describe("APEX setup — Org / Company / GCP scoping (§1)", () => {
     await board.dispose();
   });
 
-  // TODO(apex-tower): green this. The feature IS built (CloudSettingsSection renders
-  // at CompanySettings.tsx:355 behind `selectedCompanyId`), but the e2e harness needs:
-  //   (1) a FRESH ui build served by the throwaway server — `onboard --run` serves
-  //       `ui/dist`, which is stale unless `pnpm --filter @paperclipai/ui build` ran;
-  //   (2) reliable company-context establishment — the settings route is company-
-  //       scoped (`/COMPANY/company/settings`), and seeding localStorage
-  //       `paperclip.selectedCompanyId` alone didn't render CloudSettingsSection at
-  //       the unprefixed `/company/settings`. Resolve the real scoped URL + confirm
-  //       the created company is in the UI user's selectable list.
-  // The test-ids (apex-cloud-section / apex-auth-google / -github / apex-product-picker)
-  // are in place, so this should green once the harness above is sorted.
-  test.skip("Company Settings renders the APEX Cloud section with auth status", async ({ page }) => {
+  // Company Settings renders the APEX Org/scoping + Cloud sections. The settings
+  // route is company-scoped by the company's issuePrefix (`/{PREFIX}/company/settings`),
+  // and the throwaway server serves a fresh `ui/dist` (the webServer builds the UI
+  // first — see playwright.config.ts). Seed the selected company in localStorage so
+  // CompanyContext resolves it deterministically.
+  test("Company Settings renders the APEX Org/scoping + Cloud sections", async ({ page }) => {
     const board = await pwRequest.newContext({ baseURL: BASE_URL });
     const company = await createCompany(board, `Cloud UI ${Date.now()}`);
     await board.dispose();
 
-    // The settings route depends on CompanyContext, which resolves the selected
-    // company from localStorage (`paperclip.selectedCompanyId`) against the
-    // selectable list. Seed it deterministically to avoid onboarding/redirect races.
     await page.goto("/");
     await page.evaluate((id) => localStorage.setItem("paperclip.selectedCompanyId", id), company.id);
 
-    await page.goto("/company/settings");
-    // The Cloud (APEX) section renders once a company is selected — anchor on it.
-    await expect(page.getByTestId("apex-cloud-section")).toBeVisible({ timeout: 30_000 });
+    // Company-scoped settings URL: `/{issuePrefix}/company/settings`.
+    await page.goto(`/${company.issuePrefix}/company/settings`);
+
+    // Org/scoping section (this slice) + the product-level Cloud section both render
+    // once a company is selected.
+    await expect(page.getByTestId("apex-org-section")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId("apex-cloud-section")).toBeVisible();
     await expect(page.getByTestId("apex-auth-google")).toBeVisible();
     await expect(page.getByTestId("apex-auth-github")).toBeVisible();
     await expect(page.getByTestId("apex-product-picker")).toBeVisible();
