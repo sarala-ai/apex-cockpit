@@ -100,19 +100,59 @@ test.describe("APEX setup — Org / Company / GCP scoping (§1)", () => {
 
   // --- NOT BUILT YET — these encode the target scoping model (§1 aspiration) ---
 
-  test.skip("Org 'Sarala' persists as a first-class entity grouping companies", () => {
-    // TODO: no `orgs` schema table exists. Org is currently implicit (single-org
-    // assumption); companies are not grouped under a persisted Org row. Build a
-    // thin `orgs` table + `companies.orgId` (or a metadata tag) + `/orgs` routes.
+  test("Org 'Sarala' persists as a first-class entity grouping companies", async () => {
+    const board = await pwRequest.newContext({ baseURL: BASE_URL });
+    const orgRes = await board.post("/api/orgs", { data: { name: `Sarala ${Date.now()}` } });
+    await expectOk(orgRes, "POST /orgs");
+    const { org } = (await orgRes.json()) as { org: { id: string; name: string } };
+    expect(org.id).toBeTruthy();
+
+    const listRes = await board.get("/api/orgs");
+    await expectOk(listRes, "GET /orgs");
+    const listBody = (await listRes.json()) as { orgs: { id: string }[] };
+    expect(listBody.orgs.some((o) => o.id === org.id)).toBe(true);
+
+    const company = await createCompany(board, `Bloom ${Date.now()}`);
+    const linkRes = await board.post(`/api/orgs/${org.id}/companies`, { data: { companyId: company.id } });
+    await expectOk(linkRes, "link company to org");
+    const underRes = await board.get(`/api/orgs/${org.id}/companies`);
+    await expectOk(underRes, "GET /orgs/:id/companies");
+    const underBody = (await underRes.json()) as { companies: { id: string; orgId: string }[] };
+    expect(underBody.companies.some((c) => c.id === company.id && c.orgId === org.id)).toBe(true);
+    await board.dispose();
   });
 
-  test.skip("GCP projects + repos persist as a COMPANY-level scope binding", () => {
-    // TODO: today the Cloud section binds GCP projects + repos to a PRODUCT
-    // (project) via `projects.env` (writeCloudBinding), not at company level.
-    // Needs a company-level cloud-binding store + UI, then round-trip assertion.
+  test("GCP projects + repos persist as a COMPANY-level scope binding", async () => {
+    const board = await pwRequest.newContext({ baseURL: BASE_URL });
+    const company = await createCompany(board, `FinPilot ${Date.now()}`);
+    const gcpProjects = ["sarala-finpilot-dev", "sarala-finpilot-prod"];
+    const githubRepos = ["sarala-ai/finpilot"];
+    const putRes = await board.put(`/api/apex/scope/company/${company.id}/cloud-binding`, {
+      data: { gcpProjects, githubRepos },
+    });
+    await expectOk(putRes, "PUT company cloud-binding");
+    const getRes = await board.get(`/api/apex/scope/company/${company.id}/cloud-binding`);
+    await expectOk(getRes, "GET company cloud-binding");
+    const body = (await getRes.json()) as { gcpProjects: string[]; githubRepos: string[] };
+    expect(body.gcpProjects).toEqual(gcpProjects);
+    expect(body.githubRepos).toEqual(githubRepos);
+    await board.dispose();
   });
 
-  test.skip("GCP projects scope at ORG level (above company)", () => {
-    // TODO: no org-level GCP scoping exists. Depends on the Org entity above.
+  test("GCP projects scope at ORG level (above company)", async () => {
+    const board = await pwRequest.newContext({ baseURL: BASE_URL });
+    const orgRes = await board.post("/api/orgs", { data: { name: `Sarala Org ${Date.now()}` } });
+    await expectOk(orgRes, "POST /orgs");
+    const { org } = (await orgRes.json()) as { org: { id: string } };
+    const gcpProjects = ["sarala-shared-infra"];
+    const putRes = await board.put(`/api/apex/scope/org/${org.id}/cloud-binding`, {
+      data: { gcpProjects, githubRepos: [] },
+    });
+    await expectOk(putRes, "PUT org cloud-binding");
+    const getRes = await board.get(`/api/apex/scope/org/${org.id}/cloud-binding`);
+    await expectOk(getRes, "GET org cloud-binding");
+    const body = (await getRes.json()) as { gcpProjects: string[] };
+    expect(body.gcpProjects).toEqual(gcpProjects);
+    await board.dispose();
   });
 });

@@ -1,4 +1,6 @@
 export { companies } from "./companies.js";
+export { orgs } from "./orgs.js";
+export { cloudScopeBindings } from "./cloud_scope_bindings.js";
 export { companyLogos } from "./company_logos.js";
 export { authUsers, authSessions, authAccounts, authVerifications } from "./auth.js";
 export { instanceSettings } from "./instance_settings.js";
