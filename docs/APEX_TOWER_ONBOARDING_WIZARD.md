@@ -62,12 +62,25 @@ Ordered steps; each = `{ detect, kind: 'auto'|'hitl', action|guidance, verify }`
   real action in the same visible browser, automation resumes on detected completion.
 - **Never:** auto-click a third-party consent screen.
 
-## Testability
+## Testability & the scope of Playwright
 
-- **e2e (Playwright):** drive the wizard's auto-steps deterministically with the HITL
-  gates *mocked* → regression coverage, no human needed. (Extends
-  `tests/e2e/apex-setup-scoping.spec.ts`.)
-- **Live:** real HITL only on actual runs.
+**Playwright is a dev-test / regression tool only — it is NOT a production-runtime
+component, and there is no user-assist role for it currently.** Reasons:
+- apex-tower's own forms are short + discovery-driven (dropdowns from gcloud/gh), so
+  "pre-fill to save toil" adds nothing — the operator just fills them.
+- The genuinely tedious/external steps (Google/GCP consent, console) can't be
+  Playwright-driven at all (Google blocks iframing + automates-detection).
+
+So within apex-tower, Playwright's job is to **mimic the operator to test the UI**:
+fill forms, submit/save, and assert — every flow, as the dev-test loop and the
+committed regression suite (`tests/e2e/apex-setup-scoping.spec.ts`). External
+Google/GCP calls are **mocked** so the suite runs deterministically with no live
+consent per run; real consent is a live-only HITL gate outside the test.
+
+The wizard's *production* automation therefore comes entirely from **detectors +
+APEX workflows + deep-link-and-detect (APIs)** — never Playwright. (User-assist via
+Playwright is parked, not deleted: it would only return for a genuinely long/
+repetitive own-UI entry flow, or driving a non-blocking app that lacks an API.)
 
 ## Build order
 
