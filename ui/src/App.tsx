@@ -446,6 +446,10 @@ export function App() {
         <Route element={<CloudAccessGate />}>
           <Route index element={<CompanyRootRedirect />} />
           <Route path="onboarding" element={<OnboardingRoutePage />} />
+          {/* Top-level setup wizard — reachable with zero companies/org (the
+              identity-first bootstrap entry). The company-scoped
+              `/{issuePrefix}/setup` mount still exists for in-company setup. */}
+          <Route path="setup" element={<SetupWizard />} />
           <Route path="instance" element={<LegacySettingsRedirect />} />
           <Route path="instance/settings" element={<LegacySettingsRedirect />} />
           <Route path="instance/settings/*" element={<LegacySettingsRedirect />} />

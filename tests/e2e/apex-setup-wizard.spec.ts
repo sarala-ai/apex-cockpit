@@ -28,6 +28,7 @@ async function createCompany(board: APIRequestContext, name: string) {
 const COMPLETE = {
   auth: { gcloud: "ok", gh: "ok", adc: "ok" },
   org: { present: true, id: "org-1" },
+  membership: { present: true, role: "owner", status: "active" },
   companies: { count: 1, ids: ["c-1"] },
   scoping: { orgBound: true, companyBound: true },
   oauthClient: { configured: true },
@@ -38,6 +39,31 @@ const COMPLETE = {
 const FRESH = {
   auth: { gcloud: "missing", gh: "ok", adc: "missing" },
   org: { present: false },
+  membership: { present: false },
+  companies: { count: 0, ids: [] },
+  scoping: { orgBound: false, companyBound: false },
+  oauthClient: { configured: false },
+  gateway: { reachable: false },
+  mcpServers: { registered: [] },
+};
+
+// Org exists, actor authed, but is only a pending member (awaiting approval).
+const PENDING_MEMBER = {
+  auth: { gcloud: "ok", gh: "ok", adc: "ok" },
+  org: { present: true, id: "org-1" },
+  membership: { present: true, role: "member", status: "pending" },
+  companies: { count: 1, ids: ["c-1"] },
+  scoping: { orgBound: true, companyBound: true },
+  oauthClient: { configured: false },
+  gateway: { reachable: false },
+  mcpServers: { registered: [] },
+};
+
+// A reviewer: identity connected, but no cloud/repo — cloud steps are skipped.
+const REVIEWER = {
+  auth: { gcloud: "ok", gh: "ok", adc: "ok" },
+  org: { present: true, id: "org-1" },
+  membership: { present: true, role: "reviewer", status: "active" },
   companies: { count: 0, ids: [] },
   scoping: { orgBound: false, companyBound: false },
   oauthClient: { configured: false },
@@ -57,6 +83,18 @@ async function gotoWizard(page: import("@playwright/test").Page, state: unknown)
   await page.goto("/");
   await page.evaluate((id) => localStorage.setItem("paperclip.selectedCompanyId", id), company.id);
   await page.goto(`/${company.issuePrefix}/setup`);
+  await expect(page.getByTestId("apex-setup-wizard")).toBeVisible({ timeout: 30_000 });
+}
+
+/** Drive the TOP-LEVEL `/setup` route — reachable with zero companies/org (the
+ *  identity-first bootstrap entry). No company is selected. */
+async function gotoTopLevelSetup(page: import("@playwright/test").Page, state: unknown) {
+  await page.route("**/api/setup/state**", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(state) }),
+  );
+  await page.goto("/");
+  await page.evaluate(() => localStorage.removeItem("paperclip.selectedCompanyId"));
+  await page.goto("/setup");
   await expect(page.getByTestId("apex-setup-wizard")).toBeVisible({ timeout: 30_000 });
 }
 
@@ -85,10 +123,48 @@ test.describe("APEX setup wizard shell", () => {
 
   test("a guided (not-yet-built) step exposes guide + re-check", async ({ page }) => {
     await gotoWizard(page, FRESH);
-    // Open the OAuth-client step (a GuidedStep) and assert the guide + re-check render.
+    // Identity IS green here so the OAuth-client step is unlocked. Use a state
+    // where auth is complete so the gate doesn't shadow the guided body.
+    await gotoWizard(page, { ...FRESH, auth: { gcloud: "ok", gh: "ok", adc: "ok" } });
     await page.getByTestId("wizard-step-oauthClient").getByRole("button").first().click();
     const body = page.getByTestId("wizard-step-oauthClient").getByTestId("wizard-guided-step");
     await expect(body).toBeVisible();
     await expect(body.getByRole("button", { name: /re-check/i })).toBeVisible();
+  });
+
+  test("empty DB → bootstrap-as-owner branch banner", async ({ page }) => {
+    await gotoWizard(page, FRESH);
+    const branch = page.getByTestId("wizard-branch");
+    await expect(branch).toHaveAttribute("data-branch", "branch-bootstrap-owner");
+    await expect(branch.getByText(/org owner/i)).toBeVisible();
+  });
+
+  test("identity is a hard gate — downstream steps are blocked until gcloud+gh green", async ({ page }) => {
+    // FRESH has gcloud missing → the OAuth-client step body shows the auth gate,
+    // not its guide.
+    await gotoWizard(page, FRESH);
+    await page.getByTestId("wizard-step-oauthClient").getByRole("button").first().click();
+    await expect(page.getByTestId("wizard-step-oauthClient").getByTestId("wizard-auth-gate")).toBeVisible();
+    await expect(page.getByTestId("wizard-step-oauthClient").getByTestId("wizard-guided-step")).toHaveCount(0);
+  });
+
+  test("org exists + pending membership → awaiting-approval branch", async ({ page }) => {
+    await gotoWizard(page, PENDING_MEMBER);
+    await expect(page.getByTestId("wizard-branch")).toHaveAttribute("data-branch", "branch-awaiting-approval");
+  });
+
+  test("reviewer role → cloud steps are skipped, not pending", async ({ page }) => {
+    await gotoWizard(page, REVIEWER);
+    // Cloud steps drop out of the required set for a reviewer.
+    await expect(page.getByTestId("wizard-step-gateway")).toHaveAttribute("data-status", "skipped");
+    await expect(page.getByTestId("wizard-step-oauthClient")).toHaveAttribute("data-status", "skipped");
+    // Identity (non-cloud) is still done → the wizard reads complete for this role.
+    await expect(page.getByTestId("wizard-complete")).toBeVisible();
+  });
+
+  test("top-level /setup renders with no company selected", async ({ page }) => {
+    await gotoTopLevelSetup(page, FRESH);
+    await expect(page.getByTestId("apex-setup-wizard")).toBeVisible();
+    await expect(page.getByTestId("wizard-branch")).toHaveAttribute("data-branch", "branch-bootstrap-owner");
   });
 });

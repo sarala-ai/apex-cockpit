@@ -36,7 +36,11 @@ interface StepDef {
 }
 
 const STEPS: StepDef[] = [
-  { key: "auth", title: "Local cloud auth (gcloud / gh)", done: (s) => s.auth.gcloud === "ok" && s.auth.gh === "ok" },
+  {
+    key: "auth",
+    title: "Connect gcloud + GitHub (your identity)",
+    done: (s) => s.auth.gcloud === "ok" && s.auth.gh === "ok",
+  },
   { key: "org", title: 'Org "Sarala"', done: (s) => s.org.present },
   {
     key: "scoping",
@@ -54,20 +58,83 @@ const STEPS: StepDef[] = [
   { key: "governance", title: "Per-tool governance", optional: true, done: () => false },
 ];
 
-/** True when every required (non-optional) prerequisite is satisfied. */
+/**
+ * The cloud/repo-heavy steps. They're required for owner/admin/contributor roles
+ * (who provision + execute) but SKIPPED for reviewer/observer — the future
+ * no-cloud read-only tiers who review/approve/observe under the org identity and
+ * never need their own cloud access. (Don't hardcode "everyone needs cloud.")
+ */
+const CLOUD_STEP_KEYS = new Set<StepKey>(["scoping", "oauthClient", "gateway", "mcpServers", "connect"]);
+
+/** Roles that DON'T provision/execute → cloud steps don't apply.
+ *  reviewer/observer are placeholders for the read-only tiers (not yet mintable). */
+function roleNeedsCloud(role?: string): boolean {
+  return role !== "reviewer" && role !== "observer";
+}
+
+/** Steps that count toward "required" given the actor's role. */
+function requiredSteps(s: SetupState): StepDef[] {
+  const needsCloud = roleNeedsCloud(s.membership?.role);
+  return STEPS.filter((st) => !st.optional && (needsCloud || !CLOUD_STEP_KEYS.has(st.key)));
+}
+
+/** True when every required (role-aware) prerequisite is satisfied. */
 export function isSetupComplete(s: SetupState): boolean {
-  return STEPS.filter((st) => !st.optional).every((st) => st.done(s));
+  return requiredSteps(s).every((st) => st.done(s));
 }
 
 function statusOf(
   step: StepDef,
   state: SetupState,
   activeKey: StepKey | null,
+  isRequired: boolean,
 ): { label: string; variant: StatusVariant; icon: "done" | "active" | "pending" } {
   if (step.done(state)) return { label: "done", variant: "success", icon: "done" };
   if (step.optional) return { label: "optional", variant: "default", icon: "pending" };
+  // Non-optional but not required for THIS role (reviewer/observer skip cloud).
+  if (!isRequired) return { label: "skipped", variant: "default", icon: "pending" };
   if (step.key === activeKey) return { label: "current", variant: "info", icon: "active" };
   return { label: "pending", variant: "default", icon: "pending" };
+}
+
+/** One-line banner copy for the org/membership state branch. */
+function membershipBranch(state: SetupState): {
+  testid: string;
+  tone: "info" | "warn" | "success";
+  title: string;
+  body: string;
+} {
+  if (!state.org.present) {
+    return {
+      testid: "branch-bootstrap-owner",
+      tone: "info",
+      title: "You're setting up a new instance — you'll be the org owner.",
+      body: "No org exists yet. Connect your identity, then create the org; you're recorded as its owner (active). Later users are mapped as members an owner approves.",
+    };
+  }
+  const m = state.membership;
+  if (m?.present && m.status === "active") {
+    return {
+      testid: "branch-member-active",
+      tone: "success",
+      title: `You're an active ${m.role ?? "member"} of this org.`,
+      body: "Continue with the setup steps below for your role.",
+    };
+  }
+  if (m?.present && m.status === "pending") {
+    return {
+      testid: "branch-awaiting-approval",
+      tone: "warn",
+      title: "Request sent — awaiting an org admin's approval.",
+      body: "Your membership is pending. An owner/admin must approve you before org-scoped setup unlocks. (Approval UI is a placeholder — approve via the org members API for now.)",
+    };
+  }
+  return {
+    testid: "branch-request-access",
+    tone: "warn",
+    title: "This org already exists — request access to join.",
+    body: "You're not a member yet. Connect your identity, then request access; an owner/admin approves you.",
+  };
 }
 
 export function SetupWizard() {
@@ -84,12 +151,16 @@ export function SetupWizard() {
   const [openKey, setOpenKey] = useState<StepKey | null>(null);
 
   const state = stateQuery.data;
-  const required = STEPS.filter((s) => !s.optional);
+  const required = state ? requiredSteps(state) : STEPS.filter((s) => !s.optional);
+  const requiredKeys = new Set(required.map((s) => s.key));
   const doneCount = state ? required.filter((s) => s.done(state)).length : 0;
   const activeKey: StepKey | null = state
     ? (required.find((s) => !s.done(state))?.key ?? null)
     : null;
   const complete = state != null && activeKey == null;
+  // Identity is the hard gate: nothing org/cloud-scoped proceeds until gcloud+gh
+  // are both green.
+  const authReady = state != null && state.auth.gcloud === "ok" && state.auth.gh === "ok";
 
   // Default the expanded step to the active one whenever state resolves/changes.
   useEffect(() => {
@@ -133,9 +204,30 @@ export function SetupWizard() {
             </div>
           )}
 
+          {(() => {
+            const branch = membershipBranch(state);
+            const toneClass =
+              branch.tone === "success"
+                ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600"
+                : branch.tone === "warn"
+                  ? "border-amber-500/30 bg-amber-500/10 text-amber-600"
+                  : "border-sky-500/30 bg-sky-500/10 text-sky-600";
+            return (
+              <div
+                className={`mb-4 rounded-md border px-4 py-3 text-sm ${toneClass}`}
+                data-testid="wizard-branch"
+                data-branch={branch.testid}
+              >
+                <div className="font-medium">{branch.title}</div>
+                <div className="mt-0.5 text-xs opacity-90">{branch.body}</div>
+              </div>
+            );
+          })()}
+
           <ul className="space-y-2">
             {STEPS.map((step) => {
-              const st = statusOf(step, state, activeKey);
+              const isRequired = requiredKeys.has(step.key);
+              const st = statusOf(step, state, activeKey, isRequired);
               const open = openKey === step.key;
               return (
                 <li
@@ -170,6 +262,7 @@ export function SetupWizard() {
                         stepKey={step.key}
                         selectedCompanyId={selectedCompanyId}
                         done={step.done(state)}
+                        authReady={authReady}
                         onRecheck={recheck}
                         rechecking={stateQuery.isFetching}
                       />
@@ -189,23 +282,43 @@ function StepBody({
   stepKey,
   selectedCompanyId,
   done,
+  authReady,
   onRecheck,
   rechecking,
 }: {
   stepKey: StepKey;
   selectedCompanyId: string | null;
   done: boolean;
+  authReady: boolean;
   onRecheck: () => void;
   rechecking: boolean;
 }) {
+  // Identity is the hard gate — every org/cloud-scoped step is blocked until
+  // gcloud + gh are both green. The identity step itself is never gated.
+  if (stepKey !== "auth" && !authReady) {
+    return (
+      <div
+        className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-600"
+        data-testid="wizard-auth-gate"
+      >
+        Connect your identity first — finish “Connect gcloud + GitHub” (both must be green) to unlock this step.
+      </div>
+    );
+  }
   switch (stepKey) {
     case "auth":
       return (
         <div className="space-y-2 text-sm text-muted-foreground">
           <p>
+            <b>This is your login.</b> <code>gcloud auth login</code> signs you in with your
+            Google account — it <b>is</b> the Google/Gmail login (same account); there’s no
+            separate sign-in page. <code>gh auth login</code> connects your GitHub identity. Apex is
+            tied to gcloud + GitHub, so this is step one.
+          </p>
+          <p>
             Discovery + the AR pull read your local <code>gcloud</code> / <code>gh</code> auth. Fix
-            any expired/missing credential below; ADC (application-default) is needed for the apex
-            install.
+            any expired/missing credential below; ADC —{" "}
+            <code>gcloud auth application-default login</code> — is also needed for the apex install.
           </p>
           <GcloudAuthBanner />
         </div>

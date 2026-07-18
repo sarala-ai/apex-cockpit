@@ -1009,6 +1009,13 @@
       "when": 1784000000000,
       "tag": "0145_apex_orgs_scoping",
       "breakpoints": true
+    },
+    {
+      "idx": 146,
+      "version": "7",
+      "when": 1784100000000,
+      "tag": "0146_org_memberships",
+      "breakpoints": true
     }
   ]
 }

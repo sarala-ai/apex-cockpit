@@ -8,6 +8,7 @@ import { errorHandler } from "../middleware/index.js";
 const healthy: SetupStateProbes = {
   auth: async () => ({ gcloud: "ok", gh: "ok", adc: "ok" }),
   org: async () => ({ present: true, id: "org-1" }),
+  membership: async () => ({ present: true, role: "owner", status: "active" }),
   companies: async () => ({ count: 2, ids: ["c1", "c2"] }),
   scoping: async () => ({ orgBound: true, companyBound: true }),
   oauthClient: async () => ({ configured: true }),
@@ -35,6 +36,7 @@ describe("GET /setup/state", () => {
     expect(res.body).toEqual({
       auth: { gcloud: "ok", gh: "ok", adc: "ok" },
       org: { present: true, id: "org-1" },
+      membership: { present: true, role: "owner", status: "active" },
       companies: { count: 2, ids: ["c1", "c2"] },
       scoping: { orgBound: true, companyBound: true },
       oauthClient: { configured: true },

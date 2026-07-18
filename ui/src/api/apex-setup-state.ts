@@ -11,6 +11,9 @@ type Health = "ok" | "missing" | "expired";
 export interface SetupState {
   auth: { gcloud: Health; gh: Health; adc: Health };
   org: { present: boolean; id?: string };
+  /** The signed-in user's membership in the detected org (drives the wizard's
+   *  bootstrap-owner / member / awaiting-approval branch). */
+  membership: { role?: string; status?: string; present: boolean };
   companies: { count: number; ids: string[] };
   scoping: { orgBound: boolean; companyBound: boolean };
   oauthClient: { configured: boolean; note?: string };

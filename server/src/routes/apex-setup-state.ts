@@ -12,8 +12,8 @@
  */
 
 import { Router } from "express";
-import { eq } from "drizzle-orm";
-import { type Db, orgs, companies, cloudScopeBindings } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
+import { type Db, orgs, companies, cloudScopeBindings, orgMemberships } from "@paperclipai/db";
 import { checkAuth } from "../apex/setup/cloud.js";
 import { run } from "../apex/exec.js";
 import { assertBoardOrAgent } from "./authz.js";
@@ -23,6 +23,10 @@ type Health = "ok" | "missing" | "expired";
 export interface SetupState {
   auth: { gcloud: Health; gh: Health; adc: Health };
   org: { present: boolean; id?: string };
+  /** The signed-in user's membership in the detected org. `present:false` when
+   *  they have no row (org exists but they're unmapped → request-access branch),
+   *  or when there's no org yet (bootstrap-as-owner branch). */
+  membership: { role?: string; status?: string; present: boolean };
   companies: { count: number; ids: string[] };
   scoping: { orgBound: boolean; companyBound: boolean };
   oauthClient: { configured: boolean; note?: string };
@@ -33,6 +37,7 @@ export interface SetupState {
 export interface SetupStateProbes {
   auth: () => Promise<SetupState["auth"]>;
   org: () => Promise<SetupState["org"]>;
+  membership: (userId?: string | null, orgId?: string) => Promise<SetupState["membership"]>;
   companies: (orgId?: string) => Promise<SetupState["companies"]>;
   scoping: () => Promise<SetupState["scoping"]>;
   oauthClient: () => Promise<SetupState["oauthClient"]>;
@@ -71,6 +76,15 @@ export function defaultProbes(db: Db): SetupStateProbes {
     async org() {
       const [row] = await db.select({ id: orgs.id }).from(orgs).limit(1);
       return row ? { present: true, id: row.id } : { present: false };
+    },
+    async membership(userId?: string | null, orgId?: string) {
+      if (!userId || !orgId) return { present: false };
+      const [row] = await db
+        .select({ role: orgMemberships.role, status: orgMemberships.status })
+        .from(orgMemberships)
+        .where(and(eq(orgMemberships.orgId, orgId), eq(orgMemberships.userId, userId)))
+        .limit(1);
+      return row ? { present: true, role: row.role, status: row.status } : { present: false };
     },
     async companies(orgId?: string) {
       const rows = orgId
@@ -140,15 +154,19 @@ export function apexSetupStateRoutes(db: Db, overrides?: Partial<SetupStateProbe
       safe(() => probes.oauthClient(), { configured: false, note: "probe failed" }),
       safe(() => probes.gateway(), { reachable: false }),
     ]);
-    // companies is org-scoped when we know the org; mcpServers depends on gateway.
-    const [companiesState, mcpServers] = await Promise.all([
-      safe(() => probes.companies(orgId ?? org.id), { count: 0, ids: [] }),
+    // companies + membership are org-scoped once the org is known; mcpServers
+    // depends on gateway. Membership resolves the signed-in actor's row.
+    const resolvedOrgId = orgId ?? org.id;
+    const [companiesState, mcpServers, membership] = await Promise.all([
+      safe(() => probes.companies(resolvedOrgId), { count: 0, ids: [] }),
       safe(() => probes.mcpServers(gateway.reachable), { registered: [] }),
+      safe(() => probes.membership(req.actor?.userId ?? null, resolvedOrgId), { present: false }),
     ]);
 
     const state: SetupState = {
       auth,
       org,
+      membership,
       companies: companiesState,
       scoping,
       oauthClient,
