@@ -15,7 +15,17 @@ export interface SetupState {
    *  bootstrap-owner / member / awaiting-approval branch). */
   membership: { role?: string; status?: string; present: boolean };
   companies: { count: number; ids: string[] };
-  scoping: { orgBound: boolean; companyBound: boolean };
+  /** Cloud/repo binding presence, split by scope + kind (org-cloud vs
+   *  company-cloud vs company-repos) so each spine step detects independently. */
+  scoping: {
+    orgProjectsBound: boolean;
+    orgReposBound: boolean;
+    companyProjectsBound: boolean;
+    companyReposBound: boolean;
+  };
+  /** Org-level GitHub: App install + the single org WIF pool/provider (shallow
+   *  config/env probe today; deep verification is a later APEX workflow). */
+  orgGithub: { appInstalled: boolean; wifConfigured: boolean };
   oauthClient: { configured: boolean; note?: string };
   gateway: { reachable: boolean };
   mcpServers: { registered: string[] };

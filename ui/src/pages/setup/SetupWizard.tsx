@@ -18,10 +18,17 @@ import { StatusBadge, type StatusVariant } from "@/apex/status-badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { GuidedStep } from "./GuidedStep";
 
+// The cloud-first org→company engineering-setup spine. ORG steps (identity →
+// create org → org cloud → org GitHub) provision the shared substrate; COMPANY
+// steps (company cloud → company repos) provision each product unit; then the
+// capability layer (OAuth client → gateway → MCP → connect → governance).
 type StepKey =
   | "auth"
   | "org"
-  | "scoping"
+  | "orgCloud"
+  | "orgGithub"
+  | "companyCloud"
+  | "companyRepos"
   | "oauthClient"
   | "gateway"
   | "mcpServers"
@@ -41,11 +48,26 @@ const STEPS: StepDef[] = [
     title: "Connect gcloud + GitHub (your identity)",
     done: (s) => s.auth.gcloud === "ok" && s.auth.gh === "ok",
   },
-  { key: "org", title: 'Org "Sarala"', done: (s) => s.org.present },
+  { key: "org", title: "Create Org (you = owner)", done: (s) => s.org.present },
   {
-    key: "scoping",
-    title: "Companies + GCP / repo scoping",
-    done: (s) => s.companies.count > 0 && (s.scoping.orgBound || s.scoping.companyBound),
+    key: "orgCloud",
+    title: "Org cloud — shared GCP projects",
+    done: (s) => s.scoping.orgProjectsBound,
+  },
+  {
+    key: "orgGithub",
+    title: "Org GitHub — App + Workload Identity Federation",
+    done: (s) => s.orgGithub.appInstalled && s.orgGithub.wifConfigured,
+  },
+  {
+    key: "companyCloud",
+    title: "Company cloud — GCP projects",
+    done: (s) => s.companies.count > 0 && s.scoping.companyProjectsBound,
+  },
+  {
+    key: "companyRepos",
+    title: "Company repos",
+    done: (s) => s.companies.count > 0 && s.scoping.companyReposBound,
   },
   { key: "oauthClient", title: "Google OAuth client", done: (s) => s.oauthClient.configured },
   { key: "gateway", title: "MCP gateway running", done: (s) => s.gateway.reachable },
@@ -63,8 +85,18 @@ const STEPS: StepDef[] = [
  * (who provision + execute) but SKIPPED for reviewer/observer — the future
  * no-cloud read-only tiers who review/approve/observe under the org identity and
  * never need their own cloud access. (Don't hardcode "everyone needs cloud.")
+ * `auth` + `org` stay required for all roles (identity + org membership).
  */
-const CLOUD_STEP_KEYS = new Set<StepKey>(["scoping", "oauthClient", "gateway", "mcpServers", "connect"]);
+const CLOUD_STEP_KEYS = new Set<StepKey>([
+  "orgCloud",
+  "orgGithub",
+  "companyCloud",
+  "companyRepos",
+  "oauthClient",
+  "gateway",
+  "mcpServers",
+  "connect",
+]);
 
 /** Roles that DON'T provision/execute → cloud steps don't apply.
  *  reviewer/observer are placeholders for the read-only tiers (not yet mintable). */
@@ -270,6 +302,7 @@ export function SetupWizard() {
                       <StepBody
                         stepKey={step.key}
                         selectedCompanyId={selectedCompanyId}
+                        orgPresent={state.org.present}
                         done={step.done(state)}
                         authReady={authReady}
                         onRecheck={recheck}
@@ -290,6 +323,7 @@ export function SetupWizard() {
 function StepBody({
   stepKey,
   selectedCompanyId,
+  orgPresent,
   done,
   authReady,
   onRecheck,
@@ -297,6 +331,7 @@ function StepBody({
 }: {
   stepKey: StepKey;
   selectedCompanyId: string | null;
+  orgPresent: boolean;
   done: boolean;
   authReady: boolean;
   onRecheck: () => void;
@@ -333,14 +368,90 @@ function StepBody({
         </div>
       );
     case "org":
-    case "scoping":
-      return selectedCompanyId ? (
-        <OrgScopingSection companyId={selectedCompanyId} />
-      ) : (
+      // Create the holding Org (you become its owner). Company link/summary too.
+      return <OrgScopingSection companyId={selectedCompanyId ?? undefined} slice="org" />;
+    case "orgCloud":
+      // Bind the org's SHARED GCP projects (CI/CD + Artifact Registry, shared
+      // Secret Manager, observability) at org scope.
+      return !orgPresent ? (
         <p className="text-sm text-muted-foreground">
-          Select or create a company first (under <a className="underline" href="/companies">Companies</a>),
-          then the Org + scoping editor appears here.
+          Create the Org first (step above) — then bind its shared GCP projects here.
         </p>
+      ) : (
+        <OrgScopingSection companyId={selectedCompanyId ?? undefined} slice="orgScope" />
+      );
+    case "orgGithub":
+      return (
+        <GuidedStep
+          description="Connect the GitHub ORG to GCP once, keylessly: install the Apex GitHub App on the org, then create the single org-level Workload Identity Federation pool + provider that trusts your whole GitHub org. Per-repo authorization comes later, in the company steps."
+          instructions={[
+            <span key="app">
+              <b>Install the GitHub App</b> on the org (fine-grained, per-install token — not a
+              personal PAT). Permissions: <code>contents:rw</code>, <code>pull_requests</code>,{" "}
+              <code>actions</code>, <code>checks</code>, <code>workflows</code>,{" "}
+              <code>environments</code>, <code>metadata</code>. Select the repos it may touch.
+            </span>,
+            <div key="wif">
+              <b>One org-level WIF pool + provider</b> (create once, host in the shared project,
+              e.g. <code>sarala-cicd</code>). Scope trust to the whole org via the provider’s
+              attribute condition:
+              <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs">
+                <li key="cond">
+                  <code>assertion.repository_owner == 'sarala-ai'</code> — trust every repo in the
+                  org. <b>Do not</b> create a pool/provider per repo.
+                </li>
+                <li key="claims">
+                  WIF can filter only on <code>repository</code>, <code>repository_owner</code>,{" "}
+                  and <code>environment</code> (GitHub OIDC claims). GitHub is flat (no subgroups);
+                  “company = group of repos” is an Apex-side grouping — a GitHub Team / custom
+                  property is optional and <b>not</b> in the OIDC claims.
+                </li>
+              </ul>
+            </div>,
+            <span key="auth">
+              <b>Authorization stays per-repo (+ per-environment)</b> and is set up in the Company
+              steps: IAM-bind{" "}
+              <code>principalSet://…/attribute.repository/&lt;org&gt;/&lt;repo&gt;</code> (optionally
+              plus <code>attribute.environment</code>) → that env’s least-privilege deploy SA. The
+              SAs can live in <b>any</b> project (each company’s own) — only the pool/provider is
+              pinned to the shared host project. This fuses WIF + GitHub Environments +
+              required-reviewers into one keyless, approval-gated deploy path.
+            </span>,
+          ]}
+          deepLink={{
+            href: "https://github.com/organizations/sarala-ai/settings/installations",
+            label: "Open GitHub org apps →",
+          }}
+          done={done}
+          onRecheck={onRecheck}
+          rechecking={rechecking}
+        />
+      );
+    case "companyCloud":
+      // Bind THIS company's own GCP projects (dev/staging/prod) at company scope.
+      return !orgPresent ? (
+        <p className="text-sm text-muted-foreground">
+          Create the Org first — company scoping cascades under it.
+        </p>
+      ) : (
+        <OrgScopingSection companyId={selectedCompanyId ?? undefined} slice="companyScope" />
+      );
+    case "companyRepos":
+      // Bind this company's repos (subset of the org's). Same company-scope
+      // editor as company-cloud — one binding row holds both GCP projects + repos;
+      // the two steps track the two completion criteria.
+      return !orgPresent ? (
+        <p className="text-sm text-muted-foreground">
+          Create the Org first — then map this company’s repos (from the org’s repos).
+        </p>
+      ) : (
+        <div className="space-y-2">
+          <p className="text-xs text-muted-foreground">
+            Pick the repos this company owns from the org’s repos — the per-repo(+env) deploy-SA
+            WIF bindings (see the Org GitHub step) are generated from this company↔repo grouping.
+          </p>
+          <OrgScopingSection companyId={selectedCompanyId ?? undefined} slice="companyScope" />
+        </div>
       );
     case "oauthClient":
       return (

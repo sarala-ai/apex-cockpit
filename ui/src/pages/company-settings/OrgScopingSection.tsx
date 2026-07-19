@@ -163,7 +163,21 @@ function ScopeBindingEditor({
   );
 }
 
-export function OrgScopingSection({ companyId }: { companyId: string }) {
+/**
+ * Which slice of the org→company scoping surface to render. The standalone
+ * CompanySettings page uses `"all"` (create org + both scope editors). The
+ * onboarding wizard embeds one slice per step: `"org"` (create/summary/link),
+ * `"orgScope"` (org GCP+repo binding), `"companyScope"` (company GCP+repo binding).
+ */
+export type OrgScopingSlice = "all" | "org" | "orgScope" | "companyScope";
+
+export function OrgScopingSection({
+  companyId,
+  slice = "all",
+}: {
+  companyId?: string;
+  slice?: OrgScopingSlice;
+}) {
   const queryClient = useQueryClient();
   const [newOrgName, setNewOrgName] = useState("Sarala");
 
@@ -192,7 +206,9 @@ export function OrgScopingSection({ companyId }: { companyId: string }) {
   });
 
   const linkCompany = useMutation({
-    mutationFn: () => orgsApi.linkCompany(org!.id, companyId),
+    // Only invoked from the summary's "Add this company" button, which renders
+    // only when companyId is set.
+    mutationFn: () => orgsApi.linkCompany(org!.id, companyId!),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["apex-org-companies", org?.id] }),
   });
 
@@ -200,97 +216,124 @@ export function OrgScopingSection({ companyId }: { companyId: string }) {
   const repos: GhRepo[] = reposQuery.data?.repos ?? [];
   const discoveryNote = gcpProjectsQuery.data?.note ?? reposQuery.data?.note ?? null;
   const companies = companiesQuery.data?.companies ?? [];
-  const companyLinked = companies.some((c) => c.id === companyId);
+  const companyLinked = !!companyId && companies.some((c) => c.id === companyId);
+
+  const showOrgSummary = slice === "all" || slice === "org";
+  const showOrgScope = slice === "all" || slice === "orgScope";
+  const showCompanyScope = slice === "all" || slice === "companyScope";
 
   return (
-    <div className="space-y-4" data-testid="apex-org-section">
+    <div className="space-y-4" data-testid="apex-org-section" data-slice={slice}>
       <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
         Organization &amp; scoping
       </div>
       <div className="space-y-4 rounded-md border border-border px-4 py-4">
-        <p className="text-sm text-muted-foreground">
-          Group companies under a holding <strong>Org</strong> and scope GCP projects
-          &amp; repos at the org and company levels — the org → company → product
-          cascade APEX resolves.
-        </p>
+        {slice === "all" && (
+          <p className="text-sm text-muted-foreground">
+            Group companies under a holding <strong>Org</strong> and scope GCP projects
+            &amp; repos at the org and company levels — the org → company → product
+            cascade APEX resolves.
+          </p>
+        )}
 
         {!org ? (
-          <div className="space-y-2" data-testid="apex-org-create">
-            <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-              <Building2 className="h-3.5 w-3.5" /> No org yet — create the holding entity
-            </div>
-            <div className="flex items-center gap-2">
-              <input
-                data-testid="apex-org-name-input"
-                value={newOrgName}
-                onChange={(e) => setNewOrgName(e.target.value)}
-                placeholder="Org name (e.g. Sarala)"
-                className="w-48 rounded-md border border-border bg-transparent px-2.5 py-1 text-sm outline-none"
-              />
-              <Button
-                size="sm"
-                onClick={() => createOrg.mutate(newOrgName.trim())}
-                disabled={createOrg.isPending || newOrgName.trim().length === 0}
-              >
-                {createOrg.isPending ? "Creating…" : "Create org"}
-              </Button>
-            </div>
-            {createOrg.isError && (
-              <span className="text-xs text-destructive">
-                {createOrg.error instanceof Error ? createOrg.error.message : "Failed to create org"}
-              </span>
-            )}
-          </div>
-        ) : (
-          <>
-            <div className="space-y-1.5" data-testid="apex-org-summary">
-              <div className="flex items-center gap-1.5 text-sm">
-                <Building2 className="h-3.5 w-3.5 text-muted-foreground" />
-                <span className="font-medium">{org.name}</span>
-                <span className="text-xs text-muted-foreground">
-                  · {companies.length} {companies.length === 1 ? "company" : "companies"}
-                </span>
+          showOrgSummary ? (
+            <div className="space-y-2" data-testid="apex-org-create">
+              <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                <Building2 className="h-3.5 w-3.5" /> No org yet — create the holding entity
               </div>
-              {companies.length > 0 && (
-                <div className="flex flex-wrap gap-1.5">
-                  {companies.map((c) => (
-                    <StatusBadge key={c.id} variant={c.id === companyId ? "info" : "default"}>
-                      {c.name}
-                    </StatusBadge>
-                  ))}
-                </div>
-              )}
-              {!companyLinked && (
+              <div className="flex items-center gap-2">
+                <input
+                  data-testid="apex-org-name-input"
+                  value={newOrgName}
+                  onChange={(e) => setNewOrgName(e.target.value)}
+                  placeholder="Org name (e.g. Sarala)"
+                  className="w-48 rounded-md border border-border bg-transparent px-2.5 py-1 text-sm outline-none"
+                />
                 <Button
                   size="sm"
-                  variant="outline"
-                  onClick={() => linkCompany.mutate()}
-                  disabled={linkCompany.isPending}
-                  data-testid="apex-org-link-company"
+                  onClick={() => createOrg.mutate(newOrgName.trim())}
+                  disabled={createOrg.isPending || newOrgName.trim().length === 0}
                 >
-                  {linkCompany.isPending ? "Adding…" : `Add this company to ${org.name}`}
+                  {createOrg.isPending ? "Creating…" : "Create org"}
                 </Button>
+              </div>
+              {createOrg.isError && (
+                <span className="text-xs text-destructive">
+                  {createOrg.error instanceof Error ? createOrg.error.message : "Failed to create org"}
+                </span>
               )}
             </div>
+          ) : (
+            <p className="text-sm text-muted-foreground" data-testid="apex-org-needed">
+              Create the org first (the “Create Org” step) — this scope binding appears once it exists.
+            </p>
+          )
+        ) : (
+          <>
+            {showOrgSummary && (
+              <div className="space-y-1.5" data-testid="apex-org-summary">
+                <div className="flex items-center gap-1.5 text-sm">
+                  <Building2 className="h-3.5 w-3.5 text-muted-foreground" />
+                  <span className="font-medium">{org.name}</span>
+                  <span className="text-xs text-muted-foreground">
+                    · {companies.length} {companies.length === 1 ? "company" : "companies"}
+                  </span>
+                </div>
+                {companies.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {companies.map((c) => (
+                      <StatusBadge key={c.id} variant={c.id === companyId ? "info" : "default"}>
+                        {c.name}
+                      </StatusBadge>
+                    ))}
+                  </div>
+                )}
+                {companyId && !companyLinked && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => linkCompany.mutate()}
+                    disabled={linkCompany.isPending}
+                    data-testid="apex-org-link-company"
+                  >
+                    {linkCompany.isPending ? "Adding…" : `Add this company to ${org.name}`}
+                  </Button>
+                )}
+              </div>
+            )}
 
-            <ScopeBindingEditor
-              scopeType="org"
-              scopeId={org.id}
-              label={`Org scope — ${org.name}`}
-              testId="apex-org-scope-binding"
-              gcpProjects={gcpProjects}
-              repos={repos}
-              discoveryNote={discoveryNote}
-            />
-            <ScopeBindingEditor
-              scopeType="company"
-              scopeId={companyId}
-              label="Company scope"
-              testId="apex-company-scope-binding"
-              gcpProjects={gcpProjects}
-              repos={repos}
-              discoveryNote={discoveryNote}
-            />
+            {showOrgScope && (
+              <ScopeBindingEditor
+                scopeType="org"
+                scopeId={org.id}
+                label={`Org scope — ${org.name}`}
+                testId="apex-org-scope-binding"
+                gcpProjects={gcpProjects}
+                repos={repos}
+                discoveryNote={discoveryNote}
+              />
+            )}
+            {showCompanyScope &&
+              (companyId ? (
+                <ScopeBindingEditor
+                  scopeType="company"
+                  scopeId={companyId}
+                  label="Company scope"
+                  testId="apex-company-scope-binding"
+                  gcpProjects={gcpProjects}
+                  repos={repos}
+                  discoveryNote={discoveryNote}
+                />
+              ) : (
+                <p className="text-sm text-muted-foreground" data-testid="apex-company-needed">
+                  Select or create a company first (under{" "}
+                  <a className="underline" href="/companies">
+                    Companies
+                  </a>
+                  ) — then its GCP/repo binding appears here.
+                </p>
+              ))}
           </>
         )}
       </div>

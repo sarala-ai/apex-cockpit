@@ -76,7 +76,7 @@ import { useDialogActions, useDialogState } from "./context/DialogContext";
 import { loadLastInboxTab } from "./lib/inbox";
 import {
   isOnboardingWizardActive,
-  shouldRedirectCompanylessRouteToOnboarding,
+  shouldRedirectCompanylessRouteToSetup,
 } from "./lib/onboarding-route";
 import { normalizeRememberedInstanceSettingsPath } from "./lib/instance-settings";
 
@@ -283,12 +283,12 @@ function LegacySettingsRedirect() {
 
   if (!targetCompany) {
     if (
-      shouldRedirectCompanylessRouteToOnboarding({
+      shouldRedirectCompanylessRouteToSetup({
         pathname: location.pathname,
         hasCompanies: false,
       })
     ) {
-      return <Navigate to="/onboarding" replace />;
+      return <Navigate to="/setup" replace />;
     }
     return <NoCompaniesStartPage />;
   }
@@ -366,12 +366,12 @@ function CompanyRootRedirect() {
   const targetCompany = selectedCompany ?? companies[0] ?? null;
   if (!targetCompany) {
     if (
-      shouldRedirectCompanylessRouteToOnboarding({
+      shouldRedirectCompanylessRouteToSetup({
         pathname: location.pathname,
         hasCompanies: false,
       })
     ) {
-      return <Navigate to="/onboarding" replace />;
+      return <Navigate to="/setup" replace />;
     }
     return <NoCompaniesStartPage />;
   }
@@ -390,12 +390,12 @@ function UnprefixedBoardRedirect() {
   const targetCompany = selectedCompany ?? companies[0] ?? null;
   if (!targetCompany) {
     if (
-      shouldRedirectCompanylessRouteToOnboarding({
+      shouldRedirectCompanylessRouteToSetup({
         pathname: location.pathname,
         hasCompanies: false,
       })
     ) {
-      return <Navigate to="/onboarding" replace />;
+      return <Navigate to="/setup" replace />;
     }
     return <NoCompaniesStartPage />;
   }

@@ -30,7 +30,8 @@ const COMPLETE = {
   org: { present: true, id: "org-1" },
   membership: { present: true, role: "owner", status: "active" },
   companies: { count: 1, ids: ["c-1"] },
-  scoping: { orgBound: true, companyBound: true },
+  scoping: { orgProjectsBound: true, orgReposBound: true, companyProjectsBound: true, companyReposBound: true },
+  orgGithub: { appInstalled: true, wifConfigured: true },
   oauthClient: { configured: true },
   gateway: { reachable: true },
   mcpServers: { registered: ["gworkspace"] },
@@ -41,7 +42,8 @@ const FRESH = {
   org: { present: false },
   membership: { present: false },
   companies: { count: 0, ids: [] },
-  scoping: { orgBound: false, companyBound: false },
+  scoping: { orgProjectsBound: false, orgReposBound: false, companyProjectsBound: false, companyReposBound: false },
+  orgGithub: { appInstalled: false, wifConfigured: false },
   oauthClient: { configured: false },
   gateway: { reachable: false },
   mcpServers: { registered: [] },
@@ -53,7 +55,8 @@ const PENDING_MEMBER = {
   org: { present: true, id: "org-1" },
   membership: { present: true, role: "member", status: "pending" },
   companies: { count: 1, ids: ["c-1"] },
-  scoping: { orgBound: true, companyBound: true },
+  scoping: { orgProjectsBound: true, orgReposBound: true, companyProjectsBound: true, companyReposBound: true },
+  orgGithub: { appInstalled: true, wifConfigured: true },
   oauthClient: { configured: false },
   gateway: { reachable: false },
   mcpServers: { registered: [] },
@@ -65,7 +68,8 @@ const REVIEWER = {
   org: { present: true, id: "org-1" },
   membership: { present: true, role: "reviewer", status: "active" },
   companies: { count: 0, ids: [] },
-  scoping: { orgBound: false, companyBound: false },
+  scoping: { orgProjectsBound: false, orgReposBound: false, companyProjectsBound: false, companyReposBound: false },
+  orgGithub: { appInstalled: false, wifConfigured: false },
   oauthClient: { configured: false },
   gateway: { reachable: false },
   mcpServers: { registered: [] },
@@ -115,10 +119,43 @@ test.describe("APEX setup wizard shell", () => {
   test("shows 'setup complete' when all prerequisites pass", async ({ page }) => {
     await gotoWizard(page, COMPLETE);
     await expect(page.getByTestId("wizard-complete")).toBeVisible();
-    // Every required step reads done.
-    for (const key of ["auth", "org", "scoping", "oauthClient", "gateway", "mcpServers", "connect"]) {
+    // Every required step across the org→company spine reads done.
+    for (const key of [
+      "auth",
+      "org",
+      "orgCloud",
+      "orgGithub",
+      "companyCloud",
+      "companyRepos",
+      "oauthClient",
+      "gateway",
+      "mcpServers",
+      "connect",
+    ]) {
       await expect(page.getByTestId(`wizard-step-${key}`)).toHaveAttribute("data-status", "done");
     }
+  });
+
+  test("renders the cloud-first org→company spine steps with their bodies", async ({ page }) => {
+    // Org present + identity green so the org/company cloud steps render their
+    // embedded scoping editor (not the "create the org first" gate note).
+    await gotoWizard(page, COMPLETE);
+
+    // Org-cloud step embeds the org-scope binding editor.
+    await page.getByTestId("wizard-step-orgCloud").getByRole("button").first().click();
+    await expect(page.getByTestId("wizard-step-orgCloud").getByTestId("apex-org-section")).toBeVisible();
+
+    // Org-GitHub step is a guided App + WIF step (single org pool/provider copy).
+    await page.getByTestId("wizard-step-orgGithub").getByRole("button").first().click();
+    const gh = page.getByTestId("wizard-step-orgGithub").getByTestId("wizard-guided-step");
+    await expect(gh).toBeVisible();
+    await expect(gh.getByText(/Workload Identity Federation/i)).toBeVisible();
+
+    // Company-cloud step embeds the company-scope binding editor.
+    await page.getByTestId("wizard-step-companyCloud").getByRole("button").first().click();
+    await expect(
+      page.getByTestId("wizard-step-companyCloud").getByTestId("apex-org-section"),
+    ).toBeVisible();
   });
 
   test("a guided (not-yet-built) step exposes guide + re-check", async ({ page }) => {

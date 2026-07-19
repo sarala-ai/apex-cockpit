@@ -28,7 +28,19 @@ export interface SetupState {
    *  or when there's no org yet (bootstrap-as-owner branch). */
   membership: { role?: string; status?: string; present: boolean };
   companies: { count: number; ids: string[] };
-  scoping: { orgBound: boolean; companyBound: boolean };
+  /** Cloud/repo binding presence, split by scope + kind so the org→company
+   *  spine's steps each detect independently (org-cloud vs company-cloud vs
+   *  company-repos). "Bound" = at least one non-empty binding at that scope. */
+  scoping: {
+    orgProjectsBound: boolean;
+    orgReposBound: boolean;
+    companyProjectsBound: boolean;
+    companyReposBound: boolean;
+  };
+  /** Org-level GitHub connection: the GitHub App install + the single org WIF
+   *  pool/provider. SHALLOW probe — presence of config/env markers only; a deep
+   *  check (App install liveness, WIF binding) is a later APEX workflow. */
+  orgGithub: { appInstalled: boolean; wifConfigured: boolean };
   oauthClient: { configured: boolean; note?: string };
   gateway: { reachable: boolean };
   mcpServers: { registered: string[] };
@@ -40,6 +52,7 @@ export interface SetupStateProbes {
   membership: (userId?: string | null, orgId?: string) => Promise<SetupState["membership"]>;
   companies: (orgId?: string) => Promise<SetupState["companies"]>;
   scoping: () => Promise<SetupState["scoping"]>;
+  orgGithub: () => Promise<SetupState["orgGithub"]>;
   oauthClient: () => Promise<SetupState["oauthClient"]>;
   gateway: () => Promise<SetupState["gateway"]>;
   mcpServers: (gatewayReachable: boolean) => Promise<SetupState["mcpServers"]>;
@@ -94,11 +107,27 @@ export function defaultProbes(db: Db): SetupStateProbes {
     },
     async scoping() {
       const rows = await db
-        .select({ scopeType: cloudScopeBindings.scopeType })
+        .select({
+          scopeType: cloudScopeBindings.scopeType,
+          gcpProjects: cloudScopeBindings.gcpProjects,
+          githubRepos: cloudScopeBindings.githubRepos,
+        })
         .from(cloudScopeBindings);
+      const nonEmpty = (v: unknown): boolean => Array.isArray(v) && v.length > 0;
       return {
-        orgBound: rows.some((r) => r.scopeType === "org"),
-        companyBound: rows.some((r) => r.scopeType === "company"),
+        orgProjectsBound: rows.some((r) => r.scopeType === "org" && nonEmpty(r.gcpProjects)),
+        orgReposBound: rows.some((r) => r.scopeType === "org" && nonEmpty(r.githubRepos)),
+        companyProjectsBound: rows.some((r) => r.scopeType === "company" && nonEmpty(r.gcpProjects)),
+        companyReposBound: rows.some((r) => r.scopeType === "company" && nonEmpty(r.githubRepos)),
+      };
+    },
+    async orgGithub() {
+      // Shallow: presence of a stored GitHub App id + org WIF provider in
+      // config/env. Deeper verification (App installation, WIF pool binding) is
+      // a later APEX workflow — see the Org-GitHub wizard step.
+      return {
+        appInstalled: Boolean(process.env.GITHUB_APP_ID),
+        wifConfigured: Boolean(process.env.GCP_WIF_PROVIDER),
       };
     },
     async oauthClient() {
@@ -147,10 +176,16 @@ export function apexSetupStateRoutes(db: Db, overrides?: Partial<SetupStateProbe
     assertBoardOrAgent(req);
     const orgId = typeof req.query.orgId === "string" ? req.query.orgId : undefined;
 
-    const [auth, org, scoping, oauthClient, gateway] = await Promise.all([
+    const [auth, org, scoping, orgGithub, oauthClient, gateway] = await Promise.all([
       safe(() => probes.auth(), { gcloud: "missing", gh: "missing", adc: "missing" } as const),
       safe(() => probes.org(), { present: false }),
-      safe(() => probes.scoping(), { orgBound: false, companyBound: false }),
+      safe(() => probes.scoping(), {
+        orgProjectsBound: false,
+        orgReposBound: false,
+        companyProjectsBound: false,
+        companyReposBound: false,
+      }),
+      safe(() => probes.orgGithub(), { appInstalled: false, wifConfigured: false }),
       safe(() => probes.oauthClient(), { configured: false, note: "probe failed" }),
       safe(() => probes.gateway(), { reachable: false }),
     ]);
@@ -169,6 +204,7 @@ export function apexSetupStateRoutes(db: Db, overrides?: Partial<SetupStateProbe
       membership,
       companies: companiesState,
       scoping,
+      orgGithub,
       oauthClient,
       gateway,
       mcpServers,

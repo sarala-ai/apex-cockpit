@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   isOnboardingPath,
   isOnboardingWizardActive,
+  isSetupPath,
   resolveRouteOnboardingOptions,
-  shouldRedirectCompanylessRouteToOnboarding,
+  shouldRedirectCompanylessRouteToSetup,
 } from "./onboarding-route";
 
 describe("isOnboardingPath", () => {
@@ -17,6 +18,21 @@ describe("isOnboardingPath", () => {
 
   it("ignores non-onboarding routes", () => {
     expect(isOnboardingPath("/pap/dashboard")).toBe(false);
+  });
+});
+
+describe("isSetupPath", () => {
+  it("matches the top-level setup route", () => {
+    expect(isSetupPath("/setup")).toBe(true);
+  });
+
+  it("matches a company-prefixed setup route", () => {
+    expect(isSetupPath("/pap/setup")).toBe(true);
+  });
+
+  it("ignores non-setup routes", () => {
+    expect(isSetupPath("/onboarding")).toBe(false);
+    expect(isSetupPath("/pap/dashboard")).toBe(false);
   });
 });
 
@@ -51,19 +67,28 @@ describe("resolveRouteOnboardingOptions", () => {
   });
 });
 
-describe("shouldRedirectCompanylessRouteToOnboarding", () => {
-  it("redirects companyless entry routes into onboarding", () => {
+describe("shouldRedirectCompanylessRouteToSetup", () => {
+  it("redirects companyless entry routes into the setup wizard", () => {
     expect(
-      shouldRedirectCompanylessRouteToOnboarding({
+      shouldRedirectCompanylessRouteToSetup({
         pathname: "/",
         hasCompanies: false,
       }),
     ).toBe(true);
   });
 
-  it("does not redirect when already on onboarding", () => {
+  it("does not redirect when already on the setup wizard", () => {
     expect(
-      shouldRedirectCompanylessRouteToOnboarding({
+      shouldRedirectCompanylessRouteToSetup({
+        pathname: "/setup",
+        hasCompanies: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not redirect when already on onboarding (kept reachable)", () => {
+    expect(
+      shouldRedirectCompanylessRouteToSetup({
         pathname: "/onboarding",
         hasCompanies: false,
       }),
@@ -72,7 +97,7 @@ describe("shouldRedirectCompanylessRouteToOnboarding", () => {
 
   it("does not redirect when companies exist", () => {
     expect(
-      shouldRedirectCompanylessRouteToOnboarding({
+      shouldRedirectCompanylessRouteToSetup({
         pathname: "/issues",
         hasCompanies: true,
       }),
