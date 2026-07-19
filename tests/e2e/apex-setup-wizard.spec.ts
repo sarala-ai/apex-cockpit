@@ -25,6 +25,13 @@ async function createCompany(board: APIRequestContext, name: string) {
   return (await res.json()) as { id: string; name: string; issuePrefix: string };
 }
 
+/** Create a real Org (no GitHub-org mapping) via the board API. */
+async function createOrg(board: APIRequestContext, name: string) {
+  const res = await board.post("/api/orgs", { data: { name } });
+  await expectOk(res, `create org ${name}`);
+  return (await res.json()) as { org: { id: string; name: string; githubOrg: string | null } };
+}
+
 const COMPLETE = {
   auth: { gcloud: "ok", gh: "ok", adc: "ok" },
   org: { present: true, id: "org-1" },
@@ -112,8 +119,11 @@ test.describe("APEX setup wizard shell", () => {
     await expect(page.getByTestId("wizard-step-gateway")).toHaveAttribute("data-status", "pending");
     // Not complete.
     await expect(page.getByTestId("wizard-complete")).toHaveCount(0);
-    // Active step's body (the reauth banner) is expanded by default.
-    await expect(page.getByTestId("wizard-step-auth").getByText(/Google Cloud|GitHub|expired|sign|re-authenticate/i).first()).toBeVisible();
+    // The active step (auth) drives the help rail — its guidance is shown there
+    // (prose lives in the rail now, not stacked in the step row).
+    await expect(
+      page.getByTestId("wizard-help-rail").getByText(/Google Cloud|GitHub/i).first(),
+    ).toBeVisible();
   });
 
   test("shows 'setup complete' when all prerequisites pass", async ({ page }) => {
@@ -145,11 +155,13 @@ test.describe("APEX setup wizard shell", () => {
     await page.getByTestId("wizard-step-orgCloud").getByRole("button").first().click();
     await expect(page.getByTestId("wizard-step-orgCloud").getByTestId("apex-org-section")).toBeVisible();
 
-    // Org-GitHub step is a guided App + WIF step (single org pool/provider copy).
+    // Org-GitHub step is a guided App + WIF step: the actions render inline, and
+    // its WIF guidance (single org pool/provider) shows in the help rail.
     await page.getByTestId("wizard-step-orgGithub").getByRole("button").first().click();
-    const gh = page.getByTestId("wizard-step-orgGithub").getByTestId("wizard-guided-step");
-    await expect(gh).toBeVisible();
-    await expect(gh.getByText(/Workload Identity Federation/i)).toBeVisible();
+    await expect(page.getByTestId("wizard-step-orgGithub").getByTestId("wizard-guided-step")).toBeVisible();
+    await expect(
+      page.getByTestId("wizard-help-rail").getByText(/keylessly/i),
+    ).toBeVisible();
 
     // Company-cloud step embeds the company-scope binding editor.
     await page.getByTestId("wizard-step-companyCloud").getByRole("button").first().click();
@@ -203,5 +215,38 @@ test.describe("APEX setup wizard shell", () => {
     await gotoTopLevelSetup(page, FRESH);
     await expect(page.getByTestId("apex-setup-wizard")).toBeVisible();
     await expect(page.getByTestId("wizard-branch")).toHaveAttribute("data-branch", "branch-bootstrap-owner");
+  });
+
+  test("ⓘ info icon focuses the help rail on that step (wide screens)", async ({ page }) => {
+    await gotoWizard(page, COMPLETE);
+    // Clicking a step's ⓘ shows that step's guidance in the rail without expanding it.
+    await page.getByTestId("wizard-help-info-orgGithub").click();
+    await expect(
+      page.getByTestId("wizard-help-rail").getByText(/keylessly/i),
+    ).toBeVisible();
+  });
+
+  test("ⓘ info icon opens a popover on narrow screens (rail hidden)", async ({ page }) => {
+    await page.setViewportSize({ width: 500, height: 900 });
+    await gotoWizard(page, COMPLETE);
+    // The rail is hidden below lg; the ⓘ opens the same content in a popover.
+    await page.getByTestId("wizard-help-info-sm-orgGithub").click();
+    const popover = page.getByTestId("wizard-help-popover");
+    await expect(popover).toBeVisible();
+    await expect(popover.getByText(/keylessly/i)).toBeVisible();
+  });
+
+  test("org with no GitHub-org mapping warns instead of silently using personal repos", async ({ page }) => {
+    const board = await pwRequest.newContext({ baseURL: BASE_URL });
+    await createOrg(board, `NoGh ${Date.now()}`);
+    await board.dispose();
+
+    // Org present + identity green → the org-cloud step renders the scoping
+    // editor, which reads the real /orgs and (no githubOrg) shows the warning.
+    await gotoWizard(page, COMPLETE);
+    await page.getByTestId("wizard-step-orgCloud").getByRole("button").first().click();
+    await expect(
+      page.getByTestId("wizard-step-orgCloud").getByTestId("apex-org-no-github-warning"),
+    ).toBeVisible();
   });
 });

@@ -192,6 +192,37 @@ export function apexScopingRoutes(db: Db) {
     res.json({ org });
   });
 
+  // Update an org's GitHub-org mapping after creation (owner/admin only). The
+  // create form can set it up front, but an org created before that mapping
+  // existed (or left blank) needs an edit path — otherwise org/company repo
+  // discovery is stuck falling back to the signed-in user's personal repos.
+  router.patch("/orgs/:id", async (req, res) => {
+    assertBoardOrAgent(req);
+    const { id } = req.params;
+    const [org] = await db.select().from(orgs).where(eq(orgs.id, id)).limit(1);
+    if (!org) {
+      res.status(404).json({ error: `no org ${id}` });
+      return;
+    }
+    if (!(await isOrgOwnerOrAdmin(db, id, req))) {
+      res.status(403).json({ error: "only an org owner/admin can update the org" });
+      return;
+    }
+    const body = (req.body ?? {}) as { githubOrg?: string | null };
+    if (!("githubOrg" in body)) {
+      res.status(400).json({ error: "body requires { githubOrg }" });
+      return;
+    }
+    const githubOrg =
+      typeof body.githubOrg === "string" && body.githubOrg.trim() ? body.githubOrg.trim() : null;
+    const [updated] = await db
+      .update(orgs)
+      .set({ githubOrg })
+      .where(eq(orgs.id, id))
+      .returning();
+    res.json({ org: updated });
+  });
+
   // Link a company under an org.
   router.post("/orgs/:orgId/companies", async (req, res) => {
     assertBoardOrAgent(req);

@@ -194,12 +194,17 @@ export function OrgScopingSection({
   const queryClient = useQueryClient();
   const [newOrgName, setNewOrgName] = useState("Sarala");
   const [newGithubOrg, setNewGithubOrg] = useState("");
+  // Post-create GitHub-org editing (an org may exist with no mapping).
+  const [editingGithubOrg, setEditingGithubOrg] = useState(false);
+  const [githubOrgDraft, setGithubOrgDraft] = useState("");
 
   const orgsQuery = useQuery({ queryKey: ["apex-orgs"], queryFn: () => orgsApi.list() });
-  // Only needed for the create-org form (no org yet) — the GitHub org we map
-  // the new Org to, so org-scoped repo discovery (below) can be scoped to it
-  // instead of the signed-in user's personal repos.
-  const githubOrgsQuery = useGithubOrgOptions(!orgsQuery.data?.orgs.length && orgsQuery.isSuccess);
+  // The signed-in user's GitHub orgs — needed for the create-org form (no org
+  // yet) AND when editing an existing org's mapping. We scope repo discovery to
+  // this GitHub org so pickers show the org's repos, not personal ones.
+  const githubOrgsQuery = useGithubOrgOptions(
+    (!orgsQuery.data?.orgs.length && orgsQuery.isSuccess) || editingGithubOrg,
+  );
   const gcpProjectsQuery = useQuery({
     queryKey: ["apex-setup", "gcp-projects"],
     queryFn: () => apexSetupApi.gcpProjects(),
@@ -227,6 +232,17 @@ export function OrgScopingSection({
       // Org presence feeds the setup-state detector (the "org" step + status
       // bar) — refresh it live, not on reload.
       void queryClient.invalidateQueries({ queryKey: ["setup-state"] });
+    },
+  });
+
+  const updateGithubOrg = useMutation({
+    mutationFn: (githubOrg: string | null) => orgsApi.update(org!.id, { githubOrg }),
+    onSuccess: () => {
+      setEditingGithubOrg(false);
+      void queryClient.invalidateQueries({ queryKey: ["apex-orgs"] });
+      // Re-run repo discovery (its key includes the githubOrg) so pickers reflect
+      // the new mapping immediately.
+      void queryClient.invalidateQueries({ queryKey: ["apex-setup", "github-repos"] });
     },
   });
 
@@ -319,6 +335,98 @@ export function OrgScopingSection({
           )
         ) : (
           <>
+            {/* GitHub-org mapping. When absent, repo pickers fall back to the
+                signed-in user's personal repos — warn + offer to set it. */}
+            <div data-testid="apex-org-github-mapping">
+              {org.githubOrg ? (
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <Github className="h-3.5 w-3.5" />
+                  <span>
+                    GitHub org:{" "}
+                    <span className="font-medium text-foreground">{org.githubOrg}</span>
+                  </span>
+                  <button
+                    type="button"
+                    data-testid="apex-org-github-change"
+                    onClick={() => {
+                      setGithubOrgDraft(org.githubOrg ?? "");
+                      setEditingGithubOrg(true);
+                    }}
+                    className="underline transition hover:text-foreground"
+                  >
+                    change
+                  </button>
+                </div>
+              ) : (
+                <div
+                  data-testid="apex-org-no-github-warning"
+                  className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs"
+                >
+                  <div className="font-medium text-amber-700 dark:text-amber-300">
+                    No GitHub org mapped
+                  </div>
+                  <div className="mt-0.5 text-muted-foreground">
+                    Repo pickers below are falling back to your <strong>personal</strong> repos. Map
+                    a GitHub org so org &amp; company repos come from the org.
+                  </div>
+                  {!editingGithubOrg && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="mt-1.5"
+                      data-testid="apex-org-github-map"
+                      onClick={() => {
+                        setGithubOrgDraft("");
+                        setEditingGithubOrg(true);
+                      }}
+                    >
+                      Map a GitHub org
+                    </Button>
+                  )}
+                </div>
+              )}
+
+              {editingGithubOrg && (
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <select
+                    data-testid="apex-org-github-edit-select"
+                    value={githubOrgDraft}
+                    onChange={(e) => setGithubOrgDraft(e.target.value)}
+                    className="rounded-md border border-border bg-transparent px-2.5 py-1 text-sm outline-none"
+                  >
+                    <option value="">No GitHub org (personal repos)</option>
+                    {(githubOrgsQuery.data?.orgs ?? []).map((o) => (
+                      <option key={o.login} value={o.login}>
+                        {o.login}
+                      </option>
+                    ))}
+                  </select>
+                  <Button
+                    size="sm"
+                    data-testid="apex-org-github-save"
+                    onClick={() => updateGithubOrg.mutate(githubOrgDraft || null)}
+                    disabled={updateGithubOrg.isPending}
+                  >
+                    {updateGithubOrg.isPending ? "Saving…" : "Save"}
+                  </Button>
+                  <button
+                    type="button"
+                    onClick={() => setEditingGithubOrg(false)}
+                    className="text-xs text-muted-foreground underline"
+                  >
+                    Cancel
+                  </button>
+                  {updateGithubOrg.isError && (
+                    <span className="text-xs text-destructive">
+                      {updateGithubOrg.error instanceof Error
+                        ? updateGithubOrg.error.message
+                        : "Failed to update"}
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+
             {showOrgSummary && (
               <div className="space-y-1.5" data-testid="apex-org-summary">
                 <div className="flex items-center gap-1.5 text-sm">

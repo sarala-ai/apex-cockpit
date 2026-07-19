@@ -40,6 +40,8 @@ export const orgsApi = {
   get: (id: string) => api.get<{ org: Org }>(`/orgs/${id}`),
   create: (body: { name: string; googleOrg?: Org["googleOrg"]; githubOrg?: string | null }) =>
     api.post<{ org: Org; membership: OrgMembership | null }>("/orgs", body),
+  update: (id: string, body: { githubOrg: string | null }) =>
+    api.patch<{ org: Org }>(`/orgs/${id}`, body),
   linkCompany: (orgId: string, companyId: string) =>
     api.post<{ company: { id: string; name: string; orgId: string | null } }>(
       `/orgs/${orgId}/companies`,

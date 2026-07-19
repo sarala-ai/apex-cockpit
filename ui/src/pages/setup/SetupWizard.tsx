@@ -17,13 +17,14 @@ import { OrgScopingSection } from "../company-settings/OrgScopingSection";
 import { StatusBadge, type StatusVariant } from "@/apex/status-badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { GuidedStep } from "./GuidedStep";
+import { STEP_HELP, HelpRail, StepInfo } from "./setup-help";
 import { PRODUCT_NAME } from "../../lib/product";
 
 // The cloud-first org→company engineering-setup spine. ORG steps (identity →
 // create org → org cloud → org GitHub) provision the shared substrate; COMPANY
 // steps (company cloud → company repos) provision each product unit; then the
 // capability layer (OAuth client → gateway → MCP → connect → governance).
-type StepKey =
+export type StepKey =
   | "auth"
   | "org"
   | "orgCloud"
@@ -196,6 +197,15 @@ export function SetupWizard() {
 
   const recheck = () => void queryClient.invalidateQueries({ queryKey: ["setup-state"] });
   const [openKey, setOpenKey] = useState<StepKey | null>(null);
+  // The step whose help the rail is showing. Null → follow the expanded/active
+  // step; set by the ⓘ affordance to peek a step's help without expanding it.
+  const [focusKey, setFocusKey] = useState<StepKey | null>(null);
+
+  // Expanding a step (or nothing focused) drives the rail; ⓘ overrides it.
+  const toggleStep = (key: StepKey) => {
+    setFocusKey(null);
+    setOpenKey((cur) => (cur === key ? null : key));
+  };
 
   const state = stateQuery.data;
   const required = state ? requiredSteps(state) : STEPS.filter((s) => !s.optional);
@@ -226,102 +236,130 @@ export function SetupWizard() {
     );
   }
 
+  // The step whose guidance the help rail shows: an explicit ⓘ focus, else the
+  // expanded step, else the active (first-incomplete) step.
+  const railKey: StepKey | null = focusKey ?? openKey ?? activeKey;
+  const railStep = STEPS.find((s) => s.key === railKey) ?? null;
+
   return (
-    <div className="mx-auto max-w-3xl space-y-4 p-4" data-testid="apex-setup-wizard">
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center justify-between">
-            <span>Set up {PRODUCT_NAME}</span>
-            {complete ? (
-              <StatusBadge variant="success">complete</StatusBadge>
-            ) : (
-              <StatusBadge variant="info">
-                {doneCount}/{required.length} done
-              </StatusBadge>
-            )}
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {complete && (
-            <div
-              className="mb-4 flex items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-500"
-              data-testid="wizard-complete"
-            >
-              <PartyPopper className="h-4 w-4" /> Setup complete — every prerequisite is satisfied.
-            </div>
-          )}
-
-          {(() => {
-            const branch = membershipBranch(state);
-            const toneClass =
-              branch.tone === "success"
-                ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600"
-                : branch.tone === "warn"
-                  ? "border-amber-500/30 bg-amber-500/10 text-amber-600"
-                  : "border-sky-500/30 bg-sky-500/10 text-sky-600";
-            return (
+    <div className="mx-auto max-w-5xl p-4" data-testid="apex-setup-wizard">
+      <div className="lg:grid lg:grid-cols-[minmax(0,1fr)_20rem] lg:items-start lg:gap-4">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center justify-between">
+              <span>Set up {PRODUCT_NAME}</span>
+              {complete ? (
+                <StatusBadge variant="success">complete</StatusBadge>
+              ) : (
+                <StatusBadge variant="info">
+                  {doneCount}/{required.length} done
+                </StatusBadge>
+              )}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {complete && (
               <div
-                className={`mb-4 rounded-md border px-4 py-3 text-sm ${toneClass}`}
-                data-testid="wizard-branch"
-                data-branch={branch.testid}
+                className="mb-4 flex items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-500"
+                data-testid="wizard-complete"
               >
-                <div className="font-medium">{branch.title}</div>
-                <div className="mt-0.5 text-xs opacity-90">{branch.body}</div>
+                <PartyPopper className="h-4 w-4" /> Setup complete — every prerequisite is satisfied.
               </div>
-            );
-          })()}
+            )}
 
-          <ul className="space-y-2">
-            {STEPS.map((step) => {
-              const isRequired = requiredKeys.has(step.key);
-              const st = statusOf(step, state, activeKey, isRequired);
-              const open = openKey === step.key;
+            {(() => {
+              const branch = membershipBranch(state);
+              const toneClass =
+                branch.tone === "success"
+                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600"
+                  : branch.tone === "warn"
+                    ? "border-amber-500/30 bg-amber-500/10 text-amber-600"
+                    : "border-sky-500/30 bg-sky-500/10 text-sky-600";
               return (
-                <li
-                  key={step.key}
-                  className="rounded-md border border-border"
-                  data-testid={`wizard-step-${step.key}`}
-                  data-status={st.label}
+                <div
+                  className={`mb-4 rounded-md border px-4 py-3 text-sm ${toneClass}`}
+                  data-testid="wizard-branch"
+                  data-branch={branch.testid}
                 >
-                  <button
-                    type="button"
-                    onClick={() => setOpenKey(open ? null : step.key)}
-                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm"
-                  >
-                    {st.icon === "done" ? (
-                      <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-500" />
-                    ) : (
-                      <Circle
-                        className={`h-4 w-4 shrink-0 ${st.icon === "active" ? "text-sky-500" : "text-muted-foreground/40"}`}
-                      />
-                    )}
-                    <span className="flex-1 font-medium">{step.title}</span>
-                    <StatusBadge variant={st.variant}>{st.label}</StatusBadge>
-                    {open ? (
-                      <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                    ) : (
-                      <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                    )}
-                  </button>
-                  {open && (
-                    <div className="border-t border-border px-3 py-3">
-                      <StepBody
-                        stepKey={step.key}
-                        selectedCompanyId={selectedCompanyId}
-                        orgPresent={state.org.present}
-                        done={step.done(state)}
-                        authReady={authReady}
-                        onRecheck={recheck}
-                        rechecking={stateQuery.isFetching}
-                      />
-                    </div>
-                  )}
-                </li>
+                  <div className="font-medium">{branch.title}</div>
+                  <div className="mt-0.5 text-xs opacity-90">{branch.body}</div>
+                </div>
               );
-            })}
-          </ul>
-        </CardContent>
-      </Card>
+            })()}
+
+            <ul className="space-y-2">
+              {STEPS.map((step) => {
+                const isRequired = requiredKeys.has(step.key);
+                const st = statusOf(step, state, activeKey, isRequired);
+                const open = openKey === step.key;
+                return (
+                  <li
+                    key={step.key}
+                    className="rounded-md border border-border"
+                    data-testid={`wizard-step-${step.key}`}
+                    data-status={st.label}
+                  >
+                    <div className="flex w-full items-center gap-2 px-3 py-2 text-sm">
+                      <button
+                        type="button"
+                        onClick={() => toggleStep(step.key)}
+                        aria-expanded={open}
+                        className="flex flex-1 items-center gap-2 text-left"
+                      >
+                        {st.icon === "done" ? (
+                          <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-500" />
+                        ) : (
+                          <Circle
+                            className={`h-4 w-4 shrink-0 ${st.icon === "active" ? "text-sky-500" : "text-muted-foreground/40"}`}
+                          />
+                        )}
+                        <span className="flex-1 font-medium">{step.title}</span>
+                      </button>
+                      <StatusBadge variant={st.variant}>{st.label}</StatusBadge>
+                      <StepInfo
+                        stepKey={step.key}
+                        title={step.title}
+                        help={STEP_HELP[step.key]}
+                        onFocusRail={() => setFocusKey(step.key)}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => toggleStep(step.key)}
+                        aria-label={open ? "Collapse step" : "Expand step"}
+                        className="text-muted-foreground transition hover:text-foreground"
+                      >
+                        {open ? (
+                          <ChevronDown className="h-4 w-4" />
+                        ) : (
+                          <ChevronRight className="h-4 w-4" />
+                        )}
+                      </button>
+                    </div>
+                    {open && (
+                      <div className="border-t border-border px-3 py-3">
+                        <StepBody
+                          stepKey={step.key}
+                          selectedCompanyId={selectedCompanyId}
+                          orgPresent={state.org.present}
+                          done={step.done(state)}
+                          authReady={authReady}
+                          onRecheck={recheck}
+                          rechecking={stateQuery.isFetching}
+                        />
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </CardContent>
+        </Card>
+
+        {/* Contextual help rail — wide screens only; narrow uses the ⓘ popover. */}
+        <div className="hidden lg:sticky lg:top-4 lg:block">
+          <HelpRail title={railStep?.title} help={railStep ? STEP_HELP[railStep.key] : undefined} />
+        </div>
+      </div>
     </div>
   );
 }
@@ -357,22 +395,9 @@ function StepBody({
   }
   switch (stepKey) {
     case "auth":
-      return (
-        <div className="space-y-2 text-sm text-muted-foreground">
-          <p>
-            <b>This is your login.</b> <code>gcloud auth login</code> signs you in with your
-            Google account — it <b>is</b> the Google/Gmail login (same account); there’s no
-            separate sign-in page. <code>gh auth login</code> connects your GitHub identity. Apex is
-            tied to gcloud + GitHub, so this is step one.
-          </p>
-          <p>
-            Discovery + the AR pull read your local <code>gcloud</code> / <code>gh</code> auth. Fix
-            any expired/missing credential below; ADC —{" "}
-            <code>gcloud auth application-default login</code> — is also needed for the apex install.
-          </p>
-          <GcloudAuthBanner />
-        </div>
-      );
+      // Actions only — the "why" (this is your Google login, ADC needed, etc.)
+      // lives in the help rail / ⓘ. The banner surfaces any expired/missing cred.
+      return <GcloudAuthBanner />;
     case "org":
       // Create the holding Org (you become its owner). Company link/summary too.
       return <OrgScopingSection companyId={selectedCompanyId ?? undefined} slice="org" />;
@@ -389,41 +414,6 @@ function StepBody({
     case "orgGithub":
       return (
         <GuidedStep
-          description="Connect the GitHub ORG to GCP once, keylessly: install the Apex GitHub App on the org, then create the single org-level Workload Identity Federation pool + provider that trusts your whole GitHub org. Per-repo authorization comes later, in the company steps."
-          instructions={[
-            <span key="app">
-              <b>Install the GitHub App</b> on the org (fine-grained, per-install token — not a
-              personal PAT). Permissions: <code>contents:rw</code>, <code>pull_requests</code>,{" "}
-              <code>actions</code>, <code>checks</code>, <code>workflows</code>,{" "}
-              <code>environments</code>, <code>metadata</code>. Select the repos it may touch.
-            </span>,
-            <div key="wif">
-              <b>One org-level WIF pool + provider</b> (create once, host in the shared project,
-              e.g. <code>sarala-cicd</code>). Scope trust to the whole org via the provider’s
-              attribute condition:
-              <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs">
-                <li key="cond">
-                  <code>assertion.repository_owner == 'sarala-ai'</code> — trust every repo in the
-                  org. <b>Do not</b> create a pool/provider per repo.
-                </li>
-                <li key="claims">
-                  WIF can filter only on <code>repository</code>, <code>repository_owner</code>,{" "}
-                  and <code>environment</code> (GitHub OIDC claims). GitHub is flat (no subgroups);
-                  “company = group of repos” is an Apex-side grouping — a GitHub Team / custom
-                  property is optional and <b>not</b> in the OIDC claims.
-                </li>
-              </ul>
-            </div>,
-            <span key="auth">
-              <b>Authorization stays per-repo (+ per-environment)</b> and is set up in the Company
-              steps: IAM-bind{" "}
-              <code>principalSet://…/attribute.repository/&lt;org&gt;/&lt;repo&gt;</code> (optionally
-              plus <code>attribute.environment</code>) → that env’s least-privilege deploy SA. The
-              SAs can live in <b>any</b> project (each company’s own) — only the pool/provider is
-              pinned to the shared host project. This fuses WIF + GitHub Environments +
-              required-reviewers into one keyless, approval-gated deploy path.
-            </span>,
-          ]}
           deepLink={{
             href: "https://github.com/organizations/sarala-ai/settings/installations",
             label: "Open GitHub org apps →",
@@ -445,58 +435,17 @@ function StepBody({
     case "companyRepos":
       // Bind this company's repos (subset of the org's). Same company-scope
       // editor as company-cloud — one binding row holds both GCP projects + repos;
-      // the two steps track the two completion criteria.
+      // the two steps track the two completion criteria. (The "why" is in the rail.)
       return !orgPresent ? (
         <p className="text-sm text-muted-foreground">
           Create the Org first — then map this company’s repos (from the org’s repos).
         </p>
       ) : (
-        <div className="space-y-2">
-          <p className="text-xs text-muted-foreground">
-            Pick the repos this company owns from the org’s repos — the per-repo(+env) deploy-SA
-            WIF bindings (see the Org GitHub step) are generated from this company↔repo grouping.
-          </p>
-          <OrgScopingSection companyId={selectedCompanyId ?? undefined} slice="companyScope" />
-        </div>
+        <OrgScopingSection companyId={selectedCompanyId ?? undefined} slice="companyScope" />
       );
     case "oauthClient":
       return (
         <GuidedStep
-          description="One Google OAuth client (Web app) backs both SSO and per-user Workspace access. Enabling APIs + creating the client are scriptable (the APEX workflow does them); the consent screen has a console step, and you consent to your own account later — no service account, no delegation."
-          instructions={[
-            <span key="apis">
-              <b>Enable APIs</b> in the project: <code>gmail</code>, <code>docs</code>,{" "}
-              <code>sheets</code>, <code>drive</code>.googleapis.com
-            </span>,
-            <div key="scopes">
-              <b>OAuth consent screen → Internal</b> (sarala.ai). Required scopes:
-              <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs">
-                <li key="id">
-                  <code>openid</code> · <code>userinfo.email</code> · <code>userinfo.profile</code> — identity / SSO
-                </li>
-                <li key="gmail">
-                  <code>gmail.modify</code> — Gmail read / send / modify
-                </li>
-                <li key="docs">
-                  <code>documents</code> — Google Docs
-                </li>
-                <li key="sheets">
-                  <code>spreadsheets</code> — Google Sheets
-                </li>
-                <li key="drive">
-                  <code>drive.file</code> — Drive (per-file)
-                </li>
-              </ul>
-            </div>,
-            <span key="client">
-              Create one <b>OAuth 2.0 Client (Web application)</b>. Authorized redirect URIs:{" "}
-              <code>http://localhost:8001/oauth2callback</code> (dev) + your planned cloud URL.
-            </span>,
-            <span key="secret">
-              Copy the <b>client id + secret</b> → store the secret in Secret Manager (the APEX
-              workflow does this). Requires the <code>iam.oauthClientAdmin</code> role for the API path.
-            </span>,
-          ]}
           deepLink={{
             href: "https://console.cloud.google.com/apis/credentials",
             label: "Open GCP Credentials →",
@@ -510,8 +459,6 @@ function StepBody({
     case "gateway":
       return (
         <GuidedStep
-          description="Start the apex-gateway (ContextForge MCP gateway); the wizard detects it via /health."
-          instructions={["Run the gateway locally, or point APEX_GATEWAY_URL at a running instance."]}
           command="uvicorn mcpgateway.main:app --host 127.0.0.1 --port 4444"
           done={done}
           onRecheck={onRecheck}
@@ -519,40 +466,10 @@ function StepBody({
         />
       );
     case "mcpServers":
-      return (
-        <GuidedStep
-          description="Register the MCP servers whose tools your agents should see (e.g. the Google Workspace MCP). The gateway federates their tools into one catalog."
-          instructions={[
-            "Register an upstream MCP server: POST /gateways with its endpoint + transport.",
-            "The gateway auto-connects, lists its tools, and federates them.",
-          ]}
-          done={done}
-          onRecheck={onRecheck}
-          rechecking={rechecking}
-        />
-      );
+      return <GuidedStep done={done} onRecheck={onRecheck} rechecking={rechecking} />;
     case "connect":
-      return (
-        <GuidedStep
-          description="Authorize your own Google account once (per-user OAuth via the gateway broker). No service account, no delegation — you authorize you."
-          instructions={[
-            "Start the per-user OAuth flow for the Workspace gateway and approve consent in the browser.",
-            "The broker stores your token; the wizard detects the connection.",
-          ]}
-          done={done}
-          onRecheck={onRecheck}
-          rechecking={rechecking}
-        />
-      );
+      return <GuidedStep done={done} onRecheck={onRecheck} rechecking={rechecking} />;
     case "governance":
-      return (
-        <GuidedStep
-          description="Optional: allowlist which of the federated tools each company / agent may use — the resolver cascade applied to the catalog. Configured once tools are federated."
-          instructions={["Scope the federated tool catalog per org / company / agent."]}
-          done={done}
-          onRecheck={onRecheck}
-          rechecking={rechecking}
-        />
-      );
+      return <GuidedStep done={done} onRecheck={onRecheck} rechecking={rechecking} />;
   }
 }
