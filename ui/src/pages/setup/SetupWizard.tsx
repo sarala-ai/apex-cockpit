@@ -46,11 +46,20 @@ interface StepDef {
 
 const STEPS: StepDef[] = [
   {
+    // Identity = who you are. gcloud + GitHub prove that and unlock creating an org
+    // and browsing projects/repos. ADC (application-default credentials) is NOT part
+    // of identity — it's only needed to EXECUTE provisioning workflows, so it must
+    // not block step 1. ADC gates the cloud-provisioning steps instead (see below).
     key: "auth",
     title: "Connect gcloud + GitHub (your identity)",
-    done: (s) => s.auth.gcloud === "ok" && s.auth.gh === "ok" && s.auth.adc === "ok",
+    done: (s) => s.auth.gcloud === "ok" && s.auth.gh === "ok",
   },
   { key: "org", title: "Create Org (you = owner)", done: (s) => s.org.present },
+  // NOTE: ADC (s.auth.adc === "ok") gates PROVISIONING — the actual execution of the
+  // APEX workflows behind the cloud steps below (via LocalRunner). Today these steps
+  // only record project/repo bindings (no execution), so ADC isn't in their `done`
+  // predicates yet; wire ADC as a precondition here when the one-plan→approve
+  // execution path lands, so provisioning can't run without live credentials.
   {
     key: "orgCloud",
     title: "Org cloud — shared GCP projects",

@@ -197,6 +197,14 @@ test.describe("APEX setup wizard shell", () => {
     await expect(page.getByTestId("wizard-step-oauthClient").getByTestId("wizard-guided-step")).toHaveCount(0);
   });
 
+  test("identity completes on gcloud+gh even when ADC is missing (ADC gates provisioning, not identity)", async ({ page }) => {
+    // The operator's real case: signed into gcloud + gh but ADC lapsed. Identity
+    // must still read done so setup isn't stuck at step 1 — ADC only gates the
+    // later cloud-provisioning execution.
+    await gotoWizard(page, { ...FRESH, auth: { gcloud: "ok", gh: "ok", adc: "missing" } });
+    await expect(page.getByTestId("wizard-step-auth")).toHaveAttribute("data-status", "done");
+  });
+
   test("org exists + pending membership → awaiting-approval branch", async ({ page }) => {
     await gotoWizard(page, PENDING_MEMBER);
     await expect(page.getByTestId("wizard-branch")).toHaveAttribute("data-branch", "branch-awaiting-approval");
