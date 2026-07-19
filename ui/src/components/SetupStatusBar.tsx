@@ -173,7 +173,13 @@ export function SetupStatusBar() {
         data-complete={complete ? "1" : "0"}
         data-stale={stale ? "1" : "0"}
         title={stale ? "Reconnecting to the setup detector — showing last-known state" : undefined}
-        className={`fixed inset-x-0 bottom-0 z-40 flex h-7 items-center gap-1 overflow-x-auto border-t border-border bg-background/95 px-2 backdrop-blur supports-[backdrop-filter]:bg-background/80 ${
+        // `left` tracks --app-sidebar-width (published by SidebarShell) so the bar
+        // starts at the sidebar's right edge instead of laying on top of it. The
+        // var is 0px (or unset) whenever the sidebar occupies no in-flow width —
+        // mobile off-canvas, and the sidebar-less top-level /setup /onboarding
+        // routes — so the bar naturally falls back to full width there.
+        style={{ left: "var(--app-sidebar-width, 0px)" }}
+        className={`fixed right-0 bottom-0 z-40 flex h-7 items-center gap-1 overflow-x-auto border-t border-border bg-background/95 px-2 backdrop-blur supports-[backdrop-filter]:bg-background/80 ${
           stale ? "opacity-50" : ""
         }`}
       >

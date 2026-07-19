@@ -71,6 +71,29 @@ test.describe("APEX setup status bar", () => {
     const bar = page.getByTestId("setup-status-bar");
     await expect(bar).toHaveAttribute("data-complete", "0");
 
+    // The dashboard route renders inside Layout (with the left sidebar), so the
+    // bar must be offset to start at the sidebar's right edge — not lay on top
+    // of it — via the --app-sidebar-width var SidebarShell publishes.
+    const sidebarWidth = await page.evaluate(() =>
+      getComputedStyle(document.documentElement).getPropertyValue("--app-sidebar-width").trim(),
+    );
+    expect(sidebarWidth).not.toBe("");
+    expect(sidebarWidth).not.toBe("0px");
+    const barLeft = await bar.evaluate((el) => getComputedStyle(el).left);
+    expect(barLeft).toBe(sidebarWidth);
+
+    // The sidebar's bottom account-menu control must be fully clear of the bar
+    // (not clipped/overlapped) — the bar's left edge starts exactly where the
+    // sidebar ends, so their boxes never overlap on the x-axis.
+    const accountTrigger = page.getByRole("button", { name: "Open account menu" });
+    await expect(accountTrigger).toBeVisible();
+    const [accountBox, barBox] = await Promise.all([accountTrigger.boundingBox(), bar.boundingBox()]);
+    expect(accountBox).not.toBeNull();
+    expect(barBox).not.toBeNull();
+    if (accountBox && barBox) {
+      expect(accountBox.x + accountBox.width).toBeLessThanOrEqual(barBox.x + 1);
+    }
+
     // Every indicator present.
     for (const key of ["gcloud", "github", "adc", "org", "oauth", "gateway", "mcp"]) {
       await expect(page.getByTestId(`setup-status-${key}`)).toBeVisible();

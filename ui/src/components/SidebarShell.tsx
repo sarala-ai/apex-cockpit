@@ -17,6 +17,16 @@ const MIN_SIDEBAR_WIDTH = 208;
 const MAX_SIDEBAR_WIDTH = 420;
 const SIDEBAR_WIDTH_STEP = 16;
 
+/**
+ * CSS custom property published on <html> so fixed-position chrome mounted
+ * outside the layout tree (e.g. SetupStatusBar) can offset itself to start at
+ * the sidebar's right edge instead of sitting underneath it. Always tracks
+ * `reservedWidth` — the sidebar's actual in-flow occupied width (rail while
+ * collapsed, 0 while closed) — never the wider peek/overlay panel width, since
+ * that floats above content rather than pushing it.
+ */
+const SIDEBAR_WIDTH_CSS_VAR = "--app-sidebar-width";
+
 // Collapsed icon rail. Width is chosen so the icon is *centered* in the rail,
 // which keeps the active/hover highlight symmetric around it (PAP-10676):
 // the icon's left edge sits at nav px-3 (12) + item px-3 (12) = 24px, so a
@@ -126,6 +136,18 @@ export function SidebarShell({
     () => ({ width: `${reservedWidth}px` }),
     [reservedWidth],
   );
+
+  // Publish the live occupied width for fixed-position chrome mounted outside
+  // this tree (App.tsx's <SetupStatusBar/>). Reset to 0px on unmount so
+  // navigating away from a Layout route (e.g. to the sidebar-less top-level
+  // /setup) doesn't leave stale full-width chrome offset from a sidebar that
+  // no longer exists.
+  useEffect(() => {
+    document.documentElement.style.setProperty(SIDEBAR_WIDTH_CSS_VAR, `${reservedWidth}px`);
+    return () => {
+      document.documentElement.style.setProperty(SIDEBAR_WIDTH_CSS_VAR, "0px");
+    };
+  }, [reservedWidth]);
   const panelStyle = useMemo(
     () => ({ width: `${panelWidth}px` }),
     [panelWidth],
