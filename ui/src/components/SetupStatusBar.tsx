@@ -103,18 +103,25 @@ export function SetupStatusBar() {
 
   const hidden = HIDDEN_PATH_PREFIXES.some((p) => location.pathname.startsWith(p));
 
+  // Same query key as the wizard's (["setup-state"]) so both surfaces share one
+  // cache entry: invalidating one (e.g. after an in-wizard mutation) refreshes
+  // both, and they dedupe polling instead of double-fetching the detector.
   const { data, isError } = useQuery({
-    queryKey: ["setup-state", "status-bar"],
+    queryKey: ["setup-state"],
     queryFn: () => setupStateApi.get(),
     refetchInterval: 30_000,
     refetchOnWindowFocus: true,
-    retry: false,
+    retry: 2,
     enabled: !hidden,
   });
 
-  // Failure-isolated: hide on auth-ish routes, when the detector is unreachable
-  // (e.g. signed out), or before the first snapshot arrives.
-  if (hidden || isError || !data) return null;
+  // Failure-isolated, but DON'T vanish on a transient poll error: react-query keeps
+  // the last successful snapshot in `data`, so keep rendering it (dimmed) while a
+  // refetch is failing. Only hide on auth-ish routes or before we've EVER had a
+  // snapshot (signed out / first load) — never once the bar has been shown.
+  if (hidden || !data) return null;
+  // A poll is currently failing but we have a prior snapshot → show it as stale.
+  const stale = isError;
 
   const indicators = toIndicators(data);
   const progress = setupStepsProgress(data);
@@ -164,7 +171,11 @@ export function SetupStatusBar() {
       <div
         data-testid="setup-status-bar"
         data-complete={complete ? "1" : "0"}
-        className="fixed inset-x-0 bottom-0 z-40 flex h-7 items-center gap-1 overflow-x-auto border-t border-border bg-background/95 px-2 backdrop-blur supports-[backdrop-filter]:bg-background/80"
+        data-stale={stale ? "1" : "0"}
+        title={stale ? "Reconnecting to the setup detector — showing last-known state" : undefined}
+        className={`fixed inset-x-0 bottom-0 z-40 flex h-7 items-center gap-1 overflow-x-auto border-t border-border bg-background/95 px-2 backdrop-blur supports-[backdrop-filter]:bg-background/80 ${
+          stale ? "opacity-50" : ""
+        }`}
       >
         <button
           type="button"

@@ -14,6 +14,16 @@ import { orgsApi, scopeBindingApi } from "../../api/apex-scoping";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/apex/status-badge";
 
+/** The signed-in user's GitHub orgs, for the "map to a GitHub org" selector on
+ *  create. Not fetched until the create form actually needs it (no org yet). */
+function useGithubOrgOptions(enabled: boolean) {
+  return useQuery({
+    queryKey: ["apex-setup", "github-orgs"],
+    queryFn: () => apexSetupApi.githubOrgs(),
+    enabled,
+  });
+}
+
 function toggle(set: Set<string>, key: string): Set<string> {
   const next = new Set(set);
   if (next.has(key)) next.delete(key);
@@ -66,6 +76,9 @@ function ScopeBindingEditor({
     onSuccess: () => {
       setDirty(false);
       void queryClient.invalidateQueries({ queryKey: ["apex-scope-binding", scopeType, scopeId] });
+      // The scope binding feeds the setup-state detector (orgCloud/companyCloud/
+      // companyRepos steps + the status bar) — refresh it live, not on reload.
+      void queryClient.invalidateQueries({ queryKey: ["setup-state"] });
     },
   });
 
@@ -180,23 +193,41 @@ export function OrgScopingSection({
 }) {
   const queryClient = useQueryClient();
   const [newOrgName, setNewOrgName] = useState("Sarala");
+  const [newGithubOrg, setNewGithubOrg] = useState("");
 
   const orgsQuery = useQuery({ queryKey: ["apex-orgs"], queryFn: () => orgsApi.list() });
+  // Only needed for the create-org form (no org yet) — the GitHub org we map
+  // the new Org to, so org-scoped repo discovery (below) can be scoped to it
+  // instead of the signed-in user's personal repos.
+  const githubOrgsQuery = useGithubOrgOptions(!orgsQuery.data?.orgs.length && orgsQuery.isSuccess);
   const gcpProjectsQuery = useQuery({
     queryKey: ["apex-setup", "gcp-projects"],
     queryFn: () => apexSetupApi.gcpProjects(),
-  });
-  const reposQuery = useQuery({
-    queryKey: ["apex-setup", "github-repos"],
-    queryFn: () => apexSetupApi.githubRepos(""),
   });
 
   // Single holding-Org model for now: the first org is "the org".
   const org = orgsQuery.data?.orgs[0] ?? null;
 
+  // Scope repo discovery to the org's GitHub org (when known) instead of the
+  // signed-in user's personal repos — both the org and company scope editors
+  // should offer repos from the org's GitHub, not the individual's account.
+  // Only fire once the orgs list has resolved, so we don't fetch the
+  // unscoped/personal list first and flash it before the scoped list lands.
+  const reposQuery = useQuery({
+    queryKey: ["apex-setup", "github-repos", org?.githubOrg ?? null],
+    queryFn: () => apexSetupApi.githubRepos(org?.githubOrg ?? ""),
+    enabled: orgsQuery.isSuccess,
+  });
+
   const createOrg = useMutation({
-    mutationFn: (name: string) => orgsApi.create({ name }),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["apex-orgs"] }),
+    mutationFn: (args: { name: string; githubOrg?: string }) =>
+      orgsApi.create({ name: args.name, githubOrg: args.githubOrg || undefined }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["apex-orgs"] });
+      // Org presence feeds the setup-state detector (the "org" step + status
+      // bar) — refresh it live, not on reload.
+      void queryClient.invalidateQueries({ queryKey: ["setup-state"] });
+    },
   });
 
   const companiesQuery = useQuery({
@@ -242,7 +273,7 @@ export function OrgScopingSection({
               <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
                 <Building2 className="h-3.5 w-3.5" /> No org yet — create the holding entity
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <input
                   data-testid="apex-org-name-input"
                   value={newOrgName}
@@ -250,14 +281,31 @@ export function OrgScopingSection({
                   placeholder="Org name (e.g. Sarala)"
                   className="w-48 rounded-md border border-border bg-transparent px-2.5 py-1 text-sm outline-none"
                 />
+                <select
+                  data-testid="apex-org-github-org-select"
+                  value={newGithubOrg}
+                  onChange={(e) => setNewGithubOrg(e.target.value)}
+                  className="rounded-md border border-border bg-transparent px-2.5 py-1 text-sm outline-none"
+                >
+                  <option value="">No GitHub org (personal repos)</option>
+                  {(githubOrgsQuery.data?.orgs ?? []).map((o) => (
+                    <option key={o.login} value={o.login}>
+                      {o.login}
+                    </option>
+                  ))}
+                </select>
                 <Button
                   size="sm"
-                  onClick={() => createOrg.mutate(newOrgName.trim())}
+                  onClick={() => createOrg.mutate({ name: newOrgName.trim(), githubOrg: newGithubOrg })}
                   disabled={createOrg.isPending || newOrgName.trim().length === 0}
                 >
                   {createOrg.isPending ? "Creating…" : "Create org"}
                 </Button>
               </div>
+              <p className="text-xs text-muted-foreground">
+                Map to a GitHub org so org/company-scoped repo pickers show the org’s repos, not
+                your personal ones.
+              </p>
               {createOrg.isError && (
                 <span className="text-xs text-destructive">
                   {createOrg.error instanceof Error ? createOrg.error.message : "Failed to create org"}

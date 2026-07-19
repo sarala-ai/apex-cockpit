@@ -17,6 +17,7 @@ import { OrgScopingSection } from "../company-settings/OrgScopingSection";
 import { StatusBadge, type StatusVariant } from "@/apex/status-badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { GuidedStep } from "./GuidedStep";
+import { PRODUCT_NAME } from "../../lib/product";
 
 // The cloud-first org→company engineering-setup spine. ORG steps (identity →
 // create org → org cloud → org GitHub) provision the shared substrate; COMPANY
@@ -46,7 +47,7 @@ const STEPS: StepDef[] = [
   {
     key: "auth",
     title: "Connect gcloud + GitHub (your identity)",
-    done: (s) => s.auth.gcloud === "ok" && s.auth.gh === "ok",
+    done: (s) => s.auth.gcloud === "ok" && s.auth.gh === "ok" && s.auth.adc === "ok",
   },
   { key: "org", title: "Create Org (you = owner)", done: (s) => s.org.present },
   {
@@ -182,10 +183,15 @@ export function SetupWizard() {
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
 
+  // Same query key as SetupStatusBar's — one shared cache entry so invalidating
+  // either surface (e.g. after creating the org, or the status bar's poll)
+  // refreshes both; react-query dedupes the underlying fetches.
   const stateQuery = useQuery({
     queryKey: ["setup-state"],
     queryFn: () => setupStateApi.get(),
     refetchOnWindowFocus: true,
+    refetchInterval: 30_000,
+    retry: 2,
   });
 
   const recheck = () => void queryClient.invalidateQueries({ queryKey: ["setup-state"] });
@@ -225,7 +231,7 @@ export function SetupWizard() {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center justify-between">
-            <span>Set up apex-tower</span>
+            <span>Set up {PRODUCT_NAME}</span>
             {complete ? (
               <StatusBadge variant="success">complete</StatusBadge>
             ) : (
