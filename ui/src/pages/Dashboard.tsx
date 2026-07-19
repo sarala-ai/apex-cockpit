@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
-import { SetupNudge } from "./setup/SetupNudge";
 import { activityApi } from "../api/activity";
 import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
@@ -214,7 +213,6 @@ export function Dashboard() {
 
   return (
     <div className="space-y-6">
-      <SetupNudge />
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {hasNoAgents && (

@@ -83,6 +83,15 @@ export function isSetupComplete(s: SetupState): boolean {
   return requiredSteps(s).every((st) => st.done(s));
 }
 
+/** Role-aware progress: how many required steps are done out of the total, and
+ *  whether setup is complete. Drives the status bar's "N left / ✓ complete"
+ *  summary without duplicating the role-gating logic. */
+export function setupStepsProgress(s: SetupState): { done: number; total: number; complete: boolean } {
+  const required = requiredSteps(s);
+  const done = required.filter((st) => st.done(s)).length;
+  return { done, total: required.length, complete: done === required.length };
+}
+
 function statusOf(
   step: StepDef,
   state: SetupState,

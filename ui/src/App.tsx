@@ -8,6 +8,7 @@ import { CasesExperimentalGate } from "./components/CasesExperimentalGate";
 import { Cases } from "./pages/Cases";
 import { CaseDetail } from "./pages/CaseDetail";
 import { OnboardingWizardVariant } from "./components/OnboardingWizardVariant";
+import { SetupStatusBar } from "./components/SetupStatusBar";
 import { CloudAccessGate } from "./components/CloudAccessGate";
 import { Dashboard } from "./pages/Dashboard";
 import { DashboardLive } from "./pages/DashboardLive";
@@ -507,6 +508,7 @@ export function App() {
         </Route>
       </Routes>
       <OnboardingWizardVariant />
+      <SetupStatusBar />
     </>
   );
 }
