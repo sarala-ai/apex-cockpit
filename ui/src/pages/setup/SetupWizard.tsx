@@ -115,10 +115,32 @@ function roleNeedsCloud(role?: string): boolean {
   return role !== "reviewer" && role !== "observer";
 }
 
-/** Steps that count toward "required" given the actor's role. */
+/**
+ * The HARDENING steps — org-level App-install + Workload Identity Federation.
+ * They're the governed, admin-authoritative boundary and only apply once the org
+ * dials its governance posture up to `team`/`enterprise`. Under the default
+ * `individual` posture (solo dev on personal repos + personal GCP projects) they
+ * are OPTIONAL — not required, not blocking "setup complete". (Don't hardcode
+ * "everyone needs the App/WIF governance.")
+ */
+const HARDENING_STEP_KEYS = new Set<StepKey>(["orgGithub"]);
+
+/** Posture that turns on the heavy governance (App-install/WIF/admin binding). */
+function postureNeedsHardening(posture?: string): boolean {
+  return posture === "team" || posture === "enterprise";
+}
+
+/** Steps that count toward "required" given the actor's role AND the org's
+ *  governance posture (individual skips the hardening steps). */
 function requiredSteps(s: SetupState): StepDef[] {
   const needsCloud = roleNeedsCloud(s.membership?.role);
-  return STEPS.filter((st) => !st.optional && (needsCloud || !CLOUD_STEP_KEYS.has(st.key)));
+  const needsHardening = postureNeedsHardening(s.org.posture);
+  return STEPS.filter((st) => {
+    if (st.optional) return false;
+    if (CLOUD_STEP_KEYS.has(st.key) && !needsCloud) return false;
+    if (HARDENING_STEP_KEYS.has(st.key) && !needsHardening) return false;
+    return true;
+  });
 }
 
 /** True when every required (role-aware) prerequisite is satisfied. */
@@ -143,8 +165,18 @@ function statusOf(
 ): { label: string; variant: StatusVariant; icon: "done" | "active" | "pending" } {
   if (step.done(state)) return { label: "done", variant: "success", icon: "done" };
   if (step.optional) return { label: "optional", variant: "default", icon: "pending" };
-  // Non-optional but not required for THIS role (reviewer/observer skip cloud).
-  if (!isRequired) return { label: "skipped", variant: "default", icon: "pending" };
+  // Non-optional but not required here. A hardening step under `individual`
+  // posture reads as "optional" (dial up posture to require it); a cloud step
+  // skipped for a reviewer/observer role reads as "skipped".
+  if (!isRequired) {
+    const optionalByPosture =
+      HARDENING_STEP_KEYS.has(step.key) && !postureNeedsHardening(state.org.posture);
+    return {
+      label: optionalByPosture ? "optional" : "skipped",
+      variant: "default",
+      icon: "pending",
+    };
+  }
   if (step.key === activeKey) return { label: "current", variant: "info", icon: "active" };
   return { label: "pending", variant: "default", icon: "pending" };
 }

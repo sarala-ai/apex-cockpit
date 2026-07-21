@@ -83,11 +83,12 @@ export const STEP_HELP: Record<StepKey, StepHelp> = {
   },
   companyCloud: {
     purpose:
-      "Bind this company's own GCP projects (dev / staging / prod) at company scope — where its product agents and infrastructure deploy.",
+      "Associate this company's GCP projects (dev / staging / prod) so its view shows them and deploys can target them.",
     whatYoullDo: [
-      "Select the company's GCP projects.",
-      "Save the binding — it cascades under the org's shared configuration.",
+      "Select the company's GCP projects (naming-matched projects are suggested).",
+      "Save — it's a loose, editable association.",
     ],
+    note: "This is an organizing label / deploy target, NOT an access grant — who can actually touch a project is governed by GCP IAM (local) and Workload Identity Federation (cloud).",
   },
   companyRepos: {
     purpose: "Pick the repos this company owns, from the org's repos.",

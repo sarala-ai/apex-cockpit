@@ -82,6 +82,22 @@ const REVIEWER = {
   mcpServers: { registered: [] },
 };
 
+// Everything required is done EXCEPT the hardening step (orgGithub). Under the
+// default `individual` posture that step is optional → setup still completes.
+const INDIVIDUAL_NO_HARDENING = {
+  ...COMPLETE,
+  org: { present: true, id: "org-1", posture: "individual" },
+  orgGithub: { appInstalled: false, wifConfigured: false },
+};
+
+// Same, but the org dialed posture up to `enterprise` → the hardening step is now
+// REQUIRED, so setup is NOT complete until it's done.
+const ENTERPRISE_NEEDS_HARDENING = {
+  ...COMPLETE,
+  org: { present: true, id: "org-1", posture: "enterprise" },
+  orgGithub: { appInstalled: false, wifConfigured: false },
+};
+
 async function gotoWizard(page: import("@playwright/test").Page, state: unknown) {
   const board = await pwRequest.newContext({ baseURL: BASE_URL });
   const company = await createCompany(board, `Wizard ${Date.now()}`);
@@ -244,17 +260,33 @@ test.describe("APEX setup wizard shell", () => {
     await expect(popover.getByText(/keylessly/i)).toBeVisible();
   });
 
-  test("org with no GitHub-org mapping warns instead of silently using personal repos", async ({ page }) => {
+  test("individual posture: the hardening (App+WIF) step is optional and doesn't block completion", async ({ page }) => {
+    await gotoWizard(page, INDIVIDUAL_NO_HARDENING);
+    // orgGithub is not required under individual → reads "optional", not "current".
+    await expect(page.getByTestId("wizard-step-orgGithub")).toHaveAttribute("data-status", "optional");
+    // Everything else required is done → setup completes without App/WIF.
+    await expect(page.getByTestId("wizard-complete")).toBeVisible();
+  });
+
+  test("enterprise posture: the hardening (App+WIF) step becomes required and blocks completion", async ({ page }) => {
+    await gotoWizard(page, ENTERPRISE_NEEDS_HARDENING);
+    // Now required + not done → it's the current step, and setup is NOT complete.
+    await expect(page.getByTestId("wizard-step-orgGithub")).toHaveAttribute("data-status", "current");
+    await expect(page.getByTestId("wizard-complete")).toHaveCount(0);
+  });
+
+  test("individual posture (default): no GitHub org → informational, not a warning", async ({ page }) => {
+    // A freshly created org defaults to individual posture, where personal repos
+    // are expected → the missing-GitHub-org state is informational, not a warning.
     const board = await pwRequest.newContext({ baseURL: BASE_URL });
     await createOrg(board, `NoGh ${Date.now()}`);
     await board.dispose();
 
-    // Org present + identity green → the org-cloud step renders the scoping
-    // editor, which reads the real /orgs and (no githubOrg) shows the warning.
-    await gotoWizard(page, COMPLETE);
+    await gotoWizard(page, INDIVIDUAL_NO_HARDENING);
     await page.getByTestId("wizard-step-orgCloud").getByRole("button").first().click();
-    await expect(
-      page.getByTestId("wizard-step-orgCloud").getByTestId("apex-org-no-github-warning"),
-    ).toBeVisible();
+    const section = page.getByTestId("wizard-step-orgCloud");
+    await expect(section.getByTestId("apex-org-no-github-info")).toBeVisible();
+    await expect(section.getByTestId("apex-org-no-github-warning")).toHaveCount(0);
   });
+
 });

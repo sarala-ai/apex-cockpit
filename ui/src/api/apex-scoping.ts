@@ -7,11 +7,15 @@
 
 import { api } from "./client";
 
+/** The governance hardening dial. `individual` (default) = loose, self-service. */
+export type GovernancePosture = "individual" | "team" | "enterprise";
+
 export interface Org {
   id: string;
   name: string;
   googleOrg?: { id: string; displayName: string } | null;
   githubOrg?: string | null;
+  governancePosture?: GovernancePosture;
   createdAt?: string;
 }
 
@@ -40,8 +44,10 @@ export const orgsApi = {
   get: (id: string) => api.get<{ org: Org }>(`/orgs/${id}`),
   create: (body: { name: string; googleOrg?: Org["googleOrg"]; githubOrg?: string | null }) =>
     api.post<{ org: Org; membership: OrgMembership | null }>("/orgs", body),
-  update: (id: string, body: { githubOrg: string | null }) =>
-    api.patch<{ org: Org }>(`/orgs/${id}`, body),
+  update: (
+    id: string,
+    body: { githubOrg?: string | null; governancePosture?: GovernancePosture },
+  ) => api.patch<{ org: Org }>(`/orgs/${id}`, body),
   linkCompany: (orgId: string, companyId: string) =>
     api.post<{ company: { id: string; name: string; orgId: string | null } }>(
       `/orgs/${orgId}/companies`,

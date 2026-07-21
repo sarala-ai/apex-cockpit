@@ -10,7 +10,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Building2, Cloud, Github } from "lucide-react";
 import { apexSetupApi, type GcpProject, type GhRepo } from "../../api/apex-setup";
-import { orgsApi, scopeBindingApi } from "../../api/apex-scoping";
+import { orgsApi, scopeBindingApi, type GovernancePosture } from "../../api/apex-scoping";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/apex/status-badge";
 
@@ -31,6 +31,28 @@ function toggle(set: Set<string>, key: string): Set<string> {
   return next;
 }
 
+/** Normalize to an alnum-only token for loose convention matching. */
+export function conventionToken(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/**
+ * Loose, ADVISORY convention match: which of `names` belong to `companyName` by
+ * naming (`FinPilot` ↔ `finpilot-dev`, `finpilot_mcp`, `sarala-ai/finpilot-api`).
+ * This only SUGGESTS a company↔resource association for the user to confirm — it
+ * never enforces anything (access is governed by IAM/WIF for projects and GitHub
+ * grants for repos). Match on the resource's leading token, or a full-leaf prefix.
+ */
+export function suggestByConvention(names: string[], companyName: string): string[] {
+  const token = conventionToken(companyName);
+  if (!token) return [];
+  return names.filter((n) => {
+    const leaf = n.includes("/") ? (n.split("/").pop() ?? n) : n;
+    const leadingSeg = leaf.split(/[-_./]/)[0] ?? leaf;
+    return conventionToken(leadingSeg) === token || conventionToken(leaf).startsWith(token);
+  });
+}
+
 /** A GCP-project + repo multi-select bound to one scope (org|company). */
 function ScopeBindingEditor({
   scopeType,
@@ -40,6 +62,7 @@ function ScopeBindingEditor({
   gcpProjects,
   repos,
   discoveryNote,
+  suggestForName,
 }: {
   scopeType: "org" | "company";
   scopeId: string;
@@ -48,6 +71,8 @@ function ScopeBindingEditor({
   gcpProjects: GcpProject[];
   repos: GhRepo[];
   discoveryNote: string | null;
+  /** Company name (company scope) → drives loose convention suggestions. */
+  suggestForName?: string;
 }) {
   const queryClient = useQueryClient();
   const bindingQuery = useQuery({
@@ -82,9 +107,50 @@ function ScopeBindingEditor({
     },
   });
 
+  // Loose convention suggestions (company scope only): projects/repos whose names
+  // match the company. Advisory — the user confirms; nothing is auto-bound.
+  const suggestedProjects = suggestForName
+    ? suggestByConvention(gcpProjects.map((p) => p.projectId), suggestForName)
+    : [];
+  const suggestedRepos = suggestForName
+    ? suggestByConvention(repos.map((r) => r.nameWithOwner), suggestForName)
+    : [];
+  const pendingSuggested = [
+    ...suggestedProjects.filter((p) => !selProjects.has(p)),
+    ...suggestedRepos.filter((r) => !selRepos.has(r)),
+  ];
+  const addSuggested = () => {
+    setSelProjects((s) => {
+      const next = new Set(s);
+      suggestedProjects.forEach((p) => next.add(p));
+      return next;
+    });
+    setSelRepos((s) => {
+      const next = new Set(s);
+      suggestedRepos.forEach((r) => next.add(r));
+      return next;
+    });
+    setDirty(true);
+  };
+
   return (
     <div className="space-y-2 rounded-md border border-border px-3 py-3" data-testid={testId}>
       <div className="text-sm font-medium">{label}</div>
+
+      {suggestForName && pendingSuggested.length > 0 && (
+        <div
+          data-testid="apex-scope-suggestions"
+          className="flex flex-wrap items-center gap-2 rounded-md border border-sky-500/30 bg-sky-500/10 px-2.5 py-1.5 text-xs"
+        >
+          <span className="text-sky-700 dark:text-sky-300">
+            Suggested for <strong>{suggestForName}</strong> by naming:{" "}
+            {pendingSuggested.map((n) => n.split("/").pop()).join(", ")}
+          </span>
+          <Button size="sm" variant="outline" data-testid="apex-scope-add-suggested" onClick={addSuggested}>
+            Add suggested
+          </Button>
+        </div>
+      )}
 
       <div>
         <div className="mb-1.5 flex items-center gap-1.5 text-sm text-muted-foreground">
@@ -246,6 +312,17 @@ export function OrgScopingSection({
     },
   });
 
+  const updatePosture = useMutation({
+    mutationFn: (governancePosture: GovernancePosture) =>
+      orgsApi.update(org!.id, { governancePosture }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["apex-orgs"] });
+      // Posture drives the wizard's required steps + the "No GitHub org" warning —
+      // refresh the detector so both update live.
+      void queryClient.invalidateQueries({ queryKey: ["setup-state"] });
+    },
+  });
+
   const companiesQuery = useQuery({
     queryKey: ["apex-org-companies", org?.id],
     queryFn: () => orgsApi.companies(org!.id),
@@ -264,6 +341,12 @@ export function OrgScopingSection({
   const discoveryNote = gcpProjectsQuery.data?.note ?? reposQuery.data?.note ?? null;
   const companies = companiesQuery.data?.companies ?? [];
   const companyLinked = !!companyId && companies.some((c) => c.id === companyId);
+  // Governance posture (default individual). Drives whether the missing-GitHub-org
+  // warning is a hard warning (team/enterprise, where a mapped org is the boundary)
+  // or an expected, informational state (individual — personal repos are fine).
+  const posture: GovernancePosture = org?.governancePosture ?? "individual";
+  const postureHardened = posture === "team" || posture === "enterprise";
+  const companyName = companyId ? companies.find((c) => c.id === companyId)?.name : undefined;
 
   const showOrgSummary = slice === "all" || slice === "org";
   const showOrgScope = slice === "all" || slice === "orgScope";
@@ -357,7 +440,7 @@ export function OrgScopingSection({
                     change
                   </button>
                 </div>
-              ) : (
+              ) : postureHardened ? (
                 <div
                   data-testid="apex-org-no-github-warning"
                   className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs"
@@ -382,6 +465,32 @@ export function OrgScopingSection({
                     >
                       Map a GitHub org
                     </Button>
+                  )}
+                </div>
+              ) : (
+                // Individual posture — personal repos are expected, so this is an
+                // informational note, not a warning. (Dial posture up to require a
+                // mapped GitHub org.)
+                <div
+                  data-testid="apex-org-no-github-info"
+                  className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground"
+                >
+                  <Github className="h-3.5 w-3.5" />
+                  <span>
+                    Using your <strong>personal</strong> repos. Map a GitHub org anytime.
+                  </span>
+                  {!editingGithubOrg && (
+                    <button
+                      type="button"
+                      data-testid="apex-org-github-map"
+                      onClick={() => {
+                        setGithubOrgDraft("");
+                        setEditingGithubOrg(true);
+                      }}
+                      className="underline transition hover:text-foreground"
+                    >
+                      map one
+                    </button>
                   )}
                 </div>
               )}
@@ -426,6 +535,31 @@ export function OrgScopingSection({
                 </div>
               )}
             </div>
+
+            {showOrgSummary && (
+              <div
+                className="flex flex-wrap items-center gap-2 text-xs"
+                data-testid="apex-org-posture"
+              >
+                <span className="text-muted-foreground">Governance posture</span>
+                <select
+                  data-testid="apex-org-posture-select"
+                  value={posture}
+                  onChange={(e) => updatePosture.mutate(e.target.value as GovernancePosture)}
+                  disabled={updatePosture.isPending}
+                  className="rounded-md border border-border bg-transparent px-2 py-1 outline-none"
+                >
+                  <option value="individual">Individual — solo, self-service (default)</option>
+                  <option value="team">Team — App install + admin binding</option>
+                  <option value="enterprise">Enterprise — full governance</option>
+                </select>
+                <span className="text-muted-foreground">
+                  {postureHardened
+                    ? "Hardening on: App-install/WIF + admin-authoritative binding required."
+                    : "Loose: personal repos/projects, advisory associations, no App-install/WIF."}
+                </span>
+              </div>
+            )}
 
             {showOrgSummary && (
               <div className="space-y-1.5" data-testid="apex-org-summary">
@@ -480,6 +614,7 @@ export function OrgScopingSection({
                   gcpProjects={gcpProjects}
                   repos={repos}
                   discoveryNote={discoveryNote}
+                  suggestForName={companyName}
                 />
               ) : (
                 <p className="text-sm text-muted-foreground" data-testid="apex-company-needed">

@@ -7,7 +7,7 @@ import { errorHandler } from "../middleware/index.js";
 
 const healthy: SetupStateProbes = {
   auth: async () => ({ gcloud: "ok", gh: "ok", adc: "ok" }),
-  org: async () => ({ present: true, id: "org-1" }),
+  org: async () => ({ present: true, id: "org-1", posture: "individual" }),
   membership: async () => ({ present: true, role: "owner", status: "active" }),
   companies: async () => ({ count: 2, ids: ["c1", "c2"] }),
   scoping: async () => ({
@@ -41,7 +41,7 @@ describe("GET /setup/state", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       auth: { gcloud: "ok", gh: "ok", adc: "ok" },
-      org: { present: true, id: "org-1" },
+      org: { present: true, id: "org-1", posture: "individual" },
       membership: { present: true, role: "owner", status: "active" },
       companies: { count: 2, ids: ["c1", "c2"] },
       scoping: {
@@ -76,7 +76,7 @@ describe("GET /setup/state", () => {
     expect(res.body.gateway).toEqual({ reachable: false });
     expect(res.body.mcpServers).toEqual({ registered: [] });
     // Unaffected probes still report their real values.
-    expect(res.body.org).toEqual({ present: true, id: "org-1" });
+    expect(res.body.org).toEqual({ present: true, id: "org-1", posture: "individual" });
   });
 
   it("scopes companies to ?orgId when provided", async () => {

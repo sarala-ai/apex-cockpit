@@ -22,7 +22,9 @@ type Health = "ok" | "missing" | "expired";
 
 export interface SetupState {
   auth: { gcloud: Health; gh: Health; adc: Health };
-  org: { present: boolean; id?: string };
+  /** `posture` is the governance dial (default `individual`) — drives which
+   *  hardening steps the wizard requires (see SetupWizard.requiredSteps). */
+  org: { present: boolean; id?: string; posture?: "individual" | "team" | "enterprise" };
   /** The signed-in user's membership in the detected org. `present:false` when
    *  they have no row (org exists but they're unmapped → request-access branch),
    *  or when there's no org yet (bootstrap-as-owner branch). */
@@ -87,8 +89,14 @@ export function defaultProbes(db: Db): SetupStateProbes {
       return { gcloud, gh, adc };
     },
     async org() {
-      const [row] = await db.select({ id: orgs.id }).from(orgs).limit(1);
-      return row ? { present: true, id: row.id } : { present: false };
+      const [row] = await db
+        .select({ id: orgs.id, posture: orgs.governancePosture })
+        .from(orgs)
+        .limit(1);
+      if (!row) return { present: false };
+      const posture =
+        row.posture === "team" || row.posture === "enterprise" ? row.posture : "individual";
+      return { present: true, id: row.id, posture };
     },
     async membership(userId?: string | null, orgId?: string) {
       if (!userId || !orgId) return { present: false };

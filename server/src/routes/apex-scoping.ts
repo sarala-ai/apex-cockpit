@@ -13,11 +13,67 @@ import { Router } from "express";
 import { and, eq } from "drizzle-orm";
 import { type Db, orgs, companies, cloudScopeBindings, orgMemberships } from "@paperclipai/db";
 import { assertBoardOrAgent } from "./authz.js";
+import {
+  authorizeScope,
+  isGovernancePosture,
+  type GovernancePosture,
+  type ScopeAction,
+} from "../apex/scope-policy.js";
 
 type ScopeType = "org" | "company";
 
 function isScopeType(v: string): v is ScopeType {
   return v === "org" || v === "company";
+}
+
+/**
+ * Resolve the posture × role context for a scope, then run the single policy seam
+ * (scope-policy.ts). ALL scope-binding + posture read/write decisions go through
+ * here — do not add inline posture/role checks elsewhere. `orgId` is resolved from
+ * the scope: org scope → the scope id itself; company scope → the company's org.
+ */
+async function decideScope(
+  db: Db,
+  req: import("express").Request,
+  action: ScopeAction,
+  scope?: { type: ScopeType; id?: string },
+): Promise<ReturnType<typeof authorizeScope>> {
+  let orgId = scope?.type === "org" ? scope.id : undefined;
+  if (scope?.type === "company" && scope.id) {
+    const [c] = await db
+      .select({ orgId: companies.orgId })
+      .from(companies)
+      .where(eq(companies.id, scope.id))
+      .limit(1);
+    orgId = c?.orgId ?? undefined;
+  }
+
+  let posture: GovernancePosture = "individual";
+  if (orgId) {
+    const [org] = await db
+      .select({ posture: orgs.governancePosture })
+      .from(orgs)
+      .where(eq(orgs.id, orgId))
+      .limit(1);
+    if (org && isGovernancePosture(org.posture)) posture = org.posture;
+  }
+
+  const userId = actorUserId(req);
+  let role: string | null = null;
+  if (orgId && userId) {
+    const [m] = await db
+      .select({ role: orgMemberships.role, status: orgMemberships.status })
+      .from(orgMemberships)
+      .where(and(eq(orgMemberships.orgId, orgId), eq(orgMemberships.userId, userId)))
+      .limit(1);
+    role = m?.status === "active" ? m.role : null;
+  }
+
+  // Match the fork's authz convention: a local_implicit board actor is treated as
+  // instance admin (see authz.ts assertInstanceAdmin).
+  const isInstanceAdmin = Boolean(req.actor?.isInstanceAdmin) || req.actor?.source === "local_implicit";
+
+  return authorizeScope({ posture, role, isInstanceAdmin, action, scope });
 }
 
 /** Membership role vocabulary (owner/admin/member today; reviewer/observer are
@@ -192,10 +248,11 @@ export function apexScopingRoutes(db: Db) {
     res.json({ org });
   });
 
-  // Update an org's GitHub-org mapping after creation (owner/admin only). The
-  // create form can set it up front, but an org created before that mapping
-  // existed (or left blank) needs an edit path — otherwise org/company repo
-  // discovery is stuck falling back to the signed-in user's personal repos.
+  // Update an org's GitHub-org mapping and/or governance posture after creation.
+  // Gated by the single scope-policy seam (posture.write): all-allow under
+  // `individual` (solo owner edits freely), owner/admin-gated under team/enterprise.
+  // The githubOrg edit path exists because an org created before that mapping (or
+  // left blank) otherwise strands org/company repo discovery on personal repos.
   router.patch("/orgs/:id", async (req, res) => {
     assertBoardOrAgent(req);
     const { id } = req.params;
@@ -204,22 +261,31 @@ export function apexScopingRoutes(db: Db) {
       res.status(404).json({ error: `no org ${id}` });
       return;
     }
-    if (!(await isOrgOwnerOrAdmin(db, id, req))) {
-      res.status(403).json({ error: "only an org owner/admin can update the org" });
+    const decision = await decideScope(db, req, "posture.write", { type: "org", id });
+    if (!decision.allow) {
+      res.status(403).json({ error: decision.reason });
       return;
     }
-    const body = (req.body ?? {}) as { githubOrg?: string | null };
-    if (!("githubOrg" in body)) {
-      res.status(400).json({ error: "body requires { githubOrg }" });
+    const body = (req.body ?? {}) as { githubOrg?: string | null; governancePosture?: unknown };
+    const hasGithubOrg = "githubOrg" in body;
+    const hasPosture = "governancePosture" in body;
+    if (!hasGithubOrg && !hasPosture) {
+      res.status(400).json({ error: "body requires { githubOrg } and/or { governancePosture }" });
       return;
     }
-    const githubOrg =
-      typeof body.githubOrg === "string" && body.githubOrg.trim() ? body.githubOrg.trim() : null;
-    const [updated] = await db
-      .update(orgs)
-      .set({ githubOrg })
-      .where(eq(orgs.id, id))
-      .returning();
+    const update: Partial<typeof orgs.$inferInsert> = {};
+    if (hasGithubOrg) {
+      update.githubOrg =
+        typeof body.githubOrg === "string" && body.githubOrg.trim() ? body.githubOrg.trim() : null;
+    }
+    if (hasPosture) {
+      if (!isGovernancePosture(body.governancePosture)) {
+        res.status(400).json({ error: "governancePosture must be individual|team|enterprise" });
+        return;
+      }
+      update.governancePosture = body.governancePosture;
+    }
+    const [updated] = await db.update(orgs).set(update).where(eq(orgs.id, id)).returning();
     res.json({ org: updated });
   });
 
@@ -266,6 +332,14 @@ export function apexScopingRoutes(db: Db) {
       res.status(400).json({ error: "scopeType must be 'org' or 'company'" });
       return;
     }
+    // Display is governed by the SAME seam as writes: the policy's scopeFilter is
+    // applied to what's returned (identity/no-op under individual posture; a real
+    // filter under enterprise once the authz pass lands).
+    const decision = await decideScope(db, req, "binding.read", { type: scopeType, id: scopeId });
+    if (!decision.allow) {
+      res.status(403).json({ error: decision.reason });
+      return;
+    }
     const [row] = await db
       .select()
       .from(cloudScopeBindings)
@@ -274,8 +348,8 @@ export function apexScopingRoutes(db: Db) {
     res.json({
       scopeType,
       scopeId,
-      gcpProjects: row?.gcpProjects ?? [],
-      githubRepos: row?.githubRepos ?? [],
+      gcpProjects: decision.scopeFilter(row?.gcpProjects ?? []),
+      githubRepos: decision.scopeFilter(row?.githubRepos ?? []),
     });
   });
 
@@ -284,6 +358,13 @@ export function apexScopingRoutes(db: Db) {
     const { scopeType, scopeId } = req.params;
     if (!isScopeType(scopeType)) {
       res.status(400).json({ error: "scopeType must be 'org' or 'company'" });
+      return;
+    }
+    // Writes route through the single policy seam (all-allow under individual;
+    // owner/admin-gated under team/enterprise).
+    const decision = await decideScope(db, req, "binding.write", { type: scopeType, id: scopeId });
+    if (!decision.allow) {
+      res.status(403).json({ error: decision.reason });
       return;
     }
     const body = (req.body ?? {}) as { gcpProjects?: unknown; githubRepos?: unknown };

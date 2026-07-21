@@ -10,7 +10,9 @@ type Health = "ok" | "missing" | "expired";
 
 export interface SetupState {
   auth: { gcloud: Health; gh: Health; adc: Health };
-  org: { present: boolean; id?: string };
+  /** `posture` is the governance dial (default `individual`) — drives which
+   *  hardening steps the wizard requires. */
+  org: { present: boolean; id?: string; posture?: "individual" | "team" | "enterprise" };
   /** The signed-in user's membership in the detected org (drives the wizard's
    *  bootstrap-owner / member / awaiting-approval branch). */
   membership: { role?: string; status?: string; present: boolean };
