@@ -5425,6 +5425,13 @@ registerCurrentRoute({
 
 registerCurrentRoute({
   method: "get",
+  path: "/api/observe/agent-runs",
+  tags: ["apex"],
+  summary: "List recent embedded-agent runs (heartbeat runs) with usage",
+});
+
+registerCurrentRoute({
+  method: "get",
   path: "/api/orgs",
   tags: ["apex"],
   summary: "List orgs",

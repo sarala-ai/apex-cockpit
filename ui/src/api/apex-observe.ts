@@ -24,6 +24,34 @@ export interface CiRun {
   createdAt: string;
 }
 
+export interface AgentRunUsage {
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cachedInputTokens: number | null;
+  costUsd: number | null;
+  model: string | null;
+}
+
+export interface AgentRun {
+  id: string;
+  agentName: string;
+  issueId: string | null;
+  issueTitle: string | null;
+  status: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  durationMs: number | null;
+  exitCode: number | null;
+  stopReason: string | null;
+  usage: AgentRunUsage | null;
+}
+
+export interface AgentRunsResponse {
+  runs: AgentRun[];
+  source: string;
+  note?: string;
+}
+
 export interface ApexRunsResponse {
   runs: ApexRun[];
   source: string;
@@ -36,6 +64,7 @@ export interface CiRunsResponse {
 }
 
 export const apexObserveApi = {
+  agentRuns: () => api.get<AgentRunsResponse>("/observe/agent-runs"),
   apexRuns: () => api.get<ApexRunsResponse>("/observe/apex-runs"),
   ciRuns: (repo: string) =>
     api.get<CiRunsResponse>(

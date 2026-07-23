@@ -243,7 +243,7 @@ export async function createApp(
   api.use(apexSetupRoutes());
   api.use(apexScopingRoutes(db));
   api.use(apexSetupStateRoutes(db));
-  api.use(apexObserveRoutes());
+  api.use(apexObserveRoutes(db));
   api.use(issueRoutes(db, opts.storageService, {
     feedbackExportService: opts.feedbackExportService,
     pluginWorkerManager: workerManager,

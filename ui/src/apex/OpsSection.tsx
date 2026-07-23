@@ -8,7 +8,7 @@
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Activity, GitBranch, RefreshCw } from "lucide-react";
+import { Activity, Bot, GitBranch, RefreshCw } from "lucide-react";
 import { apexObserveApi } from "../api/apex-observe";
 import { GcloudAuthBanner } from "./GcloudAuthBanner";
 import { StatusBadge } from "./status-badge";
@@ -59,6 +59,76 @@ function CardShell({
 
 function Empty({ note }: { note?: string }) {
   return <p className="text-xs leading-relaxed text-muted-foreground">{note ?? "No data yet."}</p>;
+}
+
+function formatDuration(ms: number | null): string | null {
+  if (ms == null) return null;
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  return `${m}m ${s % 60}s`;
+}
+
+function formatTokens(n: number | null): string | null {
+  if (n == null) return null;
+  if (n < 1000) return String(n);
+  return `${(n / 1000).toFixed(n < 10000 ? 1 : 0)}k`;
+}
+
+function AgentRunsCard() {
+  const query = useQuery({
+    queryKey: ["apex-observe", "agent-runs"],
+    queryFn: () => apexObserveApi.agentRuns(),
+    refetchInterval: 15_000,
+  });
+  const runs = query.data?.runs ?? [];
+  return (
+    <CardShell
+      icon={<Bot className="h-4 w-4" />}
+      title="Agent runs"
+      onReload={() => void query.refetch()}
+      loading={query.isFetching}
+    >
+      {runs.length === 0 ? (
+        <Empty note={query.data?.note ?? "No agent runs yet — assign an issue to an agent and wake it."} />
+      ) : (
+        <ul className="space-y-1.5">
+          {runs.map((r) => {
+            const inTok = formatTokens(r.usage?.inputTokens ?? null);
+            const outTok = formatTokens(r.usage?.outputTokens ?? null);
+            const dur = formatDuration(r.durationMs);
+            return (
+              <li key={r.id} className="flex items-center justify-between gap-2 text-xs">
+                <span className="min-w-0 flex-1">
+                  <span className="truncate font-medium" title={r.issueTitle ?? r.agentName}>
+                    {r.issueTitle ?? "(no issue)"}
+                  </span>
+                  <span className="ml-1.5 text-muted-foreground">· {r.agentName}</span>
+                </span>
+                <span className="flex shrink-0 items-center gap-1.5 text-muted-foreground">
+                  {dur && <span className="tabular-nums">{dur}</span>}
+                  {(inTok || outTok) && (
+                    <span className="tabular-nums" title="input → output tokens">
+                      {inTok ?? "—"}→{outTok ?? "—"}
+                    </span>
+                  )}
+                  {r.usage?.costUsd != null && (
+                    <span className="tabular-nums">${r.usage.costUsd.toFixed(3)}</span>
+                  )}
+                  <StatusBadge variant={statusVariant(r.status)}>{r.status}</StatusBadge>
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {query.data?.source && (
+        <p className="mt-2 text-[10px] uppercase tracking-wide text-muted-foreground/60">
+          source: {query.data.source}
+        </p>
+      )}
+    </CardShell>
+  );
 }
 
 function ApexRunsCard() {
@@ -147,10 +217,12 @@ export function OpsSection() {
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
-        Infrastructure run status — APEX workflow instances and CI. Reads your local{" "}
-        <code>apex</code> / <code>gh</code> auth.
+        Run status — embedded agents working issues, plus APEX workflow instances and CI.
+        Agent runs come from the cockpit; APEX/CI read your local <code>apex</code> /{" "}
+        <code>gh</code> auth.
       </p>
       <GcloudAuthBanner />
+      <AgentRunsCard />
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <ApexRunsCard />
         <CiRunsCard />
