@@ -30,7 +30,11 @@ export type ScopeAction =
   | "binding.write"
   | "posture.read"
   | "posture.write"
-  | "discovery.read";
+  | "discovery.read"
+  // Create a company under an org. A write — owner/admin in team/enterprise,
+  // all-allow under individual (handled by the write branch in authorizeScope,
+  // since it isn't one of the read actions).
+  | "company.create";
 
 export interface ScopePolicyInput {
   /** The org's governance posture (defaults to individual when unknown). */

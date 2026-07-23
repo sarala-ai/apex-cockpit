@@ -8,13 +8,15 @@
 // every required prerequisite passes it shows "setup complete".
 
 import { useEffect, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, ChevronDown, ChevronRight, Circle, PartyPopper } from "lucide-react";
 import { setupStateApi, type SetupState } from "../../api/apex-setup-state";
+import { orgsApi } from "../../api/apex-scoping";
 import { useCompany } from "../../context/CompanyContext";
 import { GcloudAuthBanner } from "@/apex/GcloudAuthBanner";
 import { OrgScopingSection } from "../company-settings/OrgScopingSection";
 import { StatusBadge, type StatusVariant } from "@/apex/status-badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { GuidedStep } from "./GuidedStep";
 import { STEP_HELP, HelpRail, StepInfo } from "./setup-help";
@@ -27,6 +29,7 @@ import { PRODUCT_NAME } from "../../lib/product";
 export type StepKey =
   | "auth"
   | "org"
+  | "companies"
   | "orgCloud"
   | "orgGithub"
   | "companyCloud"
@@ -55,6 +58,9 @@ const STEPS: StepDef[] = [
     done: (s) => s.auth.gcloud === "ok" && s.auth.gh === "ok",
   },
   { key: "org", title: "Create Org (you = owner)", done: (s) => s.org.present },
+  // Create your companies (product units) first-class in the flow — the cloud/repo
+  // steps below bind to these. No /onboarding detour, no seeded demo agent.
+  { key: "companies", title: "Create companies", done: (s) => s.companies.count > 0 },
   // NOTE: ADC (s.auth.adc === "ok") gates PROVISIONING — the actual execution of the
   // APEX workflows behind the cloud steps below (via LocalRunner). Today these steps
   // only record project/repo bindings (no execution), so ADC isn't in their `done`
@@ -99,6 +105,7 @@ const STEPS: StepDef[] = [
  * `auth` + `org` stay required for all roles (identity + org membership).
  */
 const CLOUD_STEP_KEYS = new Set<StepKey>([
+  "companies",
   "orgCloud",
   "orgGithub",
   "companyCloud",
@@ -442,6 +449,16 @@ function StepBody({
     case "org":
       // Create the holding Org (you become its owner). Company link/summary too.
       return <OrgScopingSection companyId={selectedCompanyId ?? undefined} slice="org" />;
+    case "companies":
+      // Create your companies first-class in the flow (no /onboarding detour, no
+      // seeded demo agent) — the cloud/repo steps below bind to these.
+      return !orgPresent ? (
+        <p className="text-sm text-muted-foreground">
+          Create the Org first (step above) — then add your companies here.
+        </p>
+      ) : (
+        <CompanyCreateStep />
+      );
     case "orgCloud":
       // Bind the org's SHARED GCP projects (CI/CD + Artifact Registry, shared
       // Secret Manager, observability) at org scope.
@@ -465,13 +482,15 @@ function StepBody({
         />
       );
     case "companyCloud":
-      // Bind THIS company's own GCP projects (dev/staging/prod) at company scope.
+      // Bind each company's own GCP projects (dev/staging/prod) at company scope.
+      // No fixed companyId — the section shows a per-company picker so multi-company
+      // binding is explicit in the flow (not tied to the nav's selected company).
       return !orgPresent ? (
         <p className="text-sm text-muted-foreground">
           Create the Org first — company scoping cascades under it.
         </p>
       ) : (
-        <OrgScopingSection companyId={selectedCompanyId ?? undefined} slice="companyScope" />
+        <OrgScopingSection slice="companyScope" />
       );
     case "companyRepos":
       // Bind this company's repos (subset of the org's). Same company-scope
@@ -482,7 +501,7 @@ function StepBody({
           Create the Org first — then map this company’s repos (from the org’s repos).
         </p>
       ) : (
-        <OrgScopingSection companyId={selectedCompanyId ?? undefined} slice="companyScope" />
+        <OrgScopingSection slice="companyScope" />
       );
     case "oauthClient":
       return (
@@ -513,4 +532,83 @@ function StepBody({
     case "governance":
       return <GuidedStep done={done} onRecheck={onRecheck} rechecking={rechecking} />;
   }
+}
+
+/**
+ * The inline "Create companies" step — creates product-unit companies directly in
+ * the setup flow (via the org's create+associate route), so there's no detour to
+ * the off-brand `/onboarding` wizard and NO seeded Reflection Coach. Creating a
+ * company invalidates the detector so it appears live and the cloud/repo steps
+ * unlock.
+ */
+function CompanyCreateStep() {
+  const queryClient = useQueryClient();
+  const [name, setName] = useState("");
+  const orgsQuery = useQuery({ queryKey: ["apex-orgs"], queryFn: () => orgsApi.list() });
+  const org = orgsQuery.data?.orgs[0] ?? null;
+  const companiesQuery = useQuery({
+    queryKey: ["apex-org-companies", org?.id],
+    queryFn: () => orgsApi.companies(org!.id),
+    enabled: !!org,
+  });
+  const companies = companiesQuery.data?.companies ?? [];
+  const createCompany = useMutation({
+    mutationFn: (n: string) => orgsApi.createCompany(org!.id, n),
+    onSuccess: () => {
+      setName("");
+      void queryClient.invalidateQueries({ queryKey: ["apex-org-companies", org?.id] });
+      // Company count feeds the detector (this step + the company cloud/repo steps
+      // + the status bar) — refresh live, not on reload.
+      void queryClient.invalidateQueries({ queryKey: ["setup-state"] });
+    },
+  });
+
+  if (!org) {
+    return <p className="text-sm text-muted-foreground">Create the Org first.</p>;
+  }
+
+  return (
+    <div className="space-y-3" data-testid="apex-companies-step">
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          data-testid="apex-company-name-input"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && name.trim() && !createCompany.isPending) {
+              createCompany.mutate(name.trim());
+            }
+          }}
+          placeholder="Company name (e.g. FinPilot)"
+          className="w-56 rounded-md border border-border bg-transparent px-2.5 py-1 text-sm outline-none"
+        />
+        <Button
+          size="sm"
+          data-testid="apex-company-create"
+          onClick={() => createCompany.mutate(name.trim())}
+          disabled={createCompany.isPending || name.trim().length === 0}
+        >
+          {createCompany.isPending ? "Creating…" : "Create company"}
+        </Button>
+      </div>
+      {createCompany.isError && (
+        <span className="text-xs text-destructive">
+          {createCompany.error instanceof Error ? createCompany.error.message : "Failed to create company"}
+        </span>
+      )}
+      {companies.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5" data-testid="apex-companies-list">
+          {companies.map((c) => (
+            <StatusBadge key={c.id} variant="info">
+              {c.name}
+            </StatusBadge>
+          ))}
+        </div>
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          No companies yet — create your first (e.g. APEX, FinPilot, Bloom).
+        </p>
+      )}
+    </div>
+  );
 }

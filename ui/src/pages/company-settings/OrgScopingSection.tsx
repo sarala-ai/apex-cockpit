@@ -260,6 +260,9 @@ export function OrgScopingSection({
   const queryClient = useQueryClient();
   const [newOrgName, setNewOrgName] = useState("Sarala");
   const [newGithubOrg, setNewGithubOrg] = useState("");
+  // Company-scope picker: when no fixed `companyId` is passed (the setup wizard's
+  // company steps), the user picks WHICH company to bind from the org's companies.
+  const [pickedCompanyId, setPickedCompanyId] = useState<string | undefined>(undefined);
   // Post-create GitHub-org editing (an org may exist with no mapping).
   const [editingGithubOrg, setEditingGithubOrg] = useState(false);
   const [githubOrgDraft, setGithubOrgDraft] = useState("");
@@ -347,6 +350,10 @@ export function OrgScopingSection({
   const posture: GovernancePosture = org?.governancePosture ?? "individual";
   const postureHardened = posture === "team" || posture === "enterprise";
   const companyName = companyId ? companies.find((c) => c.id === companyId)?.name : undefined;
+  // The company whose scope the company-scope editor binds: the fixed prop, else
+  // the user's picked company, else the first company.
+  const effectiveCompanyId = companyId ?? pickedCompanyId ?? companies[0]?.id;
+  const effectiveCompanyName = companies.find((c) => c.id === effectiveCompanyId)?.name;
 
   const showOrgSummary = slice === "all" || slice === "org";
   const showOrgScope = slice === "all" || slice === "orgScope";
@@ -605,25 +612,46 @@ export function OrgScopingSection({
               />
             )}
             {showCompanyScope &&
-              (companyId ? (
-                <ScopeBindingEditor
-                  scopeType="company"
-                  scopeId={companyId}
-                  label="Company scope"
-                  testId="apex-company-scope-binding"
-                  gcpProjects={gcpProjects}
-                  repos={repos}
-                  discoveryNote={discoveryNote}
-                  suggestForName={companyName}
-                />
-              ) : (
+              (companies.length === 0 && !companyId ? (
                 <p className="text-sm text-muted-foreground" data-testid="apex-company-needed">
-                  Select or create a company first (under{" "}
-                  <a className="underline" href="/companies">
-                    Companies
-                  </a>
-                  ) — then its GCP/repo binding appears here.
+                  No companies yet — create one in the{" "}
+                  <strong>Create companies</strong> step above, then bind its GCP projects and
+                  repos here.
                 </p>
+              ) : (
+                <div className="space-y-2">
+                  {/* When no fixed company is passed (setup wizard), pick which
+                      company to bind. Standalone CompanySettings passes companyId. */}
+                  {!companyId && companies.length > 0 && (
+                    <div className="flex items-center gap-2 text-sm" data-testid="apex-company-picker">
+                      <span className="text-muted-foreground">Company</span>
+                      <select
+                        data-testid="apex-company-picker-select"
+                        value={effectiveCompanyId ?? ""}
+                        onChange={(e) => setPickedCompanyId(e.target.value)}
+                        className="rounded-md border border-border bg-transparent px-2 py-1 outline-none"
+                      >
+                        {companies.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  {effectiveCompanyId && (
+                    <ScopeBindingEditor
+                      scopeType="company"
+                      scopeId={effectiveCompanyId}
+                      label={`Company scope — ${effectiveCompanyName ?? ""}`}
+                      testId="apex-company-scope-binding"
+                      gcpProjects={gcpProjects}
+                      repos={repos}
+                      discoveryNote={discoveryNote}
+                      suggestForName={effectiveCompanyName}
+                    />
+                  )}
+                </div>
               ))}
           </>
         )}

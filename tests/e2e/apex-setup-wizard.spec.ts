@@ -149,6 +149,7 @@ test.describe("APEX setup wizard shell", () => {
     for (const key of [
       "auth",
       "org",
+      "companies",
       "orgCloud",
       "orgGithub",
       "companyCloud",
@@ -287,6 +288,83 @@ test.describe("APEX setup wizard shell", () => {
     const section = page.getByTestId("wizard-step-orgCloud");
     await expect(section.getByTestId("apex-org-no-github-info")).toBeVisible();
     await expect(section.getByTestId("apex-org-no-github-warning")).toHaveCount(0);
+  });
+
+  // OrgScopingSection resolves the org as orgs[0], so operate on the actual first org.
+  async function firstOrgId(board: APIRequestContext): Promise<string> {
+    let orgs = ((await (await board.get("/api/orgs")).json()) as { orgs: { id: string }[] }).orgs;
+    if (orgs.length === 0) {
+      await createOrg(board, `Base ${Date.now()}`);
+      orgs = ((await (await board.get("/api/orgs")).json()) as { orgs: { id: string }[] }).orgs;
+    }
+    return orgs[0].id;
+  }
+
+  test("creates a company inline in the setup step — associates to org, no Reflection Coach seed", async ({ page }) => {
+    const board = await pwRequest.newContext({ baseURL: BASE_URL });
+    const orgId = await firstOrgId(board);
+    // org present + identity ok + zero companies → the "Create companies" step is active.
+    const state = {
+      auth: { gcloud: "ok", gh: "ok", adc: "ok" },
+      org: { present: true, id: orgId, posture: "individual" },
+      membership: { present: true, role: "owner", status: "active" },
+      companies: { count: 0, ids: [] },
+      scoping: { orgProjectsBound: false, orgReposBound: false, companyProjectsBound: false, companyReposBound: false },
+      orgGithub: { appInstalled: false, wifConfigured: false },
+      oauthClient: { configured: false },
+      gateway: { reachable: false },
+      mcpServers: { registered: [] },
+    };
+    await gotoTopLevelSetup(page, state);
+
+    const step = page.getByTestId("wizard-step-companies");
+    const name = `AcmeInline${Date.now()}`;
+    await step.getByTestId("apex-company-name-input").fill(name);
+    await step.getByTestId("apex-company-create").click();
+
+    // Appears live in the step's own company list (no /onboarding).
+    await expect(page.getByTestId("apex-companies-list").getByText(name)).toBeVisible({ timeout: 15_000 });
+
+    // Associated to the org, and created WITHOUT a seeded Reflection Coach agent.
+    const created = ((await (await board.get(`/api/orgs/${orgId}/companies`)).json()) as {
+      companies: { id: string; name: string }[];
+    }).companies.find((c) => c.name === name);
+    expect(created).toBeTruthy();
+    const agentsBody = (await (await board.get(`/api/companies/${created!.id}/agents`)).json()) as unknown;
+    const agents = (Array.isArray(agentsBody)
+      ? agentsBody
+      : ((agentsBody as { agents?: unknown[] }).agents ?? [])) as Array<{ name?: string }>;
+    expect(agents.some((a) => /reflection coach/i.test(a.name ?? ""))).toBe(false);
+    await board.dispose();
+  });
+
+  test("company step: per-company picker when a company exists, and no /companies loop", async ({ page }) => {
+    const board = await pwRequest.newContext({ baseURL: BASE_URL });
+    const orgId = await firstOrgId(board);
+    // Ensure the org has ≥1 company (create+associate via the new route).
+    await expectOk(
+      await board.post(`/api/orgs/${orgId}/companies`, { data: { name: `PickCo${Date.now()}` } }),
+      "create+associate company",
+    );
+    const state = {
+      auth: { gcloud: "ok", gh: "ok", adc: "ok" },
+      org: { present: true, id: orgId, posture: "individual" },
+      membership: { present: true, role: "owner", status: "active" },
+      companies: { count: 1, ids: ["x"] },
+      scoping: { orgProjectsBound: false, orgReposBound: false, companyProjectsBound: false, companyReposBound: false },
+      orgGithub: { appInstalled: false, wifConfigured: false },
+      oauthClient: { configured: false },
+      gateway: { reachable: false },
+      mcpServers: { registered: [] },
+    };
+    await gotoTopLevelSetup(page, state);
+    const step = page.getByTestId("wizard-step-companyCloud");
+    await step.getByRole("button").first().click();
+    // The per-company picker shows (bind which company), and the old looping
+    // "/companies" link is gone.
+    await expect(step.getByTestId("apex-company-picker")).toBeVisible({ timeout: 15_000 });
+    await expect(step.locator('a[href="/companies"]')).toHaveCount(0);
+    await board.dispose();
   });
 
 });

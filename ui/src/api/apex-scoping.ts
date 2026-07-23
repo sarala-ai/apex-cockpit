@@ -53,6 +53,13 @@ export const orgsApi = {
       `/orgs/${orgId}/companies`,
       { companyId },
     ),
+  // Create a NEW company under the org (first-class in the setup flow — no
+  // /onboarding detour, no Reflection Coach seed; see apex-scoping route).
+  createCompany: (orgId: string, name: string) =>
+    api.post<{ company: { id: string; name: string; orgId: string | null } }>(
+      `/orgs/${orgId}/companies`,
+      { name },
+    ),
   companies: (orgId: string) =>
     api.get<{ companies: { id: string; name: string; orgId: string | null }[] }>(
       `/orgs/${orgId}/companies`,

@@ -13,6 +13,7 @@ import { Router } from "express";
 import { and, eq } from "drizzle-orm";
 import { type Db, orgs, companies, cloudScopeBindings, orgMemberships } from "@paperclipai/db";
 import { assertBoardOrAgent } from "./authz.js";
+import { accessService, companyService } from "../services/index.js";
 import {
   authorizeScope,
   isGovernancePosture,
@@ -101,6 +102,8 @@ async function isOrgOwnerOrAdmin(db: Db, orgId: string, req: import("express").R
 
 export function apexScopingRoutes(db: Db) {
   const router = Router();
+  const companies_svc = companyService(db);
+  const access = accessService(db);
 
   // --- Orgs ------------------------------------------------------------------
   router.get("/orgs", async (req, res) => {
@@ -290,21 +293,47 @@ export function apexScopingRoutes(db: Db) {
   });
 
   // Link a company under an org.
+  // Create a NEW company under the org ({ name }) OR associate an existing one
+  // ({ companyId }). The setup wizard's "Create companies" step uses { name } so
+  // company creation is first-class in the flow — no /onboarding detour, and
+  // (crucially) NO Reflection Coach seed (seedBundledAgents:false).
   router.post("/orgs/:orgId/companies", async (req, res) => {
     assertBoardOrAgent(req);
-    const { companyId } = (req.body ?? {}) as { companyId?: string };
-    if (!companyId) {
-      res.status(400).json({ error: "body requires { companyId }" });
+    const orgId = req.params.orgId;
+    const [org] = await db.select().from(orgs).where(eq(orgs.id, orgId)).limit(1);
+    if (!org) {
+      res.status(404).json({ error: `no org ${orgId}` });
       return;
     }
-    const [org] = await db.select().from(orgs).where(eq(orgs.id, req.params.orgId)).limit(1);
-    if (!org) {
-      res.status(404).json({ error: `no org ${req.params.orgId}` });
+    const body = (req.body ?? {}) as { companyId?: string; name?: string };
+
+    // CREATE + associate.
+    if (typeof body.name === "string" && body.name.trim().length > 0) {
+      const decision = await decideScope(db, req, "company.create", { type: "org", id: orgId });
+      if (!decision.allow) {
+        res.status(403).json({ error: decision.reason });
+        return;
+      }
+      const ownerPrincipalId = req.actor?.userId ?? "local-board";
+      const created = await companies_svc.create(
+        { name: body.name.trim(), orgId, defaultResponsibleUserId: ownerPrincipalId },
+        { seedBundledAgents: false },
+      );
+      await access.ensureMembership(created.id, "user", ownerPrincipalId, "owner", "active");
+      await access.ensureRoleDefaultGrants(created.id, ownerPrincipalId, "owner", req.actor?.userId ?? null);
+      res.status(201).json({ company: { id: created.id, name: created.name, orgId } });
+      return;
+    }
+
+    // ASSOCIATE an existing company.
+    const { companyId } = body;
+    if (!companyId) {
+      res.status(400).json({ error: "body requires { name } (create) or { companyId } (associate)" });
       return;
     }
     const [company] = await db
       .update(companies)
-      .set({ orgId: req.params.orgId, updatedAt: new Date() })
+      .set({ orgId, updatedAt: new Date() })
       .where(eq(companies.id, companyId))
       .returning();
     if (!company) {

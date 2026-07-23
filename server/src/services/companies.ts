@@ -266,10 +266,18 @@ export function companyService(db: Db) {
       return enrichCompany(hydrated);
     },
 
-    create: async (data: typeof companies.$inferInsert) => {
+    create: async (
+      data: typeof companies.$inferInsert,
+      opts?: { seedBundledAgents?: boolean },
+    ) => {
       const created = await createCompanyWithUniquePrefix(data);
       await environmentsSvc.ensureLocalEnvironment(created.id);
-      await builtInAgents.autoProvisionBundledAgents(created.id);
+      // Bundled built-in agents (e.g. the Reflection Coach) are auto-provisioned by
+      // default (the fork's onboarding behavior). The apex-tower setup flow creates
+      // companies clean — pass { seedBundledAgents: false } to skip the seed.
+      if (opts?.seedBundledAgents !== false) {
+        await builtInAgents.autoProvisionBundledAgents(created.id);
+      }
       const row = await getCompanyQuery(db)
         .where(eq(companies.id, created.id))
         .then((rows) => rows[0] ?? null);

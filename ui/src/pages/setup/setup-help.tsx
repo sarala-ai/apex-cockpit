@@ -56,6 +56,16 @@ export const STEP_HELP: Record<StepKey, StepHelp> = {
       "Create it — you are recorded as owner (active).",
     ],
   },
+  companies: {
+    purpose:
+      "Create your companies (product units, e.g. APEX / FinPilot / Bloom) — first-class here, so the cloud and repo steps below have something to bind to.",
+    whatYoullDo: [
+      "Name a company and create it — it's associated to the Org automatically.",
+      "Repeat for each product unit.",
+      "Then bind each company's GCP projects and repos in the steps below.",
+    ],
+    note: "Created clean in-flow — no `/onboarding` detour and no seeded demo agent.",
+  },
   orgCloud: {
     purpose:
       "Bind the shared GCP projects every company draws on — CI/CD, Artifact Registry, shared Secret Manager, observability.",
