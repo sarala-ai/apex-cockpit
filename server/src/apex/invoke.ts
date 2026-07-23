@@ -17,6 +17,7 @@
  * `readApexResult` accepts either and normalizes to a plain object before validating.
  */
 import { z } from "zod";
+import { run } from "./exec.js";
 
 /**
  * Turn a raw APEX tool result into a validated, typed value.
@@ -71,4 +72,56 @@ export interface ApexInvoker {
     params: Record<string, unknown>,
     schema: z.ZodType<T>,
   ): Promise<T>;
+}
+
+/** Thrown when the `apex` CLI isn't installed/on PATH — a store treats this as an
+ *  empty (not error) result, so the product-agent plane degrades gracefully. */
+export class ApexUnavailableError extends Error {}
+/** Thrown when `apex run` exits non-zero (tool error, auth, etc.). */
+export class ApexInvocationError extends Error {}
+
+const toDash = (s: string): string => s.replace(/_/g, "-");
+
+/**
+ * Invokes an APEX tool by shelling the CLI:
+ *   `apex --output json run <mount> <tool-with-dashes> --flag value …`
+ * The `--output json` global flag makes the CLI emit exactly one JSON object
+ * (`{server, tool, status, …result}`) on success; params become `--dashed-flag
+ * value` pairs (matching apex_cli's `param.replace("_","-")`). The result is
+ * validated through the central `readApexResult`, so the same schema the UI is
+ * typed from also validates what the CLI returns.
+ *
+ * `server` is the resource server's MOUNT name (e.g. "observability"), `tool` the
+ * underscore tool name (e.g. "list_agent_services"). Never throws for a missing
+ * binary/failed run in a way that leaks — callers catch and degrade.
+ */
+export class CliApexInvoker implements ApexInvoker {
+  constructor(
+    private readonly bin: string = process.env.APEX_BIN ?? "apex",
+    private readonly timeoutMs: number = 20_000,
+  ) {}
+
+  async invoke<T>(
+    server: string,
+    tool: string,
+    params: Record<string, unknown>,
+    schema: z.ZodType<T>,
+  ): Promise<T> {
+    const flags: string[] = [];
+    for (const [k, v] of Object.entries(params)) {
+      if (v === undefined || v === null) continue;
+      flags.push(`--${toDash(k)}`, String(v));
+    }
+    const args = ["--output", "json", "run", server, toDash(tool), ...flags];
+    const res = await run(this.bin, args, this.timeoutMs);
+    if (res.status === "missing") {
+      throw new ApexUnavailableError(`apex CLI not found (bin: ${this.bin})`);
+    }
+    if (res.status === "failed") {
+      throw new ApexInvocationError(
+        `apex run ${server} ${tool} failed (code ${res.code}): ${res.stderr.slice(0, 500)}`,
+      );
+    }
+    return readApexResult(res.stdout, schema);
+  }
 }
