@@ -1,40 +1,62 @@
 import { describe, expect, it } from "vitest";
-import { authorizeScope, isGovernancePosture } from "../apex/scope-policy.js";
+import { authorizeScope, isGovernancePosture, isReadScopeAction } from "../apex/scope-policy.js";
+import type { AuthorizationDecision } from "../services/authorization.js";
 
-describe("authorizeScope — the single scope-authz seam", () => {
-  it("individual posture: all-allow, no read filtering (fully implemented path)", () => {
-    for (const action of ["binding.read", "binding.write", "posture.write", "discovery.read"] as const) {
-      const d = authorizeScope({ posture: "individual", action, role: null });
+function engineDecision(allowed: boolean, explanation = "engine says so"): AuthorizationDecision {
+  return {
+    allowed,
+    action: "org_scope:write",
+    explanation,
+    reason: allowed ? "allow_org_role" : "deny_org_role",
+  };
+}
+
+describe("authorizeScope — thin posture adapter over the real engine", () => {
+  it("individual: all-allow, no filtering, no engine decision required", () => {
+    for (const action of ["binding.read", "binding.write", "posture.write", "discovery.read", "company.create"] as const) {
+      const d = authorizeScope({ posture: "individual", action });
       expect(d.allow).toBe(true);
       expect(d.visibility).toBe("all");
-      // scopeFilter is identity under individual.
       expect(d.scopeFilter([1, 2, 3])).toEqual([1, 2, 3]);
     }
   });
 
-  it("individual: even with no role, writes are allowed (single-owner assumption)", () => {
-    const d = authorizeScope({ posture: "individual", action: "binding.write", role: undefined });
+  it("team/enterprise: maps the engine ALLOW decision (authority comes from the engine)", () => {
+    const d = authorizeScope({
+      posture: "enterprise",
+      action: "binding.write",
+      engineDecision: engineDecision(true, "Org owner may write scope/posture."),
+    });
     expect(d.allow).toBe(true);
+    expect(d.reason).toBe("Org owner may write scope/posture.");
+    expect(d.visibility).toBe("all");
   });
 
-  it("enterprise (scaffold): writes require owner/admin, denied for a plain member", () => {
-    const denied = authorizeScope({ posture: "enterprise", action: "binding.write", role: "member" });
-    expect(denied.allow).toBe(false);
-    expect(denied.reason).toMatch(/owner\/admin/i);
-
-    for (const role of ["owner", "admin"] as const) {
-      expect(authorizeScope({ posture: "enterprise", action: "binding.write", role }).allow).toBe(true);
-    }
-    // Instance admin bypasses role.
-    expect(
-      authorizeScope({ posture: "enterprise", action: "binding.write", role: "member", isInstanceAdmin: true }).allow,
-    ).toBe(true);
+  it("team/enterprise: maps the engine DENY decision", () => {
+    const d = authorizeScope({
+      posture: "team",
+      action: "binding.write",
+      engineDecision: engineDecision(false, "Org role 'member' cannot write; requires owner or admin."),
+    });
+    expect(d.allow).toBe(false);
+    expect(d.reason).toMatch(/owner or admin/i);
+    expect(d.visibility).toBe("none");
   });
 
-  it("team/enterprise (scaffold): reads are allowed (no filtering yet)", () => {
-    const d = authorizeScope({ posture: "team", action: "binding.read", role: "member" });
-    expect(d.allow).toBe(true);
-    expect(d.scopeFilter(["a", "b"])).toEqual(["a", "b"]);
+  it("team/enterprise WITHOUT an engine decision fails closed (no local re-decide, no parallel matrix)", () => {
+    const d = authorizeScope({ posture: "team", action: "binding.write" });
+    expect(d.allow).toBe(false);
+    expect(d.reason).toMatch(/engine authorization/i);
+    expect(d.visibility).toBe("none");
+  });
+
+  it("isReadScopeAction splits reads from writes", () => {
+    expect(isReadScopeAction("binding.read")).toBe(true);
+    expect(isReadScopeAction("posture.read")).toBe(true);
+    expect(isReadScopeAction("discovery.read")).toBe(true);
+    expect(isReadScopeAction("binding.write")).toBe(false);
+    expect(isReadScopeAction("posture.write")).toBe(false);
+    expect(isReadScopeAction("company.create")).toBe(false);
   });
 
   it("isGovernancePosture guards the vocabulary", () => {

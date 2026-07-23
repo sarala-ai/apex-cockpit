@@ -14,9 +14,11 @@ import { and, eq } from "drizzle-orm";
 import { type Db, orgs, companies, cloudScopeBindings, orgMemberships } from "@paperclipai/db";
 import { assertBoardOrAgent } from "./authz.js";
 import { accessService, companyService } from "../services/index.js";
+import { authorizationService } from "../services/authorization.js";
 import {
   authorizeScope,
   isGovernancePosture,
+  isReadScopeAction,
   type GovernancePosture,
   type ScopeAction,
 } from "../apex/scope-policy.js";
@@ -59,22 +61,25 @@ async function decideScope(
     if (org && isGovernancePosture(org.posture)) posture = org.posture;
   }
 
-  const userId = actorUserId(req);
-  let role: string | null = null;
-  if (orgId && userId) {
-    const [m] = await db
-      .select({ role: orgMemberships.role, status: orgMemberships.status })
-      .from(orgMemberships)
-      .where(and(eq(orgMemberships.orgId, orgId), eq(orgMemberships.userId, userId)))
-      .limit(1);
-    role = m?.status === "active" ? m.role : null;
+  // INDIVIDUAL: loose self-service — decided by the seam, no engine round-trip.
+  if (posture === "individual") {
+    return authorizeScope({ posture, action });
   }
 
-  // Match the fork's authz convention: a local_implicit board actor is treated as
-  // instance admin (see authz.ts assertInstanceAdmin).
-  const isInstanceAdmin = Boolean(req.actor?.isInstanceAdmin) || req.actor?.source === "local_implicit";
+  // TEAM / ENTERPRISE: the authority decision (org role, instance-admin) comes
+  // from the fork's real authorization engine, which reads org_memberships. The
+  // seam only maps its decision — no parallel posture×role matrix here.
+  const decision = await authorizationService(db).authorizeOrgScope({
+    actor: {
+      userId: actorUserId(req),
+      isInstanceAdmin: req.actor?.isInstanceAdmin,
+      source: req.actor?.source,
+    },
+    orgId,
+    action: isReadScopeAction(action) ? "org_scope:read" : "org_scope:write",
+  });
 
-  return authorizeScope({ posture, role, isInstanceAdmin, action, scope });
+  return authorizeScope({ posture, action, engineDecision: decision });
 }
 
 /** Membership role vocabulary (owner/admin/member today; reviewer/observer are

@@ -1,20 +1,25 @@
 // The single scope-authorization seam (apex-tower governance posture).
 //
 // ONE decision point that BOTH binding mutations (write scope bindings, change
-// posture) AND display/reads (list/read projects, repos, bindings) route through,
-// so the follow-up authorization pass extends the matrix in one place instead of
-// chasing scattered `posture===… && role===…` checks across routes.
+// posture, create a company) AND display/reads (list/read projects, repos,
+// bindings) route through — so posture/role logic lives in one place, not
+// scattered `posture===… && role===…` checks across routes.
 //
-// It sits ON TOP of the fork's existing authz (assertBoardOrAgent / actor
-// memberships / isInstanceAdmin) — the routes still do the coarse board/agent
-// gate; this adds the posture × role factor and, for reads, a `scopeFilter` the
-// caller applies to results (so DISPLAY is governed too, not just mutations).
+// This is now a THIN ADAPTER, not a parallel authz matrix:
+//   - `individual` posture is the loose self-service end — single owner,
+//     all-allow, no read filtering. Decided here (no engine round-trip needed).
+//   - `team`/`enterprise` delegate the actual role/permission decision to the
+//     fork's real authorization engine (authorizationService.authorizeOrgScope),
+//     which reads org_memberships + honours instance-admin. The caller
+//     (decideScope in apex-scoping.ts) resolves the engine `AuthorizationDecision`
+//     and passes it in; this seam maps it to {allow, reason, visibility,
+//     scopeFilter}. All "who can do what" now comes from ONE engine.
 //
-// SCOPE OF THIS PASS: `individual` posture is implemented correctly (single owner,
-// all-allow, no read filtering); `team`/`enterprise` are SCAFFOLDED (writes need
-// owner/admin; reads allowed, no filtering yet). The full posture × role matrix +
-// enterprise read-filtering land in the dedicated authorization pass — extend
-// HERE, not in the routes.
+// Read-filtering: engine `allow` → full visibility today. Per-role SCOPED reads
+// (reviewer/observer seeing a subset) need a defined data-visibility model;
+// `scopeFilter` stays identity until that lands (flagged, not faked).
+
+import type { AuthorizationDecision } from "../services/authorization.js";
 
 export type GovernancePosture = "individual" | "team" | "enterprise";
 
@@ -22,29 +27,32 @@ export function isGovernancePosture(v: unknown): v is GovernancePosture {
   return v === "individual" || v === "team" || v === "enterprise";
 }
 
-/** Org membership role vocabulary (owner/admin/member; reviewer/observer reserved). */
-export type ScopeRole = "owner" | "admin" | "member" | "reviewer" | "observer";
-
 export type ScopeAction =
   | "binding.read"
   | "binding.write"
   | "posture.read"
   | "posture.write"
   | "discovery.read"
-  // Create a company under an org. A write — owner/admin in team/enterprise,
-  // all-allow under individual (handled by the write branch in authorizeScope,
-  // since it isn't one of the read actions).
+  // Create a company under an org — a write (owner/admin in team/enterprise,
+  // all-allow under individual).
   | "company.create";
+
+/** Whether a scope action only reads (vs. mutates). Drives the read/write split
+ *  both here and when mapping to the engine's org_scope:read / org_scope:write. */
+export function isReadScopeAction(action: ScopeAction): boolean {
+  return action === "binding.read" || action === "posture.read" || action === "discovery.read";
+}
 
 export interface ScopePolicyInput {
   /** The org's governance posture (defaults to individual when unknown). */
   posture: GovernancePosture;
-  /** The actor's org-membership role, if any. */
-  role?: string | null;
-  /** Trusted local/instance admin — bypasses role checks (fork's existing notion). */
-  isInstanceAdmin?: boolean;
   action: ScopeAction;
-  scope?: { type: "org" | "company"; id?: string };
+  /**
+   * The engine's decision for this action, REQUIRED for `team`/`enterprise`.
+   * Produced by `authorizationService(db).authorizeOrgScope(...)` in the caller,
+   * so authority lives in the real engine, not here. Ignored for `individual`.
+   */
+  engineDecision?: AuthorizationDecision;
 }
 
 export interface ScopePolicyDecision {
@@ -54,27 +62,22 @@ export interface ScopePolicyDecision {
   /** How much the actor may SEE for read actions. */
   visibility: "all" | "scoped" | "none";
   /** Applied by callers to read results so display is governed by the same seam.
-   *  Identity (no-op) for `individual` / `visibility:"all"`. */
+   *  Identity (no-op) today; per-role scoped filtering is future work. */
   scopeFilter: <T>(items: T[]) => T[];
 }
 
 const identityFilter = <T>(items: T[]): T[] => items;
 
-function isOwnerOrAdmin(role?: string | null, isInstanceAdmin?: boolean): boolean {
-  return Boolean(isInstanceAdmin) || role === "owner" || role === "admin";
-}
-
 /**
- * The one authorization decision. Pure — callers resolve `{posture, role,
- * isInstanceAdmin}` (see resolveScopeContext in apex-scoping.ts) and pass the
- * action; the route enforces `allow` for writes and applies `scopeFilter` to
- * read results.
+ * The one authorization decision. Pure — `individual` is decided here; for
+ * `team`/`enterprise` the caller supplies the engine `AuthorizationDecision`
+ * and this maps it onto the seam's {allow, visibility, scopeFilter} shape.
  */
 export function authorizeScope(input: ScopePolicyInput): ScopePolicyDecision {
-  const { posture, role, isInstanceAdmin, action } = input;
+  const { posture, action } = input;
 
-  // INDIVIDUAL — the loose, self-service end. Single owner, everything allowed,
-  // nothing filtered. This is the fully-implemented path for this pass.
+  // INDIVIDUAL — loose, self-service. Single owner, everything allowed, nothing
+  // filtered. No engine round-trip.
   if (posture === "individual") {
     return {
       allow: true,
@@ -84,32 +87,26 @@ export function authorizeScope(input: ScopePolicyInput): ScopePolicyDecision {
     };
   }
 
-  // TEAM / ENTERPRISE — SCAFFOLD. Writes need owner/admin; reads are allowed with
-  // no filtering yet. The full posture × role matrix + enterprise read-filtering
-  // (visibility:"scoped"/"none" + a real scopeFilter) are the authorization pass —
-  // extend this block, keep the seam single.
-  const isRead = action === "binding.read" || action === "posture.read" || action === "discovery.read";
-  if (isRead) {
+  // TEAM / ENTERPRISE — authority comes from the fork's engine. The caller must
+  // pass the engine decision; without it we fail closed rather than re-deciding
+  // locally (which would resurrect the parallel matrix this seam removed).
+  const decision = input.engineDecision;
+  if (!decision) {
     return {
-      allow: true,
-      reason: `${posture} posture — read allowed (filtering not yet enforced)`,
-      visibility: "all",
+      allow: false,
+      reason: `${posture} posture — engine authorization decision required`,
+      visibility: "none",
       scopeFilter: identityFilter,
     };
   }
-  // Writes (binding.write / posture.write): owner/admin only.
-  if (isOwnerOrAdmin(role, isInstanceAdmin)) {
-    return {
-      allow: true,
-      reason: `${posture} posture — owner/admin write`,
-      visibility: "all",
-      scopeFilter: identityFilter,
-    };
-  }
+
   return {
-    allow: false,
-    reason: `${posture} posture — ${action} requires org owner/admin`,
-    visibility: "none",
+    allow: decision.allowed,
+    reason: decision.explanation,
+    // Read allowed → full visibility for now; denied → none. Scoped read-
+    // filtering (reviewer/observer subset) is deferred until a data-visibility
+    // model exists — see file header.
+    visibility: decision.allowed ? "all" : "none",
     scopeFilter: identityFilter,
   };
 }
