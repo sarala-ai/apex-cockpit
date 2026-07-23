@@ -17,7 +17,17 @@ export const orgMemberships = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     orgId: uuid("org_id")
       .notNull()
-      .references(() => orgs.id),
+      .references(() => orgs.id, { onDelete: "cascade" }),
+    // Type-level reference only — intentionally NO DB-level FK (see migration
+    // 0149). The synthetic `"local-board"` actor (server/src/board-claim.ts,
+    // server/src/middleware/auth.ts) used for local/dev-mode operations is not a
+    // real row in `user`, so a hard FK here would break local-mode inserts. This
+    // matches the fork's existing precedent for actor/user references that must
+    // also accept synthetic ids: `company_memberships.principalId` (see
+    // packages/db/src/schema/company_memberships.ts) is deliberately a bare
+    // unconstrained `text` column for the same reason. Also documented at
+    // server/src/routes/apex-scoping.ts (actorUserId doc comment: "no FK
+    // enforced").
     userId: text("user_id")
       .notNull()
       .references(() => authUsers.id),

@@ -1,11 +1,15 @@
 import { pgTable, uuid, text, integer, timestamp, boolean, uniqueIndex } from "drizzle-orm/pg-core";
+import { orgs } from "./orgs.js";
 
 export const companies = pgTable(
   "companies",
   {
     id: uuid("id").primaryKey().defaultRandom(),
     name: text("name").notNull(),
-    orgId: uuid("org_id"),
+    // Nullable: a company can outlive its Org association (ON DELETE SET NULL —
+    // see migration 0149, same "org-level FK integrity" fix as 0148's routines
+    // cascade gap).
+    orgId: uuid("org_id").references(() => orgs.id, { onDelete: "set null" }),
     description: text("description"),
     status: text("status").notNull().default("active"),
     pauseReason: text("pause_reason"),

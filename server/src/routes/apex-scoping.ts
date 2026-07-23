@@ -292,6 +292,20 @@ export function apexScopingRoutes(db: Db) {
     res.json({ org: updated });
   });
 
+  // NOTE: there is no DELETE /orgs/:id route yet (design-review B2, apex-tower).
+  // When one is built, it must clean up:
+  //   - `cloud_scope_bindings` rows with `scopeType: "org"` for this org — that
+  //     table is a generic scopeType/scopeId binding with NO FK to `orgs`
+  //     (mirrors the existing `scopeType: "company"` cleanup already done in
+  //     companyService.remove(), see server/src/services/companies.ts), so it
+  //     will silently orphan unless explicitly deleted here.
+  //   - Nothing else needs manual cleanup: `org_memberships` rows cascade-delete
+  //     via their DB-level FK (ON DELETE CASCADE, migration 0149), and
+  //     `companies.org_id` is automatically nulled via its DB-level FK
+  //     (ON DELETE SET NULL, migration 0149) — companies survive their org's
+  //     deletion by design (apex-tower §1: "a company can outlive its org
+  //     association").
+
   // Link a company under an org.
   // Create a NEW company under the org ({ name }) OR associate an existing one
   // ({ companyId }). The setup wizard's "Create companies" step uses { name } so
