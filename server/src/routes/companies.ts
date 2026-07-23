@@ -527,6 +527,32 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     assertBoard(req);
+
+    const existing = await svc.getById(companyId);
+    if (!existing) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+
+    const confirmed = parseBooleanQuery(req.query.confirm) ||
+      (req.body && typeof req.body === "object" && parseBooleanQuery((req.body as Record<string, unknown>).confirm));
+
+    const summary = await svc.getDeletionSummary(companyId);
+
+    if (!summary.isEmpty && !confirmed) {
+      // NOTE: this is a hard delete-or-block gate. Data MIGRATION/remap (e.g.
+      // reassigning issues/agents to another company, or remapping cloud scope
+      // bindings before delete) is a deferred follow-up and intentionally NOT
+      // built here — confirming delete permanently discards the substantive
+      // work counted below.
+      res.status(409).json({
+        error: "Company has existing data. Pass confirm=true to delete it anyway.",
+        requiresConfirmation: true,
+        counts: summary.counts,
+      });
+      return;
+    }
+
     const company = await svc.remove(companyId);
     if (!company) {
       res.status(404).json({ error: "Company not found" });

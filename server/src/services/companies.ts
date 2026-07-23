@@ -28,6 +28,10 @@ import {
   companyMemberships,
   companySkills,
   documents,
+  routines,
+  routineRuns,
+  routineDocuments,
+  cloudScopeBindings,
 } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { environmentService } from "./environments.js";
@@ -463,13 +467,90 @@ export function companyService(db: Db) {
         await tx.delete(assets).where(eq(assets.companyId, id));
         await tx.delete(goals).where(eq(goals.companyId, id));
         await tx.delete(projects).where(eq(projects.companyId, id));
+        // routine_runs references routines (cascade) and routines.assignee_agent_id
+        // references agents (set null as of migration 0148) — delete routines
+        // ahead of agents regardless, since routine_runs would otherwise dangle
+        // on a routines delete performed after agents is gone.
+        await tx.delete(routineRuns).where(eq(routineRuns.companyId, id));
+        await tx.delete(routines).where(eq(routines.companyId, id));
         await tx.delete(agents).where(eq(agents.companyId, id));
+        // cloud_scope_bindings has no FK to companies (generic scopeType/scopeId
+        // binding) so it never blocked deletion, but it must still be cleaned up
+        // here or it orphans silently.
+        await tx
+          .delete(cloudScopeBindings)
+          .where(and(eq(cloudScopeBindings.scopeType, "company"), eq(cloudScopeBindings.scopeId, id)));
         const rows = await tx
           .delete(companies)
           .where(eq(companies.id, id))
           .returning();
         return rows[0] ?? null;
       }),
+
+    // Deletion safety check: counts SUBSTANTIVE work product for a company
+    // (issues, heartbeat runs, documents, goals, cost/finance events) plus
+    // scaffolding counts (agents, cloud scope bindings) needed for the 409
+    // confirmation payload. Seeded/bundled agents+routines, projects, skills,
+    // memberships, and scope bindings are intentionally NOT "substantive" —
+    // only real work counts toward blocking a delete.
+    getDeletionSummary: async (id: string) => {
+      const [
+        issueCount,
+        heartbeatRunCount,
+        documentCount,
+        goalCount,
+        costEventCount,
+        financeEventCount,
+        agentCount,
+        scopeBindingCount,
+      ] = await Promise.all([
+        db.select({ value: count() }).from(issues).where(eq(issues.companyId, id))
+          .then((rows) => rows[0]?.value ?? 0),
+        db.select({ value: count() }).from(heartbeatRuns).where(eq(heartbeatRuns.companyId, id))
+          .then((rows) => rows[0]?.value ?? 0),
+        // Exclude documents that are auto-generated routine descriptions
+        // (e.g. the seeded "Reflection Coach" bundle's routine doc) — those
+        // are scaffolding, not real work product.
+        db
+          .select({ value: count() })
+          .from(documents)
+          .leftJoin(routineDocuments, eq(routineDocuments.documentId, documents.id))
+          .where(and(eq(documents.companyId, id), isNull(routineDocuments.id)))
+          .then((rows) => rows[0]?.value ?? 0),
+        db.select({ value: count() }).from(goals).where(eq(goals.companyId, id))
+          .then((rows) => rows[0]?.value ?? 0),
+        db.select({ value: count() }).from(costEvents).where(eq(costEvents.companyId, id))
+          .then((rows) => rows[0]?.value ?? 0),
+        db.select({ value: count() }).from(financeEvents).where(eq(financeEvents.companyId, id))
+          .then((rows) => rows[0]?.value ?? 0),
+        db.select({ value: count() }).from(agents).where(eq(agents.companyId, id))
+          .then((rows) => rows[0]?.value ?? 0),
+        db.select({ value: count() }).from(cloudScopeBindings)
+          .where(and(eq(cloudScopeBindings.scopeType, "company"), eq(cloudScopeBindings.scopeId, id)))
+          .then((rows) => rows[0]?.value ?? 0),
+      ]);
+
+      const counts = {
+        issues: issueCount,
+        heartbeatRuns: heartbeatRunCount,
+        documents: documentCount,
+        goals: goalCount,
+        costEvents: costEventCount,
+        financeEvents: financeEventCount,
+        agents: agentCount,
+        scopeBindings: scopeBindingCount,
+      };
+
+      const isEmpty =
+        counts.issues === 0 &&
+        counts.heartbeatRuns === 0 &&
+        counts.documents === 0 &&
+        counts.goals === 0 &&
+        counts.costEvents === 0 &&
+        counts.financeEvents === 0;
+
+      return { isEmpty, counts };
+    },
 
     stats: () =>
       Promise.all([

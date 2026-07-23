@@ -29,7 +29,7 @@ export const routines = pgTable(
     parentIssueId: uuid("parent_issue_id").references(() => issues.id, { onDelete: "set null" }),
     title: text("title").notNull(),
     description: text("description"),
-    assigneeAgentId: uuid("assignee_agent_id").references(() => agents.id),
+    assigneeAgentId: uuid("assignee_agent_id").references(() => agents.id, { onDelete: "set null" }),
     priority: text("priority").notNull().default("medium"),
     status: text("status").notNull().default("active"),
     concurrencyPolicy: text("concurrency_policy").notNull().default("coalesce_if_active"),
