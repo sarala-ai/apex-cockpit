@@ -5390,6 +5390,144 @@ for (const route of [
   });
 }
 
+// ─── APEX Tower (org/company GCP+GitHub scoping, setup, observe, pipeline) ───
+
+for (const route of [
+  ["get", "/api/setup/auth", "Check gcloud/gh auth status"],
+  ["get", "/api/setup/gcp/projects", "List GCP projects the authed account can see"],
+  ["get", "/api/setup/gcp/orgs", "List GCP organizations the authed account can see"],
+  ["get", "/api/setup/github/orgs", "List GitHub organizations the authed account can see"],
+  ["get", "/api/setup/github/repos", "List GitHub repos the authed account can see"],
+] as const) {
+  registerCurrentRoute({ method: route[0], path: route[1], tags: ["apex"], summary: route[2] });
+}
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/setup/state",
+  tags: ["apex"],
+  summary: "Get one failure-isolated snapshot of every APEX setup prerequisite",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/observe/apex-runs",
+  tags: ["apex"],
+  summary: "List recent APEX workflow instances",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/observe/ci-runs",
+  tags: ["apex"],
+  summary: "List recent GitHub Actions runs for a repo",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/orgs",
+  tags: ["apex"],
+  summary: "List orgs",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/orgs",
+  tags: ["apex"],
+  summary: "Create an org",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/orgs/{orgId}/members",
+  tags: ["apex"],
+  summary: "List an org's members",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/orgs/{orgId}/membership",
+  tags: ["apex"],
+  summary: "Get the caller's membership in an org",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/orgs/{orgId}/members",
+  tags: ["apex"],
+  summary: "Add a member to an org",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/orgs/{orgId}/members/{userId}/approve",
+  tags: ["apex"],
+  summary: "Approve a pending org member",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/orgs/{id}",
+  tags: ["apex"],
+  summary: "Get an org",
+});
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/orgs/{id}",
+  tags: ["apex"],
+  summary: "Update an org's GitHub-org mapping and/or governance posture",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/orgs/{orgId}/companies",
+  tags: ["apex"],
+  summary: "Create or associate a company under an org",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/orgs/{orgId}/companies",
+  tags: ["apex"],
+  summary: "List companies under an org",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/apex/scope/{scopeType}/{scopeId}/cloud-binding",
+  tags: ["apex"],
+  summary: "Get the GCP project + GitHub repo binding for a scope (org or company)",
+});
+
+registerCurrentRoute({
+  method: "put",
+  path: "/api/apex/scope/{scopeType}/{scopeId}/cloud-binding",
+  tags: ["apex"],
+  summary: "Set the GCP project + GitHub repo binding for a scope (org or company)",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/apex/pipeline/seed",
+  tags: ["apex"],
+  summary: "Idempotently seed the fixed APEX Tower pipeline stage machine",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/apex/pipeline/ingest",
+  tags: ["apex"],
+  summary: "Mirror a repo's open GitHub issues into the seeded pipeline as cases",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/apex/pipeline/cases/{caseId}/execute",
+  tags: ["apex"],
+  summary: "Run a pipeline case's APEX workflow and advance its stage",
+});
+
 // ─── Spec builder ─────────────────────────────────────────────────────────────
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
