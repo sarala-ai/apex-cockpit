@@ -58,6 +58,7 @@ import {
   isClaudeImageProcessingError,
 } from "./parse.js";
 import {
+  buildGatewayMcpConfig,
   materializeRemoteClaudeConfig,
   prepareClaudeConfigSeed,
   resolveSharedClaudeConfigDir,
@@ -280,6 +281,17 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
 
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
+  }
+
+  // Carry the (short-lived, refresh-tolerant) gateway JWT + URL into the run env
+  // so the injected apex-gateway .mcp.json's `${APEX_GATEWAY_TOKEN}` resolves at
+  // the CLI — and so it reaches remote targets (which only get the explicit env).
+  // The adapter does NOT mint/fetch the token; whoever populates the run env
+  // supplies a fresh gateway JWT per run (no non-expiry assumption, no caching).
+  for (const gwKey of ["APEX_GATEWAY_TOKEN", "APEX_GATEWAY_URL", "APEX_GATEWAY_MCP_URL"] as const) {
+    if (env[gwKey] === undefined && typeof process.env[gwKey] === "string") {
+      env[gwKey] = process.env[gwKey] as string;
+    }
   }
 
   const runtimeEnv = Object.fromEntries(
@@ -563,6 +575,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? path.posix.join(effectivePromptBundleAddDir, path.basename(promptBundle.instructionsFilePath))
       : promptBundle.instructionsFilePath
     : undefined;
+  // Trusted apex-gateway MCP injection (when APEX_GATEWAY_TOKEN is in the run env).
+  // Written into the prompt-bundle dir so it rides the existing skills asset sync to
+  // remote targets; consumed via --mcp-config below. The file holds only the literal
+  // `${APEX_GATEWAY_TOKEN}` (resolved at the CLI from the run env) — no secret on disk.
+  const gatewayMcpConfig = buildGatewayMcpConfig(effectiveEnv);
+  let gatewayMcpConfigArgPath: string | null = null;
+  if (gatewayMcpConfig) {
+    await fs.writeFile(
+      path.join(promptBundle.addDir, "apex-gateway.mcp.json"),
+      JSON.stringify(gatewayMcpConfig, null, 2),
+    );
+    gatewayMcpConfigArgPath = path.posix.join(effectivePromptBundleAddDir, "apex-gateway.mcp.json");
+    await onLog(
+      "stdout",
+      "[paperclip] Injected apex-gateway MCP config (--mcp-config, --strict-mcp-config).\n",
+    );
+  }
   const remoteClaudeRuntimeRoot = executionTargetIsRemote
     ? preparedExecutionTargetRuntime?.runtimeRootDir ??
       path.posix.join(effectiveExecutionCwd, ".paperclip-runtime", "claude")
@@ -757,6 +786,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--append-system-prompt-file", attemptInstructionsFilePath);
     }
     args.push("--add-dir", effectivePromptBundleAddDir);
+    // Inject ONLY the trusted apex-gateway config (--strict-mcp-config ignores any
+    // ambient repo/user MCP for reproducibility). Added only when the gateway is
+    // configured, so agents without the gateway env run exactly as before.
+    if (gatewayMcpConfigArgPath) {
+      args.push("--mcp-config", gatewayMcpConfigArgPath, "--strict-mcp-config");
+    }
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
   };

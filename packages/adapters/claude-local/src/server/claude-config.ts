@@ -48,10 +48,43 @@ function sanitizeRemoteClaudeSettings(raw: string): string {
   const settings = { ...(parsed as Record<string, unknown>) };
   settings.permissions = { defaultMode: "default" };
   delete settings.hooks;
+  // Strip UNTRUSTED repo/user mcpServers from the seeded settings — the trusted
+  // gateway MCP config is injected separately via --mcp-config (buildGatewayMcpConfig).
   delete settings.mcpServers;
   delete settings.permissionMode;
   delete settings.skipDangerousModePermissionPrompt;
   return JSON.stringify(settings);
+}
+
+/**
+ * Build the TRUSTED apex-gateway MCP config for a run, or null when the gateway
+ * isn't configured. Env-driven and refresh-tolerant: the run-env builder supplies
+ * a short-lived GATEWAY JWT in `APEX_GATEWAY_TOKEN` (the adapter does NOT mint or
+ * fetch it, and never caches it across runs — it's read fresh from the run env
+ * each execution). The `Authorization` header uses the literal `${APEX_GATEWAY_TOKEN}`
+ * so the Claude CLI resolves it from the run env at spawn time, and the token
+ * value is never written to disk. Client transport is streamable-HTTP (`type:"http"`)
+ * against the gateway's catch-all `/mcp` endpoint.
+ *
+ * NOTE: this injects the FULL gateway tool surface for any run whose env carries
+ * the token — per-project / per-agent tool SCOPING is a later pass.
+ */
+export function buildGatewayMcpConfig(
+  env: NodeJS.ProcessEnv = process.env,
+): { mcpServers: Record<string, unknown> } | null {
+  if (!nonEmpty(env.APEX_GATEWAY_TOKEN)) return null;
+  const explicitMcpUrl = nonEmpty(env.APEX_GATEWAY_MCP_URL);
+  const baseUrl = nonEmpty(env.APEX_GATEWAY_URL) ?? "http://localhost:4444";
+  const mcpUrl = explicitMcpUrl ?? `${baseUrl.replace(/\/+$/, "")}/mcp`;
+  return {
+    mcpServers: {
+      "apex-gateway": {
+        type: "http",
+        url: mcpUrl,
+        headers: { Authorization: "Bearer ${APEX_GATEWAY_TOKEN}" },
+      },
+    },
+  };
 }
 
 async function collectSeedFiles(sourceDir: string): Promise<SeedFile[]> {
