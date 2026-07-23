@@ -64,7 +64,12 @@ export interface CiRunsResponse {
 }
 
 export const apexObserveApi = {
-  agentRuns: () => api.get<AgentRunsResponse>("/observe/agent-runs"),
+  // Real observability, per company: pass companyId to scope agent runs to one
+  // company's fleet (omit for the global view).
+  agentRuns: (companyId?: string) =>
+    api.get<AgentRunsResponse>(
+      `/observe/agent-runs${companyId ? `?companyId=${encodeURIComponent(companyId)}` : ""}`,
+    ),
   apexRuns: () => api.get<ApexRunsResponse>("/observe/apex-runs"),
   ciRuns: (repo: string) =>
     api.get<CiRunsResponse>(

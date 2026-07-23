@@ -36,6 +36,7 @@ import { GoalDetail } from "./pages/GoalDetail";
 import { Approvals } from "./pages/Approvals";
 import { ApprovalDetail } from "./pages/ApprovalDetail";
 import { Costs } from "./pages/Costs";
+import { Observe } from "./pages/Observe";
 import { Activity } from "./pages/Activity";
 import { Inbox } from "./pages/Inbox";
 import { BoardChat } from "./pages/BoardChat";
@@ -86,6 +87,7 @@ function boardRoutes() {
       <Route index element={<Navigate to="dashboard" replace />} />
       <Route path="dashboard" element={<Dashboard />} />
       <Route path="dashboard/live" element={<DashboardLive />} />
+      <Route path="observe" element={<Observe />} />
       <Route path="timeline" element={<Timeline />} />
       <Route path="onboarding" element={<OnboardingRoutePage />} />
       <Route path="companies" element={<Companies />} />

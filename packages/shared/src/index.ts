@@ -1,3 +1,4 @@
+export * from "./observe.js";
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
   getAgentOrgChainHealth,

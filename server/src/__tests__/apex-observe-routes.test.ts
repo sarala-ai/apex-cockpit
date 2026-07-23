@@ -6,29 +6,38 @@ import { apexObserveRoutes } from "../routes/apex-observe.js";
 import { errorHandler } from "../middleware/index.js";
 
 /**
- * A minimal drizzle-shaped mock: `.select()` returns a thenable-ish builder whose
- * terminal (`.limit()` for the runs query, `.where()` for the issue-title query)
- * resolves to canned rows. First `.select()` call → the run rows; second → the
- * issue rows. The apex-observe agent-runs route only exercises those two shapes.
+ * A minimal drizzle-shaped mock. Every method is chainable (returns the builder)
+ * and the builder itself is thenable, so it resolves to canned rows however the
+ * chain terminates — the runs query ends on `.limit()` (with `.where()` in the
+ * middle for the company filter), the issue-title query ends on an awaited
+ * `.where()`. First `.select()` call → run rows; second → issue rows. `captured`
+ * records the runs query's `where` condition so tests can assert company scoping
+ * (undefined = global view; defined = scoped).
  */
-function makeDb(runRows: unknown[], issueRows: unknown[]): Db {
+function makeDb(runRows: unknown[], issueRows: unknown[]) {
   let call = 0;
-  const builder = (result: unknown[]) => {
+  const captured: { runsWhere?: unknown } = {};
+  const builder = (result: unknown[], isRuns: boolean) => {
     const b: Record<string, unknown> = {
       from: () => b,
       innerJoin: () => b,
       orderBy: () => b,
       limit: () => Promise.resolve(result),
-      where: () => Promise.resolve(result),
+      where: (cond: unknown) => {
+        if (isRuns) captured.runsWhere = cond;
+        return b;
+      },
+      then: (resolve: (v: unknown) => void) => resolve(result),
     };
     return b;
   };
-  return {
+  const db = {
     select: () => {
       call += 1;
-      return builder(call === 1 ? runRows : issueRows);
+      return builder(call === 1 ? runRows : issueRows, call === 1);
     },
   } as unknown as Db;
+  return { db, captured };
 }
 
 function appWith(db: Db) {
@@ -74,7 +83,7 @@ const RUN_NO_USAGE = {
 
 describe("GET /observe/agent-runs", () => {
   it("maps runs with agent, linked issue title, duration, stop reason, and usage", async () => {
-    const db = makeDb([RUN_WITH_USAGE, RUN_NO_USAGE], [{ id: "i1", title: "Add a unit test" }]);
+    const { db } = makeDb([RUN_WITH_USAGE, RUN_NO_USAGE], [{ id: "i1", title: "Add a unit test" }]);
     const res = await request(appWith(db)).get("/observe/agent-runs");
 
     expect(res.status).toBe(200);
@@ -112,9 +121,23 @@ describe("GET /observe/agent-runs", () => {
   });
 
   it("returns an empty list (no issue lookup) when there are no runs", async () => {
-    const res = await request(appWith(makeDb([], []))).get("/observe/agent-runs");
+    const res = await request(appWith(makeDb([], []).db)).get("/observe/agent-runs");
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ runs: [], source: "db" });
+  });
+
+  it("scopes runs to a company when companyId is provided, global when omitted", async () => {
+    // With ?companyId → a company filter is applied to the runs query.
+    const scoped = makeDb([RUN_WITH_USAGE], [{ id: "i1", title: "Add a unit test" }]);
+    const res = await request(appWith(scoped.db)).get("/observe/agent-runs?companyId=co-1");
+    expect(res.status).toBe(200);
+    expect(res.body.runs).toHaveLength(1);
+    expect(scoped.captured.runsWhere).toBeDefined();
+
+    // Without companyId → global view, no company filter.
+    const global = makeDb([RUN_WITH_USAGE], [{ id: "i1", title: "Add a unit test" }]);
+    await request(appWith(global.db)).get("/observe/agent-runs");
+    expect(global.captured.runsWhere).toBeUndefined();
   });
 
   it("is failure-isolated: a db error yields a note, not a 500", async () => {

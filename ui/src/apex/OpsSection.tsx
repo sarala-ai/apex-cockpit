@@ -10,6 +10,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Activity, Bot, GitBranch, RefreshCw } from "lucide-react";
 import { apexObserveApi } from "../api/apex-observe";
+import { useCompany } from "../context/CompanyContext";
 import { GcloudAuthBanner } from "./GcloudAuthBanner";
 import { StatusBadge } from "./status-badge";
 import { Badge } from "@/components/ui/badge";
@@ -75,11 +76,12 @@ function formatTokens(n: number | null): string | null {
   return `${(n / 1000).toFixed(n < 10000 ? 1 : 0)}k`;
 }
 
-function AgentRunsCard() {
+function AgentRunsCard({ companyId }: { companyId: string | null }) {
   const query = useQuery({
-    queryKey: ["apex-observe", "agent-runs"],
-    queryFn: () => apexObserveApi.agentRuns(),
+    queryKey: ["apex-observe", "agent-runs", companyId],
+    queryFn: () => apexObserveApi.agentRuns(companyId ?? undefined),
     refetchInterval: 15_000,
+    enabled: !!companyId,
   });
   const runs = query.data?.runs ?? [];
   return (
@@ -89,7 +91,9 @@ function AgentRunsCard() {
       onReload={() => void query.refetch()}
       loading={query.isFetching}
     >
-      {runs.length === 0 ? (
+      {!companyId ? (
+        <Empty note="Select a company to see its agent runs." />
+      ) : runs.length === 0 ? (
         <Empty note={query.data?.note ?? "No agent runs yet — assign an issue to an agent and wake it."} />
       ) : (
         <ul className="space-y-1.5">
@@ -214,15 +218,16 @@ function CiRunsCard() {
 }
 
 export function OpsSection() {
+  const { selectedCompanyId } = useCompany();
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
         Run status — embedded agents working issues, plus APEX workflow instances and CI.
-        Agent runs come from the cockpit; APEX/CI read your local <code>apex</code> /{" "}
-        <code>gh</code> auth.
+        Agent runs are scoped to the selected company; APEX/CI read your local{" "}
+        <code>apex</code> / <code>gh</code> auth.
       </p>
       <GcloudAuthBanner />
-      <AgentRunsCard />
+      <AgentRunsCard companyId={selectedCompanyId ?? null} />
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <ApexRunsCard />
         <CiRunsCard />

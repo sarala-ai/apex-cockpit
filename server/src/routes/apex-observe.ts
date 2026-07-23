@@ -20,6 +20,8 @@ import { Router } from "express";
 import { desc, eq, inArray } from "drizzle-orm";
 import { type Db, heartbeatRuns, agents, issues } from "@paperclipai/db";
 import { getApexRuns, getCiRuns } from "../apex/observe.js";
+import { HeartbeatObserveStore } from "../observe/heartbeat-store.js";
+import { observeInputs } from "../observe/tools.js";
 import { assertBoardOrAgent } from "./authz.js";
 
 function numOrNull(v: unknown): number | null {
@@ -28,6 +30,77 @@ function numOrNull(v: unknown): number | null {
 
 export function apexObserveRoutes(db: Db) {
   const router = Router();
+
+  // Contract-shaped observe surface, backed by an ObserveStore (heartbeat plane
+  // now; the Cloud Trace plane joins behind the SAME interface). These routes are
+  // THIN passthroughs — the logic lives in the store + observe tools, so the same
+  // capability is reusable by the observe MCP server + agents, not welded to HTTP.
+  const store = new HeartbeatObserveStore(db);
+
+  router.get("/observe/fleet", async (req, res) => {
+    assertBoardOrAgent(req);
+    try {
+      res.json(await store.fleet(observeInputs.fleet.parse(req.query)));
+    } catch (e) {
+      console.error("[observe] fleet", e);
+      res.json([]);
+    }
+  });
+
+  router.get("/observe/runs", async (req, res) => {
+    assertBoardOrAgent(req);
+    try {
+      res.json(await store.runs(observeInputs.runs.parse(req.query)));
+    } catch (e) {
+      console.error("[observe] runs", e);
+      res.json([]);
+    }
+  });
+
+  router.get("/observe/health", async (req, res) => {
+    assertBoardOrAgent(req);
+    try {
+      res.json(await store.health(observeInputs.health.parse(req.query)));
+    } catch (e) {
+      console.error("[observe] health", e);
+      res.json(null);
+    }
+  });
+
+  router.get("/observe/run-detail/:runId", async (req, res) => {
+    assertBoardOrAgent(req);
+    try {
+      const detail = await store.runDetail({ runId: req.params.runId });
+      if (!detail) {
+        res.status(404).json({ error: "run not found" });
+        return;
+      }
+      res.json(detail);
+    } catch (e) {
+      console.error("[observe] run-detail", e);
+      res.status(500).json({ error: "failed to read run detail" });
+    }
+  });
+
+  router.get("/observe/evals", async (req, res) => {
+    assertBoardOrAgent(req);
+    try {
+      res.json(await store.evals(observeInputs.evals.parse(req.query)));
+    } catch (e) {
+      console.error("[observe] evals", e);
+      res.json([]);
+    }
+  });
+
+  router.get("/observe/regressions", async (req, res) => {
+    assertBoardOrAgent(req);
+    try {
+      res.json(await store.regressions(observeInputs.regressions.parse(req.query)));
+    } catch (e) {
+      console.error("[observe] regressions", e);
+      res.json([]);
+    }
+  });
 
   // GET /observe/apex-runs — recent APEX workflow instances (apex CLI, else
   // ~/.apex/instances.json fallback). Never throws.
@@ -55,14 +128,19 @@ export function apexObserveRoutes(db: Db) {
     );
   });
 
-  // GET /observe/agent-runs — recent embedded-agent runs (heartbeat_runs), the
-  // agent-work side of Observe. DB-backed, read-only, failure-isolated: any error
-  // returns `{ runs: [], note }` so the card renders guidance, never a 500.
-  // `usage` is surfaced from the run's `usageJson` when present; it's null for
-  // runs whose adapter didn't report token usage (an upstream adapter gap — the
-  // finalization already persists usage when the adapter returns it).
+  // GET /observe/agent-runs?companyId=… — recent embedded-agent runs
+  // (heartbeat_runs), the agent-work side of Observe. This is REAL observability
+  // (agent executions), not resource visibility — so it is scoped per company:
+  // pass `companyId` to see one company's fleet (uses the
+  // heartbeat_runs_company_agent_started index). Omitting it returns the global
+  // view (back-compat). DB-backed, read-only, failure-isolated: any error returns
+  // `{ runs: [], note }` so the card renders guidance, never a 500. `usage` is
+  // surfaced from the run's `usageJson` when present; it's null for runs whose
+  // adapter didn't report token usage (an upstream adapter gap — the finalization
+  // already persists usage when the adapter returns it).
   router.get("/observe/agent-runs", async (req, res) => {
     assertBoardOrAgent(req);
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId : null;
     try {
       const rows = await db
         .select({
@@ -78,6 +156,7 @@ export function apexObserveRoutes(db: Db) {
         })
         .from(heartbeatRuns)
         .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+        .where(companyId ? eq(heartbeatRuns.companyId, companyId) : undefined)
         .orderBy(desc(heartbeatRuns.createdAt))
         .limit(25);
 

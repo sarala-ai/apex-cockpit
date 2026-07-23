@@ -234,6 +234,24 @@ async function getIssueWorkspaceRuntime(client: PaperclipApiClient, issueId: str
   };
 }
 
+// Observe (read-only) tool inputs — the scope maps to the /observe/* query params.
+const observeScope = {
+  companyId: companyIdOptional,
+  projectId: z.string().optional().nullable(),
+  agentId: agentIdOptional,
+  repo: z.string().optional().nullable(),
+  env: z.enum(["dev", "staging", "prod", "local"]).optional().nullable(),
+};
+function observeQs(input: Record<string, unknown>): string {
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(input)) {
+    if (v === undefined || v === null || k === "runId") continue;
+    params.set(k, String(v));
+  }
+  const qs = params.toString();
+  return qs ? `?${qs}` : "";
+}
+
 export function createToolDefinitions(client: PaperclipApiClient): ToolDefinition[] {
   return [
     makeTool(
@@ -629,6 +647,45 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
           body: parseOptionalJson(jsonBody),
         });
       },
+    ),
+    // ── Observe (READ-ONLY) — thin wrappers over /observe/*. The observe →
+    //    diagnose → file-ticket loop uses these to sense, then a SEPARATE write
+    //    tool (paperclipCreateIssue) to act. Sensing and acting stay split.
+    makeTool(
+      "observeFleet",
+      "Observe (read-only): list a company's agents / MCP servers / workflows with health, last run, and 24h success rate.",
+      z.object({ ...observeScope }),
+      async (input) => client.requestJson("GET", `/observe/fleet${observeQs(input)}`),
+    ),
+    makeTool(
+      "observeRuns",
+      "Observe (read-only): recent agent/workflow runs in scope, with status, duration, tokens, and cost.",
+      z.object({ ...observeScope, status: z.string().optional().nullable(), limit: z.number().int().min(1).max(200).optional() }),
+      async (input) => client.requestJson("GET", `/observe/runs${observeQs(input)}`),
+    ),
+    makeTool(
+      "observeRunDetail",
+      "Observe (read-only): full trace for one run — spans, tool calls, LLM calls, evals — to debug why it did what it did.",
+      z.object({ runId: z.string().min(1) }),
+      async ({ runId }) => client.requestJson("GET", `/observe/run-detail/${encodeURIComponent(runId)}`),
+    ),
+    makeTool(
+      "observeHealth",
+      "Observe (read-only): aggregate health for a scope over a window — success rate, avg duration, cost, eval pass rate.",
+      z.object({ ...observeScope, windowHours: z.number().int().min(1).max(720).optional() }),
+      async (input) => client.requestJson("GET", `/observe/health${observeQs(input)}`),
+    ),
+    makeTool(
+      "observeEvals",
+      "Observe (read-only): recent evaluation verdicts (pass/warn/fail + score + reason) in scope.",
+      z.object({ ...observeScope, verdict: z.enum(["pass", "warn", "fail"]).optional().nullable(), limit: z.number().int().min(1).max(200).optional() }),
+      async (input) => client.requestJson("GET", `/observe/evals${observeQs(input)}`),
+    ),
+    makeTool(
+      "observeRegressions",
+      "Observe (read-only): what got worse vs the prior window — success rate, eval score, latency, cost. Feeds the improvement loop.",
+      z.object({ ...observeScope, windowHours: z.number().int().min(1).max(720).optional() }),
+      async (input) => client.requestJson("GET", `/observe/regressions${observeQs(input)}`),
     ),
   ];
 }
