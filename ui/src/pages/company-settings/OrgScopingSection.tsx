@@ -210,18 +210,30 @@ function ScopeBindingEditor({
         </div>
       </div>
 
-      <div className="flex flex-wrap gap-1.5">
-        {[...selProjects].map((p) => (
-          <StatusBadge key={p} variant="info">
-            {p}
-          </StatusBadge>
-        ))}
-        {[...selRepos].map((r) => (
-          <StatusBadge key={r} variant="default">
-            {r.split("/").pop()}
-          </StatusBadge>
-        ))}
-      </div>
+      {(selProjects.size > 0 || selRepos.size > 0) && (
+        <div className="flex flex-col gap-1 pt-0.5 text-xs" data-testid="apex-scope-selected">
+          {selProjects.size > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-muted-foreground">Selected projects:</span>
+              {[...selProjects].map((p) => (
+                <StatusBadge key={p} variant="info">
+                  {p}
+                </StatusBadge>
+              ))}
+            </div>
+          )}
+          {selRepos.size > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-muted-foreground">Selected repos:</span>
+              {[...selRepos].map((r) => (
+                <StatusBadge key={r} variant="default">
+                  {r.split("/").pop()}
+                </StatusBadge>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {dirty && (
         <div className="flex items-center gap-2">
