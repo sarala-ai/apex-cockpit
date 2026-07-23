@@ -21,6 +21,8 @@ import { desc, eq, inArray } from "drizzle-orm";
 import { type Db, heartbeatRuns, agents, issues } from "@paperclipai/db";
 import { getApexRuns, getCiRuns } from "../apex/observe.js";
 import { HeartbeatObserveStore } from "../observe/heartbeat-store.js";
+import { CloudTraceObserveStore } from "../observe/cloud-trace-store.js";
+import { CompositeObserveStore } from "../observe/composite-store.js";
 import { observeInputs } from "../observe/tools.js";
 import { assertBoardOrAgent } from "./authz.js";
 
@@ -31,11 +33,16 @@ function numOrNull(v: unknown): number | null {
 export function apexObserveRoutes(db: Db) {
   const router = Router();
 
-  // Contract-shaped observe surface, backed by an ObserveStore (heartbeat plane
-  // now; the Cloud Trace plane joins behind the SAME interface). These routes are
-  // THIN passthroughs — the logic lives in the store + observe tools, so the same
-  // capability is reusable by the observe MCP server + agents, not welded to HTTP.
-  const store = new HeartbeatObserveStore(db);
+  // Contract-shaped observe surface, backed by a composite ObserveStore: the
+  // coding-agent plane (heartbeat_runs) ⊕ the product-agent plane (Cloud Run via
+  // apex gcp_observability), behind the SAME interface. Thin passthrough routes —
+  // logic lives in the stores + observe tools, reusable by the observe MCP server
+  // + agents. The product plane is optional: if apex isn't installed it's silently
+  // empty and the coding plane still works.
+  const store = new CompositeObserveStore([
+    new HeartbeatObserveStore(db),
+    new CloudTraceObserveStore(db),
+  ]);
 
   router.get("/observe/fleet", async (req, res) => {
     assertBoardOrAgent(req);
