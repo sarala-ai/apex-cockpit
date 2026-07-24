@@ -21,8 +21,11 @@ import {
 export { buildResourceAttributes, mergeResourceAttributes, otelEnv, SPINE_ATTRIBUTE_KEYS };
 export type { RunSpine };
 
-// ── Drift guard: the helper's keys MUST equal contract.ts `Spine`, exactly. ──
+// ── Drift guard: the helper's keys MUST equal the AGENT-plane keys of `Spine`. ──
+// The user-plane `sessionId` (browser-owned; §XII: machine work never has a session)
+// is NOT an agent resource attribute, so it's excluded here — but every AGENT key
+// still has to match contract.ts exactly, or this fails typechecking.
 type AssertEqual<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
-// Both directions: same field set, same string-literal value per field.
-const _spineKeysMatchContract: AssertEqual<typeof SPINE_ATTRIBUTE_KEYS, typeof Spine> = true;
+type AgentSpine = Omit<typeof Spine, "sessionId">;
+const _spineKeysMatchContract: AssertEqual<typeof SPINE_ATTRIBUTE_KEYS, AgentSpine> = true;
 void _spineKeysMatchContract;
