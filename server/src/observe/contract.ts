@@ -35,6 +35,11 @@ export const Spine = {
   workflowInstance: "apex.workflow.instance",
   resourceId: "apex.resource.id", // deployed GCP resource this run touches
   env: "apex.env", // Env
+  // USER PLANE (browser-owned): the session a human is in. Set by FRONTENDS on
+  // their spans + propagated to the backend via W3C traceparent so a user action
+  // correlates to the run it triggers. OTel-standard `session.id` key (not apex.*).
+  // Carries STRUCTURE only (session id, interaction type, timings) — never payload/PII.
+  sessionId: "session.id",
 } as const;
 
 // ── Span kinds + their attribute vocabularies ────────────────────────────────
