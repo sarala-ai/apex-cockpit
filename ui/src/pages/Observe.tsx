@@ -4,12 +4,13 @@
 // not generated); the same data is available to agents via the observe MCP tools.
 
 import { useQuery } from "@tanstack/react-query";
-import { Activity, Bot, TrendingDown } from "lucide-react";
+import { Activity, Bot, ClipboardCheck, TrendingDown } from "lucide-react";
 import { observeApi } from "@/api/observe";
 import { useCompany } from "@/context/CompanyContext";
-import { StatusBadge } from "@/apex/status-badge";
+import { StatusBadge, type StatusVariant } from "@/apex/status-badge";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import type { FleetHealth } from "@paperclipai/shared";
+import type { EvalRecord, EvalVerdict, FleetHealth } from "@paperclipai/shared";
 
 function runStatusVariant(s: string) {
   const v = s.toLowerCase();
@@ -61,6 +62,68 @@ function relTime(iso: string | null): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
+// warn (amber) has no StatusBadge semantic variant (only success/danger/info) —
+// same amber convention as the regressions callout above; kept local rather
+// than added to StatusBadge since "warn" is eval-specific vocabulary.
+const VERDICT_BADGE: Record<EvalVerdict, StatusVariant | "warn"> = {
+  pass: "success",
+  warn: "warn",
+  fail: "danger",
+};
+const VERDICT_BAR: Record<EvalVerdict, string> = {
+  pass: "bg-emerald-500",
+  warn: "bg-amber-500",
+  fail: "bg-rose-500",
+};
+const VERDICT_LABEL: Record<EvalVerdict, string> = {
+  pass: "Pass",
+  warn: "Warn",
+  fail: "Fail",
+};
+
+function VerdictPill({ verdict }: { verdict: EvalVerdict | null }) {
+  if (verdict == null) return <StatusBadge variant="default">unknown</StatusBadge>;
+  if (verdict === "warn") {
+    return (
+      <Badge
+        variant="outline"
+        className="border-amber-500/30 bg-amber-500/10 text-amber-500 dark:text-amber-400"
+      >
+        {VERDICT_LABEL.warn}
+      </Badge>
+    );
+  }
+  return <StatusBadge variant={VERDICT_BADGE[verdict] as StatusVariant}>{VERDICT_LABEL[verdict]}</StatusBadge>;
+}
+
+function ScoreBar({ score, verdict }: { score: number | null; verdict: EvalVerdict | null }) {
+  if (score == null) return <span className="text-xs text-muted-foreground">—</span>;
+  const barColor = verdict ? VERDICT_BAR[verdict] : "bg-slate-400";
+  return (
+    <span className="flex items-center gap-1.5" title={`score ${score.toFixed(2)}`}>
+      <span className="h-1.5 w-12 overflow-hidden rounded-full bg-muted">
+        <span
+          className={`block h-full rounded-full ${barColor}`}
+          style={{ width: `${Math.round(Math.max(0, Math.min(1, score)) * 100)}%` }}
+        />
+      </span>
+      <span className="w-9 text-right text-xs tabular-nums text-muted-foreground">
+        {Math.round(score * 100)}%
+      </span>
+    </span>
+  );
+}
+
+function evalVerdictCounts(evals: EvalRecord[]) {
+  return evals.reduce(
+    (acc, e) => {
+      if (e.verdict) acc[e.verdict] += 1;
+      return acc;
+    },
+    { pass: 0, warn: 0, fail: 0 },
+  );
+}
+
 function StatCell({ label, value, tone }: { label: string; value: string; tone?: string }) {
   return (
     <div className="px-4 py-3">
@@ -98,6 +161,12 @@ export function Observe() {
     queryFn: () => observeApi.regressions(scope),
     enabled,
   });
+  const evals = useQuery({
+    queryKey: ["observe", "evals", selectedCompanyId],
+    queryFn: () => observeApi.evals({ ...scope, limit: 20 }),
+    enabled,
+    refetchInterval: 15_000,
+  });
 
   if (!selectedCompanyId) {
     return (
@@ -111,6 +180,8 @@ export function Observe() {
   const fleetRows = fleet.data ?? [];
   const runRows = runs.data ?? [];
   const regs = regressions.data ?? [];
+  const evalRows = evals.data ?? [];
+  const evalCounts = evalVerdictCounts(evalRows);
 
   return (
     <div className="space-y-4 p-4">
@@ -225,6 +296,74 @@ export function Observe() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Evals */}
+      <Card>
+        <CardHeader className="flex-row items-center gap-2 space-y-0">
+          <ClipboardCheck className="h-4 w-4 text-muted-foreground" />
+          <CardTitle className="text-base">Evals</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {evals.isLoading ? (
+            <p className="text-xs text-muted-foreground">Loading evals…</p>
+          ) : evals.isError ? (
+            <p className="text-xs text-rose-600 dark:text-rose-400">
+              Failed to load evals.
+            </p>
+          ) : evalRows.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No evals yet.</p>
+          ) : (
+            <div className="space-y-3">
+              {/* Summary strip */}
+              <div className="flex items-center gap-4 text-xs">
+                <span className="flex items-center gap-1.5">
+                  <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                  <span className="tabular-nums font-medium">{evalCounts.pass}</span>
+                  <span className="text-muted-foreground">pass</span>
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="h-2 w-2 rounded-full bg-amber-500" />
+                  <span className="tabular-nums font-medium">{evalCounts.warn}</span>
+                  <span className="text-muted-foreground">warn</span>
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="h-2 w-2 rounded-full bg-rose-500" />
+                  <span className="tabular-nums font-medium">{evalCounts.fail}</span>
+                  <span className="text-muted-foreground">fail</span>
+                </span>
+              </div>
+
+              <ul className="space-y-1.5">
+                {evalRows.map((e, i) => (
+                  <li
+                    key={`${e.runId ?? "no-run"}-${e.occurredAt ?? i}`}
+                    className="flex items-center justify-between gap-2 text-xs"
+                  >
+                    <span className="flex min-w-0 flex-1 items-center gap-2">
+                      <VerdictPill verdict={e.verdict} />
+                      <span className="min-w-0 truncate" title={e.validator ?? e.scenario ?? undefined}>
+                        <span className="font-medium">{e.validator ?? "evaluator"}</span>
+                        {e.scenario && (
+                          <span className="text-muted-foreground"> · {e.scenario}</span>
+                        )}
+                      </span>
+                    </span>
+                    <span className="flex shrink-0 items-center gap-3 text-muted-foreground">
+                      <ScoreBar score={e.score} verdict={e.verdict} />
+                      {e.runId && (
+                        <span className="font-mono tabular-nums" title={e.runId}>
+                          {e.runId.slice(0, 8)}
+                        </span>
+                      )}
+                      <span className="tabular-nums">{relTime(e.occurredAt)}</span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }
