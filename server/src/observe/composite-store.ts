@@ -11,6 +11,7 @@
 import type { z } from "zod";
 import type { ObserveStore } from "./tools.js";
 import type { observeInputs } from "./tools.js";
+import type { TraceEnricher } from "./apex-eval-client.js";
 import type {
   AgentRun,
   EvalRecord,
@@ -33,7 +34,10 @@ function startedMs(r: { startedAt: string | null }): number {
 }
 
 export class CompositeObserveStore implements ObserveStore {
-  constructor(private readonly stores: ObserveStore[]) {}
+  constructor(
+    private readonly stores: ObserveStore[],
+    private readonly enrichers: TraceEnricher[] = [],
+  ) {}
 
   async fleet(input: z.infer<typeof observeInputs.fleet>): Promise<FleetEntry[]> {
     const parts = await Promise.all(this.stores.map((s) => settle(s.fleet(input), [] as FleetEntry[])));
@@ -49,11 +53,30 @@ export class CompositeObserveStore implements ObserveStore {
   }
 
   async runDetail(input: z.infer<typeof observeInputs.runDetail>): Promise<RunDetail | null> {
+    let base: RunDetail | null = null;
     for (const s of this.stores) {
       const d = await settle(s.runDetail(input), null);
-      if (d) return d;
+      if (d) {
+        base = d;
+        break;
+      }
     }
-    return null;
+    if (!base) return null;
+
+    // The owning store gives us the run's metadata; the trace enrichers (e.g. the
+    // apex-eval read API) add the spans/toolCalls/evals that store may not carry.
+    // Same failure isolation as everywhere else: a down/slow enricher contributes
+    // nothing rather than failing the whole run detail.
+    const fragments = await Promise.all(
+      this.enrichers.map((e) => settle(e.getTrace(input.runId), { spans: [], toolCalls: [], evals: [] })),
+    );
+
+    return {
+      run: base.run,
+      spans: [...base.spans, ...fragments.flatMap((f) => f.spans)],
+      toolCalls: [...base.toolCalls, ...fragments.flatMap((f) => f.toolCalls)],
+      evals: [...base.evals, ...fragments.flatMap((f) => f.evals)],
+    };
   }
 
   async evals(input: z.infer<typeof observeInputs.evals>): Promise<EvalRecord[]> {

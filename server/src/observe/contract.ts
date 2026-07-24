@@ -46,6 +46,14 @@ export const SpanKind = {
   eval: "eval", // an evaluation verdict
 } as const;
 
+/**
+ * The attribute key that carries the domain SpanKind above (values from SpanKind).
+ * OTel's native span kind (CLIENT/SERVER/INTERNAL) is orthogonal — this is OUR
+ * category. Emitters set this on each span; the apex-eval OTLP receiver reads it to
+ * classify spans and derive tool_calls. Canonical here so emitter + receiver can't drift.
+ */
+export const SpanKindAttr = "apex.span.kind";
+
 /** agent.run root-span attributes (beyond the spine). */
 export const RunAttr = {
   status: "apex.run.status", // queued|running|succeeded|failed|cancelled

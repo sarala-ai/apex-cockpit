@@ -23,6 +23,7 @@ import { getApexRuns, getCiRuns } from "../apex/observe.js";
 import { HeartbeatObserveStore } from "../observe/heartbeat-store.js";
 import { CloudTraceObserveStore } from "../observe/cloud-trace-store.js";
 import { CompositeObserveStore } from "../observe/composite-store.js";
+import { ApexEvalTraceClient } from "../observe/apex-eval-client.js";
 import { observeInputs } from "../observe/tools.js";
 import { assertBoardOrAgent } from "./authz.js";
 
@@ -39,10 +40,10 @@ export function apexObserveRoutes(db: Db) {
   // logic lives in the stores + observe tools, reusable by the observe MCP server
   // + agents. The product plane is optional: if apex isn't installed it's silently
   // empty and the coding plane still works.
-  const store = new CompositeObserveStore([
-    new HeartbeatObserveStore(db),
-    new CloudTraceObserveStore(db),
-  ]);
+  const store = new CompositeObserveStore(
+    [new HeartbeatObserveStore(db), new CloudTraceObserveStore(db)],
+    [new ApexEvalTraceClient()],
+  );
 
   router.get("/observe/fleet", async (req, res) => {
     assertBoardOrAgent(req);

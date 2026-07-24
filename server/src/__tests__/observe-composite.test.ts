@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { Db } from "@paperclipai/db";
-import type { FleetEntry, HealthSummary } from "@paperclipai/shared";
+import type { AgentRun, FleetEntry, HealthSummary, RunDetail } from "@paperclipai/shared";
 import { CompositeObserveStore } from "../observe/composite-store.js";
 import { CloudTraceObserveStore } from "../observe/cloud-trace-store.js";
 import { ApexUnavailableError, type ApexInvoker } from "../apex/invoke.js";
 import type { ObserveStore } from "../observe/tools.js";
+import type { TraceEnricher } from "../observe/apex-eval-client.js";
 
 function stubStore(partial: Partial<ObserveStore>): ObserveStore {
   const empty: ObserveStore = {
@@ -87,6 +88,84 @@ describe("CompositeObserveStore", () => {
     const fleet = await c.fleet({});
     expect(fleet).toHaveLength(1);
     expect(fleet[0].source).toBe("gcp");
+  });
+
+  function baseRun(): AgentRun {
+    return {
+      runId: "run-1",
+      status: "succeeded",
+      startedAt: null,
+      finishedAt: null,
+      durationMs: null,
+      stopReason: null,
+      usage: null,
+    };
+  }
+
+  it("runDetail merges an enricher's spans/toolCalls/evals onto the base run", async () => {
+    const owner = stubStore({
+      runDetail: async (): Promise<RunDetail> => ({
+        run: baseRun(),
+        spans: [],
+        toolCalls: [],
+        evals: [],
+      }),
+    });
+    const enricher: TraceEnricher = {
+      getTrace: async () => ({
+        spans: [{ kind: "tool.call", name: "read_file", startedAt: null, durationMs: 5, attributes: {} }],
+        toolCalls: [
+          { runId: "run-1", name: "read_file", server: "fs", viaGateway: true, success: true, durationMs: 5, startedAt: null },
+        ],
+        evals: [
+          {
+            runId: "run-1",
+            scenario: "smoke",
+            validator: "schema",
+            verdict: "pass",
+            score: 1,
+            reason: null,
+            occurredAt: null,
+          },
+        ],
+      }),
+    };
+
+    const c = new CompositeObserveStore([owner], [enricher]);
+    const detail = await c.runDetail({ runId: "run-1" });
+
+    expect(detail).not.toBeNull();
+    expect(detail?.run).toEqual(baseRun());
+    expect(detail?.spans).toHaveLength(1);
+    expect(detail?.spans[0].name).toBe("read_file");
+    expect(detail?.toolCalls).toHaveLength(1);
+    expect(detail?.evals).toHaveLength(1);
+    expect(detail?.evals[0].verdict).toBe("pass");
+  });
+
+  it("runDetail is not broken by an enricher that throws — base run still returned", async () => {
+    const owner = stubStore({
+      runDetail: async (): Promise<RunDetail> => ({
+        run: baseRun(),
+        spans: [],
+        toolCalls: [],
+        evals: [],
+      }),
+    });
+    const brokenEnricher: TraceEnricher = {
+      getTrace: async () => {
+        throw new Error("apex-eval unreachable");
+      },
+    };
+
+    const c = new CompositeObserveStore([owner], [brokenEnricher]);
+    const detail = await c.runDetail({ runId: "run-1" });
+
+    expect(detail).not.toBeNull();
+    expect(detail?.run).toEqual(baseRun());
+    expect(detail?.spans).toEqual([]);
+    expect(detail?.toolCalls).toEqual([]);
+    expect(detail?.evals).toEqual([]);
   });
 });
 
