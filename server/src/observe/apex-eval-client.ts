@@ -28,7 +28,7 @@ const TraceResponseSchema = z.object({
 });
 
 export class ApexEvalTraceClient implements TraceEnricher {
-  constructor(private readonly baseUrl: string = process.env.APEX_EVAL_URL ?? "http://localhost:4000") {}
+  constructor(private readonly baseUrl: string = process.env.APEX_EVAL_URL ?? "http://localhost:8000") {}
 
   async getTrace(runId: string): Promise<{ spans: TraceSpan[]; toolCalls: ToolCall[]; evals: EvalRecord[] }> {
     try {

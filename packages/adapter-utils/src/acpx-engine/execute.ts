@@ -40,6 +40,7 @@ import {
   type PaperclipSkillEntry,
 } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
+import { otelEnv } from "@paperclipai/adapter-utils/observe-spine-env";
 import {
   createAcpRuntime,
   createAgentRegistry,
@@ -997,6 +998,30 @@ async function buildRuntime(input: {
     if (typeof value === "string") env[key] = value;
   }
   if (!hasExplicitApiKey && authToken) env.PAPERCLIP_API_KEY = authToken;
+  // Close the observability loop (EMITTER side): when an OTLP endpoint is
+  // configured (APEX_OTLP_ENDPOINT), stamp the spawned coding agent's env with
+  // the OTel exporter endpoint + our correlation spine as resource attributes so
+  // the agent's telemetry correlates back to this heartbeat run. GATED: when
+  // APEX_OTLP_ENDPOINT is unset, otelEnv() returns {} and nothing changes.
+  const otelVars = otelEnv(
+    {
+      companyId: agent.companyId,
+      agentId: agent.id,
+      agentName: agent.name,
+      agentKind: agent.adapterType,
+      runId,
+      repo: workspaceRepoUrl,
+      issueId: typeof context.issueId === "string" ? context.issueId : null,
+      projectId: typeof context.projectId === "string" ? context.projectId : null,
+      orgId: typeof context.orgId === "string" ? context.orgId : null,
+      env: typeof context.env === "string" ? context.env : null,
+    },
+    process.env.APEX_OTLP_ENDPOINT,
+    env.OTEL_RESOURCE_ATTRIBUTES,
+  );
+  for (const [key, value] of Object.entries(otelVars)) {
+    env[key] = value;
+  }
   // For the claude agent, set model via ANTHROPIC_MODEL at startup rather than
   // via session/set_config_option — the ACP server's set_config_option handler
   // validates the value against its internal available-models list and rejects
