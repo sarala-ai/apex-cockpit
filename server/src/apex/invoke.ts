@@ -16,6 +16,8 @@
  *   - MCP mode:  an MCP tool result object `{ content: [{ type:'text', text:'<json>' }] }`.
  * `readApexResult` accepts either and normalizes to a plain object before validating.
  */
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { z } from "zod";
 import { run } from "./exec.js";
 
@@ -99,6 +101,10 @@ export class CliApexInvoker implements ApexInvoker {
   constructor(
     private readonly bin: string = process.env.APEX_BIN ?? "apex",
     private readonly timeoutMs: number = 20_000,
+    // Shell apex from a dedicated home launch folder whose .apex/settings.yaml
+    // enables the product-plane servers (e.g. observability) — so enablement lives
+    // in home, not in any repo's config. Override with APEX_LAUNCH_DIR.
+    private readonly cwd: string = process.env.APEX_LAUNCH_DIR ?? join(homedir(), ".apex-cockpit"),
   ) {}
 
   async invoke<T>(
@@ -113,7 +119,7 @@ export class CliApexInvoker implements ApexInvoker {
       flags.push(`--${toDash(k)}`, String(v));
     }
     const args = ["--output", "json", "run", server, toDash(tool), ...flags];
-    const res = await run(this.bin, args, this.timeoutMs);
+    const res = await run(this.bin, args, this.timeoutMs, this.cwd);
     if (res.status === "missing") {
       throw new ApexUnavailableError(`apex CLI not found (bin: ${this.bin})`);
     }

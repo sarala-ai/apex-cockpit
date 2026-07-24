@@ -15,12 +15,13 @@ export function run(
   bin: string,
   args: string[],
   timeoutMs = 8000,
+  cwd?: string,
 ): Promise<ExecResult> {
   return new Promise((resolve) => {
     execFile(
       bin,
       args,
-      { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 },
+      { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, cwd },
       (error, stdout, stderr) => {
         if (error) {
           if (isMissingBinary(error)) return resolve({ status: 'missing' });
