@@ -123,6 +123,9 @@ export {
   FleetHealthSchema,
   FleetEntrySchema,
   RegressionSchema,
+  GcpServiceHealthSchema,
+  ServiceHealthConditionSchema,
+  ServiceLogEntrySchema,
 } from "@paperclipai/shared";
 export type {
   AgentKind,
@@ -139,4 +142,7 @@ export type {
   FleetHealth,
   FleetEntry,
   Regression,
+  GcpServiceHealth,
+  ServiceHealthCondition,
+  ServiceLogEntry,
 } from "@paperclipai/shared";

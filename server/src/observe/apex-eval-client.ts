@@ -27,8 +27,51 @@ const TraceResponseSchema = z.object({
   toolCalls: z.array(ToolCallSchema),
 });
 
-export class ApexEvalTraceClient implements TraceEnricher {
+/**
+ * AgentRun-ish rows as returned by apex-eval's `GET /runs?companyId=&agentName=`
+ * — the distinct app runs (from spans) for a product agent, most-recent first.
+ * This is a subset of AgentRunSchema (@paperclipai/shared): the fields the runs
+ * listing carries. Validated here so a shape drift is caught at the boundary.
+ */
+export const EvalAgentRunSchema = z.object({
+  runId: z.string(),
+  agentName: z.string().nullable(),
+  status: z.string().nullable(),
+  startedAt: z.string().nullable(),
+  durationMs: z.number().nullable(),
+});
+export type EvalAgentRun = z.infer<typeof EvalAgentRunSchema>;
+
+/** Reads a product agent's app runs (application traces) from apex-eval. Used to
+ *  correlate a Cloud Run service with the runs its agent actually emitted. */
+export interface AgentRunReader {
+  getRuns(companyId: string | undefined, agentName: string, limit?: number): Promise<EvalAgentRun[]>;
+}
+
+export class ApexEvalTraceClient implements TraceEnricher, AgentRunReader {
   constructor(private readonly baseUrl: string = process.env.APEX_EVAL_URL ?? "http://localhost:8000") {}
+
+  async getRuns(
+    companyId: string | undefined,
+    agentName: string,
+    limit = 50,
+  ): Promise<EvalAgentRun[]> {
+    try {
+      const qs = new URLSearchParams({ agentName, limit: String(limit) });
+      if (companyId) qs.set("companyId", companyId);
+      const res = await fetch(`${this.baseUrl}/runs?${qs.toString()}`);
+      if (!res.ok) {
+        console.warn(
+          `[observe] apex-eval runs fetch failed for agent ${agentName}: ${res.status}`,
+        );
+        return [];
+      }
+      return z.array(EvalAgentRunSchema).parse(await res.json());
+    } catch (e) {
+      console.warn(`[observe] apex-eval runs fetch failed for agent ${agentName}:`, e);
+      return [];
+    }
+  }
 
   async getTrace(runId: string): Promise<{ spans: TraceSpan[]; toolCalls: ToolCall[]; evals: EvalRecord[] }> {
     try {

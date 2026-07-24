@@ -118,6 +118,37 @@ export const FleetEntrySchema = ScopeSchema.extend({
 });
 export type FleetEntry = z.infer<typeof FleetEntrySchema>;
 
+// ── Product-agent GCP resource plane (Cloud Run) ─────────────────────────────
+// A deployed product agent IS a Cloud Run service. These shapes carry the live
+// GCP resource health + logs for one service, mapped from the APEX observability
+// resource server (get-service-health / read-service-logs). Distinct from the
+// run/trace shapes above (those are app-level agent executions).
+
+export const ServiceHealthConditionSchema = z.object({
+  type: z.string().nullable(),
+  status: z.string().nullable(),
+  message: z.string().nullable(),
+});
+export type ServiceHealthCondition = z.infer<typeof ServiceHealthConditionSchema>;
+
+export const GcpServiceHealthSchema = z.object({
+  service: z.string(),
+  health: z.string(),
+  ready: z.boolean(),
+  url: z.string().nullable(),
+  revision: z.string().nullable(),
+  conditions: z.array(ServiceHealthConditionSchema),
+});
+export type GcpServiceHealth = z.infer<typeof GcpServiceHealthSchema>;
+
+export const ServiceLogEntrySchema = z.object({
+  timestamp: z.string().nullable(),
+  severity: z.string().nullable(),
+  message: z.string().nullable(),
+  traceId: z.string().nullable().optional(),
+});
+export type ServiceLogEntry = z.infer<typeof ServiceLogEntrySchema>;
+
 export const RegressionSchema = ScopeSchema.extend({
   metric: z.enum(["success_rate", "eval_score", "latency", "cost"]),
   displayName: z.string(),

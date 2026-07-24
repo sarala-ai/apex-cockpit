@@ -153,3 +153,21 @@ describe("GET /observe/agent-runs", () => {
     expect(res.body.note).toContain("db exploded");
   });
 });
+
+describe("GET /observe/gcp-resource", () => {
+  it("400s when service is missing", async () => {
+    const res = await request(appWith(makeDb([], []).db)).get("/observe/gcp-resource");
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("service");
+  });
+
+  it("returns a unified {health, logs, runs} shape, failure-isolated to empties", async () => {
+    // No company binding (companyProjects → []) and no apex-eval reachable, so every
+    // slice degrades gracefully rather than 500-ing: health null, logs [], runs [].
+    const res = await request(appWith(makeDb([], []).db)).get(
+      "/observe/gcp-resource?service=orchestrator-dev",
+    );
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ health: null, logs: [], runs: [] });
+  });
+});

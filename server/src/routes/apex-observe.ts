@@ -40,10 +40,33 @@ export function apexObserveRoutes(db: Db) {
   // logic lives in the stores + observe tools, reusable by the observe MCP server
   // + agents. The product plane is optional: if apex isn't installed it's silently
   // empty and the coding plane still works.
+  const cloudStore = new CloudTraceObserveStore(db);
+  const evalClient = new ApexEvalTraceClient();
   const store = new CompositeObserveStore(
-    [new HeartbeatObserveStore(db), new CloudTraceObserveStore(db)],
-    [new ApexEvalTraceClient()],
+    [new HeartbeatObserveStore(db), cloudStore],
+    [evalClient],
   );
+
+  // GET /observe/gcp-resource?companyId=&service= — the unified product-agent view:
+  // a Cloud Run service's live GCP resource health + recent logs (from apex
+  // observability), correlated with the app runs its agent emitted (from apex-eval,
+  // keyed by agentName == service name). Every source is failure-isolated: apex CLI
+  // or apex-eval down → that slice degrades to empty/null, never a 500.
+  router.get("/observe/gcp-resource", async (req, res) => {
+    assertBoardOrAgent(req);
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId : undefined;
+    const service = typeof req.query.service === "string" ? req.query.service : "";
+    if (!service) {
+      res.status(400).json({ error: "service is required" });
+      return;
+    }
+    const [health, logs, runs] = await Promise.all([
+      cloudStore.serviceHealth(companyId, service).catch(() => null),
+      cloudStore.serviceLogs(companyId, service).catch(() => []),
+      evalClient.getRuns(companyId, service).catch(() => []),
+    ]);
+    res.json({ health, logs, runs });
+  });
 
   router.get("/observe/fleet", async (req, res) => {
     assertBoardOrAgent(req);

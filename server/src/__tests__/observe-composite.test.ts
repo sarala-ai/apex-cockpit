@@ -222,4 +222,84 @@ describe("CloudTraceObserveStore", () => {
     const store = new CloudTraceObserveStore(dbWithProjects([]), invoker);
     expect(await store.fleet({ companyId: "c1" })).toEqual([]);
   });
+
+  it("serviceHealth resolves region from the fleet listing then maps get_service_health", async () => {
+    const invoker: ApexInvoker = {
+      invoke: async (_server, tool) => {
+        if (tool === "list_agent_services") {
+          return {
+            status: "success",
+            services: [{ name: "orchestrator-dev", region: "asia-south1", url: "https://x", ready: true }],
+          } as never;
+        }
+        // get_service_health
+        return {
+          health: "ok",
+          ready: true,
+          url: "https://x",
+          latest_ready_revision: "orchestrator-dev-00007",
+          conditions: [{ type: "Ready", status: "True", message: null }],
+        } as never;
+      },
+    };
+    const store = new CloudTraceObserveStore(dbWithProjects(["finpilot-dev"]), invoker);
+    const health = await store.serviceHealth("c1", "orchestrator-dev");
+    expect(health).toMatchObject({
+      service: "orchestrator-dev",
+      health: "ok",
+      ready: true,
+      revision: "orchestrator-dev-00007",
+    });
+    expect(health?.conditions[0]).toEqual({ type: "Ready", status: "True", message: null });
+  });
+
+  it("serviceHealth returns null when the service isn't in any project (graceful)", async () => {
+    const invoker: ApexInvoker = {
+      invoke: async () => ({ status: "success", services: [] }) as never,
+    };
+    const store = new CloudTraceObserveStore(dbWithProjects(["p"]), invoker);
+    expect(await store.serviceHealth("c1", "missing")).toBeNull();
+  });
+
+  it("serviceLogs maps entries and normalizes trace id keys; failure → empty", async () => {
+    const invoker: ApexInvoker = {
+      invoke: async (_server, tool) => {
+        if (tool === "list_agent_services") {
+          return {
+            status: "success",
+            services: [{ name: "svc", region: "asia-south1", ready: true }],
+          } as never;
+        }
+        // read_service_logs
+        return {
+          status: "success",
+          entries: [
+            { timestamp: "2026-07-24T12:00:00Z", severity: "ERROR", message: "boom", trace_id: "t-1" },
+            { timestamp: "2026-07-24T12:00:01Z", severity: "INFO", message: "ok" },
+          ],
+        } as never;
+      },
+    };
+    const store = new CloudTraceObserveStore(dbWithProjects(["p"]), invoker);
+    const logs = await store.serviceLogs("c1", "svc");
+    expect(logs).toHaveLength(2);
+    expect(logs[0]).toEqual({
+      timestamp: "2026-07-24T12:00:00Z",
+      severity: "ERROR",
+      message: "boom",
+      traceId: "t-1",
+    });
+    expect(logs[1].traceId).toBeNull();
+  });
+
+  it("serviceHealth degrades to null when apex is unavailable", async () => {
+    const invoker: ApexInvoker = {
+      invoke: async () => {
+        throw new ApexUnavailableError("no apex");
+      },
+    };
+    const store = new CloudTraceObserveStore(dbWithProjects(["p"]), invoker);
+    expect(await store.serviceHealth("c1", "svc")).toBeNull();
+    expect(await store.serviceLogs("c1", "svc")).toEqual([]);
+  });
 });
