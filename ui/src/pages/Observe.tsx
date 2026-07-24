@@ -3,14 +3,15 @@
 // the semantic contract. Deterministic UI (this is the moat surface — hand-built,
 // not generated); the same data is available to agents via the observe MCP tools.
 
+import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Activity, Bot, ClipboardCheck, TrendingDown } from "lucide-react";
+import { Activity, Bot, ClipboardCheck, Server, TrendingDown } from "lucide-react";
 import { observeApi } from "@/api/observe";
 import { useCompany } from "@/context/CompanyContext";
 import { StatusBadge, type StatusVariant } from "@/apex/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import type { EvalRecord, EvalVerdict, FleetHealth } from "@paperclipai/shared";
+import type { EvalRecord, EvalVerdict, FleetEntry, FleetHealth } from "@paperclipai/shared";
 
 function runStatusVariant(s: string) {
   const v = s.toLowerCase();
@@ -124,6 +125,42 @@ function evalVerdictCounts(evals: EvalRecord[]) {
   );
 }
 
+// A product agent IS a Cloud Run service — fleet entries surfaced from the
+// GCP resource plane (server/src/observe/cloud-trace-store.ts `fleet()`),
+// distinguished from coding-plane agents by source + agentKind.
+function isProductService(f: FleetEntry): boolean {
+  return f.source === "gcp" || f.agentKind === "product";
+}
+
+// status === "True" is the Cloud Run resource-condition convention (Ready,
+// ContainerHealthy, etc.) — anything else (False/Unknown) is a warn state.
+function conditionVariant(status: string | null): StatusVariant | "warn" {
+  return status === "True" ? "success" : "warn";
+}
+
+// Cloud Logging severities → the same badge semantics used elsewhere on this
+// page (ERROR=danger, WARN/WARNING=amber warn, everything else=neutral info).
+function logSeverityVariant(severity: string | null): StatusVariant | "warn" {
+  const s = (severity ?? "").toUpperCase();
+  if (s === "ERROR" || s === "CRITICAL" || s === "ALERT" || s === "EMERGENCY") return "danger";
+  if (s === "WARN" || s === "WARNING") return "warn";
+  return "default";
+}
+
+function WarnableBadge({ variant, children }: { variant: StatusVariant | "warn"; children: ReactNode }) {
+  if (variant === "warn") {
+    return (
+      <Badge
+        variant="outline"
+        className="border-amber-500/30 bg-amber-500/10 text-amber-500 dark:text-amber-400"
+      >
+        {children}
+      </Badge>
+    );
+  }
+  return <StatusBadge variant={variant}>{children}</StatusBadge>;
+}
+
 function StatCell({ label, value, tone }: { label: string; value: string; tone?: string }) {
   return (
     <div className="px-4 py-3">
@@ -137,6 +174,11 @@ export function Observe() {
   const { selectedCompanyId } = useCompany();
   const scope = selectedCompanyId ? { companyId: selectedCompanyId } : undefined;
   const enabled = !!selectedCompanyId;
+
+  // Selected product agent (Cloud Run service) for the GCP Resource detail
+  // pane below the Fleet panel. Cleared implicitly on company switch since
+  // the fleet query key changes and the selection no longer resolves to a row.
+  const [selectedService, setSelectedService] = useState<string | null>(null);
 
   const health = useQuery({
     queryKey: ["observe", "health", selectedCompanyId],
@@ -165,6 +207,12 @@ export function Observe() {
     queryKey: ["observe", "evals", selectedCompanyId],
     queryFn: () => observeApi.evals({ ...scope, limit: 20 }),
     enabled,
+    refetchInterval: 15_000,
+  });
+  const gcpResource = useQuery({
+    queryKey: ["observe", "gcp-resource", selectedCompanyId, selectedService],
+    queryFn: () => observeApi.gcpResource({ ...scope, service: selectedService as string }),
+    enabled: enabled && !!selectedService,
     refetchInterval: 15_000,
   });
 
@@ -244,19 +292,45 @@ export function Observe() {
               </p>
             ) : (
               <ul className="space-y-1.5">
-                {fleetRows.map((f) => (
-                  <li key={f.agentId ?? f.displayName} className="flex items-center justify-between gap-2 text-xs">
-                    <span className="min-w-0 flex-1 truncate font-medium" title={f.displayName}>
-                      {f.displayName}
-                    </span>
-                    <span className="flex shrink-0 items-center gap-3 text-muted-foreground">
-                      <span className="tabular-nums" title="runs · 24h">{f.runs24h}</span>
-                      <span className="tabular-nums" title="success rate">{pct(f.successRate)}</span>
-                      <span className="tabular-nums">{relTime(f.lastRunAt)}</span>
-                      <HealthDot health={f.health} />
-                    </span>
-                  </li>
-                ))}
+                {fleetRows.map((f) => {
+                  const selectable = isProductService(f);
+                  const selected = selectable && selectedService === f.displayName;
+                  return (
+                    <li
+                      key={f.agentId ?? f.displayName}
+                      role={selectable ? "button" : undefined}
+                      tabIndex={selectable ? 0 : undefined}
+                      onClick={selectable ? () => setSelectedService(f.displayName) : undefined}
+                      onKeyDown={
+                        selectable
+                          ? (e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                setSelectedService(f.displayName);
+                              }
+                            }
+                          : undefined
+                      }
+                      className={`flex items-center justify-between gap-2 rounded-md px-1.5 py-0.5 text-xs ${
+                        selectable
+                          ? `cursor-pointer hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                              selected ? "bg-accent text-accent-foreground" : ""
+                            }`
+                          : ""
+                      }`}
+                    >
+                      <span className="min-w-0 flex-1 truncate font-medium" title={f.displayName}>
+                        {f.displayName}
+                      </span>
+                      <span className="flex shrink-0 items-center gap-3 text-muted-foreground">
+                        <span className="tabular-nums" title="runs · 24h">{f.runs24h}</span>
+                        <span className="tabular-nums" title="success rate">{pct(f.successRate)}</span>
+                        <span className="tabular-nums">{relTime(f.lastRunAt)}</span>
+                        <HealthDot health={f.health} />
+                      </span>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </CardContent>
@@ -296,6 +370,142 @@ export function Observe() {
           </CardContent>
         </Card>
       </div>
+
+      {/* GCP Resource detail — shown when a product agent (Cloud Run service) is
+          selected in Fleet. Unifies live resource health, recent logs, and the
+          app runs correlated to that service in one pane. */}
+      {selectedService && (
+        <Card>
+          <CardHeader className="flex-row items-center gap-2 space-y-0">
+            <Server className="h-4 w-4 text-muted-foreground" />
+            <CardTitle className="text-base">
+              GCP Resource — <span className="font-mono">{selectedService}</span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {gcpResource.isLoading ? (
+              <p className="text-xs text-muted-foreground">Loading resource…</p>
+            ) : gcpResource.isError ? (
+              <p className="text-xs text-rose-600 dark:text-rose-400">
+                Failed to load GCP resource detail.
+              </p>
+            ) : (
+              <>
+                {/* Resource */}
+                <div>
+                  <div className="mb-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                    Resource
+                  </div>
+                  {gcpResource.data?.health == null ? (
+                    <p className="text-xs text-muted-foreground">Resource health unavailable.</p>
+                  ) : (
+                    <div className="space-y-1.5 text-xs">
+                      <div className="flex flex-wrap items-center gap-3">
+                        <StatusBadge
+                          variant={gcpResource.data.health.health === "healthy" ? "success" : "danger"}
+                        >
+                          {gcpResource.data.health.health}
+                        </StatusBadge>
+                        <span className="text-muted-foreground">
+                          ready: <span className="font-medium text-foreground">{String(gcpResource.data.health.ready)}</span>
+                        </span>
+                        {gcpResource.data.health.revision && (
+                          <span className="font-mono text-muted-foreground" title={gcpResource.data.health.revision}>
+                            {gcpResource.data.health.revision}
+                          </span>
+                        )}
+                        {gcpResource.data.health.url && (
+                          <a
+                            href={gcpResource.data.health.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="truncate text-primary underline-offset-2 hover:underline"
+                          >
+                            {gcpResource.data.health.url}
+                          </a>
+                        )}
+                      </div>
+                      {gcpResource.data.health.conditions.length > 0 && (
+                        <div className="flex flex-wrap gap-x-4 gap-y-1">
+                          {gcpResource.data.health.conditions.map((c, i) => (
+                            <span key={i} className="flex items-center gap-1.5 text-muted-foreground">
+                              <span className="font-medium text-foreground">{c.type ?? "condition"}</span>
+                              <WarnableBadge variant={conditionVariant(c.status)}>
+                                {c.status ?? "unknown"}
+                              </WarnableBadge>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Logs */}
+                <div>
+                  <div className="mb-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                    Logs
+                  </div>
+                  {(gcpResource.data?.logs ?? []).length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No recent logs.</p>
+                  ) : (
+                    <ul className="space-y-1">
+                      {(gcpResource.data?.logs ?? []).slice(0, 20).map((l, i) => (
+                        <li key={i} className="flex items-center gap-2 text-xs">
+                          <WarnableBadge variant={logSeverityVariant(l.severity)}>
+                            {l.severity ?? "INFO"}
+                          </WarnableBadge>
+                          <span className="w-16 shrink-0 tabular-nums text-muted-foreground">
+                            {relTime(l.timestamp)}
+                          </span>
+                          <span className="min-w-0 flex-1 truncate" title={l.message ?? undefined}>
+                            {l.message ?? "—"}
+                          </span>
+                          {l.traceId && (
+                            <span
+                              className="shrink-0 font-mono text-[10px] text-muted-foreground"
+                              title={l.traceId}
+                            >
+                              {l.traceId.slice(0, 8)}
+                            </span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
+                {/* App runs (correlation) */}
+                <div>
+                  <div className="mb-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                    App runs
+                  </div>
+                  {(gcpResource.data?.runs ?? []).length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No correlated runs yet.</p>
+                  ) : (
+                    <ul className="space-y-1.5">
+                      {(gcpResource.data?.runs ?? []).slice(0, 15).map((r) => (
+                        <li key={r.runId} className="flex items-center justify-between gap-2 text-xs">
+                          <span className="min-w-0 flex-1 truncate font-mono" title={r.runId}>
+                            {r.runId.slice(0, 12)}
+                          </span>
+                          <span className="flex shrink-0 items-center gap-2 text-muted-foreground">
+                            <span className="tabular-nums">{relTime(r.startedAt)}</span>
+                            <span className="tabular-nums">{formatDuration(r.durationMs)}</span>
+                            <StatusBadge variant={runStatusVariant(r.status ?? "unknown")}>
+                              {r.status ?? "unknown"}
+                            </StatusBadge>
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Evals */}
       <Card>

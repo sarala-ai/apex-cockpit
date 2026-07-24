@@ -13,6 +13,7 @@ import type {
   RunDetail,
   EvalRecord,
   Regression,
+  GcpResourceResponse,
 } from "@paperclipai/shared";
 
 export interface ObserveScopeQuery {
@@ -27,7 +28,12 @@ export interface ObserveScopeQuery {
   windowHours?: number;
 }
 
-function qs(scope: ObserveScopeQuery = {}): string {
+export interface GcpResourceQuery {
+  companyId?: string;
+  service: string;
+}
+
+function qs<T extends object>(scope: T = {} as T): string {
   const params = new URLSearchParams();
   for (const [k, v] of Object.entries(scope)) {
     if (v === undefined || v === null) continue;
@@ -45,4 +51,6 @@ export const observeApi = {
   evals: (scope?: ObserveScopeQuery) => api.get<EvalRecord[]>(`/observe/evals${qs(scope)}`),
   regressions: (scope?: ObserveScopeQuery) =>
     api.get<Regression[]>(`/observe/regressions${qs(scope)}`),
+  gcpResource: (scope: GcpResourceQuery) =>
+    api.get<GcpResourceResponse>(`/observe/gcp-resource${qs(scope)}`),
 };

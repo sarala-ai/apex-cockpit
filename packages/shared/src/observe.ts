@@ -149,6 +149,30 @@ export const ServiceLogEntrySchema = z.object({
 });
 export type ServiceLogEntry = z.infer<typeof ServiceLogEntrySchema>;
 
+// The app-run correlation slice of GET /observe/gcp-resource — a product
+// agent's runs as emitted to apex-eval, keyed by agentName == service name.
+// Deliberately a narrower shape than AgentRun (no scope/usage fields): the
+// apex-eval /runs listing only carries these fields today.
+export const GcpResourceRunSchema = z.object({
+  runId: z.string(),
+  agentName: z.string().nullable(),
+  status: z.string().nullable(),
+  startedAt: z.string().nullable(),
+  durationMs: z.number().nullable(),
+});
+export type GcpResourceRun = z.infer<typeof GcpResourceRunSchema>;
+
+// GET /observe/gcp-resource?companyId=&service= response — the unified
+// product-agent pane: live GCP resource health, recent logs, and correlated
+// app runs. Every slice is independently nullable/empty (failure-isolated on
+// the server, never a 500), so the UI must render loading/empty per-slice.
+export const GcpResourceResponseSchema = z.object({
+  health: GcpServiceHealthSchema.nullable(),
+  logs: z.array(ServiceLogEntrySchema),
+  runs: z.array(GcpResourceRunSchema),
+});
+export type GcpResourceResponse = z.infer<typeof GcpResourceResponseSchema>;
+
 export const RegressionSchema = ScopeSchema.extend({
   metric: z.enum(["success_rate", "eval_score", "latency", "cost"]),
   displayName: z.string(),
