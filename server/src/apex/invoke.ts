@@ -124,9 +124,21 @@ export class CliApexInvoker implements ApexInvoker {
       throw new ApexUnavailableError(`apex CLI not found (bin: ${this.bin})`);
     }
     if (res.status === "failed") {
-      throw new ApexInvocationError(
-        `apex run ${server} ${tool} failed (code ${res.code}): ${res.stderr.slice(0, 500)}`,
-      );
+      // A non-zero exit does NOT mean the output is garbage: the CLI emits its
+      // structured error envelope ({status:"error", error, error_type:
+      // "auth_expired", ...}) on stdout and THEN exits 1 (verified live). That
+      // envelope carries the classified, actionable message ("Authentication
+      // expired. Run: gcloud auth login") — losing it to a generic
+      // stderr-slice error buries exactly what the user needs. Try the
+      // contract-validated parse first; only if stdout isn't a valid envelope
+      // fall through to the opaque failure.
+      try {
+        return readApexResult(res.stdout, schema);
+      } catch {
+        throw new ApexInvocationError(
+          `apex run ${server} ${tool} failed (code ${res.code}): ${res.stderr.slice(0, 500)}`,
+        );
+      }
     }
     return readApexResult(res.stdout, schema);
   }

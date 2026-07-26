@@ -4,7 +4,10 @@ import { isMissingBinary } from './errors.js';
 export type ExecResult =
   | { status: 'ok'; stdout: string }
   | { status: 'missing' }
-  | { status: 'failed'; code: number | null; stderr: string };
+  // stdout is kept on failure too: the apex CLI writes its structured error
+  // envelope (classified error_type + actionable message) to stdout and THEN
+  // exits non-zero — discarding stdout here would bury that classification.
+  | { status: 'failed'; code: number | null; stderr: string; stdout: string };
 
 /**
  * Run a binary with args, capturing stdout. Never throws — a missing binary
@@ -29,7 +32,7 @@ export function run(
             typeof (error as { code?: unknown }).code === 'number'
               ? (error as { code: number }).code
               : null;
-          return resolve({ status: 'failed', code, stderr: stderr || String(error) });
+          return resolve({ status: 'failed', code, stderr: stderr || String(error), stdout });
         }
         resolve({ status: 'ok', stdout });
       },
