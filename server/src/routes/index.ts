@@ -28,4 +28,5 @@ export { apexSetupRoutes } from "./apex-setup.js";
 export { apexScopingRoutes } from "./apex-scoping.js";
 export { apexSetupStateRoutes } from "./apex-setup-state.js";
 export { apexObserveRoutes } from "./apex-observe.js";
+export { apexGatewayObserveRoutes } from "./apex-gateway-observe.js";
 export { apexPipelineRoutes } from "./apex-pipeline.js";

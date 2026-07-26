@@ -173,6 +173,54 @@ export const GcpResourceResponseSchema = z.object({
 });
 export type GcpResourceResponse = z.infer<typeof GcpResourceResponseSchema>;
 
+// ── GCP resource inventory plane (all resource types, not just Cloud Run) ────
+// Backed by APEX's `gcp_inventory` resource server (Cloud Asset Inventory +
+// per-service gcloud queries). Distinct from the fleet/health planes above:
+// this is raw project-scoped inventory, not agent-run observability, and every
+// field is kept permissive (nullable/optional) because gcloud's output shape
+// varies across resource/asset types.
+
+export const InventoryResourceSchema = z.object({
+  name: z.string().nullable().optional(),
+  displayName: z.string().nullable().optional(),
+  state: z.string().nullable().optional(),
+  location: z.string().nullable().optional(),
+  createTime: z.string().nullable().optional(),
+  updateTime: z.string().nullable().optional(),
+});
+export type InventoryResource = z.infer<typeof InventoryResourceSchema>;
+
+export const ProjectInventorySchema = z.object({
+  projectId: z.string(),
+  totalResources: z.number().nullable(),
+  resourceTypes: z.number().nullable(),
+  resourcesByType: z.record(z.string(), z.array(InventoryResourceSchema)),
+  error: z.string().nullable().optional(),
+});
+export type ProjectInventory = z.infer<typeof ProjectInventorySchema>;
+
+export const ProjectServicesSchema = z.object({
+  projectId: z.string(),
+  cloudRun: z.array(z.record(z.string(), z.unknown())).optional(),
+  enabledApis: z.array(z.string()).optional(),
+  secrets: z.array(z.record(z.string(), z.unknown())).optional(),
+  buckets: z.array(z.record(z.string(), z.unknown())).optional(),
+  error: z.string().nullable().optional(),
+});
+export type ProjectServices = z.infer<typeof ProjectServicesSchema>;
+
+export const ResourceHealthSchema = z.object({
+  projectId: z.string(),
+  resourceType: z.string().nullable(),
+  resourceName: z.string().nullable(),
+  status: z.string().nullable(),
+  ready: z.boolean().nullable().optional(),
+  url: z.string().nullable().optional(),
+  details: z.record(z.string(), z.unknown()).nullable().optional(),
+  error: z.string().nullable().optional(),
+});
+export type ResourceHealth = z.infer<typeof ResourceHealthSchema>;
+
 export const RegressionSchema = ScopeSchema.extend({
   metric: z.enum(["success_rate", "eval_score", "latency", "cost"]),
   displayName: z.string(),

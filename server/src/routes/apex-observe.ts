@@ -24,6 +24,9 @@ import { HeartbeatObserveStore } from "../observe/heartbeat-store.js";
 import { CloudTraceObserveStore } from "../observe/cloud-trace-store.js";
 import { CompositeObserveStore } from "../observe/composite-store.js";
 import { ApexEvalTraceClient } from "../observe/apex-eval-client.js";
+import { GcpInventoryStore } from "../observe/gcp-inventory-store.js";
+import { GatewayClient } from "../gateway/gateway-client.js";
+import { EvalIngestClient } from "../observe/eval-ingest-client.js";
 import { observeInputs } from "../observe/tools.js";
 import { assertBoardOrAgent } from "./authz.js";
 
@@ -46,6 +49,9 @@ export function apexObserveRoutes(db: Db) {
     [new HeartbeatObserveStore(db), cloudStore],
     [evalClient],
   );
+  const inventoryStore = new GcpInventoryStore(db);
+  const gatewayClient = new GatewayClient();
+  const evalIngestClient = new EvalIngestClient();
 
   // GET /observe/gcp-resource?companyId=&service= — the unified product-agent view:
   // a Cloud Run service's live GCP resource health + recent logs (from apex
@@ -66,6 +72,84 @@ export function apexObserveRoutes(db: Db) {
       evalClient.getRuns(companyId, service).catch(() => []),
     ]);
     res.json({ health, logs, runs });
+  });
+
+  // GET /observe/gcp-inventory?companyId= — full project resource inventory
+  // (all asset types via Cloud Asset Inventory), one entry per bound GCP
+  // project. Distinct from /observe/fleet (running product agents only) — this
+  // is the raw "what's actually deployed" view Cortex-style catalogs cover,
+  // built on APEX's own gcp_inventory resource server. Failure-isolated per
+  // project (a project error surfaces on its own entry, never a 500).
+  router.get("/observe/gcp-inventory", async (req, res) => {
+    assertBoardOrAgent(req);
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId : undefined;
+    try {
+      res.json(await inventoryStore.listResources(companyId));
+    } catch (e) {
+      console.error("[observe] gcp-inventory", e);
+      res.json([]);
+    }
+  });
+
+  // GET /observe/gcp-services?companyId= — grouped service inventory (Cloud
+  // Run, enabled APIs, secrets, buckets) per bound GCP project.
+  router.get("/observe/gcp-services", async (req, res) => {
+    assertBoardOrAgent(req);
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId : undefined;
+    try {
+      res.json(await inventoryStore.listServices(companyId));
+    } catch (e) {
+      console.error("[observe] gcp-services", e);
+      res.json([]);
+    }
+  });
+
+  // GET /observe/gcp-resource-health?companyId=&projectId=&resourceType=&resourceName=&resourceId=
+  // — on-demand health check for one inventory resource (bucket, secret,
+  // firestore, artifact_registry, cloud_run — see gcp_inventory.py's supported
+  // types). Returns null (not 404) on failure so the UI can show "unavailable".
+  // Fire-and-forget feeds the result into apex-eval (RunCompletedEvaluator via
+  // EvalIngestClient) so it shows up in Observe's Evals card — never awaited,
+  // so a slow/down apex-eval can't add latency to this response.
+  router.get("/observe/gcp-resource-health", async (req, res) => {
+    assertBoardOrAgent(req);
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId : undefined;
+    const projectId = typeof req.query.projectId === "string" ? req.query.projectId : "";
+    const resourceType = typeof req.query.resourceType === "string" ? req.query.resourceType : "";
+    const resourceName = typeof req.query.resourceName === "string" ? req.query.resourceName : "";
+    const resourceId = typeof req.query.resourceId === "string" ? req.query.resourceId : undefined;
+    if (!projectId || !resourceType || !resourceName) {
+      res.status(400).json({ error: "projectId, resourceType, and resourceName are required" });
+      return;
+    }
+    const health = await inventoryStore.resourceHealth(companyId, projectId, resourceType, resourceName);
+    res.json(health);
+    if (health) {
+      evalIngestClient
+        .evaluateResourceHealth({
+          projectId,
+          resourceType,
+          resourceName,
+          resourceId,
+          companyId,
+          healthy: health.status === "healthy",
+        })
+        .catch((e) => console.warn("[observe] resource-health eval ingest failed", e));
+    }
+  });
+
+  // GET /observe/gateway-metrics — apex-gateway's tool/server/agent invocation
+  // metrics (throughput, failure rate, avg response time). Operational health,
+  // not governance — the registry/audit-ledger side of the gateway lives under
+  // /gateway/* (apex-gateway-observe.ts) instead.
+  router.get("/observe/gateway-metrics", async (_req, res) => {
+    assertBoardOrAgent(_req);
+    try {
+      res.json(await gatewayClient.metrics());
+    } catch (e) {
+      console.error("[observe] gateway-metrics", e);
+      res.json({ reachable: false, tools: null, servers: null, a2aAgents: null, error: "failed to load metrics" });
+    }
   });
 
   router.get("/observe/fleet", async (req, res) => {

@@ -15,8 +15,8 @@
  * is silently empty, so Observe still works with just the coding plane.
  */
 import { z } from "zod";
-import { and, eq } from "drizzle-orm";
-import { type Db, cloudScopeBindings } from "@paperclipai/db";
+import { type Db } from "@paperclipai/db";
+import { companyGcpProjects } from "./company-projects.js";
 import type { ObserveStore } from "./tools.js";
 import { observeInputs } from "./tools.js";
 import type {
@@ -93,13 +93,7 @@ export class CloudTraceObserveStore implements ObserveStore {
   ) {}
 
   private async companyProjects(companyId?: string): Promise<string[]> {
-    if (!companyId) return [];
-    const rows = await this.db
-      .select({ gcpProjects: cloudScopeBindings.gcpProjects })
-      .from(cloudScopeBindings)
-      .where(and(eq(cloudScopeBindings.scopeType, "company"), eq(cloudScopeBindings.scopeId, companyId)))
-      .limit(1);
-    return rows[0]?.gcpProjects ?? [];
+    return companyGcpProjects(this.db, companyId);
   }
 
   async fleet(input: z.infer<typeof observeInputs.fleet>): Promise<FleetEntry[]> {

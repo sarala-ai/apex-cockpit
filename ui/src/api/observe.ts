@@ -14,6 +14,10 @@ import type {
   EvalRecord,
   Regression,
   GcpResourceResponse,
+  ProjectInventory,
+  ProjectServices,
+  ResourceHealth,
+  GatewayMetrics,
 } from "@paperclipai/shared";
 
 export interface ObserveScopeQuery {
@@ -53,4 +57,18 @@ export const observeApi = {
     api.get<Regression[]>(`/observe/regressions${qs(scope)}`),
   gcpResource: (scope: GcpResourceQuery) =>
     api.get<GcpResourceResponse>(`/observe/gcp-resource${qs(scope)}`),
+  gcpInventory: (scope?: { companyId?: string }) =>
+    api.get<ProjectInventory[]>(`/observe/gcp-inventory${qs(scope)}`),
+  gcpServices: (scope?: { companyId?: string }) =>
+    api.get<ProjectServices[]>(`/observe/gcp-services${qs(scope)}`),
+  gcpResourceHealth: (query: {
+    companyId?: string;
+    projectId: string;
+    resourceType: string;
+    resourceName: string;
+    /** Cloud Asset Inventory's fully-qualified resource name, when known —
+     *  stamped as the apex.resource.id cross-pane join key. */
+    resourceId?: string;
+  }) => api.get<ResourceHealth | null>(`/observe/gcp-resource-health${qs(query)}`),
+  gatewayMetrics: () => api.get<GatewayMetrics>("/observe/gateway-metrics"),
 };

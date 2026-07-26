@@ -5,7 +5,7 @@
 
 import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Activity, Bot, ClipboardCheck, Server, TrendingDown } from "lucide-react";
+import { Activity, Bot, ClipboardCheck, Network, Server, TrendingDown } from "lucide-react";
 import { observeApi } from "@/api/observe";
 import { useCompany } from "@/context/CompanyContext";
 import { StatusBadge, type StatusVariant } from "@/apex/status-badge";
@@ -170,6 +170,26 @@ function StatCell({ label, value, tone }: { label: string; value: string; tone?:
   );
 }
 
+/**
+ * Groups Observe's cards along three concerns: raw signal ("Logs & Traces" —
+ * what exists and what happened), objective telemetry ("Metrics & Alerts" —
+ * success rate/duration/cost SLIs and threshold/trend-breach alerts), and
+ * judgment-requiring quality assessment ("Evals" — industry-standard term,
+ * kept as its own section rather than folded into Metrics). Gateway's own
+ * governance data (registry, audit ledger) stays out of Observe entirely; only
+ * its metrics/stats (operational health, not governance) land in Metrics & Alerts.
+ */
+function SectionHeader({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex items-center gap-2 pt-2">
+      <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        {children}
+      </h2>
+      <div className="h-px flex-1 bg-border" />
+    </div>
+  );
+}
+
 export function Observe() {
   const { selectedCompanyId } = useCompany();
   const scope = selectedCompanyId ? { companyId: selectedCompanyId } : undefined;
@@ -215,6 +235,25 @@ export function Observe() {
     enabled: enabled && !!selectedService,
     refetchInterval: 15_000,
   });
+  const gcpInventory = useQuery({
+    queryKey: ["observe", "gcp-inventory", selectedCompanyId],
+    queryFn: () => observeApi.gcpInventory(scope),
+    enabled,
+    refetchInterval: 30_000,
+  });
+  const gcpServices = useQuery({
+    queryKey: ["observe", "gcp-services", selectedCompanyId],
+    queryFn: () => observeApi.gcpServices(scope),
+    enabled,
+    refetchInterval: 30_000,
+  });
+  // Gateway tool-call metrics — a single shared apex-gateway instance, not
+  // per-company, so no scope/enabled gate needed.
+  const gatewayMetrics = useQuery({
+    queryKey: ["observe", "gateway-metrics"],
+    queryFn: observeApi.gatewayMetrics,
+    refetchInterval: 20_000,
+  });
 
   if (!selectedCompanyId) {
     return (
@@ -239,6 +278,8 @@ export function Observe() {
           Real observability for this company — agent runs, fleet health, and regressions.
         </p>
       </div>
+
+      <SectionHeader>Metrics &amp; Alerts</SectionHeader>
 
       {/* Health summary strip */}
       <Card>
@@ -277,6 +318,132 @@ export function Observe() {
           </CardContent>
         </Card>
       )}
+
+      {/* Gateway metrics — apex-gateway's tool/server/agent invocation
+          throughput, failure rate, avg response time. Operational health, not
+          governance — see the Gateway page for registry/audit instead. */}
+      <Card>
+        <CardHeader className="flex-row items-center gap-2 space-y-0">
+          <Network className="h-4 w-4 text-muted-foreground" />
+          <CardTitle className="text-base">Gateway</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {gatewayMetrics.isLoading ? (
+            <p className="text-xs text-muted-foreground">Loading gateway metrics…</p>
+          ) : !gatewayMetrics.data?.reachable ? (
+            <p className="text-xs text-muted-foreground">
+              {gatewayMetrics.data?.error ?? "Gateway unreachable."}
+            </p>
+          ) : (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              {(
+                [
+                  ["tools", gatewayMetrics.data.tools],
+                  ["servers", gatewayMetrics.data.servers],
+                  ["a2a agents", gatewayMetrics.data.a2aAgents],
+                ] as const
+              ).map(([label, m]) =>
+                m ? (
+                  <div key={label} className="space-y-0.5 text-xs">
+                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                      {label}
+                    </div>
+                    <div className="flex items-baseline gap-3">
+                      <span className="tabular-nums" title="total executions">
+                        {m.totalExecutions}
+                      </span>
+                      <span
+                        className={`tabular-nums ${
+                          m.failureRate != null && m.failureRate > 0
+                            ? "text-rose-600 dark:text-rose-400"
+                            : "text-muted-foreground"
+                        }`}
+                        title="failure rate"
+                      >
+                        {m.failureRate != null ? `${Math.round(m.failureRate * 100)}% fail` : "—"}
+                      </span>
+                      <span className="tabular-nums text-muted-foreground" title="avg response time">
+                        {m.avgResponseTime != null ? `${Math.round(m.avgResponseTime * 1000)}ms` : "—"}
+                      </span>
+                    </div>
+                  </div>
+                ) : null,
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <SectionHeader>Evals</SectionHeader>
+
+      <Card>
+        <CardHeader className="flex-row items-center gap-2 space-y-0">
+          <ClipboardCheck className="h-4 w-4 text-muted-foreground" />
+          <CardTitle className="text-base">Evals</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {evals.isLoading ? (
+            <p className="text-xs text-muted-foreground">Loading evals…</p>
+          ) : evals.isError ? (
+            <p className="text-xs text-rose-600 dark:text-rose-400">
+              Failed to load evals.
+            </p>
+          ) : evalRows.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No evals yet.</p>
+          ) : (
+            <div className="space-y-3">
+              {/* Summary strip */}
+              <div className="flex items-center gap-4 text-xs">
+                <span className="flex items-center gap-1.5">
+                  <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                  <span className="tabular-nums font-medium">{evalCounts.pass}</span>
+                  <span className="text-muted-foreground">pass</span>
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="h-2 w-2 rounded-full bg-amber-500" />
+                  <span className="tabular-nums font-medium">{evalCounts.warn}</span>
+                  <span className="text-muted-foreground">warn</span>
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="h-2 w-2 rounded-full bg-rose-500" />
+                  <span className="tabular-nums font-medium">{evalCounts.fail}</span>
+                  <span className="text-muted-foreground">fail</span>
+                </span>
+              </div>
+
+              <ul className="space-y-1.5">
+                {evalRows.map((e, i) => (
+                  <li
+                    key={`${e.runId ?? "no-run"}-${e.occurredAt ?? i}`}
+                    className="flex items-center justify-between gap-2 text-xs"
+                  >
+                    <span className="flex min-w-0 flex-1 items-center gap-2">
+                      <VerdictPill verdict={e.verdict} />
+                      <span className="min-w-0 truncate" title={e.validator ?? e.scenario ?? undefined}>
+                        <span className="font-medium">{e.validator ?? "evaluator"}</span>
+                        {e.scenario && (
+                          <span className="text-muted-foreground"> · {e.scenario}</span>
+                        )}
+                      </span>
+                    </span>
+                    <span className="flex shrink-0 items-center gap-3 text-muted-foreground">
+                      <ScoreBar score={e.score} verdict={e.verdict} />
+                      {e.runId && (
+                        <span className="font-mono tabular-nums" title={e.runId}>
+                          {e.runId.slice(0, 8)}
+                        </span>
+                      )}
+                      <span className="tabular-nums">{relTime(e.occurredAt)}</span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <SectionHeader>Logs &amp; Traces</SectionHeader>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         {/* Fleet */}
@@ -370,6 +537,79 @@ export function Observe() {
           </CardContent>
         </Card>
       </div>
+
+      {/* GCP Inventory — everything deployed in this company's bound GCP
+          project(s), not just running product agents. Distinct from Fleet
+          above (agents that have actually run) and from the per-service detail
+          below (one Cloud Run service's health/logs) — this is "what exists"
+          across all resource types, via APEX's gcp_inventory server. */}
+      <Card>
+        <CardHeader className="flex-row items-center gap-2 space-y-0">
+          <Server className="h-4 w-4 text-muted-foreground" />
+          <CardTitle className="text-base">GCP Inventory</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {gcpInventory.isLoading ? (
+            <p className="text-xs text-muted-foreground">Loading inventory…</p>
+          ) : gcpInventory.isError ? (
+            <p className="text-xs text-rose-600 dark:text-rose-400">Failed to load GCP inventory.</p>
+          ) : (gcpInventory.data ?? []).length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              No GCP projects bound to this company yet — bind one in Company Settings → Cloud.
+            </p>
+          ) : (
+            (gcpInventory.data ?? []).map((inv) => (
+              <div key={inv.projectId} className="space-y-1.5">
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="font-mono font-medium">{inv.projectId}</span>
+                  {inv.error ? (
+                    <span className="text-rose-600 dark:text-rose-400">— {inv.error}</span>
+                  ) : (
+                    <span className="text-muted-foreground">
+                      {inv.totalResources ?? "—"} resources · {inv.resourceTypes ?? "—"} types
+                    </span>
+                  )}
+                </div>
+                {!inv.error && Object.keys(inv.resourcesByType).length > 0 && (
+                  <ul className="grid grid-cols-1 gap-x-4 gap-y-1 pl-1 sm:grid-cols-2 lg:grid-cols-3">
+                    {Object.entries(inv.resourcesByType).map(([assetType, resources]) => (
+                      <li
+                        key={assetType}
+                        className="flex items-center justify-between gap-2 text-xs text-muted-foreground"
+                        title={assetType}
+                      >
+                        <span className="min-w-0 flex-1 truncate">{assetType.split("/").pop()}</span>
+                        <span className="shrink-0 tabular-nums">{resources.length}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ))
+          )}
+
+          {(gcpServices.data ?? []).length > 0 && (
+            <div className="space-y-1.5 border-t border-border pt-3">
+              <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Services</div>
+              {(gcpServices.data ?? []).map((svc) => (
+                <div key={svc.projectId} className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+                  <span className="font-mono">{svc.projectId}</span>
+                  {svc.error ? (
+                    <span className="text-rose-600 dark:text-rose-400">{svc.error}</span>
+                  ) : (
+                    <>
+                      <span className="text-muted-foreground">cloud run: {svc.cloudRun?.length ?? 0}</span>
+                      <span className="text-muted-foreground">buckets: {svc.buckets?.length ?? 0}</span>
+                      <span className="text-muted-foreground">secrets: {svc.secrets?.length ?? 0}</span>
+                      <span className="text-muted-foreground">APIs enabled: {svc.enabledApis?.length ?? 0}</span>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* GCP Resource detail — shown when a product agent (Cloud Run service) is
           selected in Fleet. Unifies live resource health, recent logs, and the
@@ -506,74 +746,6 @@ export function Observe() {
           </CardContent>
         </Card>
       )}
-
-      {/* Evals */}
-      <Card>
-        <CardHeader className="flex-row items-center gap-2 space-y-0">
-          <ClipboardCheck className="h-4 w-4 text-muted-foreground" />
-          <CardTitle className="text-base">Evals</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {evals.isLoading ? (
-            <p className="text-xs text-muted-foreground">Loading evals…</p>
-          ) : evals.isError ? (
-            <p className="text-xs text-rose-600 dark:text-rose-400">
-              Failed to load evals.
-            </p>
-          ) : evalRows.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No evals yet.</p>
-          ) : (
-            <div className="space-y-3">
-              {/* Summary strip */}
-              <div className="flex items-center gap-4 text-xs">
-                <span className="flex items-center gap-1.5">
-                  <span className="h-2 w-2 rounded-full bg-emerald-500" />
-                  <span className="tabular-nums font-medium">{evalCounts.pass}</span>
-                  <span className="text-muted-foreground">pass</span>
-                </span>
-                <span className="flex items-center gap-1.5">
-                  <span className="h-2 w-2 rounded-full bg-amber-500" />
-                  <span className="tabular-nums font-medium">{evalCounts.warn}</span>
-                  <span className="text-muted-foreground">warn</span>
-                </span>
-                <span className="flex items-center gap-1.5">
-                  <span className="h-2 w-2 rounded-full bg-rose-500" />
-                  <span className="tabular-nums font-medium">{evalCounts.fail}</span>
-                  <span className="text-muted-foreground">fail</span>
-                </span>
-              </div>
-
-              <ul className="space-y-1.5">
-                {evalRows.map((e, i) => (
-                  <li
-                    key={`${e.runId ?? "no-run"}-${e.occurredAt ?? i}`}
-                    className="flex items-center justify-between gap-2 text-xs"
-                  >
-                    <span className="flex min-w-0 flex-1 items-center gap-2">
-                      <VerdictPill verdict={e.verdict} />
-                      <span className="min-w-0 truncate" title={e.validator ?? e.scenario ?? undefined}>
-                        <span className="font-medium">{e.validator ?? "evaluator"}</span>
-                        {e.scenario && (
-                          <span className="text-muted-foreground"> · {e.scenario}</span>
-                        )}
-                      </span>
-                    </span>
-                    <span className="flex shrink-0 items-center gap-3 text-muted-foreground">
-                      <ScoreBar score={e.score} verdict={e.verdict} />
-                      {e.runId && (
-                        <span className="font-mono tabular-nums" title={e.runId}>
-                          {e.runId.slice(0, 8)}
-                        </span>
-                      )}
-                      <span className="tabular-nums">{relTime(e.occurredAt)}</span>
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </CardContent>
-      </Card>
     </div>
   );
 }

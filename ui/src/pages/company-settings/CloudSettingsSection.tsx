@@ -1,7 +1,7 @@
 // APEX cloud binding (apex-tower migration — Task 2 §1).
 //
-// Folds our staged SetupPane discovery UI into a "Cloud" section on Company
-// Settings. It does NOT duplicate company/project CRUD — the enclosing page and
+// A "Cloud" section on Company Settings for GCP/GitHub discovery + binding.
+// It does NOT duplicate company/project CRUD — the enclosing page and
 // the fork's `projectsApi` own that. Here we:
 //   - show gcloud/gh auth status (via the new `/setup/*` routes)
 //   - let the operator pick one of the company's products (fork `projects` rows)
