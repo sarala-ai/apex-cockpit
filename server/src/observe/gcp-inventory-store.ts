@@ -70,7 +70,13 @@ const ResourceHealthResultSchema = z.object({
 export class GcpInventoryStore {
   constructor(
     private readonly db: Db,
-    private readonly invoker: ApexInvoker = new CliApexInvoker(),
+    // Cloud Asset Inventory queries are much slower than the run/health/log
+    // reads the default 20s invoker timeout was sized for — a cold asset
+    // index on a ~1200-resource project takes tens of seconds (verified live:
+    // the 20s default killed real queries mid-flight, surfacing as
+    // "failed (code null)"). 120s bounds the worst case; the store is
+    // failure-isolated per project either way.
+    private readonly invoker: ApexInvoker = new CliApexInvoker(undefined, 120_000),
   ) {}
 
   async listResources(companyId?: string): Promise<ProjectInventory[]> {

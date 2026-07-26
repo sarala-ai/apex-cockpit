@@ -30,7 +30,25 @@ import { run } from "./exec.js";
  */
 export function readApexResult<T>(raw: unknown, schema: z.ZodType<T>): T {
   const obj = typeof raw === "string" ? JSON.parse(raw) : unwrapMcpContent(raw);
-  return schema.parse(obj);
+  return schema.parse(unwrapCliEnvelope(obj));
+}
+
+/**
+ * The apex CLI's `--output json` envelope nests the tool's payload under
+ * `result` ({server, tool, tool_name, status, message?, result: {...}}) as of
+ * apex-core 0.4.x (verified live; error envelopes ALSO spread error fields at
+ * top level, success envelopes do not). Consumer schemas are written against
+ * the tool payload itself, so flatten: keep the envelope's status (the
+ * authoritative success/error signal) and spread the payload over it.
+ */
+function unwrapCliEnvelope(obj: unknown): unknown {
+  if (obj && typeof obj === "object" && "server" in obj && "tool" in obj && "result" in obj) {
+    const env = obj as { status?: unknown; result?: unknown };
+    if (env.result && typeof env.result === "object" && !Array.isArray(env.result)) {
+      return { status: env.status, ...(env.result as Record<string, unknown>) };
+    }
+  }
+  return obj;
 }
 
 /**
