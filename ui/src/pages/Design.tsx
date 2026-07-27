@@ -80,65 +80,113 @@ interface PenpotSummaryDoc {
  *  editing stays governed (MCP, or a ticket that updates the file). */
 function PenpotPreview({ doc }: { doc: PenpotSummaryDoc }) {
   const boards = doc.boards ?? [];
-  const [boardId, setBoardId] = useState<string>(boards[0]?.id ?? "");
-  const active = boards.find((b) => b.id === boardId) ?? boards[0];
   const nav = doc.nav ?? {};
 
+  // Plane order matches the product's own IA (Home → Work → Product →
+  // Operations → Governance → Settings), with reference material last. A flat
+  // 25-board list gave no way in; this gives the file a front door.
+  const surfaceOf = (name: string) => name.split("·")[0].trim();
+  const planeRank = (page: string) => {
+    const n = parseInt(page, 10);
+    if (Number.isNaN(n)) return 500;
+    return n === 0 ? 400 : n; // "00 · System" is reference, not a starting point
+  };
+  const planes = [...new Set(boards.map((b) => b.page))].sort(
+    (a, b) => planeRank(a) - planeRank(b) || a.localeCompare(b),
+  );
+
+  // Start where a reader would: the first real surface, current state.
+  const entry =
+    boards.find((b) => b.page === planes[0] && /current/i.test(b.name)) ??
+    boards.find((b) => b.page === planes[0]) ??
+    boards[0];
+  const [boardId, setBoardId] = useState<string>(entry?.id ?? "");
+  const active = boards.find((b) => b.id === boardId) ?? entry;
+
+
+  const siblings = boards.filter(
+    (b) => active && b.page === active.page && surfaceOf(b.name) === surfaceOf(active.name),
+  );
+
   return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-3 text-xs">
-        {boards.length > 1 && (
-          <select
-            value={active?.id ?? ""}
-            onChange={(e) => setBoardId(e.target.value)}
-            className="h-7 max-w-[26rem] rounded-md border border-border bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            aria-label="Select board"
-          >
-            {boards.map((b) => (
-              <option key={b.id} value={b.id}>
-                {b.page} · {b.name}
-              </option>
-            ))}
-          </select>
-        )}
-        {doc.penpotEditUrl && (
-          <a
-            href={doc.penpotEditUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="flex items-center gap-1 text-primary underline-offset-2 hover:underline"
-            title="Authoring happens in Penpot (login), via MCP, or through a ticket"
-          >
-            Edit in Penpot <ExternalLink className="h-3 w-3" />
-          </a>
-        )}
-        <span className="text-muted-foreground">
-          {boards.length} board{boards.length === 1 ? "" : "s"} · {doc.objectCount ?? "?"} objects ·{" "}
-          {Object.keys(nav).length} links
-        </span>
-      </div>
-
-      {active && doc.fileId && (
-        <BoardCanvas
-          fileId={doc.fileId}
-          board={active}
-          nav={nav}
-          onNavigate={(dest) => {
-            if (boards.some((b) => b.id === dest)) setBoardId(dest);
-          }}
-        />
-      )}
-
-      <div className="flex gap-3 overflow-x-auto pb-1">
-        {boards.map((b) => (
-          <BoardThumb
-            key={b.id}
-            board={b}
-            fileId={doc.fileId ?? null}
-            active={b.id === active?.id}
-            onOpen={() => setBoardId(b.id)}
-          />
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-[15rem_1fr]">
+      <nav className="max-h-[36rem] space-y-3 overflow-y-auto pr-1 text-xs">
+        {planes.map((plane) => (
+          <div key={plane} className="space-y-1">
+            <p className="font-medium uppercase tracking-wide text-muted-foreground">
+              {plane.replace(/^\d+\s*·\s*/, "")}
+            </p>
+            {/* One row per SURFACE; current/target is a state toggle on the
+                right, not two identical-looking rows. */}
+            {[...new Set(boards.filter((b) => b.page === plane).map((b) => surfaceOf(b.name)))].map(
+              (surface) => {
+                const opts = boards.filter(
+                  (b) => b.page === plane && surfaceOf(b.name) === surface,
+                );
+                const primary = opts.find((b) => /current/i.test(b.name)) ?? opts[0];
+                const isActive = opts.some((b) => b.id === active?.id);
+                return (
+                  <button
+                    key={`${plane}:${surface}`}
+                    onClick={() => setBoardId((isActive ? active?.id : primary.id) ?? primary.id)}
+                    className={`block w-full truncate rounded-md px-2 py-1 text-left hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                      isActive ? "bg-accent text-accent-foreground" : "text-foreground"
+                    }`}
+                    title={surface}
+                  >
+                    {surface}
+                  </button>
+                );
+              },
+            )}
+          </div>
         ))}
+      </nav>
+
+      <div className="min-w-0 space-y-3">
+        <div className="flex flex-wrap items-center gap-3 text-xs">
+          <span className="font-medium">{active?.name ?? "—"}</span>
+          {siblings.length > 1 && (
+            <span className="flex gap-1">
+              {siblings.map((b) => (
+                <button
+                  key={b.id}
+                  onClick={() => setBoardId(b.id)}
+                  className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                    b.id === active?.id ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
+                  }`}
+                >
+                  {/target/i.test(b.name) ? "Target" : "Current"}
+                </button>
+              ))}
+            </span>
+          )}
+          {doc.penpotEditUrl && (
+            <a
+              href={doc.penpotEditUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center gap-1 text-primary underline-offset-2 hover:underline"
+              title="Authoring happens in Penpot, via MCP, or through a ticket"
+            >
+              Edit in Penpot <ExternalLink className="h-3 w-3" />
+            </a>
+          )}
+          <span className="text-muted-foreground">
+            {boards.length} boards · {planes.length} planes · {Object.keys(nav).length} links
+          </span>
+        </div>
+
+        {active && doc.fileId && (
+          <BoardCanvas
+            fileId={doc.fileId}
+            board={active}
+            nav={nav}
+            onNavigate={(dest) => {
+              if (boards.some((b) => b.id === dest)) setBoardId(dest);
+            }}
+          />
+        )}
       </div>
     </div>
   );
@@ -221,56 +269,6 @@ function BoardCanvas({
       // Sanitized server-side (scripts/handlers stripped) before it reaches here.
       dangerouslySetInnerHTML={{ __html: svg }}
     />
-  );
-}
-
-function BoardThumb({
-  board,
-  fileId,
-  active,
-  onOpen,
-}: {
-  board: { id: string; name: string; pageId: string };
-  fileId: string | null;
-  active: boolean;
-  onOpen: () => void;
-}) {
-  const [failed, setFailed] = useState(false);
-  const src = fileId
-    ? `/api/design/board.png?fileId=${fileId}&pageId=${board.pageId}&boardId=${board.id}`
-    : null;
-  const body =
-    src && !failed ? (
-      /* No loading="lazy": zero-height images never intersect the viewport, so
-         lazy-loading deadlocks (no request → no height → no request; verified
-         via DOM inspection: complete=false, naturalWidth=0, zero fetches).
-         aspect-[3/2] reserves the box; object-contain keeps the render whole. */
-      <img
-        src={src}
-        alt={board.name}
-        onError={() => setFailed(true)}
-        className="aspect-[3/2] w-full rounded-md border border-border bg-muted/20 object-contain"
-      />
-    ) : (
-      <div className="flex h-24 items-center justify-center rounded-md border border-border bg-muted/20">
-        <Badge variant="default">{board.name}</Badge>
-      </div>
-    );
-  return (
-    <figure className="w-44 shrink-0 space-y-1">
-      {/* Click steers the INLINE viewer (new tabs only via "Full screen") */}
-      <button
-        type="button"
-        onClick={onOpen}
-        title={`Preview ${board.name} inline`}
-        className={`block w-full rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-          active ? "ring-2 ring-ring" : ""
-        }`}
-      >
-        {body}
-      </button>
-      <figcaption className="truncate text-[11px] text-muted-foreground">{board.name}</figcaption>
-    </figure>
   );
 }
 
