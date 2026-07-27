@@ -92,10 +92,27 @@ async function listRepoDesignFiles(repo: string): Promise<DesignRepoListing> {
   return { repo, files, truncated: parsed.truncated === true, error: null };
 }
 
+// Every visit to the Design tab was re-paying ~2.4s of GitHub round-trips for
+// a listing that changes rarely (measured; two gh calls per repo). Short TTL
+// cache keyed by the repo set; the UI refetches on the same cadence.
+const LISTING_TTL_MS = 45_000;
+const listingCache = new Map<string, { at: number; data: DesignRepoListing[] }>();
+
 export async function listCompanyDesignFiles(db: Db, companyId?: string): Promise<DesignRepoListing[]> {
   const repos = await companyGithubRepos(db, companyId);
-  return Promise.all(repos.map(listRepoDesignFiles));
+  const key = [...repos].sort().join(",");
+  const hit = listingCache.get(key);
+  if (hit && Date.now() - hit.at < LISTING_TTL_MS) return hit.data;
+  const data = await Promise.all(repos.map(listRepoDesignFiles));
+  listingCache.set(key, { at: Date.now(), data });
+  return data;
 }
+
+// Content-addressed summary cache: the expensive half of a document read is
+// the blob download + archive parse + share-link mint. The cheap half (one
+// contents-metadata call) yields the git sha — if it matches what we last
+// parsed, the cached summary is by definition current.
+const fileCache = new Map<string, { sha: string; content: DesignFileContent }>();
 
 export async function fetchDesignFile(repo: string, path: string): Promise<DesignFileContent | null> {
   if (!REPO_RE.test(repo) || !DESIGN_EXT_RE.test(path) || path.includes("..")) return null;
@@ -108,6 +125,11 @@ export async function fetchDesignFile(repo: string, path: string): Promise<Desig
   if (res.status !== "ok") return null;
   try {
     const body = JSON.parse(res.stdout) as { content?: string; size?: number; encoding?: string; sha?: string };
+    const cacheKey = `${repo}:${path}`;
+    if (body.sha) {
+      const cached = fileCache.get(cacheKey);
+      if (cached && cached.sha === body.sha) return cached.content;
+    }
     const size = typeof body.size === "number" ? body.size : null;
     if (size !== null && size > MAX_DOC_BYTES) {
       return { repo, path, document: null, parseError: `file too large (${size} bytes)`, sizeBytes: size };
@@ -155,7 +177,9 @@ export async function fetchDesignFile(repo: string, path: string): Promise<Desig
               penpotShareId: shareId,
             }
           : {};
-        return { repo, path, document: { ...summary, ...links }, parseError: null, sizeBytes: size };
+        const content: DesignFileContent = { repo, path, document: { ...summary, ...links }, parseError: null, sizeBytes: size };
+        if (body.sha) fileCache.set(cacheKey, { sha: body.sha, content });
+        return content;
       } catch (e) {
         return {
           repo,
@@ -167,7 +191,9 @@ export async function fetchDesignFile(repo: string, path: string): Promise<Desig
       }
     }
     try {
-      return { repo, path, document: JSON.parse(raw.toString("utf8")), parseError: null, sizeBytes: size };
+      const content: DesignFileContent = { repo, path, document: JSON.parse(raw.toString("utf8")), parseError: null, sizeBytes: size };
+      if (body.sha) fileCache.set(cacheKey, { sha: body.sha, content });
+      return content;
     } catch (e) {
       return {
         repo,

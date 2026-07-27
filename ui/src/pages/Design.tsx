@@ -26,6 +26,8 @@ function DocumentPreview({ file }: { file: DesignFileEntry }) {
   const doc = useQuery({
     queryKey: ["design", "file", file.repo, file.path],
     queryFn: () => designApi.file(file.repo, file.path),
+    staleTime: 60_000,
+    placeholderData: (prev) => prev,
   });
 
   if (doc.isLoading) return <p className="text-xs text-muted-foreground">Loading document…</p>;
@@ -177,12 +179,15 @@ function BoardThumb({
     : null;
   const body =
     src && !failed ? (
+      /* No loading="lazy": zero-height images never intersect the viewport, so
+         lazy-loading deadlocks (no request → no height → no request; verified
+         via DOM inspection: complete=false, naturalWidth=0, zero fetches).
+         aspect-[3/2] reserves the box; object-contain keeps the render whole. */
       <img
         src={src}
         alt={board.name}
-        loading="lazy"
         onError={() => setFailed(true)}
-        className="w-full rounded-md border border-border bg-muted/20"
+        className="aspect-[3/2] w-full rounded-md border border-border bg-muted/20 object-contain"
       />
     ) : (
       <div className="flex h-24 items-center justify-center rounded-md border border-border bg-muted/20">
@@ -212,6 +217,8 @@ export function Design() {
     queryFn: () => designApi.files(selectedCompanyId ?? undefined),
     enabled: !!selectedCompanyId,
     refetchInterval: 60_000,
+    staleTime: 45_000,
+    placeholderData: (prev) => prev,
   });
 
   // A single document is the common case today — open it without a click.
