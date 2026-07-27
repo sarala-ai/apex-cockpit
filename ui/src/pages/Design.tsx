@@ -89,9 +89,12 @@ function PenpotPreview({ doc }: { doc: PenpotSummaryDoc }) {
   const activePage = pages.find((p) => p.id === pageId) ?? pages[0];
   const pageBoards = boards.filter((b) => b.pageId === (activePage?.id ?? ""));
 
-  const pageViewUrl = (pid: string) =>
-    doc.penpotViewUrl ? doc.penpotViewUrl.replace(/page-id=[0-9a-f-]+/i, `page-id=${pid}`) : null;
-  const embedUrl = doc.penpotShareId && activePage ? pageViewUrl(activePage.id) : null;
+  const [boardIndex, setBoardIndex] = useState(0);
+  const pageViewUrl = (pid: string, index = 0) =>
+    doc.penpotViewUrl
+      ? `${doc.penpotViewUrl.replace(/page-id=[0-9a-f-]+/i, `page-id=${pid}`)}&index=${index}`
+      : null;
+  const embedUrl = doc.penpotShareId && activePage ? pageViewUrl(activePage.id, boardIndex) : null;
 
   return (
     <div className="space-y-3">
@@ -99,7 +102,10 @@ function PenpotPreview({ doc }: { doc: PenpotSummaryDoc }) {
         {pages.length > 1 && (
           <select
             value={activePage?.id ?? ""}
-            onChange={(e) => setPageId(e.target.value)}
+            onChange={(e) => {
+              setPageId(e.target.value);
+              setBoardIndex(0);
+            }}
             className="h-7 rounded-md border border-border bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             aria-label="Select page"
           >
@@ -153,8 +159,17 @@ function PenpotPreview({ doc }: { doc: PenpotSummaryDoc }) {
           </button>
         ))}
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-3">
-        {pageBoards.map((b) => (
-          <BoardThumb key={b.id} board={b} fileId={doc.fileId ?? null} viewUrl={pageViewUrl(b.pageId)} />
+        {pageBoards.map((b, i) => (
+          <BoardThumb
+            key={b.id}
+            board={b}
+            fileId={doc.fileId ?? null}
+            active={embedOn && i === boardIndex}
+            onOpen={() => {
+              setBoardIndex(i);
+              setEmbedOn(true);
+            }}
+          />
         ))}
         {pageBoards.length === 0 && (
           <p className="text-xs text-muted-foreground">No boards on this page.</p>
@@ -167,11 +182,13 @@ function PenpotPreview({ doc }: { doc: PenpotSummaryDoc }) {
 function BoardThumb({
   board,
   fileId,
-  viewUrl,
+  active,
+  onOpen,
 }: {
   board: { id: string; name: string; pageId: string };
   fileId: string | null;
-  viewUrl: string | null;
+  active: boolean;
+  onOpen: () => void;
 }) {
   const [failed, setFailed] = useState(false);
   const src = fileId
@@ -196,13 +213,17 @@ function BoardThumb({
     );
   return (
     <figure className="space-y-1">
-      {viewUrl ? (
-        <a href={viewUrl} target="_blank" rel="noreferrer" title={`Open ${board.name} in Penpot view mode`}>
-          {body}
-        </a>
-      ) : (
-        body
-      )}
+      {/* Click steers the INLINE viewer (new tabs only via "Full screen") */}
+      <button
+        type="button"
+        onClick={onOpen}
+        title={`Preview ${board.name} inline`}
+        className={`block w-full rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+          active ? "ring-2 ring-ring" : ""
+        }`}
+      >
+        {body}
+      </button>
       <figcaption className="truncate text-[11px] text-muted-foreground">{board.name}</figcaption>
     </figure>
   );
