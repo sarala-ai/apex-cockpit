@@ -71,13 +71,14 @@ async function renderOnce(
   pageId: string,
   objectId: string,
   scale: number,
+  format: "png" | "svg" = "png",
 ): Promise<Buffer> {
   const payload = tmap(
     kw("cmd"), kw("export-shapes"),
     kw("wait"), true,
     kw("profile-id"), uid(auth.profileId),
     kw("exports"), [tmap(
-      kw("type"), kw("png"),
+      kw("type"), kw(format),
       kw("suffix"), "",
       kw("scale"), scale,
       kw("object-id"), uid(objectId),
@@ -101,58 +102,35 @@ async function renderOnce(
   return Buffer.from(await img.arrayBuffer());
 }
 
-// Share links allow anonymous VIEW access (no comment, no inspect) so the
-// cockpit can embed Penpot's view mode in an iframe without pushing dev
-// credentials into the founder's browser. Penpot has no list-share-links RPC
-// (verified 404), so we cache per file for this server's lifetime; duplicate
-// links across restarts are inert rows, not a hazard.
-// Cache key includes the PAGE SET: a share link authorizes only the pages it
-// was minted with, so a link cached before new pages were added walls those
-// pages behind login (found by click-testing the prototype, not by API).
-const shareLinks = new Map<string, string>();
-
-export async function ensureShareLink(fileId: string, pageIds: string[]): Promise<string> {
-  const key = `${fileId}:${[...pageIds].sort().join(",")}`;
-  const hit = shareLinks.get(key);
-  if (hit) return hit;
-  const auth = await ensureSession();
-  const res = await fetch(`${BASE}/api/rpc/command/create-share-link`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json", Cookie: auth.cookie },
-    body: JSON.stringify({ fileId, whoComment: "none", whoInspect: "none", pages: pageIds }),
-  });
-  if (!res.ok) throw new Error(`create-share-link failed: ${res.status}`);
-  const body = (await res.json()) as { id?: string };
-  if (!body.id) throw new Error("create-share-link returned no id");
-  shareLinks.set(key, body.id);
-  return body.id;
-}
-
 export function penpotPublicBase(): string {
   return BASE;
 }
 
-/** Render a board to PNG, with a short TTL cache. Throws on any failure —
- *  the route maps that to 502 and the UI falls back to the badge summary. */
-export async function renderBoardPng(
+/** Render a board through Penpot's own exporter, with a short TTL cache.
+ *  PNG for filmstrip thumbnails; SVG for the main viewer — the SVG carries
+ *  `<g id="shape-{uuid}">` wrappers whose uuids match the committed archive,
+ *  which is what lets the cockpit own click navigation instead of framing
+ *  Penpot's viewer. Throws on failure; the route maps that to 502. */
+export async function renderBoard(
   fileId: string,
   pageId: string,
   objectId: string,
   scale = 0.35,
+  format: "png" | "svg" = "png",
 ): Promise<Buffer> {
-  const key = `${fileId}:${pageId}:${objectId}:${scale}`;
+  const key = `${fileId}:${pageId}:${objectId}:${scale}:${format}`;
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.buf;
 
   let auth = await ensureSession();
   let buf: Buffer;
   try {
-    buf = await renderOnce(auth, fileId, pageId, objectId, scale);
+    buf = await renderOnce(auth, fileId, pageId, objectId, scale, format);
   } catch (e) {
     // One retry with a fresh session — the standing cookie may have expired.
     session = null;
     auth = await ensureSession();
-    buf = await renderOnce(auth, fileId, pageId, objectId, scale);
+    buf = await renderOnce(auth, fileId, pageId, objectId, scale, format);
   }
   if (cache.size >= CACHE_MAX) {
     const oldest = [...cache.entries()].sort((a, b) => a[1].at - b[1].at)[0];

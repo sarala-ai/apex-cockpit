@@ -75,6 +75,12 @@ export interface PenpotBoard {
   pageId: string;
 }
 
+/** shapeId -> destination board id, harvested from every shape's
+ *  navigate-interactions. The cockpit renders boards as inline SVG (whose
+ *  `<g id="shape-{uuid}">` ids match these keys) and drives navigation from
+ *  this map — so click-through is OUR behaviour, not Penpot's viewer's. */
+export type PenpotNavMap = Record<string, string>;
+
 export interface PenpotSummary {
   format: "penpot";
   manifest: unknown;
@@ -87,6 +93,7 @@ export interface PenpotSummary {
   boards: PenpotBoard[];
   objectCount: number;
   entryCount: number;
+  nav: PenpotNavMap;
 }
 
 const OBJECT_PATH_RE = /^files\/[^/]+\/pages\/([^/]+)\/([^/]+)\.json$/;
@@ -111,6 +118,7 @@ export function summarizePenpotArchive(buf: Buffer): PenpotSummary {
   }
 
   const boards: PenpotBoard[] = [];
+  const nav: PenpotNavMap = {};
   let objectCount = 0;
   for (const e of entries) {
     const m = OBJECT_PATH_RE.exec(e.name);
@@ -121,7 +129,10 @@ export function summarizePenpotArchive(buf: Buffer): PenpotSummary {
       name?: string;
       type?: string;
       parentId?: string;
+      interactions?: { actionType?: string; destination?: string }[];
     };
+    const jump = obj.interactions?.find((i) => i.actionType === "navigate" && i.destination);
+    if (jump?.destination && obj.id) nav[obj.id] = jump.destination;
     if (obj.type === "frame" && obj.id !== ROOT_FRAME_ID && obj.parentId === ROOT_FRAME_ID) {
       boards.push({
         id: obj.id ?? m[2],
@@ -135,5 +146,5 @@ export function summarizePenpotArchive(buf: Buffer): PenpotSummary {
   const pages = [...pageNames.entries()]
     .map(([id, name]) => ({ id, name }))
     .sort((a, b) => a.name.localeCompare(b.name));
-  return { format: "penpot", manifest, fileId, pages, boards, objectCount, entryCount: entries.length };
+  return { format: "penpot", manifest, fileId, pages, boards, objectCount, entryCount: entries.length, nav };
 }

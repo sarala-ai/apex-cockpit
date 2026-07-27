@@ -7,7 +7,7 @@
 // review happens in PRs — draft = open PR, approved = merged (git-native
 // status, no filename versioning).
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ExternalLink, FileJson } from "lucide-react";
 import { designApi } from "@/api/design";
@@ -69,62 +69,37 @@ interface PenpotSummaryDoc {
   pages?: { id: string; name: string }[];
   boards?: { id: string; name: string; page: string; pageId: string }[];
   objectCount?: number;
+  /** shapeId -> destination board id (from the archive's interactions). */
+  nav?: Record<string, string>;
   penpotEditUrl?: string;
-  penpotViewUrl?: string;
-  penpotShareId?: string | null;
 }
 
-/** Visual preview: an INLINE Penpot view-mode iframe (share-link token =
- *  anonymous read, no credentials in the browser) driven by a page dropdown,
- *  with rendered thumbnails as the page's board index underneath. When no
- *  share link is available (live Penpot down), the iframe is skipped and
- *  thumbnails carry the preview alone. */
+/** The design, rendered by US: Penpot's exporter emits the board as SVG, the
+ *  cockpit inlines it and drives click-through from the archive's interaction
+ *  map. No iframe, no share link, no Penpot session — viewing is ours, and
+ *  editing stays governed (MCP, or a ticket that updates the file). */
 function PenpotPreview({ doc }: { doc: PenpotSummaryDoc }) {
-  const pages = doc.pages ?? [];
   const boards = doc.boards ?? [];
-  const [pageId, setPageId] = useState<string>(pages[0]?.id ?? "");
-  // The iframe boots the full Penpot SPA — heavy enough to feel like a hang
-  // on first open. Load it only when asked; thumbnails carry the instant view.
-  const [embedOn, setEmbedOn] = useState(false);
-  const activePage = pages.find((p) => p.id === pageId) ?? pages[0];
-  const pageBoards = boards.filter((b) => b.pageId === (activePage?.id ?? ""));
-
-  const [boardIndex, setBoardIndex] = useState(0);
-  const pageViewUrl = (pid: string, index = 0) =>
-    doc.penpotViewUrl
-      ? `${doc.penpotViewUrl.replace(/page-id=[0-9a-f-]+/i, `page-id=${pid}`)}&index=${index}`
-      : null;
-  const embedUrl = doc.penpotShareId && activePage ? pageViewUrl(activePage.id, boardIndex) : null;
+  const [boardId, setBoardId] = useState<string>(boards[0]?.id ?? "");
+  const active = boards.find((b) => b.id === boardId) ?? boards[0];
+  const nav = doc.nav ?? {};
 
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-3 text-xs">
-        {pages.length > 1 && (
+        {boards.length > 1 && (
           <select
-            value={activePage?.id ?? ""}
-            onChange={(e) => {
-              setPageId(e.target.value);
-              setBoardIndex(0);
-            }}
-            className="h-7 rounded-md border border-border bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            aria-label="Select page"
+            value={active?.id ?? ""}
+            onChange={(e) => setBoardId(e.target.value)}
+            className="h-7 max-w-[26rem] rounded-md border border-border bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label="Select board"
           >
-            {pages.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
+            {boards.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.page} · {b.name}
               </option>
             ))}
           </select>
-        )}
-        {embedUrl && (
-          <a
-            href={embedUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="flex items-center gap-1 font-medium text-primary underline-offset-2 hover:underline"
-          >
-            Full screen <ExternalLink className="h-3 w-3" />
-          </a>
         )}
         {doc.penpotEditUrl && (
           <a
@@ -132,53 +107,120 @@ function PenpotPreview({ doc }: { doc: PenpotSummaryDoc }) {
             target="_blank"
             rel="noreferrer"
             className="flex items-center gap-1 text-primary underline-offset-2 hover:underline"
-            title="Editing requires a Penpot login (dev account until OIDC)"
+            title="Authoring happens in Penpot (login), via MCP, or through a ticket"
           >
             Edit in Penpot <ExternalLink className="h-3 w-3" />
           </a>
         )}
         <span className="text-muted-foreground">
-          {boards.length} board{boards.length === 1 ? "" : "s"} · {doc.objectCount ?? "?"} objects
+          {boards.length} board{boards.length === 1 ? "" : "s"} · {doc.objectCount ?? "?"} objects ·{" "}
+          {Object.keys(nav).length} links
         </span>
       </div>
-      {/* Filmstrip ABOVE the viewer: the click and its effect stay adjacent
-          (they used to be a screen apart — clicking a thumb below the fold
-          updated an embed above it, which read as "nothing loaded"). */}
+
+      {active && doc.fileId && (
+        <BoardCanvas
+          fileId={doc.fileId}
+          board={active}
+          nav={nav}
+          onNavigate={(dest) => {
+            if (boards.some((b) => b.id === dest)) setBoardId(dest);
+          }}
+        />
+      )}
+
       <div className="flex gap-3 overflow-x-auto pb-1">
-        {pageBoards.map((b, i) => (
+        {boards.map((b) => (
           <BoardThumb
             key={b.id}
             board={b}
             fileId={doc.fileId ?? null}
-            active={embedOn && i === boardIndex}
-            onOpen={() => {
-              setBoardIndex(i);
-              setEmbedOn(true);
-            }}
+            active={b.id === active?.id}
+            onOpen={() => setBoardId(b.id)}
           />
         ))}
-        {pageBoards.length === 0 && (
-          <p className="text-xs text-muted-foreground">No boards on this page.</p>
-        )}
       </div>
-      {embedUrl &&
-        (embedOn ? (
-          // No key: page/board switches update src without re-booting the SPA.
-          <iframe
-            src={embedUrl}
-            title={`Penpot — ${activePage?.name ?? "design"}`}
-            className="aspect-[16/10] w-full rounded-md border border-border bg-black"
-            allow="fullscreen"
-          />
-        ) : (
-          <button
-            onClick={() => setEmbedOn(true)}
-            className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-muted/20 py-3 text-xs font-medium text-primary hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            ▶ Load interactive preview (boots Penpot view mode in-pane)
-          </button>
-        ))}
     </div>
+  );
+}
+
+/** Inlines the board SVG and turns Penpot's `<g id="shape-...">` wrappers into
+ *  real click targets using the archive's nav map. */
+function BoardCanvas({
+  fileId,
+  board,
+  nav,
+  onNavigate,
+}: {
+  fileId: string;
+  board: { id: string; name: string; pageId: string };
+  nav: Record<string, string>;
+  onNavigate: (destination: string) => void;
+}) {
+  const [svg, setSvg] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const hostRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setSvg(null);
+    setError(null);
+    fetch(`/api/design/board.svg?fileId=${fileId}&pageId=${board.pageId}&boardId=${board.id}`)
+      .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`render failed (${r.status})`))))
+      .then((t) => !cancelled && setSvg(t))
+      .catch((e) => !cancelled && setError(e instanceof Error ? e.message : String(e)));
+    return () => {
+      cancelled = true;
+    };
+  }, [fileId, board.pageId, board.id]);
+
+  // Mark linked shapes so they look clickable; the click itself is delegated.
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host || !svg) return;
+    host.querySelectorAll("svg").forEach((el) => {
+      el.setAttribute("width", "100%");
+      el.removeAttribute("height");
+      el.style.display = "block";
+    });
+    for (const shapeId of Object.keys(nav)) {
+      const el = host.querySelector(`#shape-${CSS.escape(shapeId)}`);
+      if (el instanceof SVGElement) el.style.cursor = "pointer";
+    }
+  }, [svg, nav]);
+
+  const onClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const el = (e.target as Element | null)?.closest?.('[id^="shape-"]');
+    let node: Element | null = el ?? null;
+    while (node) {
+      const id = node.getAttribute("id")?.replace(/^shape-/, "");
+      if (id && nav[id]) {
+        onNavigate(nav[id]);
+        return;
+      }
+      node = node.parentElement?.closest?.('[id^="shape-"]') ?? null;
+    }
+  };
+
+  if (error) {
+    return (
+      <p className="rounded-md border border-border bg-muted/20 p-3 text-xs text-amber-700 dark:text-amber-400">
+        Could not render this board: {error}. The committed file is still the source of truth — the
+        live Penpot instance renders it (compose profile &quot;design&quot;).
+      </p>
+    );
+  }
+  if (!svg) {
+    return <div className="aspect-[3/2] w-full animate-pulse rounded-md border border-border bg-muted/20" />;
+  }
+  return (
+    <div
+      ref={hostRef}
+      onClick={onClick}
+      className="overflow-hidden rounded-md border border-border bg-black"
+      // Sanitized server-side (scripts/handlers stripped) before it reaches here.
+      dangerouslySetInnerHTML={{ __html: svg }}
+    />
   );
 }
 

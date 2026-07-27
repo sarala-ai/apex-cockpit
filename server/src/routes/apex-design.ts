@@ -6,7 +6,7 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { listCompanyDesignFiles, fetchDesignFile } from "../design/design-files.js";
-import { renderBoardPng, isUuid } from "../design/penpot-render.js";
+import { renderBoard, isUuid } from "../design/penpot-render.js";
 import { assertBoardOrAgent } from "./authz.js";
 
 export function apexDesignRoutes(db: Db) {
@@ -56,12 +56,46 @@ export function apexDesignRoutes(db: Db) {
       return;
     }
     try {
-      const buf = await renderBoardPng(fileId, pageId, boardId, scale);
+      const buf = await renderBoard(fileId, pageId, boardId, scale, "png");
       res.setHeader("Content-Type", "image/png");
       res.setHeader("Cache-Control", "private, max-age=300");
       res.send(buf);
     } catch (e) {
       console.error("[design] board.png", e);
+      res.status(502).json({ error: "live Penpot render unavailable" });
+    }
+  });
+
+  // GET /design/board.svg?fileId&pageId&boardId — the board as vector, for
+  // inlining into the cockpit's own DOM. Penpot's exporter wraps every shape
+  // as <g id="shape-{uuid}">, and those uuids match the committed archive, so
+  // the UI can attach its own click navigation (the archive's `nav` map)
+  // instead of framing Penpot's viewer.
+  router.get("/design/board.svg", async (req, res) => {
+    assertBoardOrAgent(req);
+    const fileId = typeof req.query.fileId === "string" ? req.query.fileId : "";
+    const pageId = typeof req.query.pageId === "string" ? req.query.pageId : "";
+    const boardId = typeof req.query.boardId === "string" ? req.query.boardId : "";
+    if (![fileId, pageId, boardId].every(isUuid)) {
+      res.status(400).json({ error: "fileId, pageId and boardId must be uuids" });
+      return;
+    }
+    try {
+      const buf = await renderBoard(fileId, pageId, boardId, 1, "svg");
+      // Inlined SVG executes in our origin, so strip anything active before it
+      // reaches the DOM — the file is agent-authored, and "we generated it"
+      // is not an argument for skipping sanitization.
+      const svg = buf
+        .toString("utf8")
+        .replace(/<script[\s\S]*?<\/script>/gi, "")
+        .replace(/\son\w+\s*=\s*"[^"]*"/gi, "")
+        .replace(/\son\w+\s*=\s*'[^']*'/gi, "")
+        .replace(/(href|xlink:href)\s*=\s*"\s*javascript:[^"]*"/gi, "");
+      res.setHeader("Content-Type", "image/svg+xml");
+      res.setHeader("Cache-Control", "private, max-age=300");
+      res.send(svg);
+    } catch (e) {
+      console.error("[design] board.svg", e);
       res.status(502).json({ error: "live Penpot render unavailable" });
     }
   });
