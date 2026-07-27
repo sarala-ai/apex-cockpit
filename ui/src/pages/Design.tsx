@@ -9,11 +9,10 @@
 
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ExternalLink, FileJson, PenTool } from "lucide-react";
+import { ExternalLink, FileJson } from "lucide-react";
 import { designApi } from "@/api/design";
 import { useCompany } from "@/context/CompanyContext";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { DesignFileEntry } from "@paperclipai/shared";
 
 function formatBytes(n: number | null): string {
@@ -243,116 +242,78 @@ export function Design() {
         </p>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader className="flex-row items-center gap-2 space-y-0">
-            <PenTool className="h-4 w-4 text-muted-foreground" />
-            <CardTitle className="text-base">Documents</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {listings.isLoading ? (
-              <p className="text-xs text-muted-foreground">Scanning bound repos…</p>
-            ) : listings.isError ? (
-              <p className="text-xs text-rose-600 dark:text-rose-400">Failed to scan bound repos.</p>
-            ) : rows.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
-                No repos bound to this company yet — bind them in Company Settings → Cloud.
-              </p>
-            ) : (
-              <div className="space-y-3">
-                {shownRows.map((r) => (
-                  <div key={r.repo} className="space-y-1.5">
-                    <div className="flex items-center gap-2 text-xs">
-                      <span className="font-mono font-medium">{r.repo}</span>
-                      {r.error ? (
-                        <span className="text-rose-600 dark:text-rose-400">— {r.error}</span>
-                      ) : (
-                        <span className="text-muted-foreground">
-                          {r.files.length} document{r.files.length === 1 ? "" : "s"}
-                          {r.truncated ? " (listing truncated)" : ""}
-                        </span>
-                      )}
-                    </div>
-                    {r.files.length > 0 && (
-                      <ul className="space-y-1 pl-1">
-                        {r.files.map((f) => (
-                          <li
-                            key={`${f.repo}:${f.path}`}
-                            role="button"
-                            tabIndex={0}
-                            onClick={() => setSelected(f)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter" || e.key === " ") {
-                                e.preventDefault();
-                                setSelected(f);
-                              }
-                            }}
-                            className={`flex cursor-pointer items-center justify-between gap-2 rounded-md px-1.5 py-1 text-xs hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-                              selected && selected.repo === f.repo && selected.path === f.path
-                                ? "bg-accent text-accent-foreground"
-                                : ""
-                            }`}
-                          >
-                            <span className="flex min-w-0 items-center gap-2">
-                              <FileJson className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                              <span className="truncate font-medium" title={f.path}>
-                                {f.name}
-                              </span>
-                              <span className="truncate text-muted-foreground">{f.path}</span>
-                            </span>
-                            <span className="shrink-0 tabular-nums text-muted-foreground">
-                              {formatBytes(f.sizeBytes)}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                ))}
-                {emptyRepoCount > 0 && (
-                  <p className="text-[11px] text-muted-foreground">
-                    {emptyRepoCount} bound repo{emptyRepoCount === 1 ? "" : "s"} with no design
-                    documents.
-                  </p>
-                )}
-                {totalFiles === 0 && rows.every((r) => !r.error) && (
-                  <p className="text-xs text-muted-foreground">
-                    No design documents yet. Author the first one in Penpot and export it into
-                    the product's design space (see the design repo's conventions: product/,
-                    explorations/).
-                  </p>
-                )}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex-row items-center justify-between gap-2 space-y-0">
-            <CardTitle className="flex min-w-0 items-center gap-2 text-base">
-              <FileJson className="h-4 w-4 shrink-0 text-muted-foreground" />
-              <span className="truncate">{selected ? selected.name : "Document"}</span>
-            </CardTitle>
-            {selected && (
-              <a
-                href={selected.url}
-                target="_blank"
-                rel="noreferrer"
-                className="flex shrink-0 items-center gap-1 text-xs text-primary underline-offset-2 hover:underline"
-              >
-                GitHub <ExternalLink className="h-3 w-3" />
-              </a>
-            )}
-          </CardHeader>
-          <CardContent>
-            {selected ? (
-              <DocumentPreview file={selected} />
-            ) : (
-              <p className="text-xs text-muted-foreground">Select a document to preview it.</p>
-            )}
-          </CardContent>
-        </Card>
+      {/* One surface, no side-by-side cards: a document dropdown replaces
+          the old Documents panel — a widget's worth of chrome for what is
+          usually one file. Errors still surface, empties collapse to a count. */}
+      <div className="flex flex-wrap items-center gap-3 text-xs">
+        {listings.isLoading ? (
+          <span className="text-muted-foreground">Scanning bound repos…</span>
+        ) : allFiles.length > 1 ? (
+          <select
+            value={selected ? `${selected.repo}::${selected.path}` : ""}
+            onChange={(e) => {
+              const f = allFiles.find((x) => `${x.repo}::${x.path}` === e.target.value) ?? null;
+              setSelected(f);
+            }}
+            className="h-7 max-w-[24rem] rounded-md border border-border bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label="Select design document"
+          >
+            {rows
+              .filter((r) => r.files.length > 0)
+              .map((r) => (
+                <optgroup key={r.repo} label={r.repo}>
+                  {r.files.map((f) => (
+                    <option key={`${f.repo}::${f.path}`} value={`${f.repo}::${f.path}`}>
+                      {f.name} · {formatBytes(f.sizeBytes)}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+          </select>
+        ) : selected ? (
+          <span className="flex items-center gap-2 font-medium">
+            <FileJson className="h-3.5 w-3.5 text-muted-foreground" />
+            {selected.name}
+            <span className="font-normal text-muted-foreground">
+              {selected.repo} · {formatBytes(selected.sizeBytes)}
+            </span>
+          </span>
+        ) : null}
+        {selected && (
+          <a
+            href={selected.url}
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-center gap-1 text-primary underline-offset-2 hover:underline"
+          >
+            GitHub <ExternalLink className="h-3 w-3" />
+          </a>
+        )}
+        <span className="text-muted-foreground">
+          {totalFiles} document{totalFiles === 1 ? "" : "s"}
+          {emptyRepoCount > 0 ? ` · ${emptyRepoCount} repo${emptyRepoCount === 1 ? "" : "s"} empty` : ""}
+          {rows.some((r) => r.truncated) ? " · listing truncated" : ""}
+        </span>
       </div>
+
+      {rows
+        .filter((r) => r.error)
+        .map((r) => (
+          <p key={r.repo} className="text-xs text-rose-600 dark:text-rose-400">
+            {r.repo}: {r.error}
+          </p>
+        ))}
+
+      {listings.isError ? (
+        <p className="text-xs text-rose-600 dark:text-rose-400">Failed to scan bound repos.</p>
+      ) : totalFiles === 0 && !listings.isLoading && rows.every((r) => !r.error) ? (
+        <p className="text-xs text-muted-foreground">
+          No design documents yet. Author the first one in Penpot and export it into the
+          product's design space (see the design repo's conventions: product/, explorations/).
+        </p>
+      ) : selected ? (
+        <DocumentPreview file={selected} />
+      ) : null}
     </div>
   );
 }
