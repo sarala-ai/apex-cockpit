@@ -82,6 +82,9 @@ function PenpotPreview({ doc }: { doc: PenpotSummaryDoc }) {
   const pages = doc.pages ?? [];
   const boards = doc.boards ?? [];
   const [pageId, setPageId] = useState<string>(pages[0]?.id ?? "");
+  // The iframe boots the full Penpot SPA — heavy enough to feel like a hang
+  // on first open. Load it only when asked; thumbnails carry the instant view.
+  const [embedOn, setEmbedOn] = useState(false);
   const activePage = pages.find((p) => p.id === pageId) ?? pages[0];
   const pageBoards = boards.filter((b) => b.pageId === (activePage?.id ?? ""));
 
@@ -131,15 +134,23 @@ function PenpotPreview({ doc }: { doc: PenpotSummaryDoc }) {
           {boards.length} board{boards.length === 1 ? "" : "s"} · {doc.objectCount ?? "?"} objects
         </span>
       </div>
-      {embedUrl && (
-        <iframe
-          key={embedUrl}
-          src={embedUrl}
-          title={`Penpot — ${activePage?.name ?? "design"}`}
-          className="aspect-[16/10] w-full rounded-md border border-border bg-black"
-          allow="fullscreen"
-        />
-      )}
+      {embedUrl &&
+        (embedOn ? (
+          // No key: page switches update src without re-booting the SPA.
+          <iframe
+            src={embedUrl}
+            title={`Penpot — ${activePage?.name ?? "design"}`}
+            className="aspect-[16/10] w-full rounded-md border border-border bg-black"
+            allow="fullscreen"
+          />
+        ) : (
+          <button
+            onClick={() => setEmbedOn(true)}
+            className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-muted/20 py-3 text-xs font-medium text-primary hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            ▶ Load interactive preview (boots Penpot view mode in-pane)
+          </button>
+        ))}
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-3">
         {pageBoards.map((b) => (
           <BoardThumb key={b.id} board={b} fileId={doc.fileId ?? null} viewUrl={pageViewUrl(b.pageId)} />
