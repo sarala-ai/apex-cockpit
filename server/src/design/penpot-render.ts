@@ -106,10 +106,14 @@ async function renderOnce(
 // credentials into the founder's browser. Penpot has no list-share-links RPC
 // (verified 404), so we cache per file for this server's lifetime; duplicate
 // links across restarts are inert rows, not a hazard.
+// Cache key includes the PAGE SET: a share link authorizes only the pages it
+// was minted with, so a link cached before new pages were added walls those
+// pages behind login (found by click-testing the prototype, not by API).
 const shareLinks = new Map<string, string>();
 
 export async function ensureShareLink(fileId: string, pageIds: string[]): Promise<string> {
-  const hit = shareLinks.get(fileId);
+  const key = `${fileId}:${[...pageIds].sort().join(",")}`;
+  const hit = shareLinks.get(key);
   if (hit) return hit;
   const auth = await ensureSession();
   const res = await fetch(`${BASE}/api/rpc/command/create-share-link`, {
@@ -120,7 +124,7 @@ export async function ensureShareLink(fileId: string, pageIds: string[]): Promis
   if (!res.ok) throw new Error(`create-share-link failed: ${res.status}`);
   const body = (await res.json()) as { id?: string };
   if (!body.id) throw new Error("create-share-link returned no id");
-  shareLinks.set(fileId, body.id);
+  shareLinks.set(key, body.id);
   return body.id;
 }
 
