@@ -70,11 +70,14 @@ interface PenpotSummaryDoc {
   objectCount?: number;
   penpotEditUrl?: string;
   penpotViewUrl?: string;
+  penpotShareId?: string | null;
 }
 
-/** Visual preview: page dropdown + rendered board thumbnails (live Penpot
- *  exporter behind /design/board.png). Click a board to play it in Penpot's
- *  view mode. Thumbnails that fail (Penpot down) fall back to a name badge. */
+/** Visual preview: an INLINE Penpot view-mode iframe (share-link token =
+ *  anonymous read, no credentials in the browser) driven by a page dropdown,
+ *  with rendered thumbnails as the page's board index underneath. When no
+ *  share link is available (live Penpot down), the iframe is skipped and
+ *  thumbnails carry the preview alone. */
 function PenpotPreview({ doc }: { doc: PenpotSummaryDoc }) {
   const pages = doc.pages ?? [];
   const boards = doc.boards ?? [];
@@ -82,10 +85,9 @@ function PenpotPreview({ doc }: { doc: PenpotSummaryDoc }) {
   const activePage = pages.find((p) => p.id === pageId) ?? pages[0];
   const pageBoards = boards.filter((b) => b.pageId === (activePage?.id ?? ""));
 
-  const viewUrlFor = (b: { pageId: string }) =>
-    doc.penpotViewUrl && doc.fileId
-      ? doc.penpotViewUrl.replace(/page-id=[0-9a-f-]+/i, `page-id=${b.pageId}`)
-      : null;
+  const pageViewUrl = (pid: string) =>
+    doc.penpotViewUrl ? doc.penpotViewUrl.replace(/page-id=[0-9a-f-]+/i, `page-id=${pid}`) : null;
+  const embedUrl = doc.penpotShareId && activePage ? pageViewUrl(activePage.id) : null;
 
   return (
     <div className="space-y-3">
@@ -104,14 +106,14 @@ function PenpotPreview({ doc }: { doc: PenpotSummaryDoc }) {
             ))}
           </select>
         )}
-        {doc.penpotViewUrl && (
+        {embedUrl && (
           <a
-            href={doc.penpotViewUrl}
+            href={embedUrl}
             target="_blank"
             rel="noreferrer"
             className="flex items-center gap-1 font-medium text-primary underline-offset-2 hover:underline"
           >
-            Play prototype <ExternalLink className="h-3 w-3" />
+            Full screen <ExternalLink className="h-3 w-3" />
           </a>
         )}
         {doc.penpotEditUrl && (
@@ -120,17 +122,27 @@ function PenpotPreview({ doc }: { doc: PenpotSummaryDoc }) {
             target="_blank"
             rel="noreferrer"
             className="flex items-center gap-1 text-primary underline-offset-2 hover:underline"
+            title="Editing requires a Penpot login (dev account until OIDC)"
           >
-            Open in Penpot <ExternalLink className="h-3 w-3" />
+            Edit in Penpot <ExternalLink className="h-3 w-3" />
           </a>
         )}
         <span className="text-muted-foreground">
           {boards.length} board{boards.length === 1 ? "" : "s"} · {doc.objectCount ?? "?"} objects
         </span>
       </div>
-      <div className="grid max-h-[32rem] grid-cols-1 gap-3 overflow-y-auto xl:grid-cols-2">
+      {embedUrl && (
+        <iframe
+          key={embedUrl}
+          src={embedUrl}
+          title={`Penpot — ${activePage?.name ?? "design"}`}
+          className="aspect-[16/10] w-full rounded-md border border-border bg-black"
+          allow="fullscreen"
+        />
+      )}
+      <div className="grid grid-cols-2 gap-3 xl:grid-cols-3">
         {pageBoards.map((b) => (
-          <BoardThumb key={b.id} board={b} fileId={doc.fileId ?? null} viewUrl={viewUrlFor(b)} />
+          <BoardThumb key={b.id} board={b} fileId={doc.fileId ?? null} viewUrl={pageViewUrl(b.pageId)} />
         ))}
         {pageBoards.length === 0 && (
           <p className="text-xs text-muted-foreground">No boards on this page.</p>

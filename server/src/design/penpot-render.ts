@@ -101,6 +101,33 @@ async function renderOnce(
   return Buffer.from(await img.arrayBuffer());
 }
 
+// Share links allow anonymous VIEW access (no comment, no inspect) so the
+// cockpit can embed Penpot's view mode in an iframe without pushing dev
+// credentials into the founder's browser. Penpot has no list-share-links RPC
+// (verified 404), so we cache per file for this server's lifetime; duplicate
+// links across restarts are inert rows, not a hazard.
+const shareLinks = new Map<string, string>();
+
+export async function ensureShareLink(fileId: string, pageIds: string[]): Promise<string> {
+  const hit = shareLinks.get(fileId);
+  if (hit) return hit;
+  const auth = await ensureSession();
+  const res = await fetch(`${BASE}/api/rpc/command/create-share-link`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json", Cookie: auth.cookie },
+    body: JSON.stringify({ fileId, whoComment: "none", whoInspect: "none", pages: pageIds }),
+  });
+  if (!res.ok) throw new Error(`create-share-link failed: ${res.status}`);
+  const body = (await res.json()) as { id?: string };
+  if (!body.id) throw new Error("create-share-link returned no id");
+  shareLinks.set(fileId, body.id);
+  return body.id;
+}
+
+export function penpotPublicBase(): string {
+  return BASE;
+}
+
 /** Render a board to PNG, with a short TTL cache. Throws on any failure —
  *  the route maps that to 502 and the UI falls back to the badge summary. */
 export async function renderBoardPng(

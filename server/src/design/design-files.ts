@@ -13,6 +13,7 @@ import type { DesignRepoListing, DesignFileEntry, DesignFileContent } from "@pap
 import { companyGithubRepos } from "../observe/company-projects.js";
 import { run } from "../apex/exec.js";
 import { summarizePenpotArchive } from "./penpot-archive.js";
+import { ensureShareLink } from "./penpot-render.js";
 
 const GH_TIMEOUT_MS = 15_000;
 /** Refuse to fetch documents beyond this — design docs are JSON (or small
@@ -133,12 +134,25 @@ export async function fetchDesignFile(repo: string, path: string): Promise<Desig
         // APEX_PENPOT_URL: the compose design-profile frontend by default.
         const penpotBase = (process.env.APEX_PENPOT_URL ?? "http://localhost:9001").replace(/\/$/, "");
         const firstPage = summary.pages[0]?.id;
+        // Anonymous view token for the inline iframe viewer — the browser
+        // never needs Penpot credentials to LOOK at designs (editing still
+        // requires login until OIDC lands). Failure-isolated: no share link
+        // just means no iframe, the rest of the preview still works.
+        let shareId: string | null = null;
+        if (summary.fileId && summary.pages.length > 0) {
+          try {
+            shareId = await ensureShareLink(summary.fileId, summary.pages.map((p) => p.id));
+          } catch (e) {
+            console.error("[design] share-link", e);
+          }
+        }
         const links = summary.fileId
           ? {
               penpotEditUrl: `${penpotBase}/#/workspace?file-id=${summary.fileId}${firstPage ? `&page-id=${firstPage}` : ""}`,
               penpotViewUrl: firstPage
-                ? `${penpotBase}/#/view?file-id=${summary.fileId}&page-id=${firstPage}`
+                ? `${penpotBase}/#/view?file-id=${summary.fileId}&page-id=${firstPage}${shareId ? `&share-id=${shareId}` : ""}`
                 : null,
+              penpotShareId: shareId,
             }
           : {};
         return { repo, path, document: { ...summary, ...links }, parseError: null, sizeBytes: size };
