@@ -116,7 +116,21 @@ export async function fetchDesignFile(repo: string, path: string): Promise<Desig
       // Penpot export: summarize the ZIP-of-JSON (boards + manifest) rather
       // than dumping an unreadable binary.
       try {
-        return { repo, path, document: summarizePenpotArchive(raw), parseError: null, sizeBytes: size };
+        const summary = summarizePenpotArchive(raw);
+        // Deep links into the live Penpot instance the export came from
+        // (manifest carries the file id — same id in the working store).
+        // APEX_PENPOT_URL: the compose design-profile frontend by default.
+        const penpotBase = (process.env.APEX_PENPOT_URL ?? "http://localhost:9001").replace(/\/$/, "");
+        const firstPage = summary.pages[0]?.id;
+        const links = summary.fileId
+          ? {
+              penpotEditUrl: `${penpotBase}/#/workspace?file-id=${summary.fileId}${firstPage ? `&page-id=${firstPage}` : ""}`,
+              penpotViewUrl: firstPage
+                ? `${penpotBase}/#/view?file-id=${summary.fileId}&page-id=${firstPage}`
+                : null,
+            }
+          : {};
+        return { repo, path, document: { ...summary, ...links }, parseError: null, sizeBytes: size };
       } catch (e) {
         return {
           repo,

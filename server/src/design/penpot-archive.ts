@@ -75,6 +75,11 @@ export interface PenpotBoard {
 export interface PenpotSummary {
   format: "penpot";
   manifest: unknown;
+  /** The exported Penpot file's id (from the manifest) — lets the UI deep-link
+   *  into the live Penpot instance this export came from. */
+  fileId: string | null;
+  /** Pages in archive order (first page = the natural view-mode entry). */
+  pages: { id: string; name: string }[];
   /** Top-level frames (boards) across all pages, root frames excluded. */
   boards: PenpotBoard[];
   objectCount: number;
@@ -90,6 +95,8 @@ export function summarizePenpotArchive(buf: Buffer): PenpotSummary {
   const manifestEntry = entries.find((e) => e.name === "manifest.json");
   if (!manifestEntry) throw new Error("no manifest.json — not a Penpot export");
   const manifest: unknown = JSON.parse(readEntryData(buf, manifestEntry).toString("utf8"));
+  const manifestFiles = (manifest as { files?: { id?: string }[] }).files;
+  const fileId = manifestFiles?.[0]?.id ?? null;
 
   // Page id → name, so boards report the human page name, not a uuid.
   const pageNames = new Map<string, string>();
@@ -117,5 +124,8 @@ export function summarizePenpotArchive(buf: Buffer): PenpotSummary {
     }
   }
   boards.sort((a, b) => (a.page + a.name).localeCompare(b.page + b.name));
-  return { format: "penpot", manifest, boards, objectCount, entryCount: entries.length };
+  const pages = [...pageNames.entries()]
+    .map(([id, name]) => ({ id, name }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  return { format: "penpot", manifest, fileId, pages, boards, objectCount, entryCount: entries.length };
 }

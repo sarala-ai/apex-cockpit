@@ -46,20 +46,48 @@ function DocumentPreview({ file }: { file: DesignFileEntry }) {
   const boards = isPenpot
     ? ((d as { boards?: { id: string; name: string }[] }).boards ?? [])
     : [];
+  const editUrl = isPenpot ? ((d as { penpotEditUrl?: string }).penpotEditUrl ?? null) : null;
+  const viewUrl = isPenpot ? ((d as { penpotViewUrl?: string }).penpotViewUrl ?? null) : null;
   const topKeys = d && typeof d === "object" && !Array.isArray(d) ? Object.keys(d as object) : [];
   return (
     <div className="space-y-2">
       {isPenpot ? (
-        <div className="flex flex-wrap gap-1.5">
-          {boards.map((b) => (
-            <Badge key={b.id} variant="default">
-              {b.name}
-            </Badge>
-          ))}
-          <span className="self-center text-[11px] text-muted-foreground">
-            {boards.length} board{boards.length === 1 ? "" : "s"} ·{" "}
-            {(d as { objectCount?: number }).objectCount ?? "?"} objects
-          </span>
+        <div className="space-y-2">
+          {(editUrl || viewUrl) && (
+            <div className="flex items-center gap-3 text-xs">
+              {viewUrl && (
+                <a
+                  href={viewUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center gap-1 font-medium text-primary underline-offset-2 hover:underline"
+                >
+                  Play prototype <ExternalLink className="h-3 w-3" />
+                </a>
+              )}
+              {editUrl && (
+                <a
+                  href={editUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center gap-1 text-primary underline-offset-2 hover:underline"
+                >
+                  Open in Penpot <ExternalLink className="h-3 w-3" />
+                </a>
+              )}
+            </div>
+          )}
+          <div className="flex flex-wrap gap-1.5">
+            {boards.map((b) => (
+              <Badge key={b.id} variant="default">
+                {b.name}
+              </Badge>
+            ))}
+            <span className="self-center text-[11px] text-muted-foreground">
+              {boards.length} board{boards.length === 1 ? "" : "s"} ·{" "}
+              {(d as { objectCount?: number }).objectCount ?? "?"} objects
+            </span>
+          </div>
         </div>
       ) : (
         topKeys.length > 0 && (
