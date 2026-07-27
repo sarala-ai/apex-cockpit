@@ -44,7 +44,7 @@ function DocumentPreview({ file }: { file: DesignFileEntry }) {
   const d = doc.data.document;
   const isPenpot =
     d != null && typeof d === "object" && (d as { format?: unknown }).format === "penpot";
-  if (isPenpot) return <PenpotPreview doc={d as PenpotSummaryDoc} />;
+  if (isPenpot) return <PenpotPreview doc={d as PenpotSummaryDoc} file={file} />;
   const topKeys = d && typeof d === "object" && !Array.isArray(d) ? Object.keys(d as object) : [];
   return (
     <div className="space-y-2">
@@ -78,7 +78,7 @@ interface PenpotSummaryDoc {
  *  cockpit inlines it and drives click-through from the archive's interaction
  *  map. No iframe, no share link, no Penpot session — viewing is ours, and
  *  editing stays governed (MCP, or a ticket that updates the file). */
-function PenpotPreview({ doc }: { doc: PenpotSummaryDoc }) {
+function PenpotPreview({ doc, file }: { doc: PenpotSummaryDoc; file: DesignFileEntry }) {
   const boards = doc.boards ?? [];
   const nav = doc.nav ?? {};
 
@@ -177,9 +177,9 @@ function PenpotPreview({ doc }: { doc: PenpotSummaryDoc }) {
           </span>
         </div>
 
-        {active && doc.fileId && (
+        {active && (
           <BoardCanvas
-            fileId={doc.fileId}
+            file={file}
             board={active}
             nav={nav}
             onNavigate={(dest) => {
@@ -195,12 +195,12 @@ function PenpotPreview({ doc }: { doc: PenpotSummaryDoc }) {
 /** Inlines the board SVG and turns Penpot's `<g id="shape-...">` wrappers into
  *  real click targets using the archive's nav map. */
 function BoardCanvas({
-  fileId,
+  file,
   board,
   nav,
   onNavigate,
 }: {
-  fileId: string;
+  file: DesignFileEntry;
   board: { id: string; name: string; pageId: string };
   nav: Record<string, string>;
   onNavigate: (destination: string) => void;
@@ -213,14 +213,16 @@ function BoardCanvas({
     let cancelled = false;
     setSvg(null);
     setError(null);
-    fetch(`/api/design/board.svg?fileId=${fileId}&pageId=${board.pageId}&boardId=${board.id}`)
+    fetch(
+      `/api/design/board.svg?repo=${encodeURIComponent(file.repo)}&path=${encodeURIComponent(file.path)}&boardId=${board.id}`,
+    )
       .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`render failed (${r.status})`))))
       .then((t) => !cancelled && setSvg(t))
       .catch((e) => !cancelled && setError(e instanceof Error ? e.message : String(e)));
     return () => {
       cancelled = true;
     };
-  }, [fileId, board.pageId, board.id]);
+  }, [file.repo, file.path, board.id]);
 
   // Mark linked shapes so they look clickable; the click itself is delegated.
   useEffect(() => {
@@ -253,8 +255,8 @@ function BoardCanvas({
   if (error) {
     return (
       <p className="rounded-md border border-border bg-muted/20 p-3 text-xs text-amber-700 dark:text-amber-400">
-        Could not render this board: {error}. The committed file is still the source of truth — the
-        live Penpot instance renders it (compose profile &quot;design&quot;).
+        Could not render this board: {error}. Rendering is offline from the committed file, so
+        this is a parsing problem, not a missing service.
       </p>
     );
   }

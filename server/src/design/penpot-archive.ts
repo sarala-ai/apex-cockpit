@@ -97,6 +97,7 @@ export interface PenpotSummary {
 }
 
 const OBJECT_PATH_RE = /^files\/[^/]+\/pages\/([^/]+)\/([^/]+)\.json$/;
+
 const PAGE_PATH_RE = /^files\/[^/]+\/pages\/([^/]+)\.json$/;
 const ROOT_FRAME_ID = "00000000-0000-0000-0000-000000000000";
 
@@ -147,4 +148,124 @@ export function summarizePenpotArchive(buf: Buffer): PenpotSummary {
     .map(([id, name]) => ({ id, name }))
     .sort((a, b) => a.name.localeCompare(b.name));
   return { format: "penpot", manifest, fileId, pages, boards, objectCount, entryCount: entries.length, nav };
+}
+
+/* ------------------------------------------------------------------------ */
+/* Deterministic archive → SVG renderer                                       */
+/*                                                                            */
+/* The cockpit renders committed designs itself, offline, from the file in    */
+/* git — no live Penpot, no exporter, no headless browser. That is not just    */
+/* simpler: Penpot's own headless renderer draws text through <foreignObject> */
+/* and races, dropping a different subset of labels on every run (verified     */
+/* across three failed hypotheses). Emitting real <text> makes completeness a  */
+/* property of the code instead of a gamble.                                   */
+/*                                                                            */
+/* Scope: the shape subset our boards use (frame/rect/circle/text). Anything   */
+/* else is skipped rather than guessed at — a design using richer Penpot       */
+/* features should be committed as a rendered SVG by its author.               */
+/* ------------------------------------------------------------------------ */
+
+interface RawShape {
+  id?: string;
+  name?: string;
+  type?: string;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  rx?: number;
+  frameId?: string;
+  fills?: { fillColor?: string; fillOpacity?: number }[];
+  strokes?: { strokeColor?: string; strokeWidth?: number }[];
+  content?: {
+    children?: { children?: { children?: { text?: string; fontSize?: string; fontWeight?: string; fills?: { fillColor?: string }[] }[] }[] }[];
+  };
+}
+
+const FONT_STACK =
+  "ui-sans-serif, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif";
+
+function esc(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function fillOf(s: RawShape): { color: string; opacity: number } | null {
+  const f = s.fills?.[0];
+  if (!f?.fillColor) return null;
+  return { color: f.fillColor, opacity: f.fillOpacity ?? 1 };
+}
+
+/** Render one board (top-level frame) of an archive to standalone SVG. */
+export function renderBoardSvgFromArchive(buf: Buffer, boardId: string): string {
+  const entries = readEntries(buf);
+  const shapes: RawShape[] = [];
+  let board: RawShape | null = null;
+  for (const e of entries) {
+    if (!OBJECT_PATH_RE.test(e.name)) continue;
+    const o = JSON.parse(readEntryData(buf, e).toString("utf8")) as RawShape;
+    if (o.id === boardId) board = o;
+    else if (o.frameId === boardId) shapes.push(o);
+  }
+  if (!board) throw new Error("board not found in archive");
+
+  const ox = board.x ?? 0;
+  const oy = board.y ?? 0;
+  const w = board.width ?? 1500;
+  const h = board.height ?? 1000;
+
+  // Painter's order: the archive's z-order is unreliable after scripted edits,
+  // so paint panels (largest first) then marks, then text on top. That matches
+  // how these boards are built and avoids text hiding behind its own card.
+  const rank = (s: RawShape) => (s.type === "text" ? 2 : s.type === "circle" ? 1 : 0);
+  const area = (s: RawShape) => (s.width ?? 0) * (s.height ?? 0);
+  shapes.sort((a, b) => rank(a) - rank(b) || area(b) - area(a));
+
+  const out: string[] = [];
+  const bg = fillOf(board);
+  out.push(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" width="100%" preserveAspectRatio="xMidYMin meet" font-family="${FONT_STACK}">`,
+  );
+  out.push(`<rect x="0" y="0" width="${w}" height="${h}" fill="${bg?.color ?? "#0a0a0a"}"/>`);
+
+  for (const s of shapes) {
+    const x = (s.x ?? 0) - ox;
+    const y = (s.y ?? 0) - oy;
+    const id = s.id ? ` id="shape-${s.id}"` : "";
+    if (s.type === "rect" || s.type === "frame") {
+      const f = fillOf(s);
+      const st = s.strokes?.[0];
+      const stroke = st?.strokeColor
+        ? ` stroke="${st.strokeColor}" stroke-width="${st.strokeWidth ?? 1}"`
+        : "";
+      out.push(
+        `<rect${id} x="${x}" y="${y}" width="${s.width ?? 0}" height="${s.height ?? 0}" rx="${s.rx ?? 0}" fill="${f?.color ?? "none"}" fill-opacity="${f?.opacity ?? 1}"${stroke}/>`,
+      );
+    } else if (s.type === "circle") {
+      const f = fillOf(s);
+      const rx = (s.width ?? 0) / 2;
+      const ry = (s.height ?? 0) / 2;
+      out.push(
+        `<ellipse${id} cx="${x + rx}" cy="${y + ry}" rx="${rx}" ry="${ry}" fill="${f?.color ?? "none"}" fill-opacity="${f?.opacity ?? 1}"/>`,
+      );
+    } else if (s.type === "text") {
+      const paras = s.content?.children?.[0]?.children ?? [];
+      let dy = 0;
+      const lines: string[] = [];
+      for (const p of paras) {
+        const run = p.children?.[0];
+        if (!run?.text) continue;
+        const size = parseFloat(run.fontSize ?? "14");
+        const weight = run.fontWeight ?? "400";
+        const color = run.fills?.[0]?.fillColor ?? "#fafafa";
+        dy += size * 1.15;
+        lines.push(
+          `<text x="${x}" y="${y + dy}" font-size="${size}" font-weight="${weight}" fill="${color}">${esc(run.text)}</text>`,
+        );
+        dy += size * 0.35;
+      }
+      if (lines.length) out.push(`<g${id}>${lines.join("")}</g>`);
+    }
+  }
+  out.push("</svg>");
+  return out.join("");
 }

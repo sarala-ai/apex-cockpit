@@ -5,7 +5,7 @@
  */
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
-import { listCompanyDesignFiles, fetchDesignFile } from "../design/design-files.js";
+import { listCompanyDesignFiles, fetchDesignFile, fetchDesignArchive, renderArchiveBoard } from "../design/design-files.js";
 import { renderBoard, isUuid } from "../design/penpot-render.js";
 import { assertBoardOrAgent } from "./authz.js";
 
@@ -66,37 +66,30 @@ export function apexDesignRoutes(db: Db) {
     }
   });
 
-  // GET /design/board.svg?fileId&pageId&boardId — the board as vector, for
-  // inlining into the cockpit's own DOM. Penpot's exporter wraps every shape
-  // as <g id="shape-{uuid}">, and those uuids match the committed archive, so
-  // the UI can attach its own click navigation (the archive's `nav` map)
-  // instead of framing Penpot's viewer.
+  // GET /design/board.svg?repo&path&boardId — the board rendered from the
+  // COMMITTED archive, offline. Penpot is a develop-time tool, not part of a
+  // deployed APEX instance, so the read path must not need it running.
   router.get("/design/board.svg", async (req, res) => {
     assertBoardOrAgent(req);
-    const fileId = typeof req.query.fileId === "string" ? req.query.fileId : "";
-    const pageId = typeof req.query.pageId === "string" ? req.query.pageId : "";
+    const repo = typeof req.query.repo === "string" ? req.query.repo : "";
+    const path = typeof req.query.path === "string" ? req.query.path : "";
     const boardId = typeof req.query.boardId === "string" ? req.query.boardId : "";
-    if (![fileId, pageId, boardId].every(isUuid)) {
-      res.status(400).json({ error: "fileId, pageId and boardId must be uuids" });
+    if (!repo || !path || !isUuid(boardId)) {
+      res.status(400).json({ error: "repo, path and a uuid boardId are required" });
       return;
     }
     try {
-      const buf = await renderBoard(fileId, pageId, boardId, 1, "svg");
-      // Inlined SVG executes in our origin, so strip anything active before it
-      // reaches the DOM — the file is agent-authored, and "we generated it"
-      // is not an argument for skipping sanitization.
-      const svg = buf
-        .toString("utf8")
-        .replace(/<script[\s\S]*?<\/script>/gi, "")
-        .replace(/\son\w+\s*=\s*"[^"]*"/gi, "")
-        .replace(/\son\w+\s*=\s*'[^']*'/gi, "")
-        .replace(/(href|xlink:href)\s*=\s*"\s*javascript:[^"]*"/gi, "");
+      const buf = await fetchDesignArchive(repo, path);
+      if (!buf) {
+        res.status(404).json({ error: "design archive not found" });
+        return;
+      }
       res.setHeader("Content-Type", "image/svg+xml");
       res.setHeader("Cache-Control", "private, max-age=300");
-      res.send(svg);
+      res.send(renderArchiveBoard(buf, boardId));
     } catch (e) {
       console.error("[design] board.svg", e);
-      res.status(502).json({ error: "live Penpot render unavailable" });
+      res.status(500).json({ error: "could not render board from archive" });
     }
   });
 

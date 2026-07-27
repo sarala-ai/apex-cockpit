@@ -12,7 +12,7 @@ import type { Db } from "@paperclipai/db";
 import type { DesignRepoListing, DesignFileEntry, DesignFileContent } from "@paperclipai/shared";
 import { companyGithubRepos } from "../observe/company-projects.js";
 import { run } from "../apex/exec.js";
-import { summarizePenpotArchive } from "./penpot-archive.js";
+import { summarizePenpotArchive, renderBoardSvgFromArchive } from "./penpot-archive.js";
 
 const GH_TIMEOUT_MS = 15_000;
 /** Refuse to fetch documents beyond this — design docs are JSON (or small
@@ -112,6 +112,35 @@ export async function listCompanyDesignFiles(db: Db, companyId?: string): Promis
 // contents-metadata call) yields the git sha — if it matches what we last
 // parsed, the cached summary is by definition current.
 const fileCache = new Map<string, { sha: string; content: DesignFileContent }>();
+
+/** Raw archive bytes, sha-cached — lets the SVG route render a board offline
+ *  from the committed file (no live Penpot involved). */
+const rawCache = new Map<string, { sha: string; buf: Buffer }>();
+
+export async function fetchDesignArchive(repo: string, path: string): Promise<Buffer | null> {
+  if (!REPO_RE.test(repo) || !path.endsWith(".penpot") || path.includes("..")) return null;
+  const meta = await run("gh", ["api", `repos/${repo}/contents/${path.split("/").map(encodeURIComponent).join("/")}`], GH_TIMEOUT_MS);
+  if (meta.status !== "ok") return null;
+  const body = JSON.parse(meta.stdout) as { content?: string; sha?: string; size?: number };
+  const key = `${repo}:${path}`;
+  if (body.sha) {
+    const hit = rawCache.get(key);
+    if (hit && hit.sha === body.sha) return hit.buf;
+  }
+  let b64 = body.content ?? "";
+  if (!b64.trim() && body.sha) {
+    const blob = await run("gh", ["api", `repos/${repo}/git/blobs/${body.sha}`], GH_TIMEOUT_MS);
+    if (blob.status !== "ok") return null;
+    b64 = (JSON.parse(blob.stdout) as { content?: string }).content ?? "";
+  }
+  const buf = Buffer.from(b64, "base64");
+  if (body.sha) rawCache.set(key, { sha: body.sha, buf });
+  return buf;
+}
+
+export function renderArchiveBoard(buf: Buffer, boardId: string): string {
+  return renderBoardSvgFromArchive(buf, boardId);
+}
 
 export async function fetchDesignFile(repo: string, path: string): Promise<DesignFileContent | null> {
   if (!REPO_RE.test(repo) || !DESIGN_EXT_RE.test(path) || path.includes("..")) return null;
