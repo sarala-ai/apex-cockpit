@@ -38,6 +38,7 @@ import { ApprovalDetail } from "./pages/ApprovalDetail";
 import { Costs } from "./pages/Costs";
 import { Observe } from "./pages/Observe";
 import { Gateway } from "./pages/Gateway";
+import { Design } from "./pages/Design";
 import { Activity } from "./pages/Activity";
 import { Inbox } from "./pages/Inbox";
 import { BoardChat } from "./pages/BoardChat";
@@ -90,6 +91,7 @@ function boardRoutes() {
       <Route path="dashboard/live" element={<DashboardLive />} />
       <Route path="observe" element={<Observe />} />
       <Route path="gateway" element={<Gateway />} />
+      <Route path="design" element={<Design />} />
       <Route path="timeline" element={<Timeline />} />
       <Route path="onboarding" element={<OnboardingRoutePage />} />
       <Route path="companies" element={<Companies />} />

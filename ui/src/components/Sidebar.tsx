@@ -19,6 +19,9 @@ import {
   Pin,
   MessagesSquare,
   GanttChartSquare,
+  PenTool,
+  Activity,
+  Network,
 } from "lucide-react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -214,6 +217,7 @@ export function Sidebar() {
           ) : null}
           <SidebarNavItem to="/artifacts" label="Artifacts" icon={Package} />
           <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
+          <SidebarNavItem to="/design" label="Design" icon={PenTool} />
           {showWorkspacesLink ? (
             <SidebarNavItem to="/workspaces" label="Workspaces" icon={GitBranch} />
           ) : null}
@@ -244,6 +248,8 @@ export function Sidebar() {
         <SidebarAgents streamlined={streamlined} />
 
         <SidebarSection label="Company" collapsible={{ open: companyOpen, onOpenChange: setCompanyOpen }}>
+          <SidebarNavItem to="/observe" label="Observe" icon={Activity} />
+          <SidebarNavItem to="/gateway" label="Gateway" icon={Network} />
           <SidebarNavItem to="/timeline" label="Timeline" icon={GanttChartSquare} />
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
           <SidebarNavItem to="/activity" label="Activity" icon={History} />

@@ -23,6 +23,7 @@ import { apexScopingRoutes } from "./routes/apex-scoping.js";
 import { apexSetupStateRoutes } from "./routes/apex-setup-state.js";
 import { apexObserveRoutes } from "./routes/apex-observe.js";
 import { apexGatewayObserveRoutes } from "./routes/apex-gateway-observe.js";
+import { apexDesignRoutes } from "./routes/apex-design.js";
 import { apexPipelineRoutes } from "./routes/apex-pipeline.js";
 import { issueRoutes } from "./routes/issues.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
@@ -246,6 +247,7 @@ export async function createApp(
   api.use(apexSetupStateRoutes(db));
   api.use(apexObserveRoutes(db));
   api.use(apexGatewayObserveRoutes());
+  api.use(apexDesignRoutes(db));
   api.use(issueRoutes(db, opts.storageService, {
     feedbackExportService: opts.feedbackExportService,
     pluginWorkerManager: workerManager,
