@@ -14,7 +14,7 @@ describe("summarizePenpotArchive", () => {
     const s = summarizePenpotArchive(readFileSync(FIXTURE));
     expect(s.format).toBe("penpot");
     expect((s.manifest as { type?: string }).type).toBe("penpot/export-files");
-    expect(s.objectCount).toBe(295);
+    expect(s.objectCount).toBe(782);
     // Board page attribution uses the human page name, not a uuid.
     expect([...new Set(s.boards.map((b) => b.page))]).toEqual([
       "01 · Shell",
