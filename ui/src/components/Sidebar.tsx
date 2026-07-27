@@ -197,6 +197,11 @@ export function Sidebar() {
           ) : null}
         </div>
 
+        {/* IA (decided Jul 27, on the Shell design board): five planes —
+            Work (the moving thread), Product (what we're making), Operations
+            (what's running), AI Governance (what can act + what's allowed),
+            Settings standalone. Lifecycle (design→develop→deploy→monitor)
+            deliberately lives INSIDE Pipelines as its columns, never as nav. */}
         <SidebarSection label="Work" collapsible={{ open: workOpen, onOpenChange: setWorkOpen }}>
           <SidebarNavItem to="/issues" label="Tasks" icon={CircleDot} />
           {showCases ? (
@@ -206,17 +211,8 @@ export function Sidebar() {
           {showPipelines ? (
             <SidebarNavItem to="/pipelines" label="Pipelines" icon={GitBranch} />
           ) : null}
-          {showGoalsLink ? (
-            <SidebarNavItem to="/goals" label="Goals" icon={Target} />
-          ) : goalsLinkPending ? (
-            <div
-              data-testid="sidebar-goals-placeholder"
-              className="h-8 pointer-coarse:h-7"
-              aria-hidden="true"
-            />
-          ) : null}
+          <SidebarNavItem to="/timeline" label="Timeline" icon={GanttChartSquare} />
           <SidebarNavItem to="/artifacts" label="Artifacts" icon={Package} />
-          <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
           {showWorkspacesLink ? (
             <SidebarNavItem to="/workspaces" label="Workspaces" icon={GitBranch} />
           ) : null}
@@ -244,20 +240,36 @@ export function Sidebar() {
         {/* Classic mode restores the per-project collapsible below Work. */}
         {streamlined ? null : <SidebarProjects />}
 
-        <SidebarAgents streamlined={streamlined} />
-
-        {/* "Platform", not "Company": the switcher up top already owns the word
-            company (choosing WHICH one), and every sidebar item is company-
-            scoped anyway — this group is the platform/ops facets OF it. */}
-        <SidebarSection label="Platform" collapsible={{ open: companyOpen, onOpenChange: setCompanyOpen }}>
-          <SidebarNavItem to="/observe" label="Observe" icon={Activity} />
+        <SidebarSection label="Product" collapsible={{ open: companyOpen, onOpenChange: setCompanyOpen }}>
           <SidebarNavItem to="/design" label="Design" icon={PenTool} />
-          <SidebarNavItem to="/gateway" label="Gateway" icon={Network} />
-          <SidebarNavItem to="/timeline" label="Timeline" icon={GanttChartSquare} />
+          {showGoalsLink ? (
+            <SidebarNavItem to="/goals" label="Goals" icon={Target} />
+          ) : goalsLinkPending ? (
+            <div
+              data-testid="sidebar-goals-placeholder"
+              className="h-8 pointer-coarse:h-7"
+              aria-hidden="true"
+            />
+          ) : null}
+          {/* Target surfaces (Shell board IA panel): Docs, Issues — the
+              issue browser lands with multi-source tickets; promoting an
+              issue is a state transition into Work, never a copy. */}
+        </SidebarSection>
+
+        <SidebarSection label="Operations">
+          <SidebarNavItem to="/observe" label="Observe" icon={Activity} />
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
           <SidebarNavItem to="/activity" label="Activity" icon={History} />
-          <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
         </SidebarSection>
+
+        <SidebarSection label="AI Governance">
+          <SidebarNavItem to="/gateway" label="Gateway" icon={Network} />
+          <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
+        </SidebarSection>
+
+        <SidebarAgents streamlined={streamlined} />
+
+        <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
 
         <PluginSlotOutlet
           slotTypes={["sidebarPanel"]}
