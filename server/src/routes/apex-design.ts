@@ -1,11 +1,12 @@
 /**
  * Design routes — design-as-code (.penpot, legacy .op) discovery + document reads across a
- * company's bound repos. Read-only; authoring happens in OpenPencil (later
+ * company's bound repos. Read-only; authoring happens in Penpot (later
  * through its gateway-registered MCP), never through these routes.
  */
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { listCompanyDesignFiles, fetchDesignFile } from "../design/design-files.js";
+import { renderBoardPng, isUuid } from "../design/penpot-render.js";
 import { assertBoardOrAgent } from "./authz.js";
 
 export function apexDesignRoutes(db: Db) {
@@ -38,6 +39,31 @@ export function apexDesignRoutes(db: Db) {
       return;
     }
     res.json(doc);
+  });
+
+  // GET /design/board.png?fileId&pageId&boardId[&scale] — renders one board
+  // via the live Penpot instance's exporter (ids come from the committed
+  // export's summary). 502 when Penpot is unreachable — the UI falls back to
+  // the badge summary rather than pretending.
+  router.get("/design/board.png", async (req, res) => {
+    assertBoardOrAgent(req);
+    const fileId = typeof req.query.fileId === "string" ? req.query.fileId : "";
+    const pageId = typeof req.query.pageId === "string" ? req.query.pageId : "";
+    const boardId = typeof req.query.boardId === "string" ? req.query.boardId : "";
+    const scale = Math.min(1, Math.max(0.1, Number(req.query.scale) || 0.35));
+    if (![fileId, pageId, boardId].every(isUuid)) {
+      res.status(400).json({ error: "fileId, pageId and boardId must be uuids" });
+      return;
+    }
+    try {
+      const buf = await renderBoardPng(fileId, pageId, boardId, scale);
+      res.setHeader("Content-Type", "image/png");
+      res.setHeader("Cache-Control", "private, max-age=300");
+      res.send(buf);
+    } catch (e) {
+      console.error("[design] board.png", e);
+      res.status(502).json({ error: "live Penpot render unavailable" });
+    }
   });
 
   return router;

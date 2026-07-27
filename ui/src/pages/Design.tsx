@@ -7,7 +7,7 @@
 // review happens in PRs — draft = open PR, approved = merged (git-native
 // status, no filename versioning).
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ExternalLink, FileJson, PenTool } from "lucide-react";
 import { designApi } from "@/api/design";
@@ -43,67 +43,141 @@ function DocumentPreview({ file }: { file: DesignFileEntry }) {
   const d = doc.data.document;
   const isPenpot =
     d != null && typeof d === "object" && (d as { format?: unknown }).format === "penpot";
-  const boards = isPenpot
-    ? ((d as { boards?: { id: string; name: string }[] }).boards ?? [])
-    : [];
-  const editUrl = isPenpot ? ((d as { penpotEditUrl?: string }).penpotEditUrl ?? null) : null;
-  const viewUrl = isPenpot ? ((d as { penpotViewUrl?: string }).penpotViewUrl ?? null) : null;
+  if (isPenpot) return <PenpotPreview doc={d as PenpotSummaryDoc} />;
   const topKeys = d && typeof d === "object" && !Array.isArray(d) ? Object.keys(d as object) : [];
   return (
     <div className="space-y-2">
-      {isPenpot ? (
-        <div className="space-y-2">
-          {(editUrl || viewUrl) && (
-            <div className="flex items-center gap-3 text-xs">
-              {viewUrl && (
-                <a
-                  href={viewUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex items-center gap-1 font-medium text-primary underline-offset-2 hover:underline"
-                >
-                  Play prototype <ExternalLink className="h-3 w-3" />
-                </a>
-              )}
-              {editUrl && (
-                <a
-                  href={editUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex items-center gap-1 text-primary underline-offset-2 hover:underline"
-                >
-                  Open in Penpot <ExternalLink className="h-3 w-3" />
-                </a>
-              )}
-            </div>
-          )}
-          <div className="flex flex-wrap gap-1.5">
-            {boards.map((b) => (
-              <Badge key={b.id} variant="default">
-                {b.name}
-              </Badge>
-            ))}
-            <span className="self-center text-[11px] text-muted-foreground">
-              {boards.length} board{boards.length === 1 ? "" : "s"} ·{" "}
-              {(d as { objectCount?: number }).objectCount ?? "?"} objects
-            </span>
-          </div>
+      {topKeys.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {topKeys.slice(0, 12).map((k) => (
+            <Badge key={k} variant="default">
+              {k}
+            </Badge>
+          ))}
         </div>
-      ) : (
-        topKeys.length > 0 && (
-          <div className="flex flex-wrap gap-1.5">
-            {topKeys.slice(0, 12).map((k) => (
-              <Badge key={k} variant="default">
-                {k}
-              </Badge>
-            ))}
-          </div>
-        )
       )}
       <pre className="max-h-80 overflow-auto rounded-md border border-border bg-muted/30 p-3 text-[11px] leading-relaxed">
         {JSON.stringify(d, null, 2)?.slice(0, 20_000)}
       </pre>
     </div>
+  );
+}
+
+interface PenpotSummaryDoc {
+  fileId?: string | null;
+  pages?: { id: string; name: string }[];
+  boards?: { id: string; name: string; page: string; pageId: string }[];
+  objectCount?: number;
+  penpotEditUrl?: string;
+  penpotViewUrl?: string;
+}
+
+/** Visual preview: page dropdown + rendered board thumbnails (live Penpot
+ *  exporter behind /design/board.png). Click a board to play it in Penpot's
+ *  view mode. Thumbnails that fail (Penpot down) fall back to a name badge. */
+function PenpotPreview({ doc }: { doc: PenpotSummaryDoc }) {
+  const pages = doc.pages ?? [];
+  const boards = doc.boards ?? [];
+  const [pageId, setPageId] = useState<string>(pages[0]?.id ?? "");
+  const activePage = pages.find((p) => p.id === pageId) ?? pages[0];
+  const pageBoards = boards.filter((b) => b.pageId === (activePage?.id ?? ""));
+
+  const viewUrlFor = (b: { pageId: string }) =>
+    doc.penpotViewUrl && doc.fileId
+      ? doc.penpotViewUrl.replace(/page-id=[0-9a-f-]+/i, `page-id=${b.pageId}`)
+      : null;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-3 text-xs">
+        {pages.length > 1 && (
+          <select
+            value={activePage?.id ?? ""}
+            onChange={(e) => setPageId(e.target.value)}
+            className="h-7 rounded-md border border-border bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label="Select page"
+          >
+            {pages.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        )}
+        {doc.penpotViewUrl && (
+          <a
+            href={doc.penpotViewUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-center gap-1 font-medium text-primary underline-offset-2 hover:underline"
+          >
+            Play prototype <ExternalLink className="h-3 w-3" />
+          </a>
+        )}
+        {doc.penpotEditUrl && (
+          <a
+            href={doc.penpotEditUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-center gap-1 text-primary underline-offset-2 hover:underline"
+          >
+            Open in Penpot <ExternalLink className="h-3 w-3" />
+          </a>
+        )}
+        <span className="text-muted-foreground">
+          {boards.length} board{boards.length === 1 ? "" : "s"} · {doc.objectCount ?? "?"} objects
+        </span>
+      </div>
+      <div className="grid max-h-[32rem] grid-cols-1 gap-3 overflow-y-auto xl:grid-cols-2">
+        {pageBoards.map((b) => (
+          <BoardThumb key={b.id} board={b} fileId={doc.fileId ?? null} viewUrl={viewUrlFor(b)} />
+        ))}
+        {pageBoards.length === 0 && (
+          <p className="text-xs text-muted-foreground">No boards on this page.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function BoardThumb({
+  board,
+  fileId,
+  viewUrl,
+}: {
+  board: { id: string; name: string; pageId: string };
+  fileId: string | null;
+  viewUrl: string | null;
+}) {
+  const [failed, setFailed] = useState(false);
+  const src = fileId
+    ? `/api/design/board.png?fileId=${fileId}&pageId=${board.pageId}&boardId=${board.id}`
+    : null;
+  const body =
+    src && !failed ? (
+      <img
+        src={src}
+        alt={board.name}
+        loading="lazy"
+        onError={() => setFailed(true)}
+        className="w-full rounded-md border border-border bg-muted/20"
+      />
+    ) : (
+      <div className="flex h-24 items-center justify-center rounded-md border border-border bg-muted/20">
+        <Badge variant="default">{board.name}</Badge>
+      </div>
+    );
+  return (
+    <figure className="space-y-1">
+      {viewUrl ? (
+        <a href={viewUrl} target="_blank" rel="noreferrer" title={`Open ${board.name} in Penpot view mode`}>
+          {body}
+        </a>
+      ) : (
+        body
+      )}
+      <figcaption className="truncate text-[11px] text-muted-foreground">{board.name}</figcaption>
+    </figure>
   );
 }
 
@@ -118,12 +192,23 @@ export function Design() {
     refetchInterval: 60_000,
   });
 
+  // A single document is the common case today — open it without a click.
+  const allFiles = (listings.data ?? []).flatMap((r) => r.files);
+  const onlyFile = allFiles.length === 1 ? allFiles[0] : null;
+  useEffect(() => {
+    if (!selected && onlyFile) setSelected(onlyFile);
+  }, [selected, onlyFile]);
+
   if (!selectedCompanyId) {
     return <div className="p-6 text-sm text-muted-foreground">Select a company to see its designs.</div>;
   }
 
   const rows = listings.data ?? [];
   const totalFiles = rows.reduce((n, r) => n + r.files.length, 0);
+  // Declutter: only repos with documents (or errors worth surfacing) get a
+  // row; empty scans collapse into one summary line.
+  const shownRows = rows.filter((r) => r.files.length > 0 || r.error);
+  const emptyRepoCount = rows.length - shownRows.length;
 
   return (
     <div className="space-y-4 p-4">
@@ -152,7 +237,7 @@ export function Design() {
               </p>
             ) : (
               <div className="space-y-3">
-                {rows.map((r) => (
+                {shownRows.map((r) => (
                   <div key={r.repo} className="space-y-1.5">
                     <div className="flex items-center gap-2 text-xs">
                       <span className="font-mono font-medium">{r.repo}</span>
@@ -201,11 +286,17 @@ export function Design() {
                     )}
                   </div>
                 ))}
+                {emptyRepoCount > 0 && (
+                  <p className="text-[11px] text-muted-foreground">
+                    {emptyRepoCount} bound repo{emptyRepoCount === 1 ? "" : "s"} with no design
+                    documents.
+                  </p>
+                )}
                 {totalFiles === 0 && rows.every((r) => !r.error) && (
                   <p className="text-xs text-muted-foreground">
                     No design documents yet. Author the first one in Penpot and export it into
                     the product's design space (see the design repo's conventions: product/,
-                    components/, explorations/).
+                    explorations/).
                   </p>
                 )}
               </div>

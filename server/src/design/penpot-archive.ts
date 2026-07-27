@@ -69,7 +69,10 @@ function readEntryData(buf: Buffer, e: ZipEntry): Buffer {
 export interface PenpotBoard {
   id: string;
   name: string;
+  /** Human page name (falls back to the page uuid when unnamed). */
   page: string;
+  /** Page uuid — needed to render/deep-link the board on the live instance. */
+  pageId: string;
 }
 
 export interface PenpotSummary {
@@ -120,7 +123,12 @@ export function summarizePenpotArchive(buf: Buffer): PenpotSummary {
       parentId?: string;
     };
     if (obj.type === "frame" && obj.id !== ROOT_FRAME_ID && obj.parentId === ROOT_FRAME_ID) {
-      boards.push({ id: obj.id ?? m[2], name: obj.name ?? "(unnamed)", page: pageNames.get(m[1]) ?? m[1] });
+      boards.push({
+        id: obj.id ?? m[2],
+        name: obj.name ?? "(unnamed)",
+        page: pageNames.get(m[1]) ?? m[1],
+        pageId: m[1],
+      });
     }
   }
   boards.sort((a, b) => (a.page + a.name).localeCompare(b.page + b.name));
