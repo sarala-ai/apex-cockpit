@@ -1,10 +1,11 @@
-// Design — design-as-code for this company. Discovers .op (OpenPencil)
-// documents across the company's BOUND repos (placement-agnostic: a standalone
-// design repo and an in-repo design/ dir are both just bindings), grouped by
-// repo, with a parsed-document preview. Read-only surface: authoring happens
-// in OpenPencil (later via its gateway-registered MCP), review happens in PRs
-// — draft = open PR, approved = merged (git-native status, no filename
-// versioning).
+// Design — design-as-code for this company. Discovers .penpot exports (and
+// legacy .op files) across the company's BOUND repos (placement-agnostic: a
+// standalone design repo and an in-repo design/ dir are both just bindings),
+// grouped by repo, with a summarized preview (boards + manifest for Penpot
+// archives). Read-only surface: authoring happens in Penpot (self-hosted,
+// `--profile design`) by hand or via apex-core's penpot resource server;
+// review happens in PRs — draft = open PR, approved = merged (git-native
+// status, no filename versioning).
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -40,17 +41,36 @@ function DocumentPreview({ file }: { file: DesignFileEntry }) {
     );
   }
   const d = doc.data.document;
+  const isPenpot =
+    d != null && typeof d === "object" && (d as { format?: unknown }).format === "penpot";
+  const boards = isPenpot
+    ? ((d as { boards?: { id: string; name: string }[] }).boards ?? [])
+    : [];
   const topKeys = d && typeof d === "object" && !Array.isArray(d) ? Object.keys(d as object) : [];
   return (
     <div className="space-y-2">
-      {topKeys.length > 0 && (
+      {isPenpot ? (
         <div className="flex flex-wrap gap-1.5">
-          {topKeys.slice(0, 12).map((k) => (
-            <Badge key={k} variant="default">
-              {k}
+          {boards.map((b) => (
+            <Badge key={b.id} variant="default">
+              {b.name}
             </Badge>
           ))}
+          <span className="self-center text-[11px] text-muted-foreground">
+            {boards.length} board{boards.length === 1 ? "" : "s"} ·{" "}
+            {(d as { objectCount?: number }).objectCount ?? "?"} objects
+          </span>
         </div>
+      ) : (
+        topKeys.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {topKeys.slice(0, 12).map((k) => (
+              <Badge key={k} variant="default">
+                {k}
+              </Badge>
+            ))}
+          </div>
+        )
       )}
       <pre className="max-h-80 overflow-auto rounded-md border border-border bg-muted/30 p-3 text-[11px] leading-relaxed">
         {JSON.stringify(d, null, 2)?.slice(0, 20_000)}
@@ -82,8 +102,8 @@ export function Design() {
       <div>
         <h1 className="text-lg font-semibold">Design</h1>
         <p className="text-sm text-muted-foreground">
-          Design-as-code for this company — .op documents discovered across its bound repos.
-          Draft = open PR; approved = merged. Authoring happens in OpenPencil.
+          Design-as-code for this company — .penpot exports discovered across its bound repos.
+          Draft = open PR; approved = merged. Authoring happens in Penpot.
         </p>
       </div>
 
@@ -155,9 +175,9 @@ export function Design() {
                 ))}
                 {totalFiles === 0 && rows.every((r) => !r.error) && (
                   <p className="text-xs text-muted-foreground">
-                    No .op documents yet. Author the first one with OpenPencil into the product's
-                    design space (see the design repo's conventions: product/, components/,
-                    explorations/).
+                    No design documents yet. Author the first one in Penpot and export it into
+                    the product's design space (see the design repo's conventions: product/,
+                    components/, explorations/).
                   </p>
                 )}
               </div>

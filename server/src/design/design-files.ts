@@ -1,7 +1,8 @@
 /**
- * Design-as-code discovery — finds .op files across a company's bound GitHub
- * repos and fetches individual documents, via the `gh` CLI (deterministic
- * core, already-authed; same pattern as the CI-runs card).
+ * Design-as-code discovery — finds .penpot exports (and legacy .op files)
+ * across a company's bound GitHub repos and fetches individual documents, via
+ * the `gh` CLI (deterministic core, already-authed; same pattern as the
+ * CI-runs card).
  *
  * Failure-isolated per repo: one repo erroring (private, deleted, unauthed)
  * reports on its own listing entry and never takes down the rest. Errors are
@@ -11,13 +12,18 @@ import type { Db } from "@paperclipai/db";
 import type { DesignRepoListing, DesignFileEntry, DesignFileContent } from "@paperclipai/shared";
 import { companyGithubRepos } from "../observe/company-projects.js";
 import { run } from "../apex/exec.js";
+import { summarizePenpotArchive } from "./penpot-archive.js";
 
 const GH_TIMEOUT_MS = 15_000;
-/** Refuse to fetch documents beyond this — .op files are JSON design docs,
- *  not asset dumps; anything this large is a mistake worth surfacing. */
+/** Refuse to fetch documents beyond this — design docs are JSON (or small
+ *  ZIP-of-JSON .penpot exports), not asset dumps; anything this large is a
+ *  mistake worth surfacing. */
 const MAX_DOC_BYTES = 4 * 1024 * 1024;
 
 const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
+/** .penpot = Penpot export (ZIP-of-JSON, canonical); .op = legacy seed
+ *  format, still listed so old files surface instead of vanishing. */
+const DESIGN_EXT_RE = /\.(penpot|op)$/;
 
 function classifyGhFailure(stderr: string): string {
   if (/auth|login|token|not logged/i.test(stderr)) {
@@ -72,11 +78,11 @@ async function listRepoDesignFiles(repo: string): Promise<DesignRepoListing> {
   }
 
   const files: DesignFileEntry[] = (parsed.tree ?? [])
-    .filter((e): e is TreeEntry & { path: string } => e.type === "blob" && typeof e.path === "string" && e.path.endsWith(".op"))
+    .filter((e): e is TreeEntry & { path: string } => e.type === "blob" && typeof e.path === "string" && DESIGN_EXT_RE.test(e.path))
     .map((e) => ({
       repo,
       path: e.path,
-      name: e.path.split("/").pop()!.replace(/\.op$/, ""),
+      name: e.path.split("/").pop()!.replace(DESIGN_EXT_RE, ""),
       url: `https://github.com/${repo}/blob/${branch}/${e.path}`,
       sizeBytes: typeof e.size === "number" ? e.size : null,
       sha: e.sha ?? null,
@@ -91,7 +97,7 @@ export async function listCompanyDesignFiles(db: Db, companyId?: string): Promis
 }
 
 export async function fetchDesignFile(repo: string, path: string): Promise<DesignFileContent | null> {
-  if (!REPO_RE.test(repo) || !path.endsWith(".op") || path.includes("..")) return null;
+  if (!REPO_RE.test(repo) || !DESIGN_EXT_RE.test(path) || path.includes("..")) return null;
   // contents API returns base64; decode locally. Size-guarded.
   const res = await run(
     "gh",
@@ -105,9 +111,24 @@ export async function fetchDesignFile(repo: string, path: string): Promise<Desig
     if (size !== null && size > MAX_DOC_BYTES) {
       return { repo, path, document: null, parseError: `file too large (${size} bytes)`, sizeBytes: size };
     }
-    const raw = Buffer.from(body.content ?? "", "base64").toString("utf8");
+    const raw = Buffer.from(body.content ?? "", "base64");
+    if (path.endsWith(".penpot")) {
+      // Penpot export: summarize the ZIP-of-JSON (boards + manifest) rather
+      // than dumping an unreadable binary.
+      try {
+        return { repo, path, document: summarizePenpotArchive(raw), parseError: null, sizeBytes: size };
+      } catch (e) {
+        return {
+          repo,
+          path,
+          document: null,
+          parseError: `not a readable Penpot export: ${e instanceof Error ? e.message : String(e)}`,
+          sizeBytes: size,
+        };
+      }
+    }
     try {
-      return { repo, path, document: JSON.parse(raw), parseError: null, sizeBytes: size };
+      return { repo, path, document: JSON.parse(raw.toString("utf8")), parseError: null, sizeBytes: size };
     } catch (e) {
       return {
         repo,

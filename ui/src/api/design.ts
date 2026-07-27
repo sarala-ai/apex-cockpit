@@ -1,5 +1,5 @@
-// Design API client — design-as-code (.op) discovery across the company's
-// bound repos. Read-only; authoring happens in OpenPencil.
+// Design API client — design-as-code (.penpot, legacy .op) discovery across the company's
+// bound repos. Read-only; authoring happens in Penpot.
 
 import { api } from "./client";
 import type { DesignRepoListing, DesignFileContent } from "@paperclipai/shared";
