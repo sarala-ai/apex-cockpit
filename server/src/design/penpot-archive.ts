@@ -82,6 +82,7 @@ export interface PenpotSummary {
 }
 
 const OBJECT_PATH_RE = /^files\/[^/]+\/pages\/([^/]+)\/([^/]+)\.json$/;
+const PAGE_PATH_RE = /^files\/[^/]+\/pages\/([^/]+)\.json$/;
 const ROOT_FRAME_ID = "00000000-0000-0000-0000-000000000000";
 
 export function summarizePenpotArchive(buf: Buffer): PenpotSummary {
@@ -89,6 +90,15 @@ export function summarizePenpotArchive(buf: Buffer): PenpotSummary {
   const manifestEntry = entries.find((e) => e.name === "manifest.json");
   if (!manifestEntry) throw new Error("no manifest.json — not a Penpot export");
   const manifest: unknown = JSON.parse(readEntryData(buf, manifestEntry).toString("utf8"));
+
+  // Page id → name, so boards report the human page name, not a uuid.
+  const pageNames = new Map<string, string>();
+  for (const e of entries) {
+    const m = PAGE_PATH_RE.exec(e.name);
+    if (!m) continue;
+    const page = JSON.parse(readEntryData(buf, e).toString("utf8")) as { name?: string };
+    if (typeof page.name === "string") pageNames.set(m[1], page.name);
+  }
 
   const boards: PenpotBoard[] = [];
   let objectCount = 0;
@@ -103,9 +113,9 @@ export function summarizePenpotArchive(buf: Buffer): PenpotSummary {
       parentId?: string;
     };
     if (obj.type === "frame" && obj.id !== ROOT_FRAME_ID && obj.parentId === ROOT_FRAME_ID) {
-      boards.push({ id: obj.id ?? m[2], name: obj.name ?? "(unnamed)", page: m[1] });
+      boards.push({ id: obj.id ?? m[2], name: obj.name ?? "(unnamed)", page: pageNames.get(m[1]) ?? m[1] });
     }
   }
-  boards.sort((a, b) => a.name.localeCompare(b.name));
+  boards.sort((a, b) => (a.page + a.name).localeCompare(b.page + b.name));
   return { format: "penpot", manifest, boards, objectCount, entryCount: entries.length };
 }

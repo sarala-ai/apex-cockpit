@@ -5,24 +5,29 @@ import { summarizePenpotArchive } from "./penpot-archive.js";
 
 // Real export produced by `apex run penpot export-file` against a live
 // self-hosted Penpot 2.16 — not a hand-crafted archive (we never fabricate
-// design-file formats; the fixture IS the format's ground truth).
-const FIXTURE = fileURLToPath(new URL("./__fixtures__/apex-vision.penpot", import.meta.url));
+// design-file formats; the fixture IS the format's ground truth). Multi-page:
+// one page per surface, Current/Target frames + a Journeys page.
+const FIXTURE = fileURLToPath(new URL("./__fixtures__/apex-platform.penpot", import.meta.url));
 
 describe("summarizePenpotArchive", () => {
-  it("summarizes a real Penpot export: manifest, boards, object count", () => {
+  it("summarizes a real Penpot export: manifest, boards with page names, object count", () => {
     const s = summarizePenpotArchive(readFileSync(FIXTURE));
     expect(s.format).toBe("penpot");
     expect((s.manifest as { type?: string }).type).toBe("penpot/export-files");
-    expect(s.objectCount).toBe(37);
-    // Six top-level boards, root frame excluded, sorted by name.
-    expect(s.boards.map((b) => b.name)).toEqual([
-      "01 · The condition",
-      "02 · The hinge",
-      "03 · One surface",
-      "04 · The governed loop",
-      "05 · Acceptance test",
-      "06 · Real vs targeted",
+    expect(s.objectCount).toBe(295);
+    // Board page attribution uses the human page name, not a uuid.
+    expect([...new Set(s.boards.map((b) => b.page))]).toEqual([
+      "01 · Shell",
+      "02 · Observe",
+      "03 · Design",
+      "04 · Gateway",
+      "05 · Pipelines",
+      "06 · Journeys",
     ]);
+    // Each surface page carries a Current and a Target frame; Journeys has one.
+    expect(s.boards).toHaveLength(11);
+    expect(s.boards.filter((b) => b.name.includes("Current")).length).toBe(5);
+    expect(s.boards.filter((b) => b.name.includes("Target")).length).toBe(5);
   });
 
   it("rejects non-ZIP input with a clear error", () => {
