@@ -141,24 +141,10 @@ function PenpotPreview({ doc }: { doc: PenpotSummaryDoc }) {
           {boards.length} board{boards.length === 1 ? "" : "s"} · {doc.objectCount ?? "?"} objects
         </span>
       </div>
-      {embedUrl &&
-        (embedOn ? (
-          // No key: page switches update src without re-booting the SPA.
-          <iframe
-            src={embedUrl}
-            title={`Penpot — ${activePage?.name ?? "design"}`}
-            className="aspect-[16/10] w-full rounded-md border border-border bg-black"
-            allow="fullscreen"
-          />
-        ) : (
-          <button
-            onClick={() => setEmbedOn(true)}
-            className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-muted/20 py-3 text-xs font-medium text-primary hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            ▶ Load interactive preview (boots Penpot view mode in-pane)
-          </button>
-        ))}
-      <div className="grid grid-cols-2 gap-3 xl:grid-cols-3">
+      {/* Filmstrip ABOVE the viewer: the click and its effect stay adjacent
+          (they used to be a screen apart — clicking a thumb below the fold
+          updated an embed above it, which read as "nothing loaded"). */}
+      <div className="flex gap-3 overflow-x-auto pb-1">
         {pageBoards.map((b, i) => (
           <BoardThumb
             key={b.id}
@@ -175,6 +161,23 @@ function PenpotPreview({ doc }: { doc: PenpotSummaryDoc }) {
           <p className="text-xs text-muted-foreground">No boards on this page.</p>
         )}
       </div>
+      {embedUrl &&
+        (embedOn ? (
+          // No key: page/board switches update src without re-booting the SPA.
+          <iframe
+            src={embedUrl}
+            title={`Penpot — ${activePage?.name ?? "design"}`}
+            className="aspect-[16/10] w-full rounded-md border border-border bg-black"
+            allow="fullscreen"
+          />
+        ) : (
+          <button
+            onClick={() => setEmbedOn(true)}
+            className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-muted/20 py-3 text-xs font-medium text-primary hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            ▶ Load interactive preview (boots Penpot view mode in-pane)
+          </button>
+        ))}
     </div>
   );
 }
@@ -212,7 +215,7 @@ function BoardThumb({
       </div>
     );
   return (
-    <figure className="space-y-1">
+    <figure className="w-44 shrink-0 space-y-1">
       {/* Click steers the INLINE viewer (new tabs only via "Full screen") */}
       <button
         type="button"
