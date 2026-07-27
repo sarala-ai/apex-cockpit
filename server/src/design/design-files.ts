@@ -106,12 +106,23 @@ export async function fetchDesignFile(repo: string, path: string): Promise<Desig
   );
   if (res.status !== "ok") return null;
   try {
-    const body = JSON.parse(res.stdout) as { content?: string; size?: number; encoding?: string };
+    const body = JSON.parse(res.stdout) as { content?: string; size?: number; encoding?: string; sha?: string };
     const size = typeof body.size === "number" ? body.size : null;
     if (size !== null && size > MAX_DOC_BYTES) {
       return { repo, path, document: null, parseError: `file too large (${size} bytes)`, sizeBytes: size };
     }
-    const raw = Buffer.from(body.content ?? "", "base64");
+    let b64 = body.content ?? "";
+    if (!b64.trim() && size !== null && size > 0 && body.sha) {
+      // GitHub's contents API omits inline content for files over 1 MB
+      // (encoding "none") — the blob API returns base64 up to 100 MB.
+      // Found by clicking a 1.1 MB .penpot in the UI, not by curl.
+      const blob = await run("gh", ["api", `repos/${repo}/git/blobs/${body.sha}`], GH_TIMEOUT_MS);
+      if (blob.status !== "ok") {
+        return { repo, path, document: null, parseError: "could not fetch blob (>1 MB path)", sizeBytes: size };
+      }
+      b64 = (JSON.parse(blob.stdout) as { content?: string }).content ?? "";
+    }
+    const raw = Buffer.from(b64, "base64");
     if (path.endsWith(".penpot")) {
       // Penpot export: summarize the ZIP-of-JSON (boards + manifest) rather
       // than dumping an unreadable binary.
