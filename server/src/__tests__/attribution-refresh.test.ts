@@ -9,7 +9,12 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { findRepoCheckout, attributionRefreshIntervalMs, runAttributionRefresh } from "../observe/attribution-refresh.js";
+import {
+  findRepoCheckout,
+  attributionRefreshIntervalMs,
+  repoRootsFromEnv,
+  runAttributionRefresh,
+} from "../observe/attribution-refresh.js";
 import { run } from "../apex/exec.js";
 
 vi.mock("../apex/exec.js", () => ({ run: vi.fn() }));
@@ -46,6 +51,16 @@ const PROJECT_INVENTORY: ProjectInventory = {
     "storage.googleapis.com/Bucket": [{ name: "//storage.googleapis.com/finpilot-dev-uploads" }],
   },
 };
+
+describe("repoRootsFromEnv", () => {
+  it("Finding 14: defaults to empty, not a hardcoded founder-laptop path", () => {
+    expect(repoRootsFromEnv({})).toEqual([]);
+  });
+
+  it("honors APEX_REPO_ROOTS", () => {
+    expect(repoRootsFromEnv({ APEX_REPO_ROOTS: "/a:/b" })).toEqual(["/a", "/b"]);
+  });
+});
 
 describe("findRepoCheckout", () => {
   let root: string;
@@ -234,5 +249,17 @@ describeEmbeddedPostgres("runAttributionRefresh", () => {
 
     expect(summary.entries).toHaveLength(0);
     expect(inventoryStore.listResources).not.toHaveBeenCalled();
+  });
+
+  it("Finding 14: skips the whole run with a loud classified log when repoRoots is empty (APEX_REPO_ROOTS unset)", async () => {
+    await seedCompany(["sarala-ai/FinPilot"], ["finpilot-dev"]);
+    const inventoryStore = { listResources: vi.fn() };
+    const lines: string[] = [];
+
+    const summary = await runAttributionRefresh(db, { repoRoots: [], inventoryStore, log: (line) => lines.push(line) });
+
+    expect(summary.entries).toEqual([]);
+    expect(inventoryStore.listResources).not.toHaveBeenCalled();
+    expect(lines.some((line) => line.includes("APEX_REPO_ROOTS"))).toBe(true);
   });
 });

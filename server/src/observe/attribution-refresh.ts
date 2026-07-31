@@ -22,6 +22,7 @@ import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { type Db, cloudScopeBindings, companies } from "@paperclipai/db";
 import { run } from "../apex/exec.js";
+import { periodicJobIntervalMs, startPeriodicJob } from "../lib/periodic-job.js";
 import { GcpInventoryStore } from "./gcp-inventory-store.js";
 import { importMapperReport, type ImportResult, type MapperReport } from "./resource-attribution-store.js";
 
@@ -66,9 +67,16 @@ export function findRepoCheckout(repo: string, roots: string[]): string | null {
   return null;
 }
 
+/** Finding 14 (adversarial architecture review): this used to default to the
+ *  founder's laptop checkout path, so on any other host the job would
+ *  silently walk a directory that doesn't exist (or, worse, one that
+ *  happens to exist and contains unrelated repos). Default is now empty —
+ *  `runAttributionRefresh` treats an empty root list as "not configured on
+ *  this host" and skips the run with a loud classified log naming this env
+ *  var, rather than guessing a path. */
 export function repoRootsFromEnv(env: NodeJS.ProcessEnv = process.env): string[] {
   const raw = env.APEX_REPO_ROOTS?.trim();
-  if (!raw) return ["/Users/srinivas/Dev/repos/sarala_org"];
+  if (!raw) return [];
   return raw.split(":").map((s) => s.trim()).filter(Boolean);
 }
 
@@ -149,6 +157,17 @@ export async function runAttributionRefresh(
   const repoRoots = opts.repoRoots ?? repoRootsFromEnv();
   const inventoryStore = opts.inventoryStore ?? new GcpInventoryStore(db);
   const log = opts.log ?? ((line: string) => console.log(`${REPORT_LOG_PREFIX} ${line}`));
+
+  if (repoRoots.length === 0) {
+    // Finding 14: no hardcoded fallback path anymore — an unconfigured host
+    // skips loudly instead of silently no-op'ing per repo with no
+    // explanation of why.
+    log(
+      "APEX_REPO_ROOTS is not set (or resolved to no paths) — skipping this run. " +
+        "Set APEX_REPO_ROOTS to a colon-separated list of directories containing local git checkouts of bound repos.",
+    );
+    return { startedAt, finishedAt: new Date().toISOString(), entries: [] };
+  }
 
   const entries: AttributionRefreshEntry[] = [];
   const companiesToRefresh = await companiesWithBindings(db);
@@ -244,11 +263,7 @@ export async function runAttributionRefresh(
 
 /** Interval (ms) from `APEX_ATTRIBUTION_REFRESH_HOURS` (default 24h, 0 disables). */
 export function attributionRefreshIntervalMs(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env.APEX_ATTRIBUTION_REFRESH_HOURS;
-  if (raw === undefined || raw.trim() === "") return 24 * 60 * 60 * 1000;
-  const hours = Number(raw);
-  if (!Number.isFinite(hours) || hours < 0) return 24 * 60 * 60 * 1000;
-  return hours * 60 * 60 * 1000;
+  return periodicJobIntervalMs("APEX_ATTRIBUTION_REFRESH_HOURS", 24, env);
 }
 
 /** First-run delay after boot (fixed 5 minutes — the job reads live cloud
@@ -257,41 +272,25 @@ export function attributionRefreshIntervalMs(env: NodeJS.ProcessEnv = process.en
 export const ATTRIBUTION_REFRESH_INITIAL_DELAY_MS = 5 * 60 * 1000;
 
 /**
- * Wires the recurring refresh into server startup, following the same
- * `setInterval` scheduling shape as the other background monitors (heartbeat
- * scheduler tick, database backup) registered in `index.ts`. Returns a
- * disposer that clears both timers — call it on shutdown. A 0-hour interval
- * (env override) disables scheduling entirely; the caller can still trigger
- * a run on demand via `runAttributionRefresh` directly (used by the manual
- * `POST /observe/attribution/refresh` route).
+ * Wires the recurring refresh into server startup via the shared
+ * `startPeriodicJob` helper (Finding 8, adversarial architecture review).
+ * Returns a disposer that clears both timers — call it on shutdown. A
+ * 0-hour interval (env override) disables scheduling entirely; the caller
+ * can still trigger a run on demand via `runAttributionRefresh` directly
+ * (used by the manual `POST /observe/attribution/refresh` route).
  */
 export function startAttributionRefreshScheduler(
   db: Db,
   opts: { intervalMs?: number; initialDelayMs?: number; log?: (line: string) => void } = {},
 ): () => void {
-  const intervalMs = opts.intervalMs ?? attributionRefreshIntervalMs();
-  const initialDelayMs = opts.initialDelayMs ?? ATTRIBUTION_REFRESH_INITIAL_DELAY_MS;
   const log = opts.log ?? ((line: string) => console.log(`${REPORT_LOG_PREFIX} ${line}`));
-
-  if (intervalMs <= 0) {
-    log("scheduling disabled (APEX_ATTRIBUTION_REFRESH_HOURS=0)");
-    return () => {};
-  }
-
-  let interval: ReturnType<typeof setInterval> | null = null;
-  const tick = () => {
-    void runAttributionRefresh(db, { log }).catch((e) => {
-      log(`refresh run failed: ${e instanceof Error ? e.message : String(e)}`);
-    });
-  };
-
-  const timeout = setTimeout(() => {
-    tick();
-    interval = setInterval(tick, intervalMs);
-  }, initialDelayMs);
-
-  return () => {
-    clearTimeout(timeout);
-    if (interval) clearInterval(interval);
-  };
+  return startPeriodicJob({
+    name: "attribution-refresh",
+    envVar: "APEX_ATTRIBUTION_REFRESH_HOURS",
+    defaultHours: 24,
+    initialDelayMs: opts.initialDelayMs ?? ATTRIBUTION_REFRESH_INITIAL_DELAY_MS,
+    intervalMs: opts.intervalMs,
+    log,
+    run: () => runAttributionRefresh(db, { log }),
+  });
 }
