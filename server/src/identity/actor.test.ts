@@ -55,7 +55,6 @@ describe("resolveLocalActor", () => {
     reply({});
     const actor = await resolveLocalActor();
     expect(actor.unresolved).toBe(true);
-    expect(actorId(actor)).toBe("unknown");
     // The old placeholder is exactly what must never reappear.
     expect(actor.email).not.toBe("local@paperclip.local");
   });
@@ -63,6 +62,38 @@ describe("resolveLocalActor", () => {
   it("treats gcloud's '(unset)' sentinel as absent", async () => {
     reply({ "gcloud config": "(unset)", "git config --get user.email": "dev@example.com" });
     expect(actorId(await resolveLocalActor())).toBe("dev@example.com");
+  });
+
+  it("resolves git identity from the REPO, so per-repo config wins", async () => {
+    const seen: Array<string | undefined> = [];
+    runMock.mockImplementation(async (cmd: string, args: string[], _t: number, cwd?: string) => {
+      if (cmd === "git") {
+        seen.push(cwd);
+        return {
+          status: "ok",
+          stdout: cwd === "/repos/bloom" ? "work@sarala.ai\n" : "personal@example.com\n",
+          stderr: "",
+        };
+      }
+      return { status: "failed", stdout: "", stderr: "" };
+    });
+    const inRepo = await resolveLocalActor("/repos/bloom");
+    expect(actorId(inRepo)).toBe("work@sarala.ai");
+    expect(seen).toContain("/repos/bloom");
+
+    // Different repo path is cached separately, not reused.
+    const global = await resolveLocalActor();
+    expect(actorId(global)).toBe("personal@example.com");
+  });
+
+  it("falls back to machine identity when no credential resolves", async () => {
+    reply({});
+    const actor = await resolveLocalActor();
+    expect(actor.unresolved).toBe(true);
+    expect(actor.origin.user).toBeTruthy();
+    expect(actor.origin.host).toBeTruthy();
+    expect(actorId(actor)).toBe(`${actor.origin.user}@${actor.origin.host}`);
+    expect(actorId(actor)).not.toBe("unknown");
   });
 
   it("caches so every request does not re-probe the CLIs", async () => {
