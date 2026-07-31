@@ -29,7 +29,7 @@ import { getAttributionsForProject, type ResourceAttributionRow } from "./resour
 // builds that support it (T5). Optional throughout: absent on older cores,
 // and the listing must still render exactly as before in that case.
 const AttributionSchema = z.object({
-  status: z.enum(["label", "registry", "exception"]),
+  status: z.enum(["label", "registry", "inherited", "system", "exception"]),
   workflow: z.string().nullable().optional(),
   repo: z.string().nullable().optional(),
   env: z.string().nullable().optional(),
@@ -48,6 +48,8 @@ const ResourceSchema = z.object({
 const AttributionSummarySchema = z.object({
   label: z.number(),
   registry: z.number(),
+  inherited: z.number().optional(),
+  system: z.number().optional(),
   exception: z.number(),
 });
 
@@ -120,7 +122,7 @@ export function mergeAttributions(
   resourcesByType: ProjectInventory["resourcesByType"],
   dbRows: Map<string, ResourceAttributionRow>,
 ): { resourcesByType: ProjectInventory["resourcesByType"]; summary: NonNullable<ProjectInventory["attributionSummary"]> } {
-  const summary = { label: 0, registry: 0, exception: 0, mapped: 0, manual: 0, conflicts: 0 };
+  const summary = { label: 0, registry: 0, inherited: 0, system: 0, exception: 0, mapped: 0, manual: 0, conflicts: 0 };
   const out: ProjectInventory["resourcesByType"] = {};
 
   for (const [assetType, resources] of Object.entries(resourcesByType)) {
@@ -162,6 +164,8 @@ export function mergeAttributions(
       }
 
       if (core?.status === "registry") summary.registry += 1;
+      else if (core?.status === "inherited") summary.inherited += 1;
+      else if (core?.status === "system") summary.system += 1;
       else if (core?.status === "exception") summary.exception += 1;
       return resource;
     });

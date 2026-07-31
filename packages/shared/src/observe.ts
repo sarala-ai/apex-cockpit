@@ -191,7 +191,7 @@ export type GcpResourceResponse = z.infer<typeof GcpResourceResponseSchema>;
 // statuses (spec: resource-attribution-mapping) — see gcp-inventory-store's
 // precedence merge (manual > cloud label > auto_mapped > core's own status).
 export const InventoryAttributionSchema = z.object({
-  status: z.enum(["label", "registry", "exception", "mapped", "manual"]),
+  status: z.enum(["label", "registry", "inherited", "system", "exception", "mapped", "manual"]),
   workflow: z.string().nullable().optional(),
   repo: z.string().nullable().optional(),
   env: z.string().nullable().optional(),
@@ -214,6 +214,8 @@ export type InventoryResource = z.infer<typeof InventoryResourceSchema>;
 export const InventoryAttributionSummarySchema = z.object({
   label: z.number(),
   registry: z.number(),
+  inherited: z.number().optional(),
+  system: z.number().optional(),
   exception: z.number(),
   mapped: z.number().optional(),
   manual: z.number().optional(),

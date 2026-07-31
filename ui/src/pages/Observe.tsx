@@ -81,6 +81,8 @@ function attributionCountsSegments(s: NonNullable<ProjectInventory["attributionS
   const segs: string[] = [];
   if (s.label > 0) segs.push(`${s.label} by label`);
   if (s.registry > 0) segs.push(`${s.registry} by registry`);
+  if ((s.inherited ?? 0) > 0) segs.push(`${s.inherited} inherited`);
+  if ((s.system ?? 0) > 0) segs.push(`${s.system} system`);
   if ((s.mapped ?? 0) > 0) segs.push(`${s.mapped} mapped`);
   if ((s.manual ?? 0) > 0) segs.push(`${s.manual} manual`);
   return segs;
