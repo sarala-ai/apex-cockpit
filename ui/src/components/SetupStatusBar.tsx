@@ -139,7 +139,7 @@ export function SetupStatusBar() {
         >
           <Rocket className="mt-0.5 h-4 w-4 shrink-0 text-sky-600 dark:text-sky-400" />
           <div className="min-w-0">
-            <p className="text-sm font-medium text-sky-900 dark:text-sky-100">Finish setting up Apex</p>
+            <p className="text-sm font-medium text-sky-900 dark:text-sky-100">Finish setting up APEX</p>
             <p className="mt-0.5 text-xs text-sky-800/80 dark:text-sky-200/70">
               {progress.total - progress.done} step{progress.total - progress.done === 1 ? "" : "s"} left —
               cloud auth, org scoping, and MCP capabilities.

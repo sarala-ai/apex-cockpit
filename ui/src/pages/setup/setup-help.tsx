@@ -39,7 +39,7 @@ function renderInline(text: string): ReactNode[] {
 export const STEP_HELP: Record<StepKey, StepHelp> = {
   auth: {
     purpose:
-      "Apex is tied to your Google Cloud and GitHub identities — connect both to begin.",
+      "APEX is tied to your Google Cloud and GitHub identities — connect both to begin.",
     whatYoullDo: [
       "Run `gcloud auth login` — this is your Google / Gmail sign-in (same account); there is no separate login page.",
       "Run `gh auth login` to connect your GitHub identity.",
@@ -77,13 +77,13 @@ export const STEP_HELP: Record<StepKey, StepHelp> = {
   },
   orgGithub: {
     purpose:
-      "Connect the GitHub org to GCP once, keylessly: install the Apex GitHub App, then create one org-level Workload Identity Federation pool + provider that trusts your whole org.",
+      "Connect the GitHub org to GCP once, keylessly: install the APEX GitHub App, then create one org-level Workload Identity Federation pool + provider that trusts your whole org.",
     whatYoullDo: [
-      "Install the Apex GitHub App on the org (fine-grained, per-install token — not a personal PAT). Grant `contents:rw`, `pull_requests`, `actions`, `checks`, `workflows`, `environments`, `metadata`, and select the repos it may touch.",
+      "Install the APEX GitHub App on the org (fine-grained, per-install token — not a personal PAT). Grant `contents:rw`, `pull_requests`, `actions`, `checks`, `workflows`, `environments`, `metadata`, and select the repos it may touch.",
       "Create one org-level WIF pool + provider, hosted in the shared project (e.g. `sarala-cicd`). Scope trust to the whole org with `assertion.repository_owner == 'sarala-ai'` — do not create a pool/provider per repo.",
       "Leave per-repo authorization to the company steps: they IAM-bind `principalSet://…/attribute.repository/<org>/<repo>` (optionally `+attribute.environment`) to each env's least-privilege deploy SA.",
     ],
-    note: "WIF filters only on `repository`, `repository_owner`, and `environment` (GitHub OIDC claims). GitHub is flat — \"company = a group of repos\" is an Apex-side grouping. Deploy SAs can live in any project; only the pool/provider is pinned to the host. This fuses WIF + GitHub Environments + required reviewers into one keyless, approval-gated deploy path.",
+    note: "WIF filters only on `repository`, `repository_owner`, and `environment` (GitHub OIDC claims). GitHub is flat — \"company = a group of repos\" is an APEX-side grouping. Deploy SAs can live in any project; only the pool/provider is pinned to the host. This fuses WIF + GitHub Environments + required reviewers into one keyless, approval-gated deploy path.",
     links: [
       {
         label: "Open GitHub org apps",
