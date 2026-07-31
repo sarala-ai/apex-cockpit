@@ -271,6 +271,7 @@ export function loadConfig(): Config {
     bind,
     host: configuredHost,
     customBindHost,
+    localContainerAck: process.env.APEX_LOCAL_CONTAINER === "true",
   });
   if (bindValidationErrors.length > 0) {
     throw new Error(bindValidationErrors[0]);

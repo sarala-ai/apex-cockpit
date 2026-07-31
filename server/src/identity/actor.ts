@@ -72,6 +72,21 @@ async function probe(cmd: string, args: string[], cwd?: string): Promise<string 
 }
 
 export async function resolveLocalActor(repoPath?: string): Promise<ResolvedActor> {
+  // Explicit override for environments where no credential CLI exists — a
+  // local container has no gcloud/git/gh, and "root@<container-id>" would be
+  // origin noise. The compose passes the host operator's identity through.
+  const envEmail = process.env.APEX_ACTOR_EMAIL?.trim();
+  const envName = process.env.APEX_ACTOR_NAME?.trim();
+  if (envEmail) {
+    return {
+      name: envName || envEmail,
+      email: envEmail,
+      sources: {},
+      origin: { user: os.userInfo().username, host: os.hostname().replace(/\.local$/i, "") },
+      unresolved: false,
+    };
+  }
+
   const key = repoPath ?? "";
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.actor;

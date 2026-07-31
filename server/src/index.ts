@@ -510,10 +510,29 @@ export async function startServer(): Promise<StartedServer> {
     startupDbInfo = { mode: "embedded-postgres", dataDir, port };
   }
   
-  if (config.deploymentMode === "local_trusted" && !isLoopbackHost(config.host)) {
+  // Identity spec (apex-docs architecture/identity.md), rule 3: auth mode is a
+  // setup choice, not a consequence of where APEX runs. A LOCAL container must
+  // be able to run trusted with no login — but a container has to bind 0.0.0.0
+  // for Docker port publishing to reach it, which this loopback guard forbade,
+  // silently forcing every containerised instance into authenticated mode.
+  //
+  // The escape hatch is an explicit acknowledgment, not a default: setting
+  // APEX_LOCAL_CONTAINER=true asserts that the operator keeps the instance
+  // local by publishing the port on the host's loopback only (compose:
+  // "127.0.0.1:3000:3100"), making the host interface the boundary the
+  // in-process bind check can no longer be. Exposure must still be private.
+  const localContainerAck = process.env.APEX_LOCAL_CONTAINER === "true";
+  if (config.deploymentMode === "local_trusted" && !isLoopbackHost(config.host) && !localContainerAck) {
     throw new Error(
       `local_trusted mode requires loopback host binding (received: ${config.host}). ` +
-        "Use authenticated mode for non-loopback deployments.",
+        "For a LOCAL container that must bind 0.0.0.0, set APEX_LOCAL_CONTAINER=true and " +
+        "publish the port on 127.0.0.1 only. Use authenticated mode for reachable deployments.",
+    );
+  }
+  if (config.deploymentMode === "local_trusted" && !isLoopbackHost(config.host) && localContainerAck) {
+    logger.warn(
+      "local_trusted on a non-loopback bind (APEX_LOCAL_CONTAINER acknowledged) — " +
+        "ensure the container port is published on 127.0.0.1 only; anyone who can reach this port is the operator.",
     );
   }
   
