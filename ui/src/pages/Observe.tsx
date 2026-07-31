@@ -5,13 +5,20 @@
 
 import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Activity, Bot, ClipboardCheck, Network, Server, TrendingDown } from "lucide-react";
+import { Activity, Bot, ChevronDown, ChevronRight, ClipboardCheck, Network, Server, TrendingDown } from "lucide-react";
 import { observeApi } from "@/api/observe";
 import { useCompany } from "@/context/CompanyContext";
 import { StatusBadge, type StatusVariant } from "@/apex/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import type { EvalRecord, EvalVerdict, FleetEntry, FleetHealth } from "@paperclipai/shared";
+import type {
+  EvalRecord,
+  EvalVerdict,
+  FleetEntry,
+  FleetHealth,
+  InventoryResource,
+  ProjectInventory,
+} from "@paperclipai/shared";
 
 function runStatusVariant(s: string) {
   const v = s.toLowerCase();
@@ -49,6 +56,20 @@ function formatTokens(n: number | null | undefined): string {
   if (n < 1000) return String(n);
   return `${(n / 1000).toFixed(n < 10000 ? 1 : 0)}k`;
 }
+// Provenance-at-birth (spec: provenance-at-birth) — flattens an inventory's
+// resourcesByType map into the resources whose attribution classified as
+// "exception" (unexplained: no apex_managed label, not found in the state
+// registry either). Only meaningful when attributionSummary is present.
+function exceptionResources(inv: ProjectInventory): Array<{ assetType: string; resource: InventoryResource }> {
+  const out: Array<{ assetType: string; resource: InventoryResource }> = [];
+  for (const [assetType, resources] of Object.entries(inv.resourcesByType)) {
+    for (const resource of resources) {
+      if (resource.attribution?.status === "exception") out.push({ assetType, resource });
+    }
+  }
+  return out;
+}
+
 function pct(v: number | null): string {
   return v == null ? "—" : `${Math.round(v * 100)}%`;
 }
@@ -199,6 +220,20 @@ export function Observe() {
   // pane below the Fleet panel. Cleared implicitly on company switch since
   // the fleet query key changes and the selection no longer resolves to a row.
   const [selectedService, setSelectedService] = useState<string | null>(null);
+
+  // GCP Inventory card — which projects have their exception-attribution list
+  // expanded. Only relevant when the project's inventory carries
+  // attribution_summary (older apex-core builds never populate it, so the
+  // card has nothing to expand there).
+  const [expandedExceptions, setExpandedExceptions] = useState<Set<string>>(new Set());
+  function toggleExceptions(projectId: string) {
+    setExpandedExceptions((prev) => {
+      const next = new Set(prev);
+      if (next.has(projectId)) next.delete(projectId);
+      else next.add(projectId);
+      return next;
+    });
+  }
 
   const health = useQuery({
     queryKey: ["observe", "health", selectedCompanyId],
@@ -558,34 +593,87 @@ export function Observe() {
               No GCP projects bound to this company yet — bind one in Company Settings → Cloud.
             </p>
           ) : (
-            (gcpInventory.data ?? []).map((inv) => (
-              <div key={inv.projectId} className="space-y-1.5">
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="font-mono font-medium">{inv.projectId}</span>
-                  {inv.error ? (
-                    <span className="text-rose-600 dark:text-rose-400">— {inv.error}</span>
-                  ) : (
-                    <span className="text-muted-foreground">
-                      {inv.totalResources ?? "—"} resources · {inv.resourceTypes ?? "—"} types
-                    </span>
+            (gcpInventory.data ?? []).map((inv) => {
+              const exceptions = inv.attributionSummary ? exceptionResources(inv) : [];
+              const isExpanded = expandedExceptions.has(inv.projectId);
+              return (
+                <div key={inv.projectId} className="space-y-1.5">
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="font-mono font-medium">{inv.projectId}</span>
+                    {inv.error ? (
+                      <span className="text-rose-600 dark:text-rose-400">— {inv.error}</span>
+                    ) : (
+                      <span className="text-muted-foreground">
+                        {inv.totalResources ?? "—"} resources · {inv.resourceTypes ?? "—"} types
+                        {inv.attributionSummary && (
+                          <>
+                            {" · "}
+                            {inv.attributionSummary.label} by label · {inv.attributionSummary.registry} by
+                            registry ·{" "}
+                            <span
+                              className={
+                                inv.attributionSummary.exception > 0
+                                  ? "text-amber-600 dark:text-amber-400"
+                                  : undefined
+                              }
+                            >
+                              {inv.attributionSummary.exception} exceptions
+                            </span>
+                          </>
+                        )}
+                      </span>
+                    )}
+                  </div>
+                  {!inv.error && Object.keys(inv.resourcesByType).length > 0 && (
+                    <ul className="grid grid-cols-1 gap-x-4 gap-y-1 pl-1 sm:grid-cols-2 lg:grid-cols-3">
+                      {Object.entries(inv.resourcesByType).map(([assetType, resources]) => (
+                        <li
+                          key={assetType}
+                          className="flex items-center justify-between gap-2 text-xs text-muted-foreground"
+                          title={assetType}
+                        >
+                          <span className="min-w-0 flex-1 truncate">{assetType.split("/").pop()}</span>
+                          <span className="shrink-0 tabular-nums">{resources.length}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {!inv.error && inv.attributionSummary && exceptions.length > 0 && (
+                    <div className="pl-1">
+                      <button
+                        type="button"
+                        onClick={() => toggleExceptions(inv.projectId)}
+                        className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                      >
+                        {isExpanded ? (
+                          <ChevronDown className="h-3 w-3 shrink-0" />
+                        ) : (
+                          <ChevronRight className="h-3 w-3 shrink-0" />
+                        )}
+                        {exceptions.length} unexplained resource{exceptions.length === 1 ? "" : "s"}
+                      </button>
+                      {isExpanded && (
+                        <ul className="mt-1 space-y-1 border-l border-border pl-3">
+                          {exceptions.map(({ assetType, resource }, i) => (
+                            <li
+                              key={`${assetType}-${resource.name ?? i}`}
+                              className="flex items-center justify-between gap-2 text-xs text-muted-foreground"
+                            >
+                              <span className="min-w-0 flex-1 truncate" title={resource.name ?? undefined}>
+                                {resource.displayName ?? resource.name ?? "—"}
+                              </span>
+                              <span className="shrink-0 truncate text-[10px] uppercase tracking-wide">
+                                {assetType.split("/").pop()}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
                   )}
                 </div>
-                {!inv.error && Object.keys(inv.resourcesByType).length > 0 && (
-                  <ul className="grid grid-cols-1 gap-x-4 gap-y-1 pl-1 sm:grid-cols-2 lg:grid-cols-3">
-                    {Object.entries(inv.resourcesByType).map(([assetType, resources]) => (
-                      <li
-                        key={assetType}
-                        className="flex items-center justify-between gap-2 text-xs text-muted-foreground"
-                        title={assetType}
-                      >
-                        <span className="min-w-0 flex-1 truncate">{assetType.split("/").pop()}</span>
-                        <span className="shrink-0 tabular-nums">{resources.length}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            ))
+              );
+            })
           )}
 
           {(gcpServices.data ?? []).length > 0 && (

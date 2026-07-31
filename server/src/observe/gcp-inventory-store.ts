@@ -22,6 +22,17 @@ import type {
 import { companyGcpProjects } from "./company-projects.js";
 import { ApexUnavailableError, CliApexInvoker, type ApexInvoker } from "../apex/invoke.js";
 
+// Provenance-at-birth (spec: provenance-at-birth) — attribution classification
+// emitted per-resource by `gcp_inventory.list_project_resources` on apex-core
+// builds that support it (T5). Optional throughout: absent on older cores,
+// and the listing must still render exactly as before in that case.
+const AttributionSchema = z.object({
+  status: z.enum(["label", "registry", "exception"]),
+  workflow: z.string().nullable().optional(),
+  repo: z.string().nullable().optional(),
+  env: z.string().nullable().optional(),
+});
+
 const ResourceSchema = z.object({
   name: z.string().nullable().optional(),
   displayName: z.string().nullable().optional(),
@@ -29,6 +40,13 @@ const ResourceSchema = z.object({
   location: z.string().nullable().optional(),
   createTime: z.string().nullable().optional(),
   updateTime: z.string().nullable().optional(),
+  attribution: AttributionSchema.optional(),
+});
+
+const AttributionSummarySchema = z.object({
+  label: z.number(),
+  registry: z.number(),
+  exception: z.number(),
 });
 
 // Shape returned by `apex run inventory list-project-resources`.
@@ -38,6 +56,7 @@ const ListResourcesSchema = z.object({
   total_resources: z.number().nullable().optional(),
   resource_types: z.number().nullable().optional(),
   resources_by_type: z.record(z.string(), z.array(ResourceSchema)).optional(),
+  attribution_summary: AttributionSummarySchema.optional(),
   error: z.string().optional(),
 });
 
@@ -95,6 +114,7 @@ export class GcpInventoryStore {
           totalResources: res.total_resources ?? null,
           resourceTypes: res.resource_types ?? null,
           resourcesByType: res.resources_by_type ?? {},
+          attributionSummary: res.attribution_summary,
           error: res.status === "success" ? null : (res.error ?? null),
         });
       } catch (e) {

@@ -180,6 +180,20 @@ export type GcpResourceResponse = z.infer<typeof GcpResourceResponseSchema>;
 // field is kept permissive (nullable/optional) because gcloud's output shape
 // varies across resource/asset types.
 
+// Provenance-at-birth (spec: provenance-at-birth) — classification of who/what
+// is accountable for a resource's existence. "label" = the resource carries
+// the engine's apex_managed label; "registry" = no label but found in the
+// state registry (best-effort, never fails the listing); "exception" =
+// neither, i.e. unexplained. Optional/absent on older apex-core builds that
+// don't emit it yet — the UI must tolerate its absence.
+export const InventoryAttributionSchema = z.object({
+  status: z.enum(["label", "registry", "exception"]),
+  workflow: z.string().nullable().optional(),
+  repo: z.string().nullable().optional(),
+  env: z.string().nullable().optional(),
+});
+export type InventoryAttribution = z.infer<typeof InventoryAttributionSchema>;
+
 export const InventoryResourceSchema = z.object({
   name: z.string().nullable().optional(),
   displayName: z.string().nullable().optional(),
@@ -187,14 +201,23 @@ export const InventoryResourceSchema = z.object({
   location: z.string().nullable().optional(),
   createTime: z.string().nullable().optional(),
   updateTime: z.string().nullable().optional(),
+  attribution: InventoryAttributionSchema.optional(),
 });
 export type InventoryResource = z.infer<typeof InventoryResourceSchema>;
+
+export const InventoryAttributionSummarySchema = z.object({
+  label: z.number(),
+  registry: z.number(),
+  exception: z.number(),
+});
+export type InventoryAttributionSummary = z.infer<typeof InventoryAttributionSummarySchema>;
 
 export const ProjectInventorySchema = z.object({
   projectId: z.string(),
   totalResources: z.number().nullable(),
   resourceTypes: z.number().nullable(),
   resourcesByType: z.record(z.string(), z.array(InventoryResourceSchema)),
+  attributionSummary: InventoryAttributionSummarySchema.optional(),
   error: z.string().nullable().optional(),
 });
 export type ProjectInventory = z.infer<typeof ProjectInventorySchema>;
