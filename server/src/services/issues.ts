@@ -64,6 +64,7 @@ import {
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
+import { reflectGithubIssueTransition } from "../apex/pipeline/github-issue-reflect.js";
 import { parseObject } from "../adapters/utils.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
@@ -6468,7 +6469,52 @@ export function issueService(db: Db) {
         return enriched;
       };
 
-      return dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx);
+      const result = dbOrTx === db ? await db.transaction(runUpdate) : await runUpdate(dbOrTx);
+
+      // Finding 5c (adversarial architecture review): the GitHub reflect hook
+      // used to fire only from the route layer, so any status transition that
+      // went through this service without passing through that route (bulk
+      // tree-control cancel, heartbeat's deferred-comment reopen, etc.) never
+      // reflected back to GitHub. Firing it here, on every committed status
+      // transition, makes this the single place that doctrine is enforced.
+      // Fire-and-forget: a reflection failure must never fail or slow the
+      // issue update itself — `reflectGithubIssueTransition` itself no-ops
+      // for anything that isn't a plugin:github-origin status change.
+      if (result && issueData.status !== undefined && existing.status !== result.status) {
+        void reflectGithubIssueTransition(existing, result).catch((e) => {
+          logger.warn({ err: e, issueId: result.id }, "github issue reflection failed");
+        });
+      }
+
+      return result;
+    },
+
+    /**
+     * Finding 5a (adversarial architecture review): the GitHub ingest job
+     * used to read `status === "backlog"` and then, separately, call the
+     * general-purpose `update()` — a TOCTOU window in which a promotion
+     * (backlog -> anything else) between the read and the write would let
+     * GitHub's re-ingest pen touch a cockpit-owned issue. `update()`'s own
+     * signature has no room for an arbitrary WHERE clause without risking
+     * every other caller's invariants, so this is a narrow, explicit-WHERE
+     * store function scoped to exactly the ingest job's title/description
+     * refresh: the row only updates `WHERE status = 'backlog'` in the same
+     * statement that reads it, atomically. Returns `null` (no-op, not an
+     * error) if the row was promoted out of backlog concurrently — the
+     * caller logs that as a classified skip.
+     */
+    updateBacklogFieldsIfStillBacklog: async (
+      id: string,
+      patch: { title?: string; description?: string | null },
+    ) => {
+      const [updated] = await db
+        .update(issues)
+        .set({ ...patch, updatedAt: new Date() })
+        .where(and(eq(issues.id, id), eq(issues.status, "backlog")))
+        .returning();
+      if (!updated) return null;
+      const [enriched] = await withIssueLabels(db, [updated]);
+      return enriched ?? null;
     },
 
     clearExecutionWorkspaceEnvironmentSelection: async (companyId: string, environmentId: string) => {
