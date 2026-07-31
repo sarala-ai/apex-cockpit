@@ -22,6 +22,7 @@ import {
   type IssueTreePreviewWarning,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { reflectGithubIssueTransition } from "../apex/pipeline/github-issue-reflect.js";
 
 type IssueRow = typeof issues.$inferSelect;
 type HoldRow = typeof issueTreeHolds.$inferSelect;
@@ -868,6 +869,26 @@ export function issueTreeControlService(db: Db) {
       .map((member) => member.issueId))];
     if (issueIds.length === 0) return { updatedIssueIds: [], updatedIssues: [] };
 
+    // Finding 5c/5d (adversarial architecture review): this bulk cancel
+    // writes to `issues` directly, bypassing issueService.update — the one
+    // place the GitHub reflect hook now fires from (see services/issues.ts).
+    // Snapshot pre-update state for plugin:github-origin members so we can
+    // fire the same reflection here, and so 5d's rule ("gate the upstream
+    // close on previous.status !== 'backlog'" — a backlog mirror was never
+    // promoted, so cockpit-side cancel is local triage only, no upstream
+    // write) has a real `previous` to gate on.
+    const previousRows = await db
+      .select({
+        id: issues.id,
+        status: issues.status,
+        originKind: issues.originKind,
+        originId: issues.originId,
+        identifier: issues.identifier,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), inArray(issues.id, issueIds)));
+    const previousById = new Map(previousRows.map((row) => [row.id, row]));
+
     const now = new Date();
     const updated = await db
       .update(issues)
@@ -893,6 +914,19 @@ export function issueTreeControlService(db: Db) {
         status: issues.status,
         assigneeAgentId: issues.assigneeAgentId,
       });
+
+    for (const issue of updated) {
+      const previous = previousById.get(issue.id);
+      if (!previous || previous.originKind !== "plugin:github") continue;
+      void reflectGithubIssueTransition(
+        { originKind: previous.originKind, originId: previous.originId, status: previous.status, identifier: previous.identifier },
+        { originKind: previous.originKind, originId: previous.originId, status: issue.status, identifier: previous.identifier },
+      ).catch((e) => {
+        console.warn(
+          `[issue-tree-control] github issue reflection failed for issue ${issue.id}: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      });
+    }
 
     return {
       updatedIssueIds: updated.map((issue) => issue.id),
