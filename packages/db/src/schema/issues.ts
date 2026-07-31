@@ -156,5 +156,15 @@ export const issues = pgTable(
           and ${table.hiddenAt} is null
           and ${table.status} not in ('done', 'cancelled')`,
       ),
+    // Finding 5b (adversarial architecture review): the GitHub ingest job
+    // upserts by (companyId, originFingerprint) at the application layer, but
+    // nothing stopped the scheduler tick and a manual `POST
+    // /apex/github-ingest` from racing each other into two inserts for the
+    // same GitHub issue. This constraint makes the dedupe atomic — scoped to
+    // `plugin:github` origin only, mirroring the other origin-scoped partial
+    // unique indexes above.
+    githubOriginFingerprintIdx: uniqueIndex("issues_github_origin_fingerprint_uq")
+      .on(table.companyId, table.originFingerprint)
+      .where(sql`${table.originKind} = 'plugin:github'`),
   }),
 );
