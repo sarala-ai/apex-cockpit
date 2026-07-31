@@ -4,13 +4,31 @@
 // this answers "what's governed", not "how healthy is it" — tool-call
 // throughput/latency metrics live on Observe's Metrics & Alerts section instead.
 
-import { useQuery } from "@tanstack/react-query";
-import { Bot, ClipboardList, Network } from "lucide-react";
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Bot, ClipboardList, Loader2, Network, Plus } from "lucide-react";
+import type { GatewayRegisterInput } from "@paperclipai/shared";
 import { gatewayApi } from "@/api/gateway";
+import { ApiError } from "@/api/client";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatusBadge } from "@/apex/status-badge";
+
+const TRANSPORTS: Array<{ value: GatewayRegisterInput["transport"]; label: string }> = [
+  { value: "STREAMABLEHTTP", label: "Streamable HTTP" },
+  { value: "SSE", label: "SSE" },
+];
 
 function relTime(iso: string | null): string {
   if (!iso) return "—";
@@ -33,7 +51,110 @@ function EmptyNote({ children }: { children: React.ReactNode }) {
   return <p className="text-xs text-muted-foreground">{children}</p>;
 }
 
+function AddGatewayForm({ onDone }: { onDone: () => void }) {
+  const queryClient = useQueryClient();
+  const [name, setName] = useState("");
+  const [url, setUrl] = useState("");
+  const [transport, setTransport] = useState<GatewayRegisterInput["transport"]>("STREAMABLEHTTP");
+  const [description, setDescription] = useState("");
+
+  const register = useMutation({
+    mutationFn: () =>
+      gatewayApi.register({
+        name: name.trim(),
+        url: url.trim(),
+        transport,
+        ...(description.trim() ? { description: description.trim() } : {}),
+      }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["gateway", "registry"] });
+      onDone();
+    },
+  });
+
+  const errorMessage =
+    register.error instanceof ApiError
+      ? register.error.message
+      : register.error
+        ? "Failed to register the MCP server."
+        : null;
+
+  return (
+    <form
+      className="space-y-3 rounded-md border border-border px-4 py-4"
+      onSubmit={(event) => {
+        event.preventDefault();
+        register.mutate();
+      }}
+    >
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label htmlFor="mcp-name">Name</Label>
+          <Input
+            id="mcp-name"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="penpot"
+            required
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="mcp-transport">Transport</Label>
+          <Select value={transport} onValueChange={(value) => setTransport(value as GatewayRegisterInput["transport"])}>
+            <SelectTrigger id="mcp-transport" className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {TRANSPORTS.map((t) => (
+                <SelectItem key={t.value} value={t.value}>
+                  {t.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="mcp-url">URL</Label>
+        <Input
+          id="mcp-url"
+          value={url}
+          onChange={(event) => setUrl(event.target.value)}
+          placeholder="https://penpot.example.com/mcp"
+          required
+        />
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="mcp-description">Description (optional)</Label>
+        <Input
+          id="mcp-description"
+          value={description}
+          onChange={(event) => setDescription(event.target.value)}
+          placeholder="What this server exposes"
+        />
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Registering federates this server's tools through apex-gateway — the same governed,
+        audited path every other tool in the registry goes through, not a side channel.
+      </p>
+      {errorMessage && (
+        <p className="text-xs text-rose-600 dark:text-rose-400">{errorMessage}</p>
+      )}
+      <div className="flex items-center gap-2">
+        <Button type="submit" size="sm" disabled={register.isPending || !name.trim() || !url.trim()}>
+          {register.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+          Register
+        </Button>
+        <Button type="button" variant="ghost" size="sm" onClick={onDone} disabled={register.isPending}>
+          Cancel
+        </Button>
+      </div>
+    </form>
+  );
+}
+
 export function Gateway() {
+  const [showAddForm, setShowAddForm] = useState(false);
   const registry = useQuery({
     queryKey: ["gateway", "registry"],
     queryFn: gatewayApi.registry,
@@ -78,6 +199,20 @@ export function Gateway() {
         </TabsList>
 
         <TabsContent value="registry" className="mt-4 space-y-4">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs text-muted-foreground">
+              Upstream gateways, their tools, and virtual servers governed through apex-gateway.
+            </p>
+            {!showAddForm && (
+              <Button size="sm" variant="outline" onClick={() => setShowAddForm(true)}>
+                <Plus className="h-4 w-4" />
+                Add MCP server
+              </Button>
+            )}
+          </div>
+
+          {showAddForm && <AddGatewayForm onDone={() => setShowAddForm(false)} />}
+
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
             <Card>
               <CardHeader className="flex-row items-center gap-2 space-y-0">

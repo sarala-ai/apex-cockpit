@@ -40,6 +40,60 @@ async function timedFetch(url: string, timeoutMs = 5000): Promise<Response | nul
   }
 }
 
+/**
+ * Write-path result shape for register/delete — deliberately NOT
+ * failure-isolated like the read methods above (empty-on-failure would hide a
+ * write outcome from the caller). Every branch is explicit: `ok` carries the
+ * gateway's own id/name back so the route can report what was created;
+ * `status` classifies the failure so the route (and ultimately the UI) can
+ * give an actionable message instead of a raw upstream string.
+ */
+export type GatewayWriteResult =
+  | { ok: true; id: string | null; name: string }
+  | {
+      ok: false;
+      // "unreachable" = we couldn't even reach apex-gateway itself (network/timeout).
+      // "upstream_unreachable" = apex-gateway is up but couldn't connect to the
+      // registered URL (its 502) — a different, more actionable failure.
+      status: "conflict" | "validation" | "unreachable" | "upstream_unreachable" | "error";
+      message: string;
+    };
+
+function extractMessage(body: unknown, fallback: string): string {
+  if (body && typeof body === "object") {
+    const m = (body as Record<string, unknown>).message ?? (body as Record<string, unknown>).detail;
+    if (typeof m === "string" && m.trim()) return m;
+  }
+  return fallback;
+}
+
+async function timedWrite(
+  url: string,
+  init: RequestInit,
+  timeoutMs = 8000,
+): Promise<{ status: number; body: unknown } | null> {
+  const token = process.env.APEX_GATEWAY_TOKEN;
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      ...init,
+      signal: controller.signal,
+      headers: {
+        "content-type": "application/json",
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...(init.headers ?? {}),
+      },
+    });
+    const body = await res.json().catch(() => null);
+    return { status: res.status, body };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 function str(v: unknown): string | null {
   return typeof v === "string" ? v : null;
 }
@@ -200,5 +254,72 @@ export class GatewayClient {
       a2aAgents: pickA2a(raw.a2aAgents),
       error: null,
     };
+  }
+
+  /**
+   * POST /gateways — register a new upstream MCP server. On success,
+   * apex-gateway federates (auto-discovers) its tools, which is why a
+   * registry re-fetch right after this call is expected to show new tools
+   * too, not just the new gateway entry.
+   *
+   * Classifies upstream failures rather than forwarding raw gateway text:
+   * - 409 → name/registration conflict (gateway already knows this name/URL)
+   * - 422 → validation, most commonly apex-gateway's SSRF guard rejecting a
+   *   docker-internal/private-network host (see SSRF_ALLOW_PRIVATE_NETWORKS)
+   * - 502 → apex-gateway reached out but couldn't connect to the URL
+   * - network/timeout failure reaching apex-gateway itself → "unreachable"
+   */
+  async registerGateway(input: {
+    name: string;
+    url: string;
+    transport: "SSE" | "STREAMABLEHTTP" | "STDIO";
+    description?: string | null;
+  }): Promise<GatewayWriteResult> {
+    const res = await timedWrite(`${gatewayUrl()}/gateways`, {
+      method: "POST",
+      body: JSON.stringify({
+        name: input.name,
+        url: input.url,
+        transport: input.transport,
+        ...(input.description ? { description: input.description } : {}),
+      }),
+    });
+    if (!res) {
+      return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
+    }
+    if (res.status >= 200 && res.status < 300) {
+      const body = (res.body ?? {}) as Record<string, unknown>;
+      return { ok: true, id: str(body.id), name: String(body.name ?? input.name) };
+    }
+    if (res.status === 409) {
+      return { ok: false, status: "conflict", message: extractMessage(res.body, "Gateway name already exists") };
+    }
+    if (res.status === 422) {
+      return { ok: false, status: "validation", message: extractMessage(res.body, "Validation failed") };
+    }
+    if (res.status === 502) {
+      return { ok: false, status: "upstream_unreachable", message: extractMessage(res.body, "Upstream gateway unreachable") };
+    }
+    return { ok: false, status: "error", message: extractMessage(res.body, `Registration failed (${res.status})`) };
+  }
+
+  /**
+   * DELETE /gateways/{id} — confirmed present in the fork (mcpgateway/main.py,
+   * `gateways.delete` permission), unlike a guessed endpoint. Returns
+   * `{ok:false}` (never throws) on 403/404/400/unreachable so callers can
+   * render an inline message the same way registerGateway does.
+   */
+  async deleteGateway(id: string): Promise<GatewayWriteResult> {
+    const res = await timedWrite(`${gatewayUrl()}/gateways/${encodeURIComponent(id)}`, { method: "DELETE" });
+    if (!res) {
+      return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
+    }
+    if (res.status >= 200 && res.status < 300) {
+      return { ok: true, id, name: id };
+    }
+    // delete_gateway raises plain HTTPException(detail=...), not {message: ...}
+    const body = res.body as Record<string, unknown> | null;
+    const message = typeof body?.detail === "string" ? body.detail : extractMessage(res.body, `Delete failed (${res.status})`);
+    return { ok: false, status: "error", message };
   }
 }

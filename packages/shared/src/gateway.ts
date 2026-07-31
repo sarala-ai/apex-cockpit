@@ -51,6 +51,18 @@ export const GatewayRegistrySchema = z.object({
 });
 export type GatewayRegistry = z.infer<typeof GatewayRegistrySchema>;
 
+// ── Registering a new upstream MCP server — the writable path added on top of
+// the read-only registry above. `transport` is intentionally the small enum
+// the cockpit UI supports (STDIO omitted from the form: it needs a `command`
+// to spawn a subprocess, not a URL, and isn't meaningful from a browser).
+export const GatewayRegisterInputSchema = z.object({
+  name: z.string().min(1),
+  url: z.string().min(1),
+  transport: z.enum(["SSE", "STREAMABLEHTTP", "STDIO"]),
+  description: z.string().optional(),
+});
+export type GatewayRegisterInput = z.infer<typeof GatewayRegisterInputSchema>;
+
 export const GatewayAgentEntrySchema = z.object({
   id: z.string().nullable(),
   name: z.string(),
