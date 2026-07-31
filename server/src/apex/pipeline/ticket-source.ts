@@ -7,9 +7,20 @@ import { err, ok, type Result } from '../errors.js';
 import { run } from '../exec.js';
 import type { Ticket } from './types.js';
 
+/** `gh issue list` page size. Finding 2 (adversarial architecture review):
+ *  the previous 30-issue cap meant any repo with a backlog bigger than that
+ *  had its 31st-and-beyond open issues silently absent from `list()` —
+ *  and the ingest job's closed-on-GitHub sweep (see github-issue-ingest.ts)
+ *  used to treat "absent from list()" as "closed", mass-cancelling live
+ *  backlog. Raised well above any repo we bind today; `truncated` on the
+ *  `list()` result surfaces it if a repo ever grows past this. */
+export const GITHUB_ISSUE_LIST_LIMIT = 200;
+
 export interface TicketSource {
-  /** List candidate tickets (open issues) for a repo. */
-  list(repo: string): Promise<Result<Ticket[]> & { source: string }>;
+  /** List candidate tickets (open issues) for a repo. `truncated` is true
+   *  when the page came back exactly at the list limit — a signal (not a
+   *  guarantee) that more open issues exist upstream than were returned. */
+  list(repo: string): Promise<Result<Ticket[]> & { source: string; truncated?: boolean }>;
   /** Fetch one ticket by number. */
   get(repo: string, number: number): Promise<Result<Ticket> & { source: string }>;
   /** Reflect pipeline progress back to the SoT (label/comment). Best-effort. */
@@ -22,6 +33,7 @@ interface GhIssue {
   body: string;
   url: string;
   state: string;
+  labels?: Array<{ name: string }>;
 }
 
 function toTicket(repo: string, i: GhIssue): Ticket {
@@ -34,6 +46,7 @@ function toTicket(repo: string, i: GhIssue): Ticket {
     body: i.body ?? '',
     url: i.url,
     status: i.state,
+    labels: i.labels?.map((l) => l.name),
   };
 }
 
@@ -49,16 +62,21 @@ function classifyGh(res: Extract<Awaited<ReturnType<typeof run>>, { status: 'mis
 }
 
 export class GitHubIssuesSource implements TicketSource {
-  async list(repo: string): Promise<Result<Ticket[]> & { source: string }> {
+  async list(repo: string): Promise<Result<Ticket[]> & { source: string; truncated?: boolean }> {
     if (!repo) return { ...err('empty', 'Pass a repo (owner/name).'), source: 'no-repo' };
     const res = await run('gh', [
-      'issue', 'list', '--repo', repo, '--state', 'open', '--limit', '30',
+      'issue', 'list', '--repo', repo, '--state', 'open', '--limit', String(GITHUB_ISSUE_LIST_LIMIT),
       '--json', 'number,title,body,url,state',
     ]);
     if (res.status !== 'ok') return { ...classifyGh(res), source: 'unavailable' };
     try {
       const issues = JSON.parse(res.stdout) as GhIssue[];
-      return { ...ok(issues.map((i) => toTicket(repo, i))), source: 'gh' };
+      // Truncation is never silent: a full page means there may be more open
+      // issues upstream than we fetched. The caller (github-issue-ingest.ts)
+      // logs this as a classified warning rather than treating the missing
+      // tail as "closed".
+      const truncated = issues.length >= GITHUB_ISSUE_LIST_LIMIT;
+      return { ...ok(issues.map((i) => toTicket(repo, i))), source: 'gh', truncated };
     } catch {
       return { ...err('parse-failed', 'Could not parse gh issue JSON.'), source: 'unavailable' };
     }
@@ -67,7 +85,7 @@ export class GitHubIssuesSource implements TicketSource {
   async get(repo: string, number: number): Promise<Result<Ticket> & { source: string }> {
     const res = await run('gh', [
       'issue', 'view', String(number), '--repo', repo,
-      '--json', 'number,title,body,url,state',
+      '--json', 'number,title,body,url,state,labels',
     ]);
     if (res.status !== 'ok') return { ...classifyGh(res), source: 'unavailable' };
     try {

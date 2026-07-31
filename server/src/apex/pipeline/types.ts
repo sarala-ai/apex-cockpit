@@ -53,6 +53,11 @@ export interface Ticket {
   body: string;
   url: string;
   status: string;
+  /** Label names on the source issue, when the source surfaces them (GitHub
+   *  does via `gh issue view/list --json ...,labels`). Used by the reflect
+   *  reconciliation sweep (Finding 13) to check apex:promoted/apex:done are
+   *  still present upstream, not to drive pipeline logic. */
+  labels?: string[];
 }
 
 /** Ephemeral work-order artifact (spec or plan). Disposable after merge. */
