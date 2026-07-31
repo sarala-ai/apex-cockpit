@@ -61,6 +61,7 @@ import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
+import { startAttributionRefreshScheduler } from "./observe/attribution-refresh.js";
 import { resolveLocalActor, actorId } from "./identity/actor.js";
 import type {
   InstanceDatabaseBackupRunResult,
@@ -1095,6 +1096,14 @@ export async function startServer(): Promise<StartedServer> {
       });
     }, backupIntervalMs);
   }
+
+  // Recurring resource-attribution refresh (spec: resource-attribution-mapping)
+  // — re-runs `apex resource-mapper` against every company's bound repos/
+  // projects and re-imports the result, so attribution rows stay fresh without
+  // a human running curl. First tick 5 minutes after boot, then every
+  // APEX_ATTRIBUTION_REFRESH_HOURS (default 24h; 0 disables). Same
+  // setInterval scheduling shape as the database-backup job above.
+  const stopAttributionRefreshScheduler = startAttributionRefreshScheduler(db as any);
   
   // Wait for external adapters to finish loading before accepting requests.
   // Without this, adapter type validation (assertKnownAdapterType) would
@@ -1182,6 +1191,7 @@ export async function startServer(): Promise<StartedServer> {
         clearInterval(heartbeatSchedulerInterval);
         heartbeatSchedulerInterval = null;
       }
+      stopAttributionRefreshScheduler();
       await waitForHeartbeatSchedulerIdle();
 
       const telemetryClient = getTelemetryClient();

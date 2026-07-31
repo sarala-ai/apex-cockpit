@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { companies, createDb, resourceAttributions } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -9,6 +9,10 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { apexObserveRoutes } from "../routes/apex-observe.js";
+import { runAttributionRefresh } from "../observe/attribution-refresh.js";
+
+vi.mock("../observe/attribution-refresh.js", () => ({ runAttributionRefresh: vi.fn() }));
+const mockRunAttributionRefresh = vi.mocked(runAttributionRefresh);
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe.sequential : describe.skip;
@@ -158,6 +162,39 @@ describeEmbeddedPostgres("attribution routes", () => {
         .from(resourceAttributions)
         .where(eq(resourceAttributions.resourceUri, resourceUri));
       expect(row).toMatchObject({ source: "manual", workflow: "human_override", repo: "org/human-repo", env: "prod" });
+    });
+  });
+
+  describe("POST /observe/attribution/refresh", () => {
+    it("runs the refresh job once and returns its summary", async () => {
+      const summary = {
+        startedAt: "2026-07-31T00:05:00.000Z",
+        finishedAt: "2026-07-31T00:05:03.000Z",
+        entries: [
+          { companyId: "co-1", companyName: "FinPilot", repo: "sarala-ai/FinPilot", projectId: "finpilot-dev", status: "imported", detail: "imported=1 updated=0 skippedManual=0 skippedNoResource=0" },
+        ],
+      };
+      mockRunAttributionRefresh.mockResolvedValueOnce(summary as never);
+
+      const res = await request(app()).post("/observe/attribution/refresh").send({});
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual(summary);
+      expect(mockRunAttributionRefresh).toHaveBeenCalledTimes(1);
+    });
+
+    it("surfaces a job failure as a 500 rather than crashing the route", async () => {
+      mockRunAttributionRefresh.mockRejectedValueOnce(new Error("db unavailable"));
+
+      const res = await request(app()).post("/observe/attribution/refresh").send({});
+
+      expect(res.status).toBe(500);
+      expect(res.body.error).toContain("db unavailable");
+    });
+
+    it("requires board-or-agent auth like its sibling attribution routes", async () => {
+      const res = await request(app({ type: "none", source: "none" } as never)).post("/observe/attribution/refresh").send({});
+      expect(res.status).toBe(403);
     });
   });
 

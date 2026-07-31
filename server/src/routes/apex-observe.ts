@@ -31,6 +31,7 @@ import { EvalIngestClient } from "../observe/eval-ingest-client.js";
 import { observeInputs } from "../observe/tools.js";
 import { assertBoardOrAgent, getActorInfo } from "./authz.js";
 import { importMapperReport, upsertManualAttribution } from "../observe/resource-attribution-store.js";
+import { runAttributionRefresh } from "../observe/attribution-refresh.js";
 
 const attributionImportSchema = z.object({
   companyId: z.string(),
@@ -156,6 +157,25 @@ export function apexObserveRoutes(db: Db) {
     } catch (e) {
       console.error("[observe] attribution/manual", e);
       res.status(500).json({ error: e instanceof Error ? e.message : "manual attribution failed" });
+    }
+  });
+
+  // POST /observe/attribution/refresh — runs the recurring attribution-refresh
+  // job (`observe/attribution-refresh.ts`) once, synchronously, and returns its
+  // per-company/repo/project summary. This is the SAME job the scheduler runs
+  // every `APEX_ATTRIBUTION_REFRESH_HOURS`; the route exists so tests/demos
+  // have a deterministic on-demand entry point rather than waiting on the
+  // clock. Failure-isolated internally (see attribution-refresh.ts) — never
+  // 500s for a single company/repo/project's failure, only for something
+  // breaking the job itself.
+  router.post("/observe/attribution/refresh", async (req, res) => {
+    assertBoardOrAgent(req);
+    try {
+      const summary = await runAttributionRefresh(db);
+      res.json(summary);
+    } catch (e) {
+      console.error("[observe] attribution/refresh", e);
+      res.status(500).json({ error: e instanceof Error ? e.message : "attribution refresh failed" });
     }
   });
 
