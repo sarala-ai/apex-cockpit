@@ -37,11 +37,20 @@ function ticket(overrides: Partial<Ticket> = {}): Ticket {
   };
 }
 
-function fakeSource(list: (repo: string) => ReturnType<TicketSource["list"]>): TicketSource {
+function fakeSource(
+  list: (repo: string) => ReturnType<TicketSource["list"]>,
+  overrides: Partial<TicketSource> = {},
+): TicketSource {
   return {
     list,
-    get: vi.fn(async () => ({ ...err("empty", "unused"), source: "unused" })) as TicketSource["get"],
+    // Finding 2's get-confirm-before-cancel gate needs `get()` to report the
+    // issue as closed for the pre-existing "cancels a still-backlog fork
+    // issue" test to keep passing without every other test having to know
+    // about the confirmation step. Tests exercising the unconfirmed paths
+    // override this explicitly.
+    get: vi.fn(async () => ({ ...ok(ticket({ status: "CLOSED" })), source: "gh" })) as TicketSource["get"],
     updateStatus: vi.fn(async () => ok(true)) as TicketSource["updateStatus"],
+    ...overrides,
   };
 }
 
@@ -205,6 +214,57 @@ describeEmbeddedPostgres("runGithubIssueIngest", () => {
     expect(comments[0]!.body).toContain("Closed on GitHub");
   });
 
+  it("Finding 2: does not cancel a backlog issue absent from listing when get() fails (unknown, not closed)", async () => {
+    const company = await seedCompany(["acme/repo"]);
+    const source = fakeSource(async () => ({ ...ok([ticket()]), source: "gh" }));
+    await runGithubIssueIngest(db, { source, log: () => {} });
+
+    const closedSource = fakeSource(
+      async () => ({ ...ok([]), source: "gh" }),
+      { get: vi.fn(async () => ({ ...err("tool-failed", "gh timed out"), source: "unavailable" })) },
+    );
+    const summary = await runGithubIssueIngest(db, { source: closedSource, log: () => {} });
+
+    expect(summary.entries).toEqual([
+      expect.objectContaining({ action: "cancel_skipped_unconfirmed", originId: "acme/repo#1" }),
+    ]);
+    const row = await getFork(company.id, "acme/repo#1");
+    expect(row!.status).toBe("backlog"); // never cancelled on a guess
+  });
+
+  it("Finding 2: does not cancel a backlog issue absent from a (truncated) listing when get() shows it still open", async () => {
+    const company = await seedCompany(["acme/repo"]);
+    const source = fakeSource(async () => ({ ...ok([ticket()]), source: "gh" }));
+    await runGithubIssueIngest(db, { source, log: () => {} });
+
+    const closedSource = fakeSource(
+      async () => ({ ...ok([]), source: "gh" }),
+      { get: vi.fn(async () => ({ ...ok(ticket({ status: "OPEN" })), source: "gh" })) },
+    );
+    const summary = await runGithubIssueIngest(db, { source: closedSource, log: () => {} });
+
+    expect(summary.entries).toEqual([
+      expect.objectContaining({ action: "cancel_skipped_unconfirmed", originId: "acme/repo#1" }),
+    ]);
+    const row = await getFork(company.id, "acme/repo#1");
+    expect(row!.status).toBe("backlog");
+  });
+
+  it("Finding 2: logs a classified truncation warning when the listing page is full", async () => {
+    await seedCompany(["acme/repo"]);
+    const source = fakeSource(async (repo) => ({
+      ...ok([ticket({ id: `${repo}#1` })]),
+      source: "gh",
+      truncated: true,
+    }));
+
+    const summary = await runGithubIssueIngest(db, { source, log: () => {} });
+
+    expect(summary.entries).toContainEqual(
+      expect.objectContaining({ action: "listing_truncated", repo: "acme/repo" }),
+    );
+  });
+
   it("does not cancel an issue that has already been promoted, even if closed on GitHub", async () => {
     const company = await seedCompany(["acme/repo"]);
     const source = fakeSource(async () => ({ ...ok([ticket()]), source: "gh" }));
@@ -241,5 +301,40 @@ describeEmbeddedPostgres("runGithubIssueIngest", () => {
 
     expect(summary.entries).toEqual([]);
     expect(source.list).not.toHaveBeenCalled();
+  });
+
+  it("Finding 5b: the partial unique index rejects a second plugin:github row with the same (company, fingerprint)", async () => {
+    const company = await seedCompany(["acme/repo"]);
+    const fingerprint = githubOriginFingerprint("acme/repo#1");
+    await db.insert(issues).values({
+      companyId: company.id,
+      identifier: `${company.issuePrefix}-1`,
+      title: "First",
+      status: "backlog",
+      originKind: "plugin:github",
+      originId: "acme/repo#1",
+      originFingerprint: fingerprint,
+    });
+
+    let thrown: unknown = null;
+    try {
+      await db.insert(issues).values({
+        companyId: company.id,
+        identifier: `${company.issuePrefix}-2`,
+        title: "Racing duplicate",
+        status: "backlog",
+        originKind: "plugin:github",
+        originId: "acme/repo#1",
+        originFingerprint: fingerprint,
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).not.toBeNull();
+    const messages = [thrown, (thrown as { cause?: unknown } | null)?.cause]
+      .map((e) => (e instanceof Error ? e.message : ""))
+      .join("\n");
+    expect(messages).toContain("duplicate key value violates unique constraint");
+    expect(messages).toContain("issues_github_origin_fingerprint_uq");
   });
 });

@@ -21,9 +21,15 @@
  * or a single issue's upsert error is logged and skipped, never throws the
  * job down (same shape as `observe/attribution-refresh.ts`).
  */
-import { and, eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import { type Db, cloudScopeBindings, companies, issues } from "@paperclipai/db";
 import { issueService } from "../../services/issues.js";
+import { periodicJobIntervalMs, startPeriodicJob } from "../../lib/periodic-job.js";
+import {
+  GITHUB_DONE_LABEL,
+  GITHUB_PROMOTED_LABEL,
+  parseGithubOriginId,
+} from "./github-issue-reflect.js";
 import { GitHubIssuesSource } from "./ticket-source.js";
 import type { TicketSource } from "./ticket-source.js";
 
@@ -34,6 +40,9 @@ export type GithubIssueIngestAction =
   | "skipped_not_backlog"
   | "cancelled_closed_on_github"
   | "source_unavailable"
+  | "listing_truncated"
+  | "cancel_skipped_unconfirmed"
+  | "reconciled"
   | "failed";
 
 export type GithubIssueIngestEntry = {
@@ -52,6 +61,43 @@ export type GithubIssueIngestSummary = {
 };
 
 const LOG_PREFIX = "[github-issue-ingest]";
+
+const GITHUB_ORIGIN_FINGERPRINT_UNIQUE_CONSTRAINT = "issues_github_origin_fingerprint_uq";
+
+/** Detects a Postgres unique-violation (23505) against
+ *  `issues_github_origin_fingerprint_uq` specifically, so a genuinely
+ *  unexpected DB error still propagates instead of being swallowed. Mirrors
+ *  the `isUniqueConstraintConflict` idiom in services/task-watchdogs.ts. */
+function isGithubOriginFingerprintUniqueConflict(error: unknown): boolean {
+  const queue: unknown[] = [error];
+  const messages: string[] = [];
+  let hasUniqueCode = false;
+  let hasConstraint = false;
+  for (const candidate of queue) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const typed = candidate as {
+      code?: string;
+      constraint?: string;
+      constraint_name?: string;
+      cause?: unknown;
+      message?: string;
+    };
+    if (typed.code === "23505") hasUniqueCode = true;
+    if (
+      typed.constraint === GITHUB_ORIGIN_FINGERPRINT_UNIQUE_CONSTRAINT ||
+      typed.constraint_name === GITHUB_ORIGIN_FINGERPRINT_UNIQUE_CONSTRAINT
+    ) {
+      hasConstraint = true;
+    }
+    if (typed.message) messages.push(typed.message);
+    if (typed.cause) queue.push(typed.cause);
+  }
+  const message = messages.join("\n");
+  return (
+    (hasUniqueCode || message.includes("duplicate key value violates unique constraint")) &&
+    (hasConstraint || message.includes(GITHUB_ORIGIN_FINGERPRINT_UNIQUE_CONSTRAINT))
+  );
+}
 
 /** Stable dedupe key for a GitHub issue, scoped by company via the row's
  *  own companyId (not embedded in the fingerprint itself). */
@@ -102,6 +148,23 @@ async function ingestRepoForCompany(
     return entries;
   }
 
+  // Finding 2 (adversarial architecture review): a full page from
+  // `source.list` means there may be more open issues upstream than we
+  // fetched. Truncation must never be silent — log it as a classified
+  // warning so a repo growing past the page size is visible in ops, not
+  // just inferred later from mysteriously-vanishing backlog issues.
+  if (listed.truncated) {
+    entries.push({
+      companyId: company.companyId,
+      companyName: company.companyName,
+      repo,
+      originId: null,
+      action: "listing_truncated",
+      detail: `gh issue list returned a full page (>= ${listed.value.length} issues) — some open issues on ${repo} may not have been fetched this pass`,
+    });
+    log(`company=${company.companyId} repo=${repo} WARNING: gh issue list page full — listing may be truncated`);
+  }
+
   const openOriginIds = new Set(listed.value.map((t) => t.id));
 
   for (const ticket of listed.value) {
@@ -114,14 +177,36 @@ async function ingestRepoForCompany(
         .then((rows) => rows[0] ?? null);
 
       if (!existing) {
-        await svc.create(company.companyId, {
-          title: ticket.title,
-          description: ticket.body || null,
-          status: "backlog",
-          originKind: "plugin:github",
-          originId: ticket.id,
-          originFingerprint: fingerprint,
-        });
+        try {
+          await svc.create(company.companyId, {
+            title: ticket.title,
+            description: ticket.body || null,
+            status: "backlog",
+            originKind: "plugin:github",
+            originId: ticket.id,
+            originFingerprint: fingerprint,
+          });
+        } catch (e) {
+          // Finding 5b (adversarial architecture review): the scheduled tick
+          // and a manual `POST /apex/github-ingest` can race on the same
+          // not-yet-ingested GitHub issue. `issues_github_origin_fingerprint_uq`
+          // (migration 0151) makes the dedupe atomic at the DB layer — the
+          // loser of the race hits a unique-violation here instead of
+          // double-creating. Treat that as a benign race, not a failure.
+          if (isGithubOriginFingerprintUniqueConflict(e)) {
+            entries.push({
+              companyId: company.companyId,
+              companyName: company.companyName,
+              repo,
+              originId: ticket.id,
+              action: "unchanged",
+              detail: "lost a concurrent create race (another ingest run/manual trigger created it first) — not duplicated",
+            });
+            log(`company=${company.companyId} repo=${repo} issue=${ticket.id} create raced, deduped by unique index`);
+            continue;
+          }
+          throw e;
+        }
         entries.push({
           companyId: company.companyId,
           companyName: company.companyName,
@@ -159,7 +244,29 @@ async function ingestRepoForCompany(
         continue;
       }
 
-      await svc.update(existing.id, { title: ticket.title, description: nextDescription });
+      // Finding 5a (adversarial architecture review): the `existing.status
+      // !== "backlog"` check above and this write used to be two separate
+      // statements — a promotion racing in between would let this job's
+      // title/description refresh clobber a cockpit-owned issue. This helper
+      // re-checks `status = 'backlog'` atomically in the same UPDATE, so a
+      // concurrent promotion makes it a no-op (returns null) instead of a
+      // race.
+      const updated = await svc.updateBacklogFieldsIfStillBacklog(existing.id, {
+        title: ticket.title,
+        description: nextDescription,
+      });
+      if (!updated) {
+        entries.push({
+          companyId: company.companyId,
+          companyName: company.companyName,
+          repo,
+          originId: ticket.id,
+          action: "skipped_not_backlog",
+          detail: `fork issue ${existing.identifier ?? existing.id} was promoted out of backlog concurrently — refresh skipped`,
+        });
+        log(`company=${company.companyId} repo=${repo} issue=${ticket.id} skip update: promoted concurrently`);
+        continue;
+      }
       entries.push({
         companyId: company.companyId,
         companyName: company.companyName,
@@ -202,6 +309,54 @@ async function ingestRepoForCompany(
     for (const row of backlogRows) {
       if (!row.originId || !row.originId.startsWith(repoPrefix)) continue;
       if (openOriginIds.has(row.originId)) continue;
+
+      // Finding 2 (adversarial architecture review): "absent from list()"
+      // used to be treated as "closed", but `list()` is paginated — a repo
+      // with more open issues than the page size would silently mass-cancel
+      // legitimate backlog. Never cancel on absence alone: confirm the issue
+      // is actually closed via a direct `get()`. A `get()` failure (network,
+      // auth, rate limit, or a since-deleted issue) is unknown, not closed —
+      // skip and log classified, never cancel on a guess.
+      const parsed = parseGithubOriginId(row.originId);
+      if (!parsed) {
+        entries.push({
+          companyId: company.companyId,
+          companyName: company.companyName,
+          repo,
+          originId: row.originId,
+          action: "cancel_skipped_unconfirmed",
+          detail: `fork issue ${row.identifier ?? row.id} has an unparseable originId (${row.originId}) — skipping cancel`,
+        });
+        log(`company=${company.companyId} repo=${repo} issue=${row.originId} skip cancel: unparseable originId`);
+        continue;
+      }
+      const confirmed = await source.get(parsed.repo, parsed.number);
+      if (!confirmed.ok) {
+        entries.push({
+          companyId: company.companyId,
+          companyName: company.companyName,
+          repo,
+          originId: row.originId,
+          action: "cancel_skipped_unconfirmed",
+          detail: `could not confirm GitHub state for ${row.originId} (get failed: ${confirmed.message}) — treating as unknown, not cancelling`,
+        });
+        log(`company=${company.companyId} repo=${repo} issue=${row.originId} skip cancel: get() failed: ${confirmed.message}`);
+        continue;
+      }
+      const confirmedClosed = /closed/i.test(confirmed.value.status);
+      if (!confirmedClosed) {
+        entries.push({
+          companyId: company.companyId,
+          companyName: company.companyName,
+          repo,
+          originId: row.originId,
+          action: "cancel_skipped_unconfirmed",
+          detail: `fork issue ${row.identifier ?? row.id} absent from the (possibly truncated) listing but get() shows it still open — not cancelling`,
+        });
+        log(`company=${company.companyId} repo=${repo} issue=${row.originId} skip cancel: get() shows still open`);
+        continue;
+      }
+
       try {
         await svc.update(row.id, { status: "cancelled" });
         await svc.addComment(
@@ -237,6 +392,110 @@ async function ingestRepoForCompany(
     log(`company=${company.companyId} repo=${repo} closed-on-GitHub sweep FAILED: ${detail}`);
   }
 
+  entries.push(...(await reconcilePromotedAndDoneMirrors(db, source, company, repo, log)));
+
+  return entries;
+}
+
+/**
+ * Finding 13 (adversarial architecture review): `reflectGithubIssueTransition`
+ * is fire-and-forget — a failed label/close call is a classified log line
+ * and nothing else, permanently. This sweep runs every ingest tick (6h by
+ * default) and re-checks every non-backlog `plugin:github` mirror: promoted
+ * mirrors should carry `apex:promoted`, done/cancelled mirrors should carry
+ * `apex:done` and be closed upstream. Anything missing gets a best-effort
+ * re-apply, classified and logged either way. Only runs against sources that
+ * actually expose the label/close surface (real `GitHubIssuesSource`) —
+ * a minimal `TicketSource` test double is a no-op here, same as
+ * `reflectGithubIssueTransition` treats it.
+ */
+async function reconcilePromotedAndDoneMirrors(
+  db: Db,
+  source: TicketSource & Partial<Pick<GitHubIssuesSource, "addLabel" | "close">>,
+  company: { companyId: string; companyName: string | null },
+  repo: string,
+  log: (line: string) => void,
+): Promise<GithubIssueIngestEntry[]> {
+  const entries: GithubIssueIngestEntry[] = [];
+  if (!source.addLabel || !source.close) return entries;
+
+  const repoPrefix = `${repo}#`;
+  const mirroredRows = await db
+    .select()
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, company.companyId),
+        eq(issues.originKind, "plugin:github"),
+        ne(issues.status, "backlog"),
+      ),
+    );
+
+  for (const row of mirroredRows) {
+    if (!row.originId || !row.originId.startsWith(repoPrefix)) continue;
+    const parsed = parseGithubOriginId(row.originId);
+    if (!parsed) continue;
+
+    try {
+      const confirmed = await source.get(parsed.repo, parsed.number);
+      if (!confirmed.ok) {
+        log(`company=${company.companyId} repo=${repo} issue=${row.originId} reconcile skipped: get() failed: ${confirmed.message}`);
+        continue;
+      }
+
+      const isTerminal = row.status === "done" || row.status === "cancelled";
+      const expectedLabel = isTerminal ? GITHUB_DONE_LABEL : GITHUB_PROMOTED_LABEL;
+      const hasExpectedLabel = (confirmed.value.labels ?? []).includes(expectedLabel);
+      const isClosedUpstream = /closed/i.test(confirmed.value.status);
+      const needsLabel = !hasExpectedLabel;
+      const needsClose = isTerminal && !isClosedUpstream;
+      if (!needsLabel && !needsClose) continue;
+
+      const problems: string[] = [];
+      if (needsLabel) problems.push(`missing ${expectedLabel} label`);
+      if (needsClose) problems.push("not closed upstream");
+
+      let labelOk = !needsLabel;
+      let closeOk = !needsClose;
+      if (needsLabel) {
+        const labelRes = await source.addLabel(parsed.repo, parsed.number, expectedLabel);
+        labelOk = labelRes.ok;
+        if (!labelRes.ok) {
+          log(`company=${company.companyId} repo=${repo} issue=${row.originId} reconcile addLabel failed: ${labelRes.message}`);
+        }
+      }
+      if (needsClose) {
+        const closeRes = await source.close(parsed.repo, parsed.number);
+        closeOk = closeRes.ok;
+        if (!closeRes.ok) {
+          log(`company=${company.companyId} repo=${repo} issue=${row.originId} reconcile close failed: ${closeRes.message}`);
+        }
+      }
+
+      const fixed = labelOk && closeOk;
+      entries.push({
+        companyId: company.companyId,
+        companyName: company.companyName,
+        repo,
+        originId: row.originId,
+        action: fixed ? "reconciled" : "failed",
+        detail: `${problems.join(", ")} — ${fixed ? "re-applied" : "re-apply attempt incomplete"}`,
+      });
+      log(`company=${company.companyId} repo=${repo} issue=${row.originId} reconcile: ${problems.join(", ")} -> ${fixed ? "fixed" : "still incomplete"}`);
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e);
+      entries.push({
+        companyId: company.companyId,
+        companyName: company.companyName,
+        repo,
+        originId: row.originId,
+        action: "failed",
+        detail: `reconcile threw: ${detail}`,
+      });
+      log(`company=${company.companyId} repo=${repo} issue=${row.originId} reconcile FAILED: ${detail}`);
+    }
+  }
+
   return entries;
 }
 
@@ -269,11 +528,7 @@ export async function runGithubIssueIngest(
 
 /** Interval (ms) from `APEX_GITHUB_INGEST_HOURS` (default 6h, 0 disables). */
 export function githubIngestIntervalMs(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env.APEX_GITHUB_INGEST_HOURS;
-  if (raw === undefined || raw.trim() === "") return 6 * 60 * 60 * 1000;
-  const hours = Number(raw);
-  if (!Number.isFinite(hours) || hours < 0) return 6 * 60 * 60 * 1000;
-  return hours * 60 * 60 * 1000;
+  return periodicJobIntervalMs("APEX_GITHUB_INGEST_HOURS", 6, env);
 }
 
 /** First-run delay after boot — same 5-minute deliberate offset as the
@@ -282,40 +537,27 @@ export function githubIngestIntervalMs(env: NodeJS.ProcessEnv = process.env): nu
 export const GITHUB_INGEST_INITIAL_DELAY_MS = 5 * 60 * 1000;
 
 /**
- * Wires the recurring ingest into server startup, following the same
- * `setInterval` scheduling shape as `startAttributionRefreshScheduler`.
- * Returns a disposer that clears both timers — call it on shutdown. A
- * 0-hour interval (env override) disables scheduling entirely; the caller
- * can still trigger a run on demand via `runGithubIssueIngest` directly
- * (used by the manual `POST /apex/github-ingest` route).
+ * Wires the recurring ingest into server startup via the shared
+ * `startPeriodicJob` helper (Finding 8, adversarial architecture review —
+ * this and `startAttributionRefreshScheduler` were ~30 duplicated lines of
+ * hand-rolled `setTimeout`/`setInterval` each). Returns a disposer that
+ * clears both timers — call it on shutdown. A 0-hour interval (env
+ * override) disables scheduling entirely; the caller can still trigger a
+ * run on demand via `runGithubIssueIngest` directly (used by the manual
+ * `POST /apex/github-ingest` route).
  */
 export function startGithubIssueIngestScheduler(
   db: Db,
   opts: { intervalMs?: number; initialDelayMs?: number; log?: (line: string) => void } = {},
 ): () => void {
-  const intervalMs = opts.intervalMs ?? githubIngestIntervalMs();
-  const initialDelayMs = opts.initialDelayMs ?? GITHUB_INGEST_INITIAL_DELAY_MS;
   const log = opts.log ?? ((line: string) => console.log(`${LOG_PREFIX} ${line}`));
-
-  if (intervalMs <= 0) {
-    log("scheduling disabled (APEX_GITHUB_INGEST_HOURS=0)");
-    return () => {};
-  }
-
-  let interval: ReturnType<typeof setInterval> | null = null;
-  const tick = () => {
-    void runGithubIssueIngest(db, { log }).catch((e) => {
-      log(`ingest run failed: ${e instanceof Error ? e.message : String(e)}`);
-    });
-  };
-
-  const timeout = setTimeout(() => {
-    tick();
-    interval = setInterval(tick, intervalMs);
-  }, initialDelayMs);
-
-  return () => {
-    clearTimeout(timeout);
-    if (interval) clearInterval(interval);
-  };
+  return startPeriodicJob({
+    name: "github-issue-ingest",
+    envVar: "APEX_GITHUB_INGEST_HOURS",
+    defaultHours: 6,
+    initialDelayMs: opts.initialDelayMs ?? GITHUB_INGEST_INITIAL_DELAY_MS,
+    intervalMs: opts.intervalMs,
+    log,
+    run: () => runGithubIssueIngest(db, { log }),
+  });
 }
