@@ -52,6 +52,14 @@ install() {
   <dict>
     <key>PATH</key><string>/opt/homebrew/bin:/opt/homebrew/share/google-cloud-sdk/bin:/usr/local/bin:/usr/bin:/bin:$HOME/.rd/bin</string>
     <key>HOME</key><string>$HOME</string>
+    <!-- Backing services, provided by the umbrella compose (docker compose up
+         in apex/ = db + eval; gateway/penpot behind their profiles). Declared
+         here rather than relying on in-code defaults so the native-cockpit ↔
+         compose-services contract is visible and swappable in ONE place. -->
+    <key>APEX_EVAL_URL</key><string>http://localhost:8000</string>
+    <key>APEX_OTLP_ENDPOINT</key><string>http://localhost:8000</string>
+    <key>APEX_GATEWAY_URL</key><string>http://localhost:4444</string>
+    <key>APEX_PENPOT_URL</key><string>http://localhost:9001</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key>
