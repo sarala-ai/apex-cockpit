@@ -17,6 +17,7 @@
  */
 
 import { Router } from "express";
+import { z } from "zod";
 import { desc, eq, inArray } from "drizzle-orm";
 import { type Db, heartbeatRuns, agents, issues } from "@paperclipai/db";
 import { getApexRuns, getCiRuns } from "../apex/observe.js";
@@ -28,7 +29,24 @@ import { GcpInventoryStore } from "../observe/gcp-inventory-store.js";
 import { GatewayClient } from "../gateway/gateway-client.js";
 import { EvalIngestClient } from "../observe/eval-ingest-client.js";
 import { observeInputs } from "../observe/tools.js";
-import { assertBoardOrAgent } from "./authz.js";
+import { assertBoardOrAgent, getActorInfo } from "./authz.js";
+import { importMapperReport, upsertManualAttribution } from "../observe/resource-attribution-store.js";
+
+const attributionImportSchema = z.object({
+  companyId: z.string(),
+  projectId: z.string(),
+  report: z.record(z.string(), z.unknown()),
+});
+
+const attributionManualSchema = z.object({
+  companyId: z.string(),
+  projectId: z.string(),
+  resourceUri: z.string(),
+  assetType: z.string(),
+  workflow: z.string().nullable().optional(),
+  repo: z.string().nullable().optional(),
+  env: z.string().nullable().optional(),
+});
 
 function numOrNull(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
@@ -100,6 +118,63 @@ export function apexObserveRoutes(db: Db) {
       res.json(await inventoryStore.listServices(companyId));
     } catch (e) {
       console.error("[observe] gcp-services", e);
+      res.json([]);
+    }
+  });
+
+  // POST /observe/attribution/import — bulk-loads an apex-core `resource-mapper`
+  // report's `exact` section as `auto_mapped` rows (spec:
+  // resource-attribution-mapping). Idempotent on (projectId, resourceUri); never
+  // imports proposals/drift (those need human review first, not a bulk write),
+  // and never overwrites a row a human has since promoted to `manual`.
+  router.post("/observe/attribution/import", async (req, res) => {
+    assertBoardOrAgent(req);
+    const body = attributionImportSchema.parse(req.body);
+    try {
+      const result = await importMapperReport(db, body.companyId, body.projectId, body.report);
+      res.json(result);
+    } catch (e) {
+      console.error("[observe] attribution/import", e);
+      res.status(500).json({ error: e instanceof Error ? e.message : "import failed" });
+    }
+  });
+
+  // POST /observe/attribution/manual — a human's conflict-resolution decision.
+  // Always upserts as `source: "manual"`, which always wins the precedence
+  // merge in gcp-inventory-store regardless of what auto-mapping or cloud
+  // label say about the same resource.
+  router.post("/observe/attribution/manual", async (req, res) => {
+    assertBoardOrAgent(req);
+    const body = attributionManualSchema.parse(req.body);
+    const actor = getActorInfo(req);
+    try {
+      const row = await upsertManualAttribution(db, {
+        ...body,
+        decidedBy: actor.actorId,
+      });
+      res.json(row);
+    } catch (e) {
+      console.error("[observe] attribution/manual", e);
+      res.status(500).json({ error: e instanceof Error ? e.message : "manual attribution failed" });
+    }
+  });
+
+  // GET /observe/attribution/conflicts?companyId= — resources where the live
+  // cloud label and a db auto_mapped row disagree on workflow/repo/env. The
+  // cloud label stays effective either way (precedence); this just surfaces
+  // the disagreement so a human can "keep mapping" (POST .../manual) if the
+  // label is wrong.
+  router.get("/observe/attribution/conflicts", async (req, res) => {
+    assertBoardOrAgent(req);
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId : "";
+    if (!companyId) {
+      res.status(400).json({ error: "companyId is required" });
+      return;
+    }
+    try {
+      res.json(await inventoryStore.attributionConflicts(companyId));
+    } catch (e) {
+      console.error("[observe] attribution/conflicts", e);
       res.json([]);
     }
   });

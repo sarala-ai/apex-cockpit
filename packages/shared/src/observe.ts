@@ -186,11 +186,17 @@ export type GcpResourceResponse = z.infer<typeof GcpResourceResponseSchema>;
 // state registry (best-effort, never fails the listing); "exception" =
 // neither, i.e. unexplained. Optional/absent on older apex-core builds that
 // don't emit it yet — the UI must tolerate its absence.
+// "label" / "registry" / "exception" come from apex-core's own live
+// classification (unchanged). "mapped" / "manual" are cockpit-DB overlay
+// statuses (spec: resource-attribution-mapping) — see gcp-inventory-store's
+// precedence merge (manual > cloud label > auto_mapped > core's own status).
 export const InventoryAttributionSchema = z.object({
-  status: z.enum(["label", "registry", "exception"]),
+  status: z.enum(["label", "registry", "exception", "mapped", "manual"]),
   workflow: z.string().nullable().optional(),
   repo: z.string().nullable().optional(),
   env: z.string().nullable().optional(),
+  source: z.enum(["label", "auto_mapped", "manual"]).optional(),
+  conflict: z.boolean().optional(),
 });
 export type InventoryAttribution = z.infer<typeof InventoryAttributionSchema>;
 
@@ -209,8 +215,33 @@ export const InventoryAttributionSummarySchema = z.object({
   label: z.number(),
   registry: z.number(),
   exception: z.number(),
+  mapped: z.number().optional(),
+  manual: z.number().optional(),
+  conflicts: z.number().optional(),
 });
 export type InventoryAttributionSummary = z.infer<typeof InventoryAttributionSummarySchema>;
+
+// GET /observe/attribution/conflicts?companyId= — one entry per resource where
+// the cloud label and the db's auto_mapped row disagree on workflow/repo/env.
+// Resolution is API-only for now (POST /observe/attribution/manual to "keep
+// mapping" — i.e. pin the db's side as the manual override).
+export const AttributionConflictSchema = z.object({
+  projectId: z.string(),
+  resourceUri: z.string(),
+  assetType: z.string(),
+  displayName: z.string().nullable().optional(),
+  label: z.object({
+    workflow: z.string().nullable().optional(),
+    repo: z.string().nullable().optional(),
+    env: z.string().nullable().optional(),
+  }),
+  mapping: z.object({
+    workflow: z.string().nullable().optional(),
+    repo: z.string().nullable().optional(),
+    env: z.string().nullable().optional(),
+  }),
+});
+export type AttributionConflict = z.infer<typeof AttributionConflictSchema>;
 
 export const ProjectInventorySchema = z.object({
   projectId: z.string(),

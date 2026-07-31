@@ -36,6 +36,7 @@ export { environmentCustomImageSetupSessions } from "./environment_custom_image_
 export { workspaceOperations } from "./workspace_operations.js";
 export { workspaceRuntimeServices } from "./workspace_runtime_services.js";
 export { projectGoals } from "./project_goals.js";
+export { resourceAttributions } from "./resource_attributions.js";
 export { goals } from "./goals.js";
 export { issues } from "./issues.js";
 export { issueWatchdogs } from "./issue_watchdogs.js";

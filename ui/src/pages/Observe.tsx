@@ -4,7 +4,7 @@
 // not generated); the same data is available to agents via the observe MCP tools.
 
 import { useState, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Activity, Bot, ChevronDown, ChevronRight, ClipboardCheck, Network, Server, TrendingDown } from "lucide-react";
 import { observeApi } from "@/api/observe";
 import { useCompany } from "@/context/CompanyContext";
@@ -12,6 +12,7 @@ import { StatusBadge, type StatusVariant } from "@/apex/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type {
+  AttributionConflict,
   EvalRecord,
   EvalVerdict,
   FleetEntry,
@@ -68,6 +69,21 @@ function exceptionResources(inv: ProjectInventory): Array<{ assetType: string; r
     }
   }
   return out;
+}
+
+// Provenance-at-birth overlay (spec: resource-attribution-mapping) — the
+// non-zero counts segments for the GCP Inventory card's summary line, in
+// display order. Exceptions are handled separately by the caller (always
+// shown, even at zero, colored amber when > 0) — everything else here is
+// omitted when its count is zero so a project with no db attributions at all
+// still reads cleanly as "N resources · N types · N exceptions".
+function attributionCountsSegments(s: NonNullable<ProjectInventory["attributionSummary"]>): string[] {
+  const segs: string[] = [];
+  if (s.label > 0) segs.push(`${s.label} by label`);
+  if (s.registry > 0) segs.push(`${s.registry} by registry`);
+  if ((s.mapped ?? 0) > 0) segs.push(`${s.mapped} mapped`);
+  if ((s.manual ?? 0) > 0) segs.push(`${s.manual} manual`);
+  return segs;
 }
 
 function pct(v: number | null): string {
@@ -215,6 +231,7 @@ export function Observe() {
   const { selectedCompanyId } = useCompany();
   const scope = selectedCompanyId ? { companyId: selectedCompanyId } : undefined;
   const enabled = !!selectedCompanyId;
+  const queryClient = useQueryClient();
 
   // Selected product agent (Cloud Run service) for the GCP Resource detail
   // pane below the Fleet panel. Cleared implicitly on company switch since
@@ -234,6 +251,35 @@ export function Observe() {
       return next;
     });
   }
+
+  // Same expand/collapse pattern as the exception list, keyed by project — for
+  // the attribution-conflict list (spec: resource-attribution-mapping).
+  const [expandedConflicts, setExpandedConflicts] = useState<Set<string>>(new Set());
+  function toggleConflicts(projectId: string) {
+    setExpandedConflicts((prev) => {
+      const next = new Set(prev);
+      if (next.has(projectId)) next.delete(projectId);
+      else next.add(projectId);
+      return next;
+    });
+  }
+
+  const keepMapping = useMutation({
+    mutationFn: (conflict: AttributionConflict) =>
+      observeApi.attributionManual({
+        companyId: selectedCompanyId as string,
+        projectId: conflict.projectId,
+        resourceUri: conflict.resourceUri,
+        assetType: conflict.assetType,
+        workflow: conflict.mapping.workflow,
+        repo: conflict.mapping.repo,
+        env: conflict.mapping.env,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["observe", "gcp-inventory", selectedCompanyId] });
+      queryClient.invalidateQueries({ queryKey: ["observe", "attribution-conflicts", selectedCompanyId] });
+    },
+  });
 
   const health = useQuery({
     queryKey: ["observe", "health", selectedCompanyId],
@@ -279,6 +325,12 @@ export function Observe() {
   const gcpServices = useQuery({
     queryKey: ["observe", "gcp-services", selectedCompanyId],
     queryFn: () => observeApi.gcpServices(scope),
+    enabled,
+    refetchInterval: 30_000,
+  });
+  const attributionConflicts = useQuery({
+    queryKey: ["observe", "attribution-conflicts", selectedCompanyId],
+    queryFn: () => observeApi.attributionConflicts({ companyId: selectedCompanyId as string }),
     enabled,
     refetchInterval: 30_000,
   });
@@ -596,6 +648,10 @@ export function Observe() {
             (gcpInventory.data ?? []).map((inv) => {
               const exceptions = inv.attributionSummary ? exceptionResources(inv) : [];
               const isExpanded = expandedExceptions.has(inv.projectId);
+              const conflictsForProject = (attributionConflicts.data ?? []).filter(
+                (c) => c.projectId === inv.projectId,
+              );
+              const isConflictsExpanded = expandedConflicts.has(inv.projectId);
               return (
                 <div key={inv.projectId} className="space-y-1.5">
                   <div className="flex items-center gap-2 text-xs">
@@ -608,8 +664,10 @@ export function Observe() {
                         {inv.attributionSummary && (
                           <>
                             {" · "}
-                            {inv.attributionSummary.label} by label · {inv.attributionSummary.registry} by
-                            registry ·{" "}
+                            {(() => {
+                              const segs = attributionCountsSegments(inv.attributionSummary);
+                              return segs.length > 0 ? `${segs.join(" · ")} · ` : "";
+                            })()}
                             <span
                               className={
                                 inv.attributionSummary.exception > 0
@@ -622,6 +680,14 @@ export function Observe() {
                           </>
                         )}
                       </span>
+                    )}
+                    {conflictsForProject.length > 0 && (
+                      <Badge
+                        variant="outline"
+                        className="border-amber-300 text-amber-700 dark:border-amber-700 dark:text-amber-400"
+                      >
+                        {conflictsForProject.length} conflict{conflictsForProject.length === 1 ? "" : "s"}
+                      </Badge>
                     )}
                   </div>
                   {!inv.error && Object.keys(inv.resourcesByType).length > 0 && (
@@ -665,6 +731,50 @@ export function Observe() {
                               <span className="shrink-0 truncate text-[10px] uppercase tracking-wide">
                                 {assetType.split("/").pop()}
                               </span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  )}
+                  {!inv.error && conflictsForProject.length > 0 && (
+                    <div className="pl-1">
+                      <button
+                        type="button"
+                        onClick={() => toggleConflicts(inv.projectId)}
+                        className="flex items-center gap-1 text-xs text-amber-700 hover:text-amber-800 dark:text-amber-400 dark:hover:text-amber-300"
+                      >
+                        {isConflictsExpanded ? (
+                          <ChevronDown className="h-3 w-3 shrink-0" />
+                        ) : (
+                          <ChevronRight className="h-3 w-3 shrink-0" />
+                        )}
+                        {conflictsForProject.length} label/mapping conflict{conflictsForProject.length === 1 ? "" : "s"}
+                      </button>
+                      {isConflictsExpanded && (
+                        <ul className="mt-1 space-y-1.5 border-l border-border pl-3">
+                          {conflictsForProject.map((c) => (
+                            <li key={c.resourceUri} className="space-y-0.5 text-xs">
+                              <div className="flex min-w-0 items-center justify-between gap-2">
+                                <span
+                                  className="min-w-0 flex-1 truncate text-muted-foreground"
+                                  title={c.resourceUri}
+                                >
+                                  {c.displayName ?? c.resourceUri}
+                                </span>
+                                <button
+                                  type="button"
+                                  disabled={keepMapping.isPending}
+                                  onClick={() => keepMapping.mutate(c)}
+                                  className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
+                                >
+                                  Keep mapping
+                                </button>
+                              </div>
+                              <div className="pl-0 text-[11px] text-muted-foreground">
+                                label says {c.label.workflow ?? "—"}/{c.label.repo ?? "—"}/{c.label.env ?? "—"} · mapping
+                                says {c.mapping.workflow ?? "—"}/{c.mapping.repo ?? "—"}/{c.mapping.env ?? "—"}
+                              </div>
                             </li>
                           ))}
                         </ul>

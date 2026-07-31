@@ -15,12 +15,14 @@
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import type {
+  AttributionConflict,
   ProjectInventory,
   ProjectServices,
   ResourceHealth,
 } from "@paperclipai/shared";
 import { companyGcpProjects } from "./company-projects.js";
 import { ApexUnavailableError, CliApexInvoker, type ApexInvoker } from "../apex/invoke.js";
+import { getAttributionsForProject, type ResourceAttributionRow } from "./resource-attribution-store.js";
 
 // Provenance-at-birth (spec: provenance-at-birth) — attribution classification
 // emitted per-resource by `gcp_inventory.list_project_resources` on apex-core
@@ -86,6 +88,79 @@ const ResourceHealthResultSchema = z.object({
   error: z.string().nullable().optional(),
 });
 
+function attributionsDisagree(
+  label: { workflow?: string | null; repo?: string | null; env?: string | null },
+  row: ResourceAttributionRow,
+): boolean {
+  const norm = (v: string | null | undefined) => v ?? null;
+  return (
+    norm(label.workflow) !== norm(row.workflow) ||
+    norm(label.repo) !== norm(row.repo) ||
+    norm(label.env) !== norm(row.env)
+  );
+}
+
+// Precedence merge (spec: resource-attribution-mapping) — overlays this
+// company/project's `resource_attributions` db rows onto the core payload's
+// per-resource attribution. Precedence: manual (db) > cloud label (core,
+// live) > auto_mapped (db) > whatever core said (registry/exception, or
+// nothing on cores that don't emit attribution at all). Mutates nothing —
+// returns a new resourcesByType map plus a recomputed summary so the two
+// never drift apart.
+export function mergeAttributions(
+  resourcesByType: ProjectInventory["resourcesByType"],
+  dbRows: Map<string, ResourceAttributionRow>,
+): { resourcesByType: ProjectInventory["resourcesByType"]; summary: NonNullable<ProjectInventory["attributionSummary"]> } {
+  const summary = { label: 0, registry: 0, exception: 0, mapped: 0, manual: 0, conflicts: 0 };
+  const out: ProjectInventory["resourcesByType"] = {};
+
+  for (const [assetType, resources] of Object.entries(resourcesByType)) {
+    out[assetType] = resources.map((resource) => {
+      const uri = resource.name;
+      const row = uri ? dbRows.get(uri) : undefined;
+      const core = resource.attribution;
+
+      if (row?.source === "manual") {
+        summary.manual += 1;
+        return {
+          ...resource,
+          attribution: { status: "manual" as const, workflow: row.workflow, repo: row.repo, env: row.env, source: "manual" as const },
+        };
+      }
+
+      if (core?.status === "label") {
+        const conflict = row?.source === "auto_mapped" ? attributionsDisagree(core, row) : false;
+        if (conflict) summary.conflicts += 1;
+        summary.label += 1;
+        return {
+          ...resource,
+          attribution: { ...core, source: "label" as const, conflict },
+        };
+      }
+
+      if (row?.source === "auto_mapped") {
+        summary.mapped += 1;
+        return {
+          ...resource,
+          attribution: {
+            status: "mapped" as const,
+            workflow: row.workflow,
+            repo: row.repo,
+            env: row.env,
+            source: "auto_mapped" as const,
+          },
+        };
+      }
+
+      if (core?.status === "registry") summary.registry += 1;
+      else if (core?.status === "exception") summary.exception += 1;
+      return resource;
+    });
+  }
+
+  return { resourcesByType: out, summary };
+}
+
 export class GcpInventoryStore {
   constructor(
     private readonly db: Db,
@@ -109,12 +184,15 @@ export class GcpInventoryStore {
           { project_id: project },
           ListResourcesSchema,
         );
+        const resourcesByType = res.resources_by_type ?? {};
+        const dbRows = companyId ? await getAttributionsForProject(this.db, companyId, project) : new Map();
+        const merged = mergeAttributions(resourcesByType, dbRows);
         out.push({
           projectId: project,
           totalResources: res.total_resources ?? null,
           resourceTypes: res.resource_types ?? null,
-          resourcesByType: res.resources_by_type ?? {},
-          attributionSummary: res.attribution_summary,
+          resourcesByType: merged.resourcesByType,
+          attributionSummary: res.attribution_summary ? merged.summary : undefined,
           error: res.status === "success" ? null : (res.error ?? null),
         });
       } catch (e) {
@@ -153,6 +231,40 @@ export class GcpInventoryStore {
       } catch (e) {
         if (e instanceof ApexUnavailableError) return out;
         out.push({ projectId: project, error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    return out;
+  }
+
+  // GET /observe/attribution/conflicts — resources across this company's bound
+  // projects where the live cloud label and the db's auto_mapped row disagree.
+  // Reuses listResources' own merge (single source of truth for what counts as
+  // a conflict) rather than recomputing it.
+  async attributionConflicts(companyId: string): Promise<AttributionConflict[]> {
+    const inventories = await this.listResources(companyId);
+    const out: AttributionConflict[] = [];
+    for (const inv of inventories) {
+      // The disagreeing db side isn't carried on the merged resource (only the
+      // winning label side is) — look the auto_mapped rows back up directly
+      // for the "mapping says" half of each diff, once per project.
+      const dbRows = await getAttributionsForProject(this.db, companyId, inv.projectId);
+      for (const [assetType, resources] of Object.entries(inv.resourcesByType)) {
+        for (const resource of resources) {
+          if (!resource.attribution?.conflict || !resource.name) continue;
+          const row = dbRows.get(resource.name);
+          out.push({
+            projectId: inv.projectId,
+            resourceUri: resource.name,
+            assetType,
+            displayName: resource.displayName ?? null,
+            label: {
+              workflow: resource.attribution.workflow ?? null,
+              repo: resource.attribution.repo ?? null,
+              env: resource.attribution.env ?? null,
+            },
+            mapping: { workflow: row?.workflow ?? null, repo: row?.repo ?? null, env: row?.env ?? null },
+          });
+        }
       }
     }
     return out;

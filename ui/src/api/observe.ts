@@ -18,6 +18,7 @@ import type {
   ProjectServices,
   ResourceHealth,
   GatewayMetrics,
+  AttributionConflict,
 } from "@paperclipai/shared";
 
 export interface ObserveScopeQuery {
@@ -71,4 +72,15 @@ export const observeApi = {
     resourceId?: string;
   }) => api.get<ResourceHealth | null>(`/observe/gcp-resource-health${qs(query)}`),
   gatewayMetrics: () => api.get<GatewayMetrics>("/observe/gateway-metrics"),
+  attributionConflicts: (scope: { companyId: string }) =>
+    api.get<AttributionConflict[]>(`/observe/attribution/conflicts${qs(scope)}`),
+  attributionManual: (body: {
+    companyId: string;
+    projectId: string;
+    resourceUri: string;
+    assetType: string;
+    workflow?: string | null;
+    repo?: string | null;
+    env?: string | null;
+  }) => api.post(`/observe/attribution/manual`, body),
 };

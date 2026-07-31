@@ -16,6 +16,8 @@ const mockObserveApi = vi.hoisted(() => ({
   gcpInventory: vi.fn(),
   gcpServices: vi.fn(),
   gatewayMetrics: vi.fn(),
+  attributionConflicts: vi.fn(),
+  attributionManual: vi.fn(),
 }));
 
 vi.mock("@/api/observe", () => ({ observeApi: mockObserveApi }));
@@ -73,6 +75,8 @@ describe("Observe — GCP Inventory attribution", () => {
     mockObserveApi.gcpResource.mockResolvedValue({ health: null, logs: [], runs: [] });
     mockObserveApi.gcpServices.mockResolvedValue([]);
     mockObserveApi.gatewayMetrics.mockResolvedValue({});
+    mockObserveApi.attributionConflicts.mockResolvedValue([]);
+    mockObserveApi.attributionManual.mockResolvedValue({});
   });
 
   afterEach(() => {
@@ -136,6 +140,77 @@ describe("Observe — GCP Inventory attribution", () => {
 
     expect(container.textContent).toContain("svc-exception");
     expect(container.textContent).not.toContain("svc-labeled");
+
+    await act(async () => root.unmount());
+  });
+
+  it("shows mapped/manual counts and omits zero segments (except exceptions)", async () => {
+    mockObserveApi.gcpInventory.mockResolvedValue([
+      baseInventory({ attributionSummary: { label: 1, registry: 0, exception: 0, mapped: 9, manual: 0 } }),
+    ]);
+
+    const root = await render();
+
+    expect(container.textContent).toContain("1 by label");
+    expect(container.textContent).toContain("9 mapped");
+    expect(container.textContent).not.toContain("by registry");
+    expect(container.textContent).not.toContain("manual");
+    expect(container.textContent).toContain("0 exceptions");
+
+    await act(async () => root.unmount());
+  });
+
+  it("renders an amber conflicts chip and an expandable list with a keep-mapping action", async () => {
+    mockObserveApi.gcpInventory.mockResolvedValue([
+      baseInventory({ attributionSummary: { label: 1, registry: 0, exception: 0, mapped: 1, manual: 0 } }),
+    ]);
+    mockObserveApi.attributionConflicts.mockResolvedValue([
+      {
+        projectId: "proj-1",
+        resourceUri: "//run.googleapis.com/svc-labeled",
+        assetType: "run.googleapis.com/Service",
+        displayName: "svc-labeled",
+        label: { workflow: "deploy--v1", repo: "org/repo", env: "dev" },
+        mapping: { workflow: "infra_wf", repo: "org/infra-repo", env: "staging" },
+      },
+    ]);
+
+    const root = await render();
+
+    expect(container.textContent).toContain("1 conflict");
+
+    const toggle = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("label/mapping conflict"),
+    ) as HTMLButtonElement | undefined;
+    expect(toggle).toBeTruthy();
+
+    await act(async () => {
+      toggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("deploy--v1");
+    expect(container.textContent).toContain("infra_wf");
+
+    const keepMapping = Array.from(container.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Keep mapping"),
+    ) as HTMLButtonElement | undefined;
+    expect(keepMapping).toBeTruthy();
+
+    await act(async () => {
+      keepMapping?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockObserveApi.attributionManual).toHaveBeenCalledWith({
+      companyId: "company-1",
+      projectId: "proj-1",
+      resourceUri: "//run.googleapis.com/svc-labeled",
+      assetType: "run.googleapis.com/Service",
+      workflow: "infra_wf",
+      repo: "org/infra-repo",
+      env: "staging",
+    });
 
     await act(async () => root.unmount());
   });
