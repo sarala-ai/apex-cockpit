@@ -74,6 +74,17 @@ export async function reflectGithubIssueTransition(
   const identifier = next.identifier ?? previous.identifier ?? next.originId ?? previous.originId;
 
   try {
+    if ((next.status === "done" || next.status === "cancelled") && previous.status === "backlog") {
+      // Finding 5d (adversarial architecture review): during the Statement
+      // phase (still `backlog`) GitHub holds the pen — the mirror was never
+      // promoted, so a cockpit-side cancel/done here is local triage only.
+      // Closing the upstream issue would be a second writer clobbering
+      // GitHub's own close/reopen decisions on an issue the cockpit never
+      // took ownership of.
+      log(`repo=${parsed.repo} issue=${parsed.number} skipped: backlog-origin issue closed locally, not reflected upstream`);
+      return { action: "skipped", detail: "backlog mirror cancelled/done locally — no upstream write" };
+    }
+
     if (next.status === "done" || next.status === "cancelled") {
       const labelRes = await source.addLabel(parsed.repo, parsed.number, GITHUB_DONE_LABEL);
       if (!labelRes.ok) {

@@ -116,6 +116,31 @@ describe("reflectGithubIssueTransition", () => {
     expect(source.addLabel).not.toHaveBeenCalled();
   });
 
+  it("does not close upstream when a still-backlog mirror is locally cancelled (Finding 5d)", async () => {
+    const source = fakeSource();
+    const result = await reflectGithubIssueTransition(
+      { ...base, status: "backlog" },
+      { ...base, status: "cancelled" },
+      { source: source as never, log: () => {} },
+    );
+
+    expect(result.action).toBe("skipped");
+    expect(source.close).not.toHaveBeenCalled();
+    expect(source.addLabel).not.toHaveBeenCalled();
+  });
+
+  it("does not close upstream when a still-backlog mirror is locally marked done (Finding 5d)", async () => {
+    const source = fakeSource();
+    const result = await reflectGithubIssueTransition(
+      { ...base, status: "backlog" },
+      { ...base, status: "done" },
+      { source: source as never, log: () => {} },
+    );
+
+    expect(result.action).toBe("skipped");
+    expect(source.close).not.toHaveBeenCalled();
+  });
+
   it("classifies a reflection failure without throwing", async () => {
     const source = fakeSource();
     source.comment.mockResolvedValueOnce(err("tool-unauth", "gh is not authenticated"));
