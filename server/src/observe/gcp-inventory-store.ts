@@ -92,7 +92,16 @@ function attributionsDisagree(
   label: { workflow?: string | null; repo?: string | null; env?: string | null },
   row: ResourceAttributionRow,
 ): boolean {
-  const norm = (v: string | null | undefined) => v ?? null;
+  // Compare through the SAME sanitization the engine applies when it writes
+  // cloud labels (apex-core provenance.sanitize_label_value): lowercase,
+  // "/"→"--", any other invalid char→"_". Mapper reports carry raw values
+  // ("sarala-ai/FinPilot"); labels carry sanitized ones ("sarala-ai--finpilot").
+  // Comparing raw-vs-sanitized false-conflicted every agreeing mapping — a
+  // conflict must mean the IDENTITY disagrees, never the encoding.
+  const norm = (v: string | null | undefined) => {
+    if (v == null || v === "") return null;
+    return v.toLowerCase().replaceAll("/", "--").replace(/[^a-z0-9_-]/g, "_");
+  };
   return (
     norm(label.workflow) !== norm(row.workflow) ||
     norm(label.repo) !== norm(row.repo) ||
