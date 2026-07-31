@@ -183,7 +183,6 @@ import {
   type TrustPresetResolution,
 } from "../services/trust-preset-resolver.js";
 import { externalObjectService } from "../services/external-objects.js";
-import { reflectGithubIssueTransition } from "../apex/pipeline/github-issue-reflect.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -7887,16 +7886,10 @@ export function issueRoutes(
       return;
     }
 
-    // Work-loop doctrine reflection (docs/architecture/work-loop.md): a
-    // plugin:github-origin issue's promotion out of backlog, or its terminal
-    // close, gets best-effort mirrored back to the GitHub issue as a
-    // label/comment/close. Fire-and-forget — this shells `gh`, and a
-    // reflection failure must never slow or fail the issue update itself.
-    if (existing.status !== issue.status) {
-      void reflectGithubIssueTransition(existing, issue).catch((err) => {
-        logger.warn({ err, issueId: issue.id }, "github issue reflection failed");
-      });
-    }
+    // Work-loop doctrine reflection (docs/architecture/work-loop.md): moved
+    // into issueService.update (Finding 5c, adversarial architecture review)
+    // so every status transition reflects, not just the ones that flow
+    // through this route.
 
     let cancelledStatusRunId: string | null = null;
     if (runToCancelForCancelledStatus) {
