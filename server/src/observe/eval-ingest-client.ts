@@ -50,6 +50,15 @@ interface SpineAttrs {
    *  (e.g. "//run.googleapis.com/projects/P/locations/R/services/S") — already
    *  globally unique, no new id scheme needed. */
   resourceId?: string;
+  /** WHO caused this — the credential that performed the effect (gcloud/git/gh
+   *  identity locally, session identity under enterprise auth), never a typed
+   *  name. The spine carried company/project/agent/run/repo/resource but no
+   *  actor, so a run could not answer "who set this off"; audit rows, resource
+   *  labels and cost attribution all inherit it via run id. */
+  actor?: string;
+  /** For agent runs: the human the agent acted for. An agent principal alone
+   *  answers "what ran", not "on whose authority". */
+  actorOnBehalfOf?: string;
 }
 
 function spineKeyValues(spine: SpineAttrs): Array<{ key: string; value: { stringValue: string } }> {
@@ -60,6 +69,9 @@ function spineKeyValues(spine: SpineAttrs): Array<{ key: string; value: { string
   if (spine.agentName) kv.push({ key: "apex.agent.name", value: { stringValue: spine.agentName } });
   if (spine.repo) kv.push({ key: "apex.repo", value: { stringValue: spine.repo } });
   if (spine.resourceId) kv.push({ key: "apex.resource.id", value: { stringValue: spine.resourceId } });
+  if (spine.actor) kv.push({ key: "apex.actor", value: { stringValue: spine.actor } });
+  if (spine.actorOnBehalfOf)
+    kv.push({ key: "apex.actor.on_behalf_of", value: { stringValue: spine.actorOnBehalfOf } });
   return kv;
 }
 

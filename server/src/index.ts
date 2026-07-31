@@ -61,6 +61,7 @@ import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
+import { resolveLocalActor, actorId } from "./identity/actor.js";
 import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
@@ -245,12 +246,25 @@ export async function startServer(): Promise<StartedServer> {
     }
   }
   
+  // Stable row id — issues.created_by_user_id and approvals.decided_by_user_id
+  // already reference it. The NAME and EMAIL are refreshed from the machine's
+  // real credentials on every boot, so existing audit rows re-attribute to the
+  // actual operator instead of the "Board / local@paperclip.local" placeholder
+  // this fork shipped (meaningless attribution, and a Paperclip remnant living
+  // in your data rather than just on screen).
   const LOCAL_BOARD_USER_ID = "local-board";
-  const LOCAL_BOARD_USER_EMAIL = "local@paperclip.local";
-  const LOCAL_BOARD_USER_NAME = "Board";
   
   async function ensureLocalTrustedBoardPrincipal(db: any): Promise<void> {
     const now = new Date();
+    const actor = await resolveLocalActor();
+    if (actor.unresolved) {
+      logger.warn(
+        "No local identity found (gcloud/git/gh all unset) — audit records will read 'unknown'. " +
+          "Authenticate one of them so effects can be reconciled with cloud audit logs.",
+      );
+    }
+    const resolvedName = actor.name;
+    const resolvedEmail = actorId(actor);
     const existingUser = await db
       .select({ id: authUsers.id })
       .from(authUsers)
@@ -260,13 +274,18 @@ export async function startServer(): Promise<StartedServer> {
     if (!existingUser) {
       await db.insert(authUsers).values({
         id: LOCAL_BOARD_USER_ID,
-        name: LOCAL_BOARD_USER_NAME,
-        email: LOCAL_BOARD_USER_EMAIL,
+        name: resolvedName,
+        email: resolvedEmail,
         emailVerified: true,
         image: null,
         createdAt: now,
         updatedAt: now,
       });
+    } else {
+      await db
+        .update(authUsers)
+        .set({ name: resolvedName, email: resolvedEmail, updatedAt: now })
+        .where(eq(authUsers.id, LOCAL_BOARD_USER_ID));
     }
   
     const role = await db
