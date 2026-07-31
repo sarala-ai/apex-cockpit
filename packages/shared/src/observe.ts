@@ -73,12 +73,21 @@ export const EvalRecordSchema = ScopeSchema.omit({ runId: true }).extend({
 });
 export type EvalRecord = z.infer<typeof EvalRecordSchema>;
 
+// traceId/spanId/parentSpanId are apex-eval-specific (GET /runs/{id}/trace —
+// see apex/eval/src/apex_eval/api.py `_span_to_wire`) — that API's own doc
+// comment notes they're "extra fields added for the UI to build a tree" since
+// the endpoint itself returns a flat list, no server-side nesting. Optional
+// because other emitters into this same shape (e.g. the coding-agent
+// heartbeat plane) don't carry span/trace ids at all.
 export const TraceSpanSchema = z.object({
   kind: z.string(),
   name: z.string(),
   startedAt: z.string().nullable(),
   durationMs: z.number().nullable(),
   attributes: z.record(z.string(), z.unknown()),
+  traceId: z.string().nullable().optional(),
+  spanId: z.string().nullable().optional(),
+  parentSpanId: z.string().nullable().optional(),
 });
 export type TraceSpan = z.infer<typeof TraceSpanSchema>;
 
@@ -89,6 +98,59 @@ export const RunDetailSchema = z.object({
   evals: z.array(EvalRecordSchema),
 });
 export type RunDetail = z.infer<typeof RunDetailSchema>;
+
+// A span kind counted as an error for tree-highlighting purposes: OTel status
+// conventions land in attributes (status_code / apex.tool.success == false),
+// but until every emitter carries a structured status field, treat a span as
+// an error span from what IS on TraceSpan today — attributes.status_code ==
+// "ERROR"/"error", or a failed tool.call (apex.tool.success === false).
+export function isErrorSpan(span: TraceSpan): boolean {
+  const statusCode = span.attributes["status_code"] ?? span.attributes["status"];
+  if (typeof statusCode === "string" && statusCode.toUpperCase() === "ERROR") return true;
+  const toolSuccess = span.attributes["apex.tool.success"];
+  if (toolSuccess === false) return true;
+  return false;
+}
+
+export interface SpanTreeNode extends TraceSpan {
+  depth: number;
+  children: SpanTreeNode[];
+}
+
+/**
+ * Assembles the flat span list a trace endpoint returns into a parent/child
+ * tree via parentSpanId → spanId, depth-first, most-recent-first siblings
+ * kept in their original (already time-ordered) order.
+ *
+ * A span is a root when: it carries no parentSpanId, OR its parentSpanId
+ * doesn't resolve to any span in THIS list (an orphan — the parent fell
+ * outside the query window, was dropped, or belongs to another service).
+ * Orphans surface as top-level roots rather than being silently dropped, so
+ * "flat → tree" is lossless: every input span appears exactly once in the
+ * output. Spans without a spanId at all (older emitters) are always roots,
+ * since they can neither be a parent nor be addressed as a child.
+ */
+export function buildSpanTree(spans: TraceSpan[]): SpanTreeNode[] {
+  const bySpanId = new Map<string, TraceSpan[]>();
+  const knownSpanIds = new Set<string>();
+  for (const s of spans) {
+    if (s.spanId) knownSpanIds.add(s.spanId);
+  }
+  for (const s of spans) {
+    const parent = s.spanId && s.parentSpanId && knownSpanIds.has(s.parentSpanId) ? s.parentSpanId : null;
+    const key = parent ?? "__root__";
+    const bucket = bySpanId.get(key);
+    if (bucket) bucket.push(s);
+    else bySpanId.set(key, [s]);
+  }
+
+  function build(span: TraceSpan, depth: number): SpanTreeNode {
+    const children = span.spanId ? (bySpanId.get(span.spanId) ?? []) : [];
+    return { ...span, depth, children: children.map((c) => build(c, depth + 1)) };
+  }
+
+  return (bySpanId.get("__root__") ?? []).map((s) => build(s, 0));
+}
 
 export const HealthSummarySchema = ScopeSchema.extend({
   window: z.string(),

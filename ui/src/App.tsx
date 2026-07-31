@@ -37,6 +37,7 @@ import { Approvals } from "./pages/Approvals";
 import { ApprovalDetail } from "./pages/ApprovalDetail";
 import { Costs } from "./pages/Costs";
 import { Observe } from "./pages/Observe";
+import { RunDetail } from "./pages/RunDetail";
 import { Gateway } from "./pages/Gateway";
 import { Design } from "./pages/Design";
 import { Activity } from "./pages/Activity";
@@ -90,6 +91,7 @@ function boardRoutes() {
       <Route path="dashboard" element={<Dashboard />} />
       <Route path="dashboard/live" element={<DashboardLive />} />
       <Route path="observe" element={<Observe />} />
+      <Route path="observe/runs/:runId" element={<RunDetail />} />
       <Route path="gateway" element={<Gateway />} />
       <Route path="design" element={<Design />} />
       <Route path="timeline" element={<Timeline />} />
@@ -470,6 +472,7 @@ export function App() {
           <Route path="cases" element={<UnprefixedBoardRedirect />} />
           <Route path="cases/:caseIdentifier" element={<UnprefixedBoardRedirect />} />
           <Route path="observe" element={<UnprefixedBoardRedirect />} />
+          <Route path="observe/runs/:runId" element={<UnprefixedBoardRedirect />} />
           <Route path="gateway" element={<UnprefixedBoardRedirect />} />
           <Route path="design" element={<UnprefixedBoardRedirect />} />
           <Route path="pipelines" element={<UnprefixedBoardRedirect />} />

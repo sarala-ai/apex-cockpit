@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import { apexObserveRoutes } from "../routes/apex-observe.js";
 import { errorHandler } from "../middleware/index.js";
@@ -151,6 +151,85 @@ describe("GET /observe/agent-runs", () => {
     expect(res.body.runs).toEqual([]);
     expect(res.body.source).toBe("unavailable");
     expect(res.body.note).toContain("db exploded");
+  });
+});
+
+describe("GET /observe/run-detail/:runId", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("404s when no store owns the run and apex-eval has nothing for it either", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("nope", { status: 503 })),
+    );
+    const res = await request(appWith(makeDb([], []).db)).get("/observe/run-detail/missing-run");
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBeDefined();
+  });
+
+  it("merges the owning store's run with apex-eval's spans/toolCalls/evals for the same runId", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.includes("/trace")) {
+          return new Response(
+            JSON.stringify({
+              spans: [{ kind: "agent.run", name: "root", startedAt: null, durationMs: 500, attributes: {} }],
+              toolCalls: [],
+            }),
+            { status: 200 },
+          );
+        }
+        if (url.includes("/evals")) {
+          return new Response(
+            JSON.stringify([
+              { runId: "r1", scenario: "s", validator: "v", verdict: "pass", score: 0.9, reason: null, occurredAt: null },
+            ]),
+            { status: 200 },
+          );
+        }
+        return new Response("[]", { status: 200 });
+      }),
+    );
+    const { db } = makeDb([RUN_WITH_USAGE], []);
+    const res = await request(appWith(db)).get("/observe/run-detail/r1");
+    expect(res.status).toBe(200);
+    expect(res.body.run).toMatchObject({ runId: "r1", status: "succeeded" });
+    expect(res.body.spans).toHaveLength(1);
+    expect(res.body.evals).toHaveLength(1);
+    expect(res.body.evals[0].verdict).toBe("pass");
+  });
+
+  it("is failure-isolated: a db error inside a store is swallowed (settle()), yielding 404 not a crash", async () => {
+    // CompositeObserveStore.runDetail wraps each store's call in settle(), so a
+    // throwing store degrades to null same as "not found" — never a 500. This is
+    // the same isolation guarantee as every other CompositeObserveStore method.
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("nope", { status: 503 })));
+    const db = {
+      select: () => {
+        throw new Error("db exploded");
+      },
+    } as unknown as Db;
+    const res = await request(appWith(db)).get("/observe/run-detail/r1");
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBeDefined();
+  });
+
+  it("is failure-isolated: apex-eval unreachable degrades the trace/evals to empty, run detail still 200s", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("ECONNREFUSED");
+      }),
+    );
+    const { db } = makeDb([RUN_WITH_USAGE], []);
+    const res = await request(appWith(db)).get("/observe/run-detail/r1");
+    expect(res.status).toBe(200);
+    expect(res.body.spans).toEqual([]);
+    expect(res.body.evals).toEqual([]);
   });
 });
 
