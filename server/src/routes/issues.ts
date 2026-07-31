@@ -183,6 +183,7 @@ import {
   type TrustPresetResolution,
 } from "../services/trust-preset-resolver.js";
 import { externalObjectService } from "../services/external-objects.js";
+import { reflectGithubIssueTransition } from "../apex/pipeline/github-issue-reflect.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -7884,6 +7885,17 @@ export function issueRoutes(
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
+    }
+
+    // Work-loop doctrine reflection (docs/architecture/work-loop.md): a
+    // plugin:github-origin issue's promotion out of backlog, or its terminal
+    // close, gets best-effort mirrored back to the GitHub issue as a
+    // label/comment/close. Fire-and-forget — this shells `gh`, and a
+    // reflection failure must never slow or fail the issue update itself.
+    if (existing.status !== issue.status) {
+      void reflectGithubIssueTransition(existing, issue).catch((err) => {
+        logger.warn({ err, issueId: issue.id }, "github issue reflection failed");
+      });
     }
 
     let cancelledStatusRunId: string | null = null;

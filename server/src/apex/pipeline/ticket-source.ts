@@ -85,4 +85,35 @@ export class GitHubIssuesSource implements TicketSource {
     ]);
     return res.status === 'ok' ? ok(true) : classifyGh(res);
   }
+
+  /** Post an arbitrary comment (used by the promotion/close reflection —
+   *  distinct from `updateStatus`'s fixed "apex-tower: {status}" body). */
+  async comment(repo: string, number: number, body: string): Promise<Result<true>> {
+    const res = await run('gh', [
+      'issue', 'comment', String(number), '--repo', repo,
+      '--body', body,
+    ]);
+    return res.status === 'ok' ? ok(true) : classifyGh(res);
+  }
+
+  /** Add a label, creating it first if `gh` reports it doesn't exist yet
+   *  (repos bound to apex-tower won't have `apex:promoted`/`apex:done`
+   *  pre-created). Best-effort, like the rest of this reflection surface. */
+  async addLabel(repo: string, number: number, label: string): Promise<Result<true>> {
+    const res = await run('gh', ['issue', 'edit', String(number), '--repo', repo, '--add-label', label]);
+    if (res.status === 'ok') return ok(true);
+    const missingLabel = res.status === 'failed' && /not found|does not exist/i.test(res.stderr);
+    if (missingLabel) {
+      const created = await run('gh', ['label', 'create', label, '--repo', repo, '--color', 'ededed', '--force']);
+      if (created.status !== 'ok') return classifyGh(created);
+      const retry = await run('gh', ['issue', 'edit', String(number), '--repo', repo, '--add-label', label]);
+      return retry.status === 'ok' ? ok(true) : classifyGh(retry);
+    }
+    return classifyGh(res);
+  }
+
+  async close(repo: string, number: number): Promise<Result<true>> {
+    const res = await run('gh', ['issue', 'close', String(number), '--repo', repo]);
+    return res.status === 'ok' ? ok(true) : classifyGh(res);
+  }
 }

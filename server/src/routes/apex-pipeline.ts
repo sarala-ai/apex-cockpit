@@ -27,7 +27,8 @@ import { seedApexTowerPipeline } from "../apex/pipeline/seed.js";
 import { openGateApprovalIfNeeded } from "../apex/pipeline/gate-bridge.js";
 import { IssueIngestionAdapter } from "../apex/pipeline/ingest-service.js";
 import { ExecDispatcher } from "../apex/pipeline/exec-dispatch.js";
-import { assertBoardOrgAccess, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { runGithubIssueIngest } from "../apex/pipeline/github-issue-ingest.js";
+import { assertBoardOrAgent, assertBoardOrgAccess, assertCompanyAccess, getActorInfo } from "./authz.js";
 import type { PipelineActor } from "../services/pipelines.js";
 import type { Request } from "express";
 
@@ -112,6 +113,24 @@ export function apexPipelineRoutes(db: Db) {
       res.json(result);
     },
   );
+
+  // Manual trigger for the recurring GitHub-Issues -> fork-issues ingest job
+  // (`apex/pipeline/github-issue-ingest.ts`, work-loop doctrine Slice 0). Same
+  // job the scheduler runs every `APEX_GITHUB_INGEST_HOURS`; this route gives
+  // tests/demos a deterministic on-demand entry point. Failure-isolated
+  // internally — never 500s for a single company/repo/issue's failure, only
+  // for something breaking the job itself. Same auth guard shape as the
+  // attribution-refresh manual route (`POST /observe/attribution/refresh`).
+  router.post("/apex/github-ingest", async (req, res) => {
+    assertBoardOrAgent(req);
+    try {
+      const summary = await runGithubIssueIngest(db);
+      res.json(summary);
+    } catch (e) {
+      console.error("[apex] github-ingest", e);
+      res.status(500).json({ error: e instanceof Error ? e.message : "github ingest failed" });
+    }
+  });
 
   return router;
 }

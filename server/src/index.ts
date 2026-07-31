@@ -62,6 +62,7 @@ import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
 import { startAttributionRefreshScheduler } from "./observe/attribution-refresh.js";
+import { startGithubIssueIngestScheduler } from "./apex/pipeline/github-issue-ingest.js";
 import { resolveLocalActor, actorId } from "./identity/actor.js";
 import type {
   InstanceDatabaseBackupRunResult,
@@ -1104,7 +1105,15 @@ export async function startServer(): Promise<StartedServer> {
   // APEX_ATTRIBUTION_REFRESH_HOURS (default 24h; 0 disables). Same
   // setInterval scheduling shape as the database-backup job above.
   const stopAttributionRefreshScheduler = startAttributionRefreshScheduler(db as any);
-  
+
+  // Recurring GitHub-Issues -> fork-issues ingest (work-loop doctrine Slice 0,
+  // docs/architecture/work-loop.md) — mirrors open issues from every bound
+  // GitHub repo into the fork's own issues table on originKind
+  // "plugin:github". First tick 5 minutes after boot, then every
+  // APEX_GITHUB_INGEST_HOURS (default 6h; 0 disables). Same setInterval
+  // scheduling shape as the attribution-refresh job above.
+  const stopGithubIssueIngestScheduler = startGithubIssueIngestScheduler(db as any);
+
   // Wait for external adapters to finish loading before accepting requests.
   // Without this, adapter type validation (assertKnownAdapterType) would
   // reject valid external adapter types during the startup loading window.
@@ -1192,6 +1201,7 @@ export async function startServer(): Promise<StartedServer> {
         heartbeatSchedulerInterval = null;
       }
       stopAttributionRefreshScheduler();
+      stopGithubIssueIngestScheduler();
       await waitForHeartbeatSchedulerIdle();
 
       const telemetryClient = getTelemetryClient();

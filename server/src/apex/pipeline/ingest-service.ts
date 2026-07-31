@@ -1,10 +1,21 @@
 /**
- * GitHub-Issues → pipeline-cases ingestion adapter (apex-tower migration — Task
- * 2 §2c). Genuinely new integration surface: the fork's `issues` table has no
- * GitHub linkage, so our `TicketSource` (gh CLI) becomes an ingestion adapter
- * that mirrors open issues into the seeded lifecycle pipeline as `pipelineCases`
- * (one case per issue, landing on the `ingested` stage). No schema change — it
- * calls the fork's `pipelineService.ingestCase`.
+ * @deprecated GitHub-Issues → pipeline-cases ingestion adapter (apex-tower
+ * migration — Task 2 §2c). Written back when the fork's `issues` table had
+ * no GitHub linkage, so it mirrored open issues into the seeded lifecycle
+ * pipeline as `pipelineCases` instead.
+ *
+ * SUPERSEDED by `./github-issue-ingest.ts` (work-loop doctrine Slice 0, see
+ * docs/architecture/work-loop.md): the fork's `issues` table now has real
+ * GitHub linkage (`originKind: "plugin:github"`, `originId`,
+ * `originFingerprint`), so GitHub issues ingest directly into fork issues —
+ * the statement-phase system of record per the doctrine's single-writer
+ * table — not into a parallel pipeline-case shadow. New integrations should
+ * use `runGithubIssueIngest` from `./github-issue-ingest.ts`.
+ *
+ * Left in place (not deleted) because `POST /apex/pipeline/ingest`
+ * (routes/apex-pipeline.ts) still calls it for the spec-002 pipeline/cases
+ * demo flow, which is a separate, still-live surface from the work-loop
+ * Issues plane. Do not add new callers of this adapter.
  *
  * Idempotency: each issue's stable id (`owner/repo#N`) is used as the case
  * `caseKey`, so re-ingesting an already-mirrored issue upserts rather than
