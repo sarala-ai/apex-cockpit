@@ -15,6 +15,7 @@ import {
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
+  issues,
   principalPermissionGrants,
   routines,
   routineTriggers,
@@ -23,6 +24,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { updateCompanySchema } from "@paperclipai/shared";
 import { companyService } from "../services/companies.js";
 import { readBuiltInAgentMarker } from "../services/built-in-agent-metadata.js";
 import { reconcileBuiltInAgentsOnStartup } from "../services/built-in-agents.js";
@@ -60,6 +62,7 @@ describeEmbeddedPostgres("companyService", () => {
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
     await db.delete(cloudScopeBindings);
+    await db.delete(issues);
     await db.delete(companies);
   });
 
@@ -345,6 +348,155 @@ describeEmbeddedPostgres("companyService", () => {
           { actorType: "user", actorId: "test-user", agentId: null, runId: null },
         ),
       ).rejects.toMatchObject({ status: 409, details: { code: "slug_immutable" } });
+    });
+  });
+
+  describe("breakGlassChangeIssuePrefix", () => {
+    const actor = { actorType: "user" as const, actorId: "test-admin", agentId: null, runId: null };
+
+    it("returns a consequences preview without writing when confirm is absent", async () => {
+      const created = await companyService(db).create({ name: "Preview Prefix Co" });
+      const result = await companyService(db).breakGlassChangeIssuePrefix(created.id, "NEWP", { actor });
+
+      expect(result.preview).toBe(true);
+      expect(result.consequences).toMatchObject({
+        companyId: created.id,
+        currentPrefix: created.issuePrefix,
+        proposedPrefix: "NEWP",
+        existingIssueCount: 0,
+      });
+      expect(result.company).toBeUndefined();
+
+      const rows = await db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, created.id));
+      expect(rows[0]?.issuePrefix).toBe(created.issuePrefix);
+    });
+
+    it("still validates the shape of the new prefix on preview", async () => {
+      const created = await companyService(db).create({ name: "Bad Prefix Co" });
+      await expect(
+        companyService(db).breakGlassChangeIssuePrefix(created.id, "not valid!", { actor }),
+      ).rejects.toMatchObject({ status: 422, details: { code: "issue_prefix_invalid" } });
+    });
+
+    it("rejects execution when confirm does not match the current prefix", async () => {
+      const created = await companyService(db).create({ name: "Mismatch Prefix Co" });
+      await expect(
+        companyService(db).breakGlassChangeIssuePrefix(created.id, "NEWP", {
+          confirm: "wrong-prefix",
+          actor,
+        }),
+      ).rejects.toMatchObject({ status: 409, details: { code: "issue_prefix_break_glass_confirm_mismatch" } });
+
+      const rows = await db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, created.id));
+      expect(rows[0]?.issuePrefix).toBe(created.issuePrefix);
+    });
+
+    it("performs the change transactionally, rewrites existing issue identifiers, and records an audit entry", async () => {
+      const created = await companyService(db).create({ name: "Confirmed Prefix Co" });
+      const oldPrefix = created.issuePrefix;
+
+      // Simulate a couple of existing issues under the old prefix, the way
+      // issues.ts would have created them (identifier built from prefix + the
+      // stored issueNumber column).
+      await db.insert(issues).values([
+        {
+          companyId: created.id,
+          title: "First",
+          status: "open",
+          issueNumber: 1,
+          identifier: `${oldPrefix}-1`,
+        },
+        {
+          companyId: created.id,
+          title: "Second",
+          status: "open",
+          issueNumber: 2,
+          identifier: `${oldPrefix}-2`,
+        },
+      ]);
+
+      const result = await companyService(db).breakGlassChangeIssuePrefix(created.id, "CFPX", {
+        confirm: oldPrefix,
+        actor,
+      });
+
+      expect(result.preview).toBe(false);
+      expect(result.company?.issuePrefix).toBe("CFPX");
+      expect(result.consequences.currentPrefix).toBe(oldPrefix);
+      expect(result.consequences.proposedPrefix).toBe("CFPX");
+      expect(result.consequences.existingIssueCount).toBe(2);
+      expect(result.activityId).toBeTruthy();
+
+      const companyRows = await db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, created.id));
+      expect(companyRows[0]?.issuePrefix).toBe("CFPX");
+
+      const issueRows = await db
+        .select({ identifier: issues.identifier, issueNumber: issues.issueNumber })
+        .from(issues)
+        .where(eq(issues.companyId, created.id))
+        .orderBy(issues.issueNumber);
+      expect(issueRows).toEqual([
+        { identifier: "CFPX-1", issueNumber: 1 },
+        { identifier: "CFPX-2", issueNumber: 2 },
+      ]);
+
+      const [logRow] = await db
+        .select({ action: activityLog.action, actorId: activityLog.actorId, details: activityLog.details })
+        .from(activityLog)
+        .where(and(eq(activityLog.companyId, created.id), eq(activityLog.action, "company.issue_prefix_break_glass")));
+
+      expect(logRow).toMatchObject({ action: "company.issue_prefix_break_glass", actorId: "test-admin" });
+      expect(logRow?.details).toMatchObject({
+        oldPrefix,
+        newPrefix: "CFPX",
+        consequences: { currentPrefix: oldPrefix, proposedPrefix: "CFPX", existingIssueCount: 2 },
+      });
+    });
+
+    it("rejects executing a conflicting prefix already used by another company", async () => {
+      await db.insert(companies).values({ name: "Taken Prefix Co", issuePrefix: "TAKN" });
+      const created = await companyService(db).create({ name: "Conflicted Prefix Co" });
+
+      await expect(
+        companyService(db).breakGlassChangeIssuePrefix(created.id, "TAKN", {
+          confirm: created.issuePrefix,
+          actor,
+        }),
+      ).rejects.toMatchObject({ status: 409, details: { code: "issue_prefix_conflict" } });
+    });
+
+    it("reports a purely forward-looking warning when the company has no existing issues", async () => {
+      const created = await companyService(db).create({ name: "Empty Prefix Co" });
+      const result = await companyService(db).breakGlassChangeIssuePrefix(created.id, "EMPT", { actor });
+      expect(result.consequences.existingIssueCount).toBe(0);
+      expect(result.consequences.warning).toContain("forward-looking");
+    });
+
+    it("flags stale GitHub mirror issue titles when GitHub projection is enabled", async () => {
+      const created = await companyService(db).create({ name: "Projected Prefix Co" });
+      await companyService(db).update(
+        created.id,
+        { githubProjectionEnabled: true, githubProjectionRepo: "acme/projected-prefix-co" },
+        actor,
+      );
+
+      const result = await companyService(db).breakGlassChangeIssuePrefix(created.id, "PROJ", { actor });
+      expect(result.consequences.githubProjectionRepo).toBe("acme/projected-prefix-co");
+      expect(result.consequences.warning).toContain("GitHub projection");
+    });
+
+    it("keeps issuePrefix out of the normal HTTP update() request shape — break-glass is the only route in", () => {
+      // The HTTP PATCH /:companyId route always parses the body through
+      // updateCompanySchema (or updateCompanyBrandingSchema for agents)
+      // before it ever reaches companyService.update — see
+      // server/src/routes/companies.ts. As long as issuePrefix is absent
+      // from that schema, an operator (or agent) can never rewrite the
+      // prefix — and silently orphan/duplicate issue identifiers — through
+      // the ordinary settings PATCH; the audited break-glass route above is
+      // the only path in. This guards the schema shape directly rather than
+      // the service layer, which (like slug pre-immutability-check) still
+      // trusts its caller.
+      expect(Object.prototype.hasOwnProperty.call(updateCompanySchema.shape, "issuePrefix")).toBe(false);
     });
   });
 

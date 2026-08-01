@@ -106,3 +106,33 @@ export const companySlugBreakGlassSchema = z.object({
 });
 
 export type CompanySlugBreakGlass = z.infer<typeof companySlugBreakGlassSchema>;
+
+// Issue prefix shape: uppercase letters/digits, must start with a letter,
+// 1-10 characters. This is intentionally looser than deriveIssuePrefixBase's
+// output (which only ever produces 1-4 letters from a company name) because
+// an operator using the break-glass escape hatch may want to hand-pick a
+// prefix that doesn't match any company name at all.
+export const COMPANY_ISSUE_PREFIX_PATTERN = /^[A-Z][A-Z0-9]{0,9}$/;
+
+export const companyIssuePrefixSchema = z
+  .string()
+  .trim()
+  .transform((value) => value.toUpperCase())
+  .refine((value) => COMPANY_ISSUE_PREFIX_PATTERN.test(value), {
+    message:
+      "Issue prefix must start with an uppercase letter and contain only uppercase letters and digits (1-10 characters).",
+  });
+
+// Break-glass issue prefix change — same posture as the slug break-glass
+// escape hatch (see companySlugBreakGlassSchema): `confirm` absent returns a
+// dry-run consequences preview only; `confirm` set to the CURRENT prefix
+// performs the change. See companyService.breakGlassChangeIssuePrefix for why
+// this exists as a break-glass op rather than a normal update() field — issue
+// prefix has no update path at all today, and once issues exist against a
+// prefix, changing it has real consequences (see consequences report).
+export const companyIssuePrefixBreakGlassSchema = z.object({
+  newPrefix: companyIssuePrefixSchema,
+  confirm: z.string().min(1).optional(),
+});
+
+export type CompanyIssuePrefixBreakGlass = z.infer<typeof companyIssuePrefixBreakGlassSchema>;

@@ -1,4 +1,4 @@
-import { and, count, eq, gte, inArray, isNull, lt, notInArray, sql } from "drizzle-orm";
+import { and, count, desc, eq, gte, inArray, isNotNull, isNull, lt, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   companies,
@@ -33,7 +33,12 @@ import {
   routineDocuments,
   cloudScopeBindings,
 } from "@paperclipai/db";
-import { companySlugSchema, type CompanySlugBreakGlassConsequences } from "@paperclipai/shared";
+import {
+  companySlugSchema,
+  companyIssuePrefixSchema,
+  type CompanySlugBreakGlassConsequences,
+  type CompanyIssuePrefixBreakGlassConsequences,
+} from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { environmentService } from "./environments.js";
 import { heartbeatService } from "./heartbeat.js";
@@ -284,6 +289,20 @@ export function companyService(db: Db) {
     );
   }
 
+  function issuePrefixConflictError(prefix: string) {
+    return conflict(`Issue prefix "${prefix}" is already in use by another company.`, {
+      code: "issue_prefix_conflict",
+    });
+  }
+
+  function issuePrefixBreakGlassConfirmMismatchError(currentPrefix: string) {
+    return conflict(
+      `Break-glass issue prefix change requires typing the CURRENT prefix ("${currentPrefix}") as confirm — ` +
+        `same deliberateness proof as the slug break-glass escape hatch.`,
+      { code: "issue_prefix_break_glass_confirm_mismatch" },
+    );
+  }
+
   // NEVER exposed through the normal update() path — companyService.update
   // rejects any change to a non-null slug outright (see slugImmutableError).
   // This is the one deliberate, loud, audited escape hatch: it is returned
@@ -347,6 +366,61 @@ export function companyService(db: Db) {
       warning: boundRepos.length > 0
         ? `${boundRepos.length} bound repo(s) may carry the old slug in committed config — see boundRepoConfigs. Nothing outside this database row is touched by this command.`
         : "No repos are currently bound to this company via cloudScopeBindings, but capability sync paths and env vars derived from the old slug are still orphaned by this change — see capabilitySyncTargets and envVarsThatChange.",
+    };
+  }
+
+  // Unlike the slug consequences report, this one is grounded in actual rows:
+  // issue identifiers are stored (issues.identifier), built once at issue
+  // creation from company.issuePrefix + issues.issueNumber (see
+  // server/src/services/issues.ts). issues.issueNumber is ALSO stored
+  // separately, so a prefix change can honestly rebuild every identifier from
+  // (newPrefix, issueNumber) rather than string-splitting the old identifier —
+  // same construction the create path already uses.
+  async function buildIssuePrefixBreakGlassConsequences(
+    database: Pick<Db, "select">,
+    companyId: string,
+    currentPrefix: string,
+    proposedPrefix: string,
+  ): Promise<CompanyIssuePrefixBreakGlassConsequences> {
+    const [countRow, sampleRows, companyRow] = await Promise.all([
+      database
+        .select({ value: count() })
+        .from(issues)
+        .where(eq(issues.companyId, companyId))
+        .then((rows) => rows[0]?.value ?? 0),
+      database
+        .select({ issueNumber: issues.issueNumber, identifier: issues.identifier })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), isNotNull(issues.issueNumber)))
+        .orderBy(desc(issues.issueNumber))
+        .limit(5),
+      database
+        .select({ githubProjectionEnabled: companies.githubProjectionEnabled, githubProjectionRepo: companies.githubProjectionRepo })
+        .from(companies)
+        .where(eq(companies.id, companyId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    const githubProjectionRepo =
+      companyRow?.githubProjectionEnabled && companyRow.githubProjectionRepo ? companyRow.githubProjectionRepo : null;
+
+    return {
+      companyId,
+      currentPrefix,
+      proposedPrefix,
+      existingIssueCount: countRow,
+      sampleRewrittenIdentifiers: sampleRows.map((row) => ({
+        current: row.identifier ?? `${currentPrefix}-${row.issueNumber}`,
+        next: `${proposedPrefix}-${row.issueNumber}`,
+      })),
+      githubProjectionRepo,
+      warning:
+        (countRow === 0
+          ? "This company has no existing issues, so this is purely forward-looking — no identifiers will be rewritten."
+          : `${countRow} existing issue identifier(s) will be rewritten from ${currentPrefix}-<n> to ${proposedPrefix}-<n> in the same transaction as the prefix change — this is NOT forward-only.`) +
+        (githubProjectionRepo
+          ? ` GitHub projection is enabled for ${githubProjectionRepo}: mirror issues already created there (if any) have the OLD identifier baked into their title/body — this command does NOT edit GitHub, so those go stale.`
+          : ""),
     };
   }
 
@@ -819,6 +893,128 @@ export function companyService(db: Db) {
         details: {
           oldSlug,
           newSlug: normalizedNewSlug,
+          consequences: result.consequences,
+        },
+      });
+
+      return {
+        preview: false,
+        company: result.company,
+        consequences: result.consequences,
+        activityId: activity.id,
+      };
+    },
+
+    // Break-glass issue prefix change. Issue prefix has NO normal update()
+    // path at all today (it's only ever set once, at creation, by
+    // createCompanyWithUniquePrefix) — this is the one deliberate, audited
+    // escape hatch, modeled directly on breakGlassChangeSlug: no `confirm` ->
+    // dry-run consequences preview only; `confirm` equal to the CURRENT
+    // prefix -> performs the change.
+    //
+    // Unlike the slug, this is NOT forward-only: issues.identifier is a
+    // stored column, but it's built from (issuePrefix, issueNumber) and
+    // issueNumber is independently stored too, so every existing identifier
+    // for this company is honestly rewritten in the same transaction as the
+    // prefix change (see buildIssuePrefixBreakGlassConsequences for what this
+    // can't reach — e.g. GitHub mirror issue titles already created under the
+    // old identifier).
+    breakGlassChangeIssuePrefix: async (
+      id: string,
+      newPrefix: string,
+      opts: { confirm?: string; actor: CompanyActivityActor },
+    ): Promise<{
+      preview: boolean;
+      consequences: CompanyIssuePrefixBreakGlassConsequences;
+      company?: ReturnType<typeof enrichCompany>;
+      activityId?: string | null;
+    }> => {
+      const parsedPrefix = companyIssuePrefixSchema.safeParse(newPrefix);
+      if (!parsedPrefix.success) {
+        throw unprocessable(parsedPrefix.error.issues[0]?.message ?? "Invalid issue prefix", {
+          code: "issue_prefix_invalid",
+        });
+      }
+      const normalizedNewPrefix = parsedPrefix.data;
+
+      const existing = await getCompanyQuery(db)
+        .where(eq(companies.id, id))
+        .then((rows) => rows[0] ?? null);
+      if (!existing) throw notFound("Company not found");
+
+      if (opts.confirm === undefined) {
+        const consequences = await buildIssuePrefixBreakGlassConsequences(
+          db,
+          id,
+          existing.issuePrefix,
+          normalizedNewPrefix,
+        );
+        return { preview: true, consequences };
+      }
+
+      if (opts.confirm !== existing.issuePrefix) {
+        throw issuePrefixBreakGlassConfirmMismatchError(existing.issuePrefix);
+      }
+
+      const oldPrefix = existing.issuePrefix;
+
+      const result = await db.transaction(async (tx) => {
+        const txExisting = await getCompanyQuery(tx)
+          .where(eq(companies.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!txExisting) throw notFound("Company not found");
+        if (txExisting.issuePrefix !== oldPrefix) {
+          // Prefix moved out from under this call between the pre-check and
+          // the transaction (e.g. a concurrent break-glass) — re-validate
+          // rather than blindly overwrite, same guard as the slug path.
+          throw issuePrefixBreakGlassConfirmMismatchError(txExisting.issuePrefix);
+        }
+
+        const consequences = await buildIssuePrefixBreakGlassConsequences(tx, id, oldPrefix, normalizedNewPrefix);
+
+        let updated;
+        try {
+          updated = await tx
+            .update(companies)
+            .set({ issuePrefix: normalizedNewPrefix, updatedAt: new Date() })
+            .where(eq(companies.id, id))
+            .returning()
+            .then((rows) => rows[0] ?? null);
+        } catch (error) {
+          if (isIssuePrefixConflict(error)) throw issuePrefixConflictError(normalizedNewPrefix);
+          throw error;
+        }
+        if (!updated) throw notFound("Company not found");
+
+        // Rewrite every existing issue's identifier from (oldPrefix, n) to
+        // (newPrefix, n) — recomputed from the stored issueNumber column, the
+        // same construction issues.ts uses at creation time, rather than
+        // string-splitting the old identifier.
+        await tx
+          .update(issues)
+          .set({ identifier: sql`${normalizedNewPrefix} || '-' || ${issues.issueNumber}` })
+          .where(and(eq(issues.companyId, id), isNotNull(issues.issueNumber)));
+
+        const [hydrated] = await hydrateCompanySpend([{
+          ...updated,
+          logoAssetId: txExisting.logoAssetId,
+        }], tx);
+
+        return { company: enrichCompany(hydrated), consequences };
+      });
+
+      const activity = await logActivity(db, {
+        companyId: id,
+        actorType: opts.actor.actorType,
+        actorId: opts.actor.actorId,
+        agentId: opts.actor.agentId ?? null,
+        runId: opts.actor.runId ?? null,
+        action: "company.issue_prefix_break_glass",
+        entityType: "company",
+        entityId: id,
+        details: {
+          oldPrefix,
+          newPrefix: normalizedNewPrefix,
           consequences: result.consequences,
         },
       });

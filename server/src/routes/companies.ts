@@ -11,6 +11,7 @@ import {
   companyPortabilityImportSchema,
   companyPortabilityPreviewSchema,
   companySlugBreakGlassSchema,
+  companyIssuePrefixBreakGlassSchema,
   createCompanySchema,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
@@ -540,6 +541,38 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     const actor = getActorInfo(req);
 
     const result = await svc.breakGlassChangeSlug(companyId, body.newSlug, {
+      confirm: body.confirm,
+      actor,
+    });
+
+    if (result.preview) {
+      res.status(200).json({ preview: true, consequences: result.consequences });
+      return;
+    }
+
+    res.status(200).json({
+      preview: false,
+      company: result.company,
+      consequences: result.consequences,
+      activityId: result.activityId ?? null,
+    });
+  });
+
+  // Break-glass issue prefix change — same posture and gating as
+  // slug-break-glass above (instance-admin-gated, preview-then-confirm), but
+  // for issue prefix, which has NO normal update() path at all today. See
+  // companyService.breakGlassChangeIssuePrefix: unlike the slug this is NOT
+  // forward-only — existing issue identifiers are rewritten transactionally
+  // in the same operation, and the consequences report says so.
+  router.post("/:companyId/issue-prefix-break-glass", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertInstanceAdmin(req);
+
+    const body = companyIssuePrefixBreakGlassSchema.parse(req.body);
+    const actor = getActorInfo(req);
+
+    const result = await svc.breakGlassChangeIssuePrefix(companyId, body.newPrefix, {
       confirm: body.confirm,
       actor,
     });
