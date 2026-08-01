@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import { agents, createDb } from "@paperclipai/db";
 import { secretService } from "../server/src/services/secrets.js";
+import { syncAgentAdapterEnvBindings } from "../server/src/services/agent-secret-bindings.js";
 
 const SENSITIVE_ENV_KEY_RE =
   /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
@@ -97,16 +98,25 @@ async function main() {
     changedAgents += 1;
 
     if (apply) {
+      const nextAdapterConfig = { ...adapterConfig, env: nextEnv };
       await db
         .update(agents)
         .set({
-          adapterConfig: {
-            ...adapterConfig,
-            env: nextEnv,
-          },
+          adapterConfig: nextAdapterConfig,
           updatedAt: new Date(),
         })
         .where(eq(agents.id, agent.id));
+      // This script writes the agent row directly, bypassing agentService
+      // .update() — which is the only other caller of this sync. Without it a
+      // migrated agent holds secret_ref bindings that no company_secret_
+      // bindings row records, so the secret's consumer list silently under-
+      // reports who uses it, and "what breaks if I rotate this" answers wrong.
+      await syncAgentAdapterEnvBindings({
+        secretsSvc: secrets,
+        companyId: agent.companyId,
+        agentId: agent.id,
+        adapterConfig: nextAdapterConfig,
+      });
     }
   }
 
