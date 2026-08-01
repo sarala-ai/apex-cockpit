@@ -1,8 +1,9 @@
 /**
  * WorkflowsCliClient — shells the top-level `apex workflows` CLI directly
  * (NOT `apex run <server> <tool>`, see invoke.ts's CliApexInvoker for that
- * shape): `apex workflows list --output json` / `apex workflows show <name>
- * --output json`, per the documented contract (see @paperclipai/shared's
+ * shape): `apex --output json workflows list` / `apex --output json workflows
+ * show <name>` (--output is a GROUP-level option — verified live: placing it
+ * after the subcommand is silently rejected), per the documented contract (see @paperclipai/shared's
  * workflows.ts for the exact schema).
  *
  * This is Part 2 of the Workflows migration, consumed against a live CLI
@@ -107,7 +108,7 @@ export class WorkflowsCliClient {
   }
 
   async list(): Promise<WorkflowsCliResult<WorkflowListSuccess>> {
-    const r = await this.invoke(["workflows", "list", "--output", "json"]);
+    const r = await this.invoke(["--output", "json", "workflows", "list"]);
     if (!r.ok) return { ok: false, error: r.error };
     const parsed = WorkflowListSuccessSchema.safeParse(r.json);
     if (!parsed.success) {
@@ -120,7 +121,7 @@ export class WorkflowsCliClient {
   }
 
   async show(name: string): Promise<WorkflowsCliResult<WorkflowDetailSuccess>> {
-    const r = await this.invoke(["workflows", "show", name, "--output", "json"]);
+    const r = await this.invoke(["--output", "json", "workflows", "show", name]);
     if (!r.ok) return { ok: false, error: r.error };
     const parsed = WorkflowDetailSuccessSchema.safeParse(r.json);
     if (!parsed.success) {
