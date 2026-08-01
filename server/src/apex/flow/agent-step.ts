@@ -18,12 +18,26 @@
  *   verifiable artifact in the form `file_exists:<path>` (absolute, or
  *   relative to APEX_LAUNCH_DIR / ~/.apex-cockpit), the file's existence is
  *   verified with fs.stat.
+ * - additionally, when it declares `pr_exists:<repo>#<head-branch>`, the
+ *   OPEN pull request for that head branch is verified through the apex CLI
+ *   (`apex run github_repo get-pull-request --repo … --head …` — the
+ *   producer-owns seam, same doctrine as flow definitions). The PR's URL is
+ *   recorded in the evaluation string, so the gate approval's activity
+ *   trail carries the artifact link.
  * - every other acceptance string is recorded verbatim in the activity log
  *   and evaluated as run-success-only — no LLM judging, no expression engine.
+ *
+ * Acceptance strings are TEMPLATES: the coordinator renders `{{identifier}}`
+ * etc. through `renderAgentPrompt` before posting the instruction comment
+ * and before evaluating — the agent and the evaluator always see the same
+ * concrete string (e.g. `pr_exists:sarala-ai/apex-design#design/APE-7`).
  */
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
+import { z } from "zod";
+import { run } from "../exec.js";
+import { ApexUnavailableError } from "../invoke.js";
 
 export const FLOW_AGENT_WAKE_REASON = "flow_agent_step";
 /** contextSnapshot marker the completion hook keys on — only runs the flow
@@ -63,11 +77,88 @@ export function renderAgentPrompt(template: string, context: AgentPromptContext)
   );
 }
 
+/** Interpolate `{{placeholder}}` tokens in a workflow node's params — string
+ *  values only, non-strings pass through untouched. Same token grammar as
+ *  prompts/acceptance, so `head: design/{{identifier}}` in a flow definition
+ *  becomes the ticket's concrete branch. */
+export function renderWorkflowParams(
+  params: Record<string, unknown>,
+  context: AgentPromptContext,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(params).map(([key, value]) => [
+      key,
+      typeof value === "string" ? renderAgentPrompt(value, context) : value,
+    ]),
+  );
+}
+
 export type AcceptanceEvaluation =
   | { ok: true; evaluation: string }
   | { ok: false; evaluation: string; message: string };
 
 const FILE_EXISTS_RE = /^file_exists:\s*(.+)$/;
+const PR_EXISTS_RE = /^pr_exists:\s*([^#\s]+)#(\S+)$/;
+
+export type PullRequestCheck =
+  | { exists: true; url: string; number: number | null }
+  | { exists: false; message: string };
+
+/** Look up the OPEN pull request for a head branch via the apex CLI —
+ *  github_repo's get-pull-request tool is read-path (dry_run_enabled: false),
+ *  so no execution-mode escalation is involved. */
+const prCheckEnvelopeSchema = z
+  .object({
+    status: z.string(),
+    error: z.string().optional(),
+    error_type: z.string().optional(),
+    result: z
+      .object({ url: z.string().optional(), number: z.number().optional(), state: z.string().optional() })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
+
+export async function checkPullRequestViaCli(
+  repo: string,
+  head: string,
+  options: { bin?: string; cwd?: string; timeoutMs?: number } = {},
+): Promise<PullRequestCheck> {
+  const bin = options.bin ?? process.env.APEX_BIN ?? "apex";
+  const cwd = options.cwd ?? process.env.APEX_LAUNCH_DIR ?? join(homedir(), ".apex-cockpit");
+  const res = await run(
+    bin,
+    ["--output", "json", "run", "github_repo", "get-pull-request", "--repo", repo, "--head", head],
+    options.timeoutMs ?? 120_000,
+    cwd,
+  );
+  if (res.status === "missing") {
+    throw new ApexUnavailableError(`apex CLI not found (bin: ${bin})`);
+  }
+  let envelope: z.infer<typeof prCheckEnvelopeSchema>;
+  try {
+    envelope = prCheckEnvelopeSchema.parse(JSON.parse(res.stdout));
+  } catch {
+    return {
+      exists: false,
+      message:
+        res.status === "failed"
+          ? `apex github_repo get-pull-request failed (code ${res.code}): ${res.stderr.slice(0, 300)}`
+          : "apex github_repo get-pull-request returned unparseable output",
+    };
+  }
+  if (envelope.status !== "success") {
+    return {
+      exists: false,
+      message: envelope.error ?? `get-pull-request reported status ${JSON.stringify(envelope.status)}`,
+    };
+  }
+  return {
+    exists: true,
+    url: envelope.result?.url ?? "",
+    number: envelope.result?.number ?? null,
+  };
+}
 
 export function acceptanceArtifactPath(
   acceptance: string,
@@ -80,11 +171,42 @@ export function acceptanceArtifactPath(
   return isAbsolute(raw) ? resolve(raw) : resolve(launchDir, raw);
 }
 
+/** Parse a `pr_exists:<repo>#<head>` acceptance declaration, or null. */
+export function acceptancePullRequestTarget(
+  acceptance: string,
+): { repo: string; head: string } | null {
+  const match = PR_EXISTS_RE.exec(acceptance.trim());
+  if (!match) return null;
+  return { repo: match[1], head: match[2] };
+}
+
 /** v1 acceptance evaluation — see module doc for exactly what is checked. */
 export async function evaluateAcceptanceV1(
   acceptance: string,
-  options: { launchDir?: string } = {},
+  options: {
+    launchDir?: string;
+    checkPullRequest?: (repo: string, head: string) => Promise<PullRequestCheck>;
+  } = {},
 ): Promise<AcceptanceEvaluation> {
+  const prTarget = acceptancePullRequestTarget(acceptance);
+  if (prTarget !== null) {
+    const check = options.checkPullRequest ?? checkPullRequestViaCli;
+    const outcome = await check(prTarget.repo, prTarget.head);
+    if (outcome.exists) {
+      return {
+        ok: true,
+        evaluation:
+          `v1: run success + pr_exists verified (${prTarget.repo}#${prTarget.head}` +
+          (outcome.url ? ` → ${outcome.url}` : "") +
+          ")",
+      };
+    }
+    return {
+      ok: false,
+      evaluation: `v1: run success + pr_exists check FAILED (${prTarget.repo}#${prTarget.head})`,
+      message: `acceptance pull request not found: ${outcome.message}`,
+    };
+  }
   const artifactPath = acceptanceArtifactPath(acceptance, options.launchDir);
   if (artifactPath === null) {
     return {

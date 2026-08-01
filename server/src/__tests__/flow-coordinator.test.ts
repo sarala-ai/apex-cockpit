@@ -183,6 +183,32 @@ describeEmbeddedPostgres("flow coordinator", () => {
     expect(actions.filter((a) => a === "flow.node_succeeded")).toHaveLength(2);
   });
 
+  it("workflow node params are templates rendered against the ticket (design-merge shape)", async () => {
+    const { issueId } = await seedIssue();
+    const flow = choreFlow();
+    (flow.nodes[0].workflow as { params: Record<string, unknown> }).params = {
+      repo: "sarala-ai/apex-design",
+      head: "design/{{identifier}}",
+    };
+    const { runner, calls } = fakeRunner({
+      "simple-test": [ok],
+      "health generate_health_report": [ok],
+    });
+    const coordinator = flowCoordinator(db, {
+      loadDefinition: loaderFor(flow),
+      nodeRunner: runner,
+    });
+    const started = await coordinator.startFlow({ issueId, flowName: "noop-verify" });
+    await started.execution;
+
+    const [issueRow] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const workflowCall = calls.find((c) => c.kind === "workflow");
+    expect((workflowCall?.config as { params: Record<string, unknown> }).params).toEqual({
+      repo: "sarala-ai/apex-design",
+      head: `design/${issueRow.identifier}`,
+    });
+  });
+
   it("workflow failure with on_fail=pause pauses the flow and surfaces a classified comment", async () => {
     const { issueId } = await seedIssue();
     const { runner } = fakeRunner({ "simple-test": [fail] });
@@ -717,6 +743,75 @@ describeEmbeddedPostgres("flow coordinator", () => {
         } finally {
           await rm(dir, { recursive: true, force: true });
         }
+      });
+
+      it("acceptance templates render against the ticket for the instruction AND the evaluation", async () => {
+        const seeded = await seedAgentIssue({ assign: true });
+        const runId = await seedRun(seeded.companyId, seeded.agentId, "succeeded");
+        const evaluated: string[] = [];
+        const coordinator = flowCoordinator(db, {
+          loadDefinition: loaderFor(
+            agentFlow({ acceptance: "pr_exists:sarala-ai/apex-design#design/{{identifier}}" }),
+          ),
+          nodeRunner: fakeRunner({}).runner,
+          commissionAgentRun: async () => ({ runId }),
+          evaluateAcceptance: async (acceptance) => {
+            evaluated.push(acceptance);
+            return { ok: true, evaluation: "stubbed pr_exists pass" };
+          },
+        });
+        const started = await coordinator.startFlow({ issueId: seeded.issueId, flowName: "agentic" });
+        await started.execution;
+
+        const [issueRow] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+        const rendered = `pr_exists:sarala-ai/apex-design#design/${issueRow.identifier}`;
+        // instruction comment carries the RENDERED acceptance (no {{tokens}})
+        const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
+        expect(comments[0].body).toContain(rendered);
+        expect(comments[0].body).not.toContain("{{identifier}}");
+
+        const result = await coordinator.onAgentRunCompletion({
+          runId,
+          issueId: seeded.issueId,
+          flowName: "agentic",
+          flowNodeId: "board_diff",
+          runStatus: "succeeded",
+        });
+        expect(result.advanced).toBe(true);
+        if ("execution" in result && result.execution) await result.execution;
+        // evaluator saw the SAME rendered string
+        expect(evaluated).toEqual([rendered]);
+        expect((await flowState(seeded.issueId)).flowStatus).toBe("done");
+      });
+
+      it("failed pr_exists acceptance routes on_fail with classification", async () => {
+        const seeded = await seedAgentIssue({ assign: true });
+        const runId = await seedRun(seeded.companyId, seeded.agentId, "succeeded");
+        const coordinator = flowCoordinator(db, {
+          loadDefinition: loaderFor(
+            agentFlow({ acceptance: "pr_exists:sarala-ai/apex-design#design/{{identifier}}" }),
+          ),
+          nodeRunner: fakeRunner({}).runner,
+          commissionAgentRun: async () => ({ runId }),
+          evaluateAcceptance: async () => ({
+            ok: false,
+            evaluation: "v1: run success + pr_exists check FAILED",
+            message: "acceptance pull request not found: no open PR",
+          }),
+        });
+        const started = await coordinator.startFlow({ issueId: seeded.issueId, flowName: "agentic" });
+        await started.execution;
+        const result = await coordinator.onAgentRunCompletion({
+          runId,
+          issueId: seeded.issueId,
+          flowName: "agentic",
+          flowNodeId: "board_diff",
+          runStatus: "succeeded",
+        });
+        expect(result).toMatchObject({ advanced: false, reason: "agent_acceptance_failed" });
+        expect((await flowState(seeded.issueId)).flowStatus).toBe("paused");
+        const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId));
+        expect(comments.some((c) => c.body.includes("acceptance pull request not found"))).toBe(true);
       });
 
       it("a stale or mismatched completion is a classified no-op", async () => {
