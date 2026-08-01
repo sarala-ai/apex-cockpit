@@ -1,11 +1,16 @@
-import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
+import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck, GitPullRequest } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { formatCents } from "../lib/utils";
+import { approvalsApi } from "../api/approvals";
+import { queryKeys } from "../lib/queryKeys";
+import { StatusBadge } from "./StatusBadge";
 
 export const typeLabel: Record<string, string> = {
   hire_agent: "Hire Agent",
   approve_ceo_strategy: "CEO Strategy",
   budget_override_required: "Budget Override",
   request_board_approval: "Board Approval",
+  flow_gate: "Flow Gate",
 };
 
 function firstNonEmptyString(...values: unknown[]): string | null {
@@ -41,6 +46,7 @@ export const typeIcon: Record<string, typeof UserPlus> = {
   approve_ceo_strategy: Lightbulb,
   budget_override_required: ShieldAlert,
   request_board_approval: ShieldCheck,
+  flow_gate: GitPullRequest,
 };
 
 export const defaultTypeIcon = ShieldCheck;
@@ -229,19 +235,121 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
   );
 }
 
+function PullRequestFileRow({ file }: { file: { path: string; status: string; additions: number; deletions: number } }) {
+  return (
+    <li className="flex items-center gap-2 text-xs">
+      <StatusBadge status={file.status} />
+      <span className="min-w-0 flex-1 truncate font-mono">{file.path}</span>
+      <span className="shrink-0 text-muted-foreground">
+        <span className="text-green-600 dark:text-green-400">+{file.additions}</span>{" "}
+        <span className="text-red-600 dark:text-red-400">-{file.deletions}</span>
+      </span>
+    </li>
+  );
+}
+
+/**
+ * Flow-gate approval payload — the gate's prompt plus the PR the preceding
+ * A-node's `pr_exists:<repo>#<head>` acceptance points at, fetched at VIEW
+ * time (server/src/routes/approvals.ts GET /approvals/:id/pr-diff) so an
+ * already-pending approval benefits the moment this ships, not just new
+ * ones. Loading / not-applicable / degraded (CLI or gh unavailable) states
+ * are rendered explicitly — the fetch never throws into this component.
+ */
+export function FlowGatePayload({
+  payload,
+  approvalId,
+}: {
+  payload: Record<string, unknown>;
+  approvalId?: string;
+}) {
+  const prompt = firstNonEmptyString(payload.prompt);
+  const flowName = firstNonEmptyString(payload.flowName);
+  const nodeId = firstNonEmptyString(payload.nodeId);
+
+  const { data, isLoading } = useQuery({
+    queryKey: queryKeys.approvals.prDiff(approvalId ?? ""),
+    queryFn: () => approvalsApi.getPrDiff(approvalId as string),
+    enabled: !!approvalId,
+    staleTime: 15_000,
+  });
+
+  return (
+    <div className="mt-3 space-y-3 text-sm">
+      {(flowName || nodeId) && (
+        <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+          {flowName && <span className="font-mono">{flowName}</span>}
+          {nodeId && <span>gate &lsquo;{nodeId}&rsquo;</span>}
+        </div>
+      )}
+      {prompt && <p className="leading-6 text-foreground/90">{prompt}</p>}
+
+      {!approvalId ? null : isLoading ? (
+        <p className="text-xs text-muted-foreground">Loading pull request…</p>
+      ) : !data ? (
+        <p className="text-xs text-muted-foreground">Couldn&rsquo;t load the pull request.</p>
+      ) : data.available === false ? (
+        <p className="text-xs text-muted-foreground">No linked pull request found for this gate.</p>
+      ) : data.degraded ? (
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
+          Couldn&rsquo;t load {data.repo}#{data.headBranch}: {data.error}
+        </div>
+      ) : (
+        <div className="space-y-2 rounded-md border border-border/60 bg-background/60 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <a
+              href={data.url}
+              target="_blank"
+              rel="noreferrer"
+              className="min-w-0 truncate font-medium text-foreground hover:underline"
+            >
+              {data.title || `${data.repo}#${data.headBranch}`}
+            </a>
+            <span className="shrink-0 text-xs text-muted-foreground">
+              <span className="text-green-600 dark:text-green-400">+{data.totals.additions}</span>{" "}
+              <span className="text-red-600 dark:text-red-400">-{data.totals.deletions}</span>{" "}
+              · {data.totals.changedFiles} file{data.totals.changedFiles === 1 ? "" : "s"}
+            </span>
+          </div>
+          {data.files.length > 0 && (
+            <ul className="space-y-1 border-t border-border/60 pt-2">
+              {data.files.map((file) => (
+                <PullRequestFileRow key={file.path} file={file} />
+              ))}
+            </ul>
+          )}
+          {data.files_truncated && (
+            <p className="text-(length:--text-micro) text-muted-foreground">
+              Showing the first {data.files.length} changed files — more were truncated.
+            </p>
+          )}
+          {data.acceptanceEvaluation && (
+            <p className="border-t border-border/60 pt-2 text-(length:--text-micro) text-muted-foreground">
+              {data.acceptanceEvaluation}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ApprovalPayloadRenderer({
   type,
   payload,
   hidePrimaryTitle = false,
+  approvalId,
 }: {
   type: string;
   payload: Record<string, unknown>;
   hidePrimaryTitle?: boolean;
+  approvalId?: string;
 }) {
   if (type === "hire_agent") return <HireAgentPayload payload={payload} />;
   if (type === "budget_override_required") return <BudgetOverridePayload payload={payload} />;
   if (type === "request_board_approval") {
     return <BoardApprovalPayload payload={payload} hideTitle={hidePrimaryTitle} />;
   }
+  if (type === "flow_gate") return <FlowGatePayload payload={payload} approvalId={approvalId} />;
   return <CeoStrategyPayload payload={payload} />;
 }
