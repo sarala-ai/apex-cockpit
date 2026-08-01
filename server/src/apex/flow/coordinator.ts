@@ -99,6 +99,9 @@ export type FlowIssue = {
   description: string | null;
   agentBrief: string | null;
   assigneeAgentId: string | null;
+  /** The flow's own executor — see resolveExecutorAgent for why this is not
+   *  `assigneeAgentId`. Coordinator-owned, cleared at flow-terminal. */
+  flowExecutorAgentId: string | null;
   flowName: string | null;
   flowNodeId: string | null;
   flowStatus: string | null;
@@ -287,6 +290,7 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
     description: issues.description,
     agentBrief: issues.agentBrief,
     assigneeAgentId: issues.assigneeAgentId,
+    flowExecutorAgentId: issues.flowExecutorAgentId,
     flowName: issues.flowName,
     flowNodeId: issues.flowNodeId,
     flowStatus: issues.flowStatus,
@@ -294,6 +298,16 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
     flowStartedAt: issues.flowStartedAt,
     flowAdvancedAt: issues.flowAdvancedAt,
   };
+
+  /** Record the flow's executor, once. Guarded on still-null so a concurrent
+   *  resolution never re-routes a flow already bound to an agent — the same
+   *  fill-a-vacuum-never-overwrite discipline the assignee write uses. */
+  async function rememberFlowExecutor(issueId: string, agentId: string): Promise<void> {
+    await db
+      .update(issues)
+      .set({ flowExecutorAgentId: agentId, updatedAt: deps.now() })
+      .where(and(eq(issues.id, issueId), isNull(issues.flowExecutorAgentId)));
+  }
 
   async function getIssue(issueId: string): Promise<FlowIssue | null> {
     const rows = await db.select(FLOW_COLUMNS).from(issues).where(eq(issues.id, issueId));
@@ -308,6 +322,7 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
       flowNodeId: string | null;
       flowStatus: FlowStatus | null;
       flowRunId: string | null;
+      flowExecutorAgentId: string | null;
     }>,
     action: string,
     details: Record<string, unknown>,
@@ -484,9 +499,16 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
   ): Promise<FlowIssue | null> {
     const nextNode = flow.nodes[index + 1];
     if (!nextNode) {
-      await transition(issue, { flowStatus: "done", flowRunId: null }, "flow.completed", {
-        completedNodeId: flow.nodes[index]?.id ?? null,
-      });
+      await transition(
+        issue,
+        // Executor binding released only on genuine completion. `failed` and
+        // `paused` deliberately KEEP it: `retryCurrentNode` resumes the SAME
+        // flow, and re-resolving from `assigneeAgentId` at that point is
+        // exactly the reviewer-hijack this column exists to prevent.
+        { flowStatus: "done", flowRunId: null, flowExecutorAgentId: null },
+        "flow.completed",
+        { completedNodeId: flow.nodes[index]?.id ?? null },
+      );
       void deps.projection.flowCompleted({
         issueId: issue.id,
         completedNodeId: flow.nodes[index]?.id ?? null,
@@ -713,13 +735,39 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
     };
   }
 
-  /** Resolve the agent that executes this node: the issue's assignee, or —
-   *  when unassigned — the company's single assignable agent (deterministic
-   *  dispatch; anything ambiguous is a classified failure, never a guess). */
+  /**
+   * Resolve the agent that executes this flow's agent nodes.
+   *
+   * Order: the flow's OWN recorded executor (`flowExecutorAgentId`) → the
+   * issue's assignee → the company's single assignable agent (deterministic
+   * dispatch; anything ambiguous is a classified failure, never a guess). The
+   * first resolution is written back to `flowExecutorAgentId` and every later
+   * node of the same flow uses it.
+   *
+   * Why the flow keeps its own column instead of re-reading `assigneeAgentId`
+   * each time: `assigneeAgentId` has a SECOND writer. The per-issue execution
+   * policy (services/issue-execution-policy.ts, `buildPendingStagePatch`)
+   * reassigns the issue to the REVIEWER when it intercepts a done-transition,
+   * deliberately excluding the executor so review is independent. Re-reading
+   * that column mid-flow therefore commissioned the flow's next agent step to
+   * the reviewer — silently defeating the independence the execution policy
+   * exists to enforce. Resolving once and remembering is the fix; it also
+   * makes a mid-flow reassignment by a human no longer silently re-route the
+   * remaining steps, which was never intended either.
+   *
+   * The coordinator still fills an assignee vacuum on first resolution (so the
+   * ticket has a visible owner), but never re-routes an existing assignment.
+   */
   async function resolveExecutorAgent(issue: FlowIssue): Promise<
     { ok: true; agentId: string; assigned: boolean } | { ok: false; failure: NodeFailure }
   > {
-    if (issue.assigneeAgentId) return { ok: true, agentId: issue.assigneeAgentId, assigned: false };
+    if (issue.flowExecutorAgentId) {
+      return { ok: true, agentId: issue.flowExecutorAgentId, assigned: false };
+    }
+    if (issue.assigneeAgentId) {
+      await rememberFlowExecutor(issue.id, issue.assigneeAgentId);
+      return { ok: true, agentId: issue.assigneeAgentId, assigned: false };
+    }
     // Invokable statuses (shared agent-eligibility taxonomy): the commissioned
     // wakeup must actually dispatch, so paused/terminated/pending_approval
     // agents (e.g. auto-provisioned built-ins parked as `paused`) don't count.
@@ -756,12 +804,19 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
     if (assigned.length === 0) {
       // Someone assigned concurrently — re-read and use theirs.
       const fresh = await getIssue(issue.id);
-      if (fresh?.assigneeAgentId) return { ok: true, agentId: fresh.assigneeAgentId, assigned: false };
+      if (fresh?.flowExecutorAgentId) {
+        return { ok: true, agentId: fresh.flowExecutorAgentId, assigned: false };
+      }
+      if (fresh?.assigneeAgentId) {
+        await rememberFlowExecutor(issue.id, fresh.assigneeAgentId);
+        return { ok: true, agentId: fresh.assigneeAgentId, assigned: false };
+      }
       return {
         ok: false,
         failure: { errorType: "flow_agent_unavailable", message: "agent assignment raced and no assignee remains" },
       };
     }
+    await rememberFlowExecutor(issue.id, agentId);
     return { ok: true, agentId, assigned: true };
   }
 
@@ -1180,6 +1235,9 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
           flowNodeId: firstNode.id,
           flowStatus: "running",
           flowRunId: null,
+          // A new flow resolves its executor afresh; never inherits the
+          // previous flow's binding.
+          flowExecutorAgentId: null,
           flowStartedAt: stamp,
           flowAdvancedAt: stamp,
           updatedAt: stamp,

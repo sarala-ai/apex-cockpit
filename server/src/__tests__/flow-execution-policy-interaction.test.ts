@@ -149,25 +149,93 @@ describeEmbeddedPostgres("flow gates vs execution policy on the same issue", () 
     });
   }
 
-  it("CONFLICT: the flow commissions its agent step to whoever executionPolicy last assigned — including the reviewer", async () => {
-    // Reproduces the shape execution policy leaves behind after it intercepts
-    // a done-transition: status in_review, issue REASSIGNED to the reviewer.
+  it("REGRESSION: a mid-flow reassignment to the reviewer does not hijack the flow's agent step", async () => {
+    // The bug: execution policy reassigns issues.assigneeAgentId to the
+    // REVIEWER when it intercepts a done-transition (deliberately excluding
+    // the executor so review is independent). resolveExecutorAgent used to
+    // re-read that column on every agent node, so the flow's next step ran as
+    // the reviewer — silently defeating that independence.
     const { issueId, executorId, reviewerId } = await seed();
+
+    const commissioned: Array<{ agentId: string; nodeId: string }> = [];
+    const coordinator = coordinatorFor(commissioned);
+    const started = await coordinator.startFlow({ issueId, flowName: "agent-gate" });
+    await started.execution;
+
+    // First agent node resolves and RECORDS the executor.
+    expect(commissioned).toHaveLength(1);
+    expect(commissioned[0]).toMatchObject({ nodeId: "author", agentId: executorId });
+    const [afterFirst] = await db
+      .select({ flowExecutorAgentId: issues.flowExecutorAgentId })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(afterFirst.flowExecutorAgentId).toBe(executorId);
+
+    // Execution policy now does exactly what it does: in_review, reassigned to
+    // the reviewer. The flow's binding must be unaffected.
     await db
       .update(issues)
       .set({ status: "in_review", assigneeAgentId: reviewerId })
       .where(eq(issues.id, issueId));
 
-    const commissioned: Array<{ agentId: string; nodeId: string }> = [];
-    const started = await coordinatorFor(commissioned).startFlow({ issueId, flowName: "agent-gate" });
-    await started.execution;
+    // Re-arm the same agent node (the shape a request_changes round takes).
+    await db
+      .update(issues)
+      .set({ flowStatus: "paused", flowRunId: null })
+      .where(eq(issues.id, issueId));
+    const retried = await coordinator.retryCurrentNode(issueId);
+    await retried.execution;
 
-    expect(commissioned).toHaveLength(1);
-    // WRONG-BUT-CURRENT: the flow's authoring step runs as the REVIEWER,
-    // because resolveExecutorAgent trusts issues.assigneeAgentId and execution
-    // policy owns that column too. Independent verification is silently lost.
-    expect(commissioned[0]).toMatchObject({ nodeId: "author", agentId: reviewerId });
-    expect(commissioned[0].agentId).not.toBe(executorId);
+    expect(commissioned).toHaveLength(2);
+    expect(commissioned[1]).toMatchObject({ nodeId: "author", agentId: executorId });
+    expect(commissioned[1].agentId).not.toBe(reviewerId);
+  });
+
+  it("the recorded executor is released on completion, so a new flow resolves afresh", async () => {
+    const { issueId, executorId } = await seed();
+    const commissioned: Array<{ agentId: string; nodeId: string }> = [];
+    const coordinator = coordinatorFor(commissioned);
+    const started = await coordinator.startFlow({ issueId, flowName: "agent-gate" });
+    await started.execution;
+    const [mid] = await db
+      .select({ flowRunId: issues.flowRunId, flowExecutorAgentId: issues.flowExecutorAgentId })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(mid.flowExecutorAgentId).toBe(executorId);
+
+    const completed = await coordinator.onAgentRunCompletion({
+      runId: mid.flowRunId as string,
+      issueId,
+      flowName: "agent-gate",
+      flowNodeId: "author",
+      runStatus: "succeeded",
+    });
+    // The advancement loop is returned, not awaited internally — a test that
+    // reads the gate's approval must wait for the flow to reach the gate.
+    if (completed.execution) await completed.execution;
+    // Flow parks at the gate — still bound, because the flow is not finished.
+    const [atGate] = await db
+      .select({ flowStatus: issues.flowStatus, flowExecutorAgentId: issues.flowExecutorAgentId })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(atGate.flowStatus).toBe("waiting_gate");
+    expect(atGate.flowExecutorAgentId).toBe(executorId);
+
+    const [approval] = await db.select().from(approvals);
+    const decision = await coordinator.onGateDecision({
+      approvalId: approval.id,
+      payload: approval.payload,
+      decision: "approve",
+      decidedByUserId: "founder",
+    });
+    if (decision.resumed) await decision.execution;
+
+    const [done] = await db
+      .select({ flowStatus: issues.flowStatus, flowExecutorAgentId: issues.flowExecutorAgentId })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(done.flowStatus).toBe("done");
+    expect(done.flowExecutorAgentId).toBeNull();
   });
 
   it("the coordinator neither reads nor clears executionState — the two state machines are blind to each other", async () => {
@@ -211,13 +279,14 @@ describeEmbeddedPostgres("flow gates vs execution policy on the same issue", () 
     await started.execution;
 
     const [state] = await db.select({ flowRunId: issues.flowRunId }).from(issues).where(eq(issues.id, issueId));
-    await coordinator.onAgentRunCompletion({
+    const completed = await coordinator.onAgentRunCompletion({
       runId: state.flowRunId as string,
       issueId,
       flowName: "agent-gate",
       flowNodeId: "author",
       runStatus: "succeeded",
     });
+    if (completed.execution) await completed.execution;
 
     const approvalRows = await db.select().from(approvals);
     expect(approvalRows).toHaveLength(1);
