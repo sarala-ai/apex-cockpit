@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  companyIssuePrefixSchema,
   companySlugSchema,
   createCompanySchema,
   updateCompanySchema,
@@ -64,6 +65,47 @@ describe("createCompanySchema — slug", () => {
 
   it("rejects a malformed supplied slug", () => {
     expect(() => createCompanySchema.parse({ name: "Acme", slug: "not valid!" })).toThrow();
+  });
+});
+
+describe("createCompanySchema — issuePrefix", () => {
+  it("is optional — omitting it is valid", () => {
+    const parsed = createCompanySchema.parse({ name: "Acme" });
+    expect(parsed.issuePrefix).toBeUndefined();
+  });
+
+  it("normalizes and validates a supplied issuePrefix", () => {
+    const parsed = createCompanySchema.parse({ name: "Acme", issuePrefix: "acme" });
+    expect(parsed.issuePrefix).toBe("ACME");
+  });
+
+  it("rejects a malformed supplied issuePrefix (starts with a digit)", () => {
+    expect(() => createCompanySchema.parse({ name: "Acme", issuePrefix: "1ACME" })).toThrow();
+  });
+
+  it("rejects an issuePrefix longer than 10 characters", () => {
+    expect(() => createCompanySchema.parse({ name: "Acme", issuePrefix: "A".repeat(11) })).toThrow();
+  });
+});
+
+describe("updateCompanySchema — issuePrefix (create-only, break-glass to change)", () => {
+  it("keeps issuePrefix out of the update shape even though createCompanySchema now accepts it", () => {
+    expect(Object.prototype.hasOwnProperty.call(updateCompanySchema.shape, "issuePrefix")).toBe(false);
+  });
+
+  it("silently strips an issuePrefix field from update input rather than accepting it", () => {
+    const parsed = updateCompanySchema.parse({ name: "Acme", issuePrefix: "ACME" } as Record<string, unknown>);
+    expect((parsed as Record<string, unknown>).issuePrefix).toBeUndefined();
+  });
+});
+
+describe("companyIssuePrefixSchema", () => {
+  it("accepts a well-formed prefix and uppercases it", () => {
+    expect(companyIssuePrefixSchema.parse("acme")).toBe("ACME");
+  });
+
+  it("rejects a prefix that doesn't start with a letter", () => {
+    expect(() => companyIssuePrefixSchema.parse("1ACME")).toThrow();
   });
 });
 

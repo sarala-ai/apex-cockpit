@@ -184,6 +184,122 @@ describeEmbeddedPostgres("companyService", () => {
     ).rejects.toMatchObject({ status: 409, details: { code: "slug_conflict" } });
   });
 
+  it("accepts an explicit issuePrefix at creation, winning over derivation", async () => {
+    const created = await companyService(db).create({
+      name: "Totally Unrelated Name",
+      issuePrefix: "CUSTOM",
+    });
+
+    expect(created.issuePrefix).toBe("CUSTOM");
+    // Slug still derives — from the NAME (the two axes are independent), not
+    // from the explicit prefix — since no slug was supplied.
+    expect(created.slug).toBe("totallyunrelatedname");
+  });
+
+  it("honors both an explicit issuePrefix and an explicit slug together", async () => {
+    const created = await companyService(db).create({
+      name: "Whatever",
+      issuePrefix: "CUSTOM",
+      slug: "custom-slug",
+    });
+
+    expect(created.issuePrefix).toBe("CUSTOM");
+    expect(created.slug).toBe("custom-slug");
+  });
+
+  it("rejects creation with an explicit issuePrefix already used by another company, without silently appending a suffix", async () => {
+    await db.insert(companies).values({ name: "Existing", issuePrefix: "TAKEN" });
+
+    await expect(
+      companyService(db).create({ name: "New Co", issuePrefix: "TAKEN" }),
+    ).rejects.toMatchObject({ status: 409, details: { code: "issue_prefix_conflict" } });
+
+    // Confirms no "TAKENA"-style silent retry happened.
+    const rows = await db.select({ issuePrefix: companies.issuePrefix }).from(companies);
+    expect(rows.map((row) => row.issuePrefix)).toEqual(["TAKEN"]);
+  });
+
+  describe("identityPreview", () => {
+    it("returns the derived prefix/slug (independent axes) and marks them available when nothing collides", async () => {
+      const result = await companyService(db).identityPreview("Acme Corp");
+
+      expect(result).toEqual({
+        name: "Acme Corp",
+        issuePrefix: "ACME",
+        slug: "acmecorp",
+        prefixAvailable: true,
+        slugAvailable: true,
+        suggestedPrefix: null,
+        suggestedSlug: null,
+      });
+    });
+
+    it("preserves a short name verbatim, mirroring create()'s own derivation", async () => {
+      const result = await companyService(db).identityPreview("APEX");
+      expect(result.issuePrefix).toBe("APEX");
+      expect(result.slug).toBe("apex");
+    });
+
+    it("reports the derived prefix as unavailable when taken, with a colliding-free suggestion, without perturbing an available slug", async () => {
+      // Prefix axis collides; slug does not (a completely different slug).
+      await db.insert(companies).values({ name: "Existing Apex", issuePrefix: "APEX", slug: "something-else" });
+
+      const result = await companyService(db).identityPreview("APEX");
+
+      expect(result.prefixAvailable).toBe(false);
+      expect(result.slugAvailable).toBe(true);
+      expect(result.suggestedPrefix).toBe("APEXA");
+      expect(result.suggestedSlug).toBeNull();
+    });
+
+    it("reports the derived slug as unavailable when taken, with a colliding-free suggestion, without perturbing an available prefix", async () => {
+      // Slug axis collides; prefix does not (a completely different prefix).
+      await db.insert(companies).values({ name: "Some Other Co", issuePrefix: "ZZZZ", slug: "apex" });
+
+      const result = await companyService(db).identityPreview("APEX");
+
+      expect(result.prefixAvailable).toBe(true);
+      expect(result.slugAvailable).toBe(false);
+      expect(result.suggestedPrefix).toBeNull();
+      expect(result.suggestedSlug).toBe("apex-2");
+    });
+
+    it("checks an operator-supplied prefix override independently of the (still name-derived) slug", async () => {
+      await db.insert(companies).values({ name: "Existing", issuePrefix: "CUSTOM", slug: "custom" });
+
+      const result = await companyService(db).identityPreview("Acme Corp", { issuePrefix: "CUSTOM" });
+
+      expect(result.issuePrefix).toBe("CUSTOM");
+      expect(result.prefixAvailable).toBe(false);
+      // Slug still derives from the NAME (not the override prefix) — the two
+      // axes stay independent even when one is overridden.
+      expect(result.slug).toBe("acmecorp");
+      expect(result.slugAvailable).toBe(true);
+    });
+
+    it("returns an all-unavailable, empty-string preview for a blank name without querying the database", async () => {
+      const result = await companyService(db).identityPreview("   ");
+
+      expect(result).toEqual({
+        name: "",
+        issuePrefix: "",
+        slug: "",
+        prefixAvailable: false,
+        slugAvailable: false,
+        suggestedPrefix: null,
+        suggestedSlug: null,
+      });
+    });
+
+    it("never drifts from create()'s own allocation for the same name", async () => {
+      const previewed = await companyService(db).identityPreview("FinPilot");
+      const created = await companyService(db).create({ name: "FinPilot" });
+
+      expect(created.issuePrefix).toBe(previewed.issuePrefix);
+      expect(created.slug).toBe(previewed.slug);
+    });
+  });
+
   it("sets slug once when the current value is null (legacy un-backfilled company)", async () => {
     const companyId = randomUUID();
     // Simulate a company created before the slug column/backfill existed by

@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
+import type { AdapterEnvironmentTestResult, CompanyIdentityPreview } from "@paperclipai/shared";
+import { COMPANY_ISSUE_PREFIX_PATTERN, COMPANY_SLUG_PATTERN } from "@paperclipai/shared";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -100,16 +101,6 @@ function loadSavedState(): Record<string, unknown> | null {
   }
 }
 
-// Mirrors companyService's deriveIssuePrefixBase — the server derives a
-// company's write-once slug from the same allocated issue prefix when no
-// explicit slug is supplied at creation, which is what this wizard does.
-// This is a best-effort preview: a rare uniqueness collision can still cause
-// the server to append a suffix, but the base always matches this preview.
-function previewCompanySlug(name: string) {
-  const base = name.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 3);
-  return (base || "CMP").toLowerCase();
-}
-
 export function OnboardingWizard() {
   const {
     onboardingOpen,
@@ -164,6 +155,18 @@ export function OnboardingWizard() {
   // Step 1
   const [companyName, setCompanyName] = useState((saved?.companyName as string) ?? "");
   const [companyGoal, setCompanyGoal] = useState((saved?.companyGoal as string) ?? "");
+  // Identity fields (issue prefix + slug) — pre-filled from the identity-preview
+  // endpoint as companyName is typed, but editable. Once the operator edits a
+  // field directly, it goes "dirty" and stops being overwritten by the
+  // name-driven preview — see the identityPreview effect below, and the fix
+  // for the classic "derived value clobbers what I just typed" bug this
+  // dirty-field tracking exists to prevent.
+  const [companyIssuePrefix, setCompanyIssuePrefix] = useState((saved?.companyIssuePrefix as string) ?? "");
+  const [companySlug, setCompanySlug] = useState((saved?.companySlug as string) ?? "");
+  const [issuePrefixDirty, setIssuePrefixDirty] = useState((saved?.issuePrefixDirty as boolean) ?? false);
+  const [slugDirty, setSlugDirty] = useState((saved?.slugDirty as boolean) ?? false);
+  const [identityPreview, setIdentityPreview] = useState<CompanyIdentityPreview | null>(null);
+  const [identityPreviewLoading, setIdentityPreviewLoading] = useState(false);
   const [missionPath, setMissionPath] = useState<"direct" | "questionnaire" | null>((saved?.missionPath as "direct" | "questionnaire" | null) ?? null);
   const [missionConfirmed, setMissionConfirmed] = useState((saved?.missionConfirmed as boolean) ?? false);
   // Questionnaire answers
@@ -246,6 +249,7 @@ export function OnboardingWizard() {
       createdCompanyId, createdCompanyPrefix, createdAgentId,
       createdCompanyGoalId, createdProjectId, createdIssueRef,
       onboardingPath, growWorkflows, growPainPoints, growAutomate,
+      companyIssuePrefix, companySlug, issuePrefixDirty, slugDirty,
     };
     localStorage.setItem(ONBOARDING_STORAGE_KEY, JSON.stringify(state));
   }, [
@@ -254,7 +258,62 @@ export function OnboardingWizard() {
     createdCompanyId, createdCompanyPrefix, createdAgentId,
     createdCompanyGoalId, createdProjectId, createdIssueRef,
     onboardingPath, growWorkflows, growPainPoints, growAutomate,
+    companyIssuePrefix, companySlug, issuePrefixDirty, slugDirty,
   ]);
+
+  // Debounced identity preview: as companyName is typed (and the wizard is on
+  // the naming step), fetch the issue prefix + slug create() would allocate,
+  // plus availability. Pre-fills companyIssuePrefix/companySlug ONLY for
+  // fields the operator hasn't hand-edited yet (dirty-field tracking) — once
+  // a field is dirty, this effect must never overwrite it again, otherwise
+  // the derived value clobbers whatever the operator just typed on the very
+  // next keystroke.
+  useEffect(() => {
+    if (!effectiveOnboardingOpen || step !== 1 || createdCompanyId) return;
+    const trimmedName = companyName.trim();
+    if (!trimmedName) {
+      setIdentityPreview(null);
+      return;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      setIdentityPreviewLoading(true);
+      companiesApi
+        .identityPreview(
+          trimmedName,
+          {
+            issuePrefix: issuePrefixDirty ? companyIssuePrefix.trim() : undefined,
+            slug: slugDirty ? companySlug.trim() : undefined,
+          },
+          { signal: controller.signal },
+        )
+        .then((result) => {
+          setIdentityPreview(result);
+          if (!issuePrefixDirty) setCompanyIssuePrefix(result.issuePrefix);
+          if (!slugDirty) setCompanySlug(result.slug);
+        })
+        .catch((err) => {
+          if (err instanceof DOMException && err.name === "AbortError") return;
+        })
+        .finally(() => setIdentityPreviewLoading(false));
+    }, 400);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [companyName, step, effectiveOnboardingOpen, createdCompanyId, issuePrefixDirty, slugDirty]);
+
+  const issuePrefixFormatValid = companyIssuePrefix.trim().length === 0 || COMPANY_ISSUE_PREFIX_PATTERN.test(companyIssuePrefix.trim().toUpperCase());
+  const slugFormatValid = companySlug.trim().length === 0 || COMPANY_SLUG_PATTERN.test(companySlug.trim().toLowerCase());
+  const issuePrefixTaken = Boolean(
+    identityPreview && identityPreview.issuePrefix === companyIssuePrefix.trim().toUpperCase() && !identityPreview.prefixAvailable,
+  );
+  const slugTaken = Boolean(
+    identityPreview && identityPreview.slug === companySlug.trim().toLowerCase() && !identityPreview.slugAvailable,
+  );
+  const identityValid =
+    issuePrefixFormatValid && slugFormatValid && !issuePrefixTaken && !slugTaken;
 
   const {
     data: adapterModels,
@@ -378,6 +437,11 @@ export function OnboardingWizard() {
     setLoading(false);
     setError(null);
     setCompanyName("");
+    setCompanyIssuePrefix("");
+    setCompanySlug("");
+    setIssuePrefixDirty(false);
+    setSlugDirty(false);
+    setIdentityPreview(null);
     setCompanyGoal("");
     setMissionPath(null);
     setMissionConfirmed(false);
@@ -555,7 +619,16 @@ export function OnboardingWizard() {
     setLoading(true);
     setError(null);
     try {
-      const company = await companiesApi.create({ name: companyName.trim() });
+      // Explicit identity wins over derivation server-side too — only send it
+      // when the operator actually edited the field away from the derived
+      // default, so an untouched field still gets the server's own
+      // auto-derivation (and its collision-retry) rather than a value this
+      // wizard merely echoed back.
+      const company = await companiesApi.create({
+        name: companyName.trim(),
+        ...(issuePrefixDirty && companyIssuePrefix.trim() ? { issuePrefix: companyIssuePrefix.trim() } : {}),
+        ...(slugDirty && companySlug.trim() ? { slug: companySlug.trim() } : {}),
+      });
       setCreatedCompanyId(company.id);
       setCreatedCompanyPrefix(company.issuePrefix);
       setSelectedCompanyId(company.id);
@@ -743,7 +816,7 @@ export function OnboardingWizard() {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
       if (step === 0) return; // front door requires click
-      if (step === 1 && companyName.trim()) setStep(2);
+      if (step === 1 && companyName.trim() && identityValid) setStep(2);
       else if (step === 2 && companyName.trim() && companyGoal.trim()) handleConfirmMission();
       else if (step === 3 && agentName.trim()) setStep(4);
       else if (step === 4 && agentName.trim()) handleGiveHeartbeat();
@@ -999,12 +1072,13 @@ export function OnboardingWizard() {
                       Company name
                     </label>
                     <input
+                      data-testid="onboarding-company-name-input"
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
                       placeholder="Acme Corp"
                       value={companyName}
                       onChange={(e) => setCompanyName(e.target.value)}
                       onKeyDown={(e) => {
-                        if (e.key === "Enter" && companyName.trim()) {
+                        if (e.key === "Enter" && companyName.trim() && identityValid) {
                           e.preventDefault();
                           if (onboardingPath !== "grow" && !missionPath) setMissionPath("direct");
                           setStep(2);
@@ -1014,10 +1088,75 @@ export function OnboardingWizard() {
                     />
                   </div>
                   {companyName.trim() && (
-                    <p className="text-(length:--text-micro) text-muted-foreground">
-                      Company slug: <span className="font-mono">{previewCompanySlug(companyName)}</span> — a
-                      permanent identifier used for capability paths and env vars. This cannot be changed later.
-                    </p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="group">
+                        <label className="text-xs mb-1 block text-muted-foreground group-focus-within:text-foreground transition-colors">
+                          Issue prefix
+                        </label>
+                        <input
+                          data-testid="onboarding-issue-prefix-input"
+                          className={cn(
+                            "w-full rounded-md border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring uppercase",
+                            !issuePrefixFormatValid || issuePrefixTaken ? "border-destructive" : "border-border"
+                          )}
+                          value={companyIssuePrefix}
+                          onChange={(e) => {
+                            setIssuePrefixDirty(true);
+                            setCompanyIssuePrefix(e.target.value.toUpperCase());
+                          }}
+                        />
+                        <p className="mt-1 text-(length:--text-nano) text-muted-foreground">
+                          What appears on every ticket, e.g. "{companyIssuePrefix.trim() || "APEX"}-1".
+                        </p>
+                        {!issuePrefixFormatValid && (
+                          <p className="mt-1 text-(length:--text-nano) text-destructive">
+                            Must start with a letter — letters and numbers only.
+                          </p>
+                        )}
+                        {issuePrefixFormatValid && issuePrefixTaken && (
+                          <p className="mt-1 text-(length:--text-nano) text-destructive">
+                            Already used by another company
+                            {identityPreview?.suggestedPrefix ? ` — try "${identityPreview.suggestedPrefix}"` : ""}.
+                          </p>
+                        )}
+                      </div>
+                      <div className="group">
+                        <label className="text-xs mb-1 block text-muted-foreground group-focus-within:text-foreground transition-colors">
+                          Workspace slug
+                        </label>
+                        <input
+                          data-testid="onboarding-slug-input"
+                          className={cn(
+                            "w-full rounded-md border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring",
+                            !slugFormatValid || slugTaken ? "border-destructive" : "border-border"
+                          )}
+                          value={companySlug}
+                          onChange={(e) => {
+                            setSlugDirty(true);
+                            setCompanySlug(e.target.value.toLowerCase());
+                          }}
+                        />
+                        <p className="mt-1 text-(length:--text-nano) text-muted-foreground">
+                          Used in file paths and configuration. Permanent — this cannot be changed later.
+                        </p>
+                        {!slugFormatValid && (
+                          <p className="mt-1 text-(length:--text-nano) text-destructive">
+                            Lowercase letters, numbers, and hyphens only — must start with a letter.
+                          </p>
+                        )}
+                        {slugFormatValid && slugTaken && (
+                          <p className="mt-1 text-(length:--text-nano) text-destructive">
+                            Already used by another company
+                            {identityPreview?.suggestedSlug ? ` — try "${identityPreview.suggestedSlug}"` : ""}.
+                          </p>
+                        )}
+                      </div>
+                      {identityPreviewLoading && (
+                        <p className="col-span-2 text-(length:--text-nano) text-muted-foreground">
+                          Checking availability…
+                        </p>
+                      )}
+                    </div>
                   )}
                   <button
                     className="text-(length:--text-micro) text-muted-foreground hover:text-foreground transition-colors"
@@ -1664,7 +1803,7 @@ export function OnboardingWizard() {
                   {step === 1 && (
                     <Button
                       size="sm"
-                      disabled={!companyName.trim()}
+                      disabled={!companyName.trim() || !identityValid}
                       onClick={() => {
                         if (onboardingPath !== "grow" && !missionPath) setMissionPath("direct");
                         setStep(2);

@@ -29,12 +29,35 @@ export const companySlugSchema = z
       "Slug must start with a lowercase letter and contain only lowercase letters, numbers, and hyphens (2-32 characters).",
   });
 
+// Issue prefix shape: uppercase letters/digits, must start with a letter,
+// 1-10 characters. This is intentionally looser than deriveIssuePrefixBase's
+// output (which only ever produces 1-4 letters from a company name) because
+// an operator may want to hand-pick a prefix (at creation, or via the
+// break-glass escape hatch) that doesn't match any company name at all.
+export const COMPANY_ISSUE_PREFIX_PATTERN = /^[A-Z][A-Z0-9]{0,9}$/;
+
+export const companyIssuePrefixSchema = z
+  .string()
+  .trim()
+  .transform((value) => value.toUpperCase())
+  .refine((value) => COMPANY_ISSUE_PREFIX_PATTERN.test(value), {
+    message:
+      "Issue prefix must start with an uppercase letter and contain only uppercase letters and digits (1-10 characters).",
+  });
+
 export const createCompanySchema = z.object({
   name: z.string().min(1),
   description: z.string().optional().nullable(),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   attachmentMaxBytes: attachmentMaxBytesSchema.optional(),
   defaultResponsibleUserId: z.string().min(1).nullable().optional(),
+  // Optional at creation — omit to auto-derive from the company name (see
+  // deriveIssuePrefixBase). An explicit value wins over derivation and is
+  // validated with the SAME shape as the break-glass path
+  // (companyIssuePrefixSchema); unlike break-glass it is NOT retried with an
+  // auto-appended suffix on collision — a taken explicit prefix is a
+  // conflict, not something creation should silently work around.
+  issuePrefix: companyIssuePrefixSchema.optional(),
   // Optional at creation — omit to auto-derive from the allocated issue prefix.
   // Creation is the intended one-time set point; see companySlugSchema.
   slug: companySlugSchema.optional(),
@@ -44,6 +67,12 @@ export type CreateCompany = z.infer<typeof createCompanySchema>;
 
 export const updateCompanySchema = createCompanySchema
   .partial()
+  // issuePrefix is create-only: deliberately excluded here even though
+  // createCompanySchema now accepts it. Changing a company's issue prefix
+  // post-creation is break-glass only (companyIssuePrefixBreakGlassSchema) —
+  // see the "keeps issuePrefix out of the normal HTTP update() request shape"
+  // test in companies-service.test.ts, which asserts this omission directly.
+  .omit({ issuePrefix: true })
   .extend({
     status: z.enum(COMPANY_STATUSES).optional(),
     spentMonthlyCents: z.number().int().nonnegative().optional(),
@@ -109,22 +138,6 @@ export const companySlugBreakGlassSchema = z.object({
 });
 
 export type CompanySlugBreakGlass = z.infer<typeof companySlugBreakGlassSchema>;
-
-// Issue prefix shape: uppercase letters/digits, must start with a letter,
-// 1-10 characters. This is intentionally looser than deriveIssuePrefixBase's
-// output (which only ever produces 1-4 letters from a company name) because
-// an operator using the break-glass escape hatch may want to hand-pick a
-// prefix that doesn't match any company name at all.
-export const COMPANY_ISSUE_PREFIX_PATTERN = /^[A-Z][A-Z0-9]{0,9}$/;
-
-export const companyIssuePrefixSchema = z
-  .string()
-  .trim()
-  .transform((value) => value.toUpperCase())
-  .refine((value) => COMPANY_ISSUE_PREFIX_PATTERN.test(value), {
-    message:
-      "Issue prefix must start with an uppercase letter and contain only uppercase letters and digits (1-10 characters).",
-  });
 
 // Break-glass issue prefix change — same posture as the slug break-glass
 // escape hatch (see companySlugBreakGlassSchema): `confirm` absent returns a

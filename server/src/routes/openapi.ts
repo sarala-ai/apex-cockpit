@@ -713,6 +713,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
 
 const INSTANCE_ADMIN_OPERATIONS = new Set([
   "POST /api/companies",
+  "GET /api/companies/identity-preview",
   "POST /api/plugins/install",
   "POST /api/instance/database-backups",
   "POST /api/admin/users/{userId}/promote-instance-admin",
@@ -5659,6 +5660,13 @@ registerCurrentRoute({
   path: "/api/approvals/{id}/brief",
   tags: ["apex"],
   summary: "Get the decision brief for a flow_gate approval",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/identity-preview",
+  tags: ["apex"],
+  summary: "Preview the issue prefix and slug creating a company with this name would allocate",
 });
 
 registerCurrentRoute({

@@ -48,6 +48,27 @@ export interface CompanyIssuePrefixBreakGlassConsequences {
   warning: string;
 }
 
+// Returned by GET /api/companies/identity-preview?name=<name> — a read-only
+// preview of the issue prefix + slug companyService.create() would allocate
+// for `name`, plus availability against existing companies, so onboarding can
+// show it (and let the operator override it) BEFORE submit rather than
+// discovering a conflict as a 500 afterward. See companyService.identityPreview.
+export interface CompanyIdentityPreview {
+  name: string;
+  /** Derived issue prefix for `name` (e.g. "APEX-1" prefix "APEX"). Empty string if `name` is blank. */
+  issuePrefix: string;
+  /** Derived workspace slug for `name`. Empty string if `name` is blank. */
+  slug: string;
+  /** Whether `issuePrefix` is free to use as-is. */
+  prefixAvailable: boolean;
+  /** Whether `slug` is free to use as-is. */
+  slugAvailable: boolean;
+  /** A colliding-free alternative prefix, only set when `prefixAvailable` or `slugAvailable` is false. */
+  suggestedPrefix: string | null;
+  /** A colliding-free alternative slug, paired with `suggestedPrefix`. */
+  suggestedSlug: string | null;
+}
+
 export interface Company {
   id: string;
   name: string;

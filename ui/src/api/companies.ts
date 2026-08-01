@@ -1,5 +1,6 @@
 import type {
   Company,
+  CompanyIdentityPreview,
   CompanyPortabilityExportRequest,
   CompanyPortabilityExportPreviewResult,
   CompanyPortabilityExportResult,
@@ -25,10 +26,28 @@ export const companiesApi = {
   list: () => api.get<Company[]>("/companies"),
   get: (companyId: string) => api.get<Company>(`/companies/${companyId}`),
   stats: () => api.get<CompanyStats>("/companies/stats"),
+  // Read-only preview of the issue prefix + slug create() would allocate for
+  // `name`, plus availability against existing companies — used by the
+  // onboarding wizard's identity step so a taken value is caught before
+  // submit, not as a 500 afterward. See companyService.identityPreview.
+  identityPreview: (
+    name: string,
+    overrides?: { issuePrefix?: string; slug?: string },
+    options?: { signal?: AbortSignal },
+  ) => {
+    const params = new URLSearchParams({ name });
+    if (overrides?.issuePrefix) params.set("prefix", overrides.issuePrefix);
+    if (overrides?.slug) params.set("slug", overrides.slug);
+    return api.get<CompanyIdentityPreview>(`/companies/identity-preview?${params.toString()}`, options);
+  },
   create: (data: {
     name: string;
     description?: string | null;
     budgetMonthlyCents?: number;
+    // One-time, at creation — see companyIssuePrefixSchema. Omit to
+    // auto-derive from the company name. An explicit value wins over
+    // derivation and is NOT retried with a suffix on collision.
+    issuePrefix?: string;
     // One-time, at creation — see companySlugSchema. Omit to auto-derive.
     slug?: string;
   }) =>
