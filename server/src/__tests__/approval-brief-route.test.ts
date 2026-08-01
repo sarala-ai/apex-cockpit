@@ -62,6 +62,7 @@ async function createApp(options: {
   invoke: ReturnType<typeof vi.fn>;
   loadFlowDefinition?: ReturnType<typeof vi.fn>;
   provenanceLookup?: ReturnType<typeof vi.fn>;
+  fetchDesignArchive?: ReturnType<typeof vi.fn>;
 }) {
   const [{ errorHandler }, { approvalRoutes }] = await Promise.all([
     import("../middleware/index.js"),
@@ -85,6 +86,9 @@ async function createApp(options: {
       apexInvoker: { invoke: options.invoke } as any,
       loadFlowDefinition: (options.loadFlowDefinition ??
         vi.fn().mockResolvedValue(DESIGN_CHANGE_FLOW)) as any,
+      // Default to "no archive readable" so the suite never shells out to gh;
+      // the design-preview test injects a real fixture explicitly.
+      fetchDesignArchive: (options.fetchDesignArchive ?? vi.fn().mockResolvedValue(null)) as any,
       provenanceLookup: (options.provenanceLookup ??
         vi.fn().mockResolvedValue({
           agentName: "Designer",
@@ -170,7 +174,7 @@ describe("GET /approvals/:id/brief", () => {
   it("assembles the full brief: decision, plain-language verification, artifact, next steps, provenance", async () => {
     mockApprovalService.getById.mockResolvedValue(FLOW_GATE_APPROVAL);
     mockActivityService.forIssue.mockResolvedValue(ACTIVITY_ROWS);
-    const invoke = vi.fn().mockResolvedValue(PR_SUCCESS);
+    const invoke = vi.fn().mockImplementation(async () => structuredClone(PR_SUCCESS));
 
     const res = await request(await createApp({ invoke })).get("/api/approvals/approval-1/brief");
 
@@ -219,6 +223,119 @@ describe("GET /approvals/:id/brief", () => {
       verifiedAt: "2026-08-01T07:40:20.528Z",
       gateOpenedAt: "2026-08-01T07:40:21.814Z",
     });
+
+    // The artifact declares its KIND server-side, so the UI's renderer
+    // registry never has to sniff file extensions of its own.
+    expect(res.body.artifact.artifactKind).toBe("design");
+
+    // Risk + reversibility, derived from the post-gate merge workflow.
+    expect(res.body.risk).toMatchObject({ reversibility: "reversible", derived: true });
+    expect(res.body.risk.reversibilityLine).toMatch(/revert/);
+
+    // How long the founder has been the bottleneck.
+    expect(res.body.waitingSince).toBe("2026-08-01T07:40:21.814Z");
+  });
+
+  it("carries per-file diff hunks and the binary flag through to the artifact", async () => {
+    mockApprovalService.getById.mockResolvedValue(FLOW_GATE_APPROVAL);
+    mockActivityService.forIssue.mockResolvedValue(ACTIVITY_ROWS);
+    const invoke = vi.fn().mockResolvedValue({
+      ...PR_SUCCESS,
+      changed_files: 2,
+      files: [
+        {
+          path: "server/src/a.ts",
+          status: "modified",
+          additions: 2,
+          deletions: 1,
+          binary: false,
+          patch: "@@ -1 +1 @@\n-old\n+new",
+          patch_truncated: false,
+        },
+        {
+          path: "product/apex-platform.penpot",
+          status: "modified",
+          additions: 0,
+          deletions: 0,
+          binary: true,
+          patch: null,
+          patch_truncated: false,
+        },
+      ],
+    });
+
+    const res = await request(await createApp({ invoke })).get("/api/approvals/approval-1/brief");
+
+    expect(res.status).toBe(200);
+    expect(res.body.artifact.files[0].patch).toContain("+new");
+    expect(res.body.artifact.files[1].binary).toBe(true);
+    // A .penpot in the changeset makes the whole thing a design review.
+    expect(res.body.artifact.artifactKind).toBe("design");
+  });
+
+  it("attaches a real board preview to a design artifact, read from the PR's own .penpot", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    const archive = readFileSync(
+      fileURLToPath(new URL("../design/__fixtures__/apex-platform.penpot", import.meta.url)),
+    );
+    mockApprovalService.getById.mockResolvedValue(FLOW_GATE_APPROVAL);
+    mockActivityService.forIssue.mockResolvedValue(ACTIVITY_ROWS);
+    const fetchDesignArchive = vi.fn().mockResolvedValue(archive);
+
+    const res = await request(
+      await createApp({ invoke: vi.fn().mockImplementation(async () => structuredClone(PR_SUCCESS)), fetchDesignArchive }),
+    ).get("/api/approvals/approval-1/brief");
+
+    expect(res.status).toBe(200);
+    const file = res.body.artifact.files[0];
+    expect(file.design.boards.length).toBe(11);
+    expect(file.design.preview.dataUri).toMatch(/^data:image\/svg\+xml;base64,/);
+    expect(fetchDesignArchive).toHaveBeenCalledWith(
+      "sarala-ai/apex-design",
+      "product/apex-platform.penpot",
+      "design/APE-5",
+    );
+  });
+
+  it("omits the design block entirely when the archive is unreadable — never a fake preview", async () => {
+    mockApprovalService.getById.mockResolvedValue(FLOW_GATE_APPROVAL);
+    mockActivityService.forIssue.mockResolvedValue(ACTIVITY_ROWS);
+
+    const res = await request(
+      await createApp({ invoke: vi.fn().mockImplementation(async () => structuredClone(PR_SUCCESS)) }),
+    ).get("/api/approvals/approval-1/brief");
+
+    expect(res.status).toBe(200);
+    expect(res.body.artifact.artifactKind).toBe("design");
+    expect(res.body.artifact.files[0].design ?? null).toBeNull();
+  });
+
+  it("classifies a pure code changeset as code and marks a deploy as going live", async () => {
+    mockApprovalService.getById.mockResolvedValue(FLOW_GATE_APPROVAL);
+    mockActivityService.forIssue.mockResolvedValue(ACTIVITY_ROWS);
+    const loadFlowDefinition = vi.fn().mockResolvedValue({
+      path: "/flows/bug.yml",
+      flow: {
+        ...DESIGN_CHANGE_FLOW.flow,
+        nodes: [
+          DESIGN_CHANGE_FLOW.flow.nodes[1],
+          { id: "deploy", kind: "workflow", workflow: { workflow: "cloud_run_deploy", params: {} }, on_fail: "pause" },
+        ],
+      },
+    });
+    const invoke = vi.fn().mockResolvedValue({
+      ...PR_SUCCESS,
+      files: [{ path: "server/src/a.ts", status: "modified", additions: 2, deletions: 1, patch: "@@\n+x" }],
+    });
+
+    const res = await request(await createApp({ invoke, loadFlowDefinition }))
+      .get("/api/approvals/approval-1/brief");
+
+    expect(res.status).toBe(200);
+    expect(res.body.artifact.artifactKind).toBe("code");
+    expect(res.body.risk.reversibility).toBe("reversible_with_effort");
+    expect(res.body.risk.risks.join(" ")).toContain("cloud_run_deploy");
   });
 
   it("derives a different next-step sentence when the flow's post-gate node changes", async () => {
@@ -237,7 +354,7 @@ describe("GET /approvals/:id/brief", () => {
       },
     });
 
-    const res = await request(await createApp({ invoke: vi.fn().mockResolvedValue(PR_SUCCESS), loadFlowDefinition }))
+    const res = await request(await createApp({ invoke: vi.fn().mockImplementation(async () => structuredClone(PR_SUCCESS)), loadFlowDefinition }))
       .get("/api/approvals/approval-1/brief");
 
     expect(res.status).toBe(200);
@@ -255,7 +372,7 @@ describe("GET /approvals/:id/brief", () => {
       .fn()
       .mockRejectedValue(new ApexUnavailableError("apex CLI not found (bin: apex)"));
 
-    const res = await request(await createApp({ invoke: vi.fn().mockResolvedValue(PR_SUCCESS), loadFlowDefinition }))
+    const res = await request(await createApp({ invoke: vi.fn().mockImplementation(async () => structuredClone(PR_SUCCESS)), loadFlowDefinition }))
       .get("/api/approvals/approval-1/brief");
 
     expect(res.status).toBe(200);
@@ -324,7 +441,7 @@ describe("GET /approvals/:id/brief", () => {
       },
     ]);
 
-    const res = await request(await createApp({ invoke: vi.fn().mockResolvedValue(PR_SUCCESS) })).get(
+    const res = await request(await createApp({ invoke: vi.fn().mockImplementation(async () => structuredClone(PR_SUCCESS)) })).get(
       "/api/approvals/approval-1/brief",
     );
 
@@ -340,7 +457,7 @@ describe("GET /approvals/:id/brief", () => {
     const provenanceLookup = vi.fn().mockRejectedValue(new Error("db down"));
 
     const res = await request(
-      await createApp({ invoke: vi.fn().mockResolvedValue(PR_SUCCESS), provenanceLookup }),
+      await createApp({ invoke: vi.fn().mockImplementation(async () => structuredClone(PR_SUCCESS)), provenanceLookup }),
     ).get("/api/approvals/approval-1/brief");
 
     expect(res.status).toBe(200);

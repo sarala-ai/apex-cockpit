@@ -117,12 +117,24 @@ const fileCache = new Map<string, { sha: string; content: DesignFileContent }>()
  *  from the committed file (no live Penpot involved). */
 const rawCache = new Map<string, { sha: string; buf: Buffer }>();
 
-export async function fetchDesignArchive(repo: string, path: string): Promise<Buffer | null> {
+/**
+ * @param ref Optional git ref (branch / sha). Omitted = the repo's default
+ *   branch. An approval brief passes the PULL REQUEST's head branch, because
+ *   the whole point there is the proposed version, not the landed one.
+ */
+export async function fetchDesignArchive(
+  repo: string,
+  path: string,
+  ref?: string,
+): Promise<Buffer | null> {
   if (!REPO_RE.test(repo) || !path.endsWith(".penpot") || path.includes("..")) return null;
-  const meta = await run("gh", ["api", `repos/${repo}/contents/${path.split("/").map(encodeURIComponent).join("/")}`], GH_TIMEOUT_MS);
+  if (ref !== undefined && !/^[\w./-]{1,255}$/.test(ref)) return null;
+  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+  const query = ref ? `?ref=${encodeURIComponent(ref)}` : "";
+  const meta = await run("gh", ["api", `repos/${repo}/contents/${encodedPath}${query}`], GH_TIMEOUT_MS);
   if (meta.status !== "ok") return null;
   const body = JSON.parse(meta.stdout) as { content?: string; sha?: string; size?: number };
-  const key = `${repo}:${path}`;
+  const key = `${repo}:${ref ?? ""}:${path}`;
   if (body.sha) {
     const hit = rawCache.get(key);
     if (hit && hit.sha === body.sha) return hit.buf;

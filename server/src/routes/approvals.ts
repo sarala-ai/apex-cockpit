@@ -32,6 +32,8 @@ import {
   findAcceptanceTarget,
   type ProvenanceLookup,
 } from "../apex/flow/brief.js";
+import type { DesignArchiveFetcher } from "../apex/flow/design-artifact.js";
+import { fetchDesignArchive } from "../design/design-files.js";
 import { loadFlowDefinition, type LoadedFlowDefinition } from "../apex/flow/definition.js";
 import type { PipelineActor } from "../services/pipelines.js";
 
@@ -107,6 +109,9 @@ export function approvalRoutes(
      *  be exercised without shelling out to the apex CLI. */
     loadFlowDefinition?: (name: string) => Promise<LoadedFlowDefinition>;
     provenanceLookup?: ProvenanceLookup;
+    /** Injected by tests so the design preview can be exercised without gh.
+     *  Defaults to the real `gh`-backed archive read. */
+    fetchDesignArchive?: DesignArchiveFetcher;
   } = {},
 ) {
   const router = Router();
@@ -656,6 +661,7 @@ export function approvalRoutes(
       apexInvoker,
       loadFlowDefinition: flowDefinitionLoader,
       provenanceLookup,
+      fetchDesignArchive: options.fetchDesignArchive ?? fetchDesignArchive,
     });
     res.json(brief);
   });

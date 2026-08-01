@@ -11,7 +11,29 @@ export type ApprovalPrDiffFile = {
   status: string;
   additions: number;
   deletions: number;
+  /** Unified diff hunks for this file. Absent when the file is binary, when
+   *  the diff was too large for GitHub to return, or when the server is
+   *  talking to an apex-core that predates the patch extension. */
+  patch?: string | null;
+  /** A blob, not an empty diff — no line-level view exists for it. */
+  binary?: boolean | null;
+  /** This file's diff was cut. The renderer must SAY so, never hide it. */
+  patch_truncated?: boolean | null;
+  /** Present only for design documents the server could read something out
+   *  of. Absent means "nothing could be read", NOT "nothing changed" — the
+   *  design renderer must say so rather than imply an empty change. */
+  design?: {
+    /** A rendered image, when one can be produced headlessly. */
+    preview?: { label: string; dataUri: string } | null;
+    /** Page / board names parsed from the design file itself. */
+    boards?: string[] | null;
+  } | null;
 };
+
+/** What kind of thing the reviewer is looking at. Classified server-side in
+ *  `server/src/apex/flow/brief.ts` (`classifyArtifactKind`) — the UI keys its
+ *  renderer registry off this value and never re-derives it. */
+export type ApprovalArtifactKind = "code" | "design" | "plan" | "doc" | "unknown";
 export type ApprovalPrDiff =
   | { available: false; reason: string }
   | {
@@ -33,7 +55,11 @@ export type ApprovalPrDiff =
       files: ApprovalPrDiffFile[];
       files_truncated: boolean;
       acceptanceEvaluation: string | null;
+      artifactKind: ApprovalArtifactKind;
     };
+
+/** The healthy branch of ApprovalPrDiff — what an artifact renderer receives. */
+export type ApprovalArtifact = Extract<ApprovalPrDiff, { degraded: false }>;
 
 /** The flow-gate DECISION BRIEF (server: GET /approvals/:id/brief). Answers,
  *  in decision order: what is being decided → what was already verified →
@@ -50,6 +76,15 @@ export type ApprovalBriefNext = {
   reject: string;
   derived: boolean;
   note: string | null;
+};
+/** Risk + reversibility of approving this gate, derived server-side from the
+ *  flow definition's post-gate nodes. Uses the same "Risks" vocabulary the
+ *  board-approval brief already uses. */
+export type ApprovalBriefRisk = {
+  reversibility: "reversible" | "reversible_with_effort" | "irreversible" | "unknown";
+  reversibilityLine: string;
+  risks: string[];
+  derived: boolean;
 };
 export type ApprovalBriefProvenance = {
   agentName: string | null;
@@ -75,7 +110,9 @@ export type ApprovalBrief =
       verified: ApprovalBriefVerified;
       artifact: ApprovalPrDiff;
       next: ApprovalBriefNext;
+      risk: ApprovalBriefRisk;
       provenance: ApprovalBriefProvenance;
+      waitingSince: string | null;
       machine: {
         approvalId: string;
         issueId: string;
