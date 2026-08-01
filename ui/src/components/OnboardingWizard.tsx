@@ -100,6 +100,16 @@ function loadSavedState(): Record<string, unknown> | null {
   }
 }
 
+// Mirrors companyService's deriveIssuePrefixBase — the server derives a
+// company's write-once slug from the same allocated issue prefix when no
+// explicit slug is supplied at creation, which is what this wizard does.
+// This is a best-effort preview: a rare uniqueness collision can still cause
+// the server to append a suffix, but the base always matches this preview.
+function previewCompanySlug(name: string) {
+  const base = name.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 3);
+  return (base || "CMP").toLowerCase();
+}
+
 export function OnboardingWizard() {
   const {
     onboardingOpen,
@@ -1003,6 +1013,12 @@ export function OnboardingWizard() {
                       autoFocus
                     />
                   </div>
+                  {companyName.trim() && (
+                    <p className="text-(length:--text-micro) text-muted-foreground">
+                      Company slug: <span className="font-mono">{previewCompanySlug(companyName)}</span> — a
+                      permanent identifier used for capability paths and env vars. This cannot be changed later.
+                    </p>
+                  )}
                   <button
                     className="text-(length:--text-micro) text-muted-foreground hover:text-foreground transition-colors"
                     onClick={() => { setOnboardingPath(null); setStep(0); }}

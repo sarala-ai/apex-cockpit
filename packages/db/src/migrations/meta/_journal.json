@@ -1051,6 +1051,20 @@
       "when": 1784600000000,
       "tag": "0151_github_origin_fingerprint_unique",
       "breakpoints": true
+    },
+    {
+      "idx": 152,
+      "version": "7",
+      "when": 1784700000000,
+      "tag": "0152_company_slug",
+      "breakpoints": true
+    },
+    {
+      "idx": 153,
+      "version": "7",
+      "when": 1784800000000,
+      "tag": "0153_company_slug_backfill",
+      "breakpoints": true
     }
   ]
 }

@@ -8,6 +8,10 @@ export interface Company {
   pauseReason: PauseReason | null;
   pausedAt: Date | null;
   issuePrefix: string;
+  // Write-once (see companySlugSchema / companyService.update). Nullable only
+  // for the not-yet-backfilled edge case; new companies always get one at
+  // creation.
+  slug: string | null;
   issueCounter: number;
   budgetMonthlyCents: number;
   spentMonthlyCents: number;

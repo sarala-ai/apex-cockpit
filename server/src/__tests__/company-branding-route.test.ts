@@ -62,6 +62,7 @@ function createCompany() {
     description: null,
     status: "active",
     issuePrefix: "PAP",
+    slug: "pap",
     issueCounter: 568,
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
@@ -353,5 +354,90 @@ describe("PATCH /api/companies/:companyId", () => {
       actorType: "user",
       actorId: "user-1",
     }));
+  });
+
+  it("rejects a malformed slug before reaching the service", async () => {
+    const company = createCompany();
+    mockCompanyService.getById.mockResolvedValue(company);
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app)
+      .patch("/api/companies/company-1")
+      .send({ slug: "Not Valid!" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Validation error");
+    expect(mockCompanyService.update).not.toHaveBeenCalled();
+  });
+
+  it("normalizes an uppercase-but-otherwise-valid slug to lowercase before it reaches the service", async () => {
+    const company = { ...createCompany(), slug: null };
+    mockCompanyService.getById.mockResolvedValue(company);
+    mockCompanyService.update.mockResolvedValue({ ...company, slug: "acme" });
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app)
+      .patch("/api/companies/company-1")
+      .send({ slug: "ACME" });
+
+    expect(res.status).toBe(200);
+    expect(mockCompanyService.update).toHaveBeenCalledWith("company-1", { slug: "acme" }, expect.objectContaining({
+      actorType: "user",
+      actorId: "user-1",
+    }));
+  });
+
+  it("surfaces the service's classified 409 when the slug is already set", async () => {
+    const company = createCompany(); // slug: "pap" (already set)
+    mockCompanyService.getById.mockResolvedValue(company);
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    });
+    // Import from the same module registry snapshot createApp() just populated,
+    // so this HttpError and the errorHandler's `instanceof HttpError` check
+    // share one class identity (vi.resetModules() in beforeEach would otherwise
+    // make them distinct realms).
+    const { HttpError } = await vi.importActual<typeof import("../errors.js")>("../errors.js");
+    mockCompanyService.update.mockRejectedValue(
+      new HttpError(409, "Company slug is permanent and cannot be changed once set.", { code: "slug_immutable" }),
+    );
+
+    const res = await request(app)
+      .patch("/api/companies/company-1")
+      .send({ slug: "new-slug" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("slug_immutable");
+  });
+
+  it("surfaces the service's classified 409 when the slug is already taken by another company", async () => {
+    const company = { ...createCompany(), slug: null };
+    mockCompanyService.getById.mockResolvedValue(company);
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    });
+    const { HttpError } = await vi.importActual<typeof import("../errors.js")>("../errors.js");
+    mockCompanyService.update.mockRejectedValue(
+      new HttpError(409, 'Slug "taken" is already in use by another company.', { code: "slug_conflict" }),
+    );
+
+    const res = await request(app)
+      .patch("/api/companies/company-1")
+      .send({ slug: "taken" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("slug_conflict");
   });
 });
