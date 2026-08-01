@@ -67,6 +67,38 @@ describe("createCompanySchema — slug", () => {
   });
 });
 
+describe("updateCompanySchema — github projection", () => {
+  it("accepts enabling with an owner/name repo", () => {
+    const parsed = updateCompanySchema.parse({
+      githubProjectionEnabled: true,
+      githubProjectionRepo: "sarala-ai/apex",
+    });
+    expect(parsed.githubProjectionEnabled).toBe(true);
+    expect(parsed.githubProjectionRepo).toBe("sarala-ai/apex");
+  });
+
+  it("accepts disabling and clearing the repo", () => {
+    const parsed = updateCompanySchema.parse({
+      githubProjectionEnabled: false,
+      githubProjectionRepo: null,
+    });
+    expect(parsed.githubProjectionEnabled).toBe(false);
+    expect(parsed.githubProjectionRepo).toBeNull();
+  });
+
+  it("rejects a repo that is not owner/name shaped", () => {
+    expect(() => updateCompanySchema.parse({ githubProjectionRepo: "not-a-repo" })).toThrow();
+    expect(() => updateCompanySchema.parse({ githubProjectionRepo: "a/b/c" })).toThrow();
+    expect(() => updateCompanySchema.parse({ githubProjectionRepo: "a b/c" })).toThrow();
+  });
+
+  it("both fields are optional — omitting them is valid", () => {
+    const parsed = updateCompanySchema.parse({ name: "Acme" });
+    expect(parsed.githubProjectionEnabled).toBeUndefined();
+    expect(parsed.githubProjectionRepo).toBeUndefined();
+  });
+});
+
 describe("updateCompanySchema — slug", () => {
   it("is optional — omitting it is valid", () => {
     const parsed = updateCompanySchema.parse({ name: "Acme" });

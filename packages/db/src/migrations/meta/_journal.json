@@ -1086,6 +1086,13 @@
       "when": 1785700000000,
       "tag": "0156_heartbeat_run_permission_mode",
       "breakpoints": true
+    },
+    {
+      "idx": 157,
+      "version": "7",
+      "when": 1785800000000,
+      "tag": "0157_github_projection",
+      "breakpoints": true
     }
   ]
 }

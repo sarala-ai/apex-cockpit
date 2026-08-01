@@ -77,6 +77,12 @@ export const issues = pgTable(
     flowRunId: uuid("flow_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     flowStartedAt: timestamp("flow_started_at", { withTimezone: true }),
     flowAdvancedAt: timestamp("flow_advanced_at", { withTimezone: true }),
+    // GitHub projection mirror ref ("owner/repo#123") — set once when the
+    // projection CREATES a mirror issue for a board-origin ticket (typed column
+    // by doctrine, never jsonb). NULL for github-origin issues: their own
+    // origin issue (originKind='plugin:github', originId) is the mirror target
+    // and is never duplicated or closed by the projection.
+    githubMirrorRef: text("github_mirror_ref"),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),

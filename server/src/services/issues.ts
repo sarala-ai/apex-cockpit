@@ -2473,6 +2473,7 @@ const issueListSelect = {
   flowRunId: issues.flowRunId,
   flowStartedAt: issues.flowStartedAt,
   flowAdvancedAt: issues.flowAdvancedAt,
+  githubMirrorRef: issues.githubMirrorRef,
   startedAt: issues.startedAt,
   completedAt: issues.completedAt,
   cancelledAt: issues.cancelledAt,

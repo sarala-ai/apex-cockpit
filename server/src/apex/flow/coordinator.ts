@@ -66,6 +66,7 @@ import {
   clearGovernedAdapterConfigOverride,
   derivePermissionPolicy,
 } from "./run-policy.js";
+import { githubFlowProjection, type FlowProjectionHooks } from "./github-projection.js";
 
 export const FLOW_STATUSES = [
   "running",
@@ -121,6 +122,11 @@ export type FlowCoordinatorDeps = {
   /** Acceptance evaluator (v1 grammar: run-success / file_exists / pr_exists).
    *  Injectable so tests never shell the apex CLI for pr_exists. */
   evaluateAcceptance: typeof evaluateAcceptanceV1;
+  /** Decision-ledger projection (GitHub mirror). Fire-and-forget at every
+   *  call site: the coordinator only emits thin events and NEVER awaits the
+   *  outcome — a projection failure cannot block or fail a flow (the
+   *  implementation is failure-isolated, see github-projection.ts). */
+  projection: FlowProjectionHooks;
   now: () => Date;
 };
 
@@ -258,6 +264,7 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
       overrides.commissionAgentRun ??
       ((issue, node, commission) => defaultCommissionAgentRun(db, issue, node, commission)),
     evaluateAcceptance: overrides.evaluateAcceptance ?? evaluateAcceptanceV1,
+    projection: overrides.projection ?? githubFlowProjection(db),
     now: overrides.now ?? (() => new Date()),
   };
   const issuesSvc = issueService(db);
@@ -386,6 +393,12 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
       errorType: failure.errorType,
       error: failure.message,
     });
+    void deps.projection.flowFailed({
+      issueId: next.id,
+      nodeId: next.flowNodeId,
+      errorType: failure.errorType,
+      message: failure.message,
+    });
     await clearFlowRunPermissionOverride(db, next.id);
     await surface(
       next,
@@ -400,11 +413,17 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
     issue: FlowIssue,
     flow: FlowDefinition,
     index: number,
+    context: { acceptanceEvaluation?: string | null } = {},
   ): Promise<FlowIssue | null> {
     const nextNode = flow.nodes[index + 1];
     if (!nextNode) {
       await transition(issue, { flowStatus: "done", flowRunId: null }, "flow.completed", {
         completedNodeId: flow.nodes[index]?.id ?? null,
+      });
+      void deps.projection.flowCompleted({
+        issueId: issue.id,
+        completedNodeId: flow.nodes[index]?.id ?? null,
+        acceptanceEvaluation: context.acceptanceEvaluation ?? null,
       });
       await clearFlowRunPermissionOverride(db, issue.id);
       return null;
@@ -520,6 +539,12 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
       nodeId: node.id,
       approvalId: approval.id,
       prompt: gate.prompt ?? null,
+    });
+    void deps.projection.gateOpened({
+      issueId: issue.id,
+      nodeId: node.id,
+      prompt: gate.prompt ?? null,
+      approvalId: approval.id,
     });
     return null;
   }
@@ -671,6 +696,11 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
         agentId: executor.agentId,
         instructionCommentId,
       });
+      void deps.projection.agentRunCommissioned({
+        issueId: waiting.id,
+        nodeId: node.id,
+        runId: commissioned.runId,
+      });
     } catch (err) {
       if (err instanceof FlowStateConflictError) throw err;
       return applyOnFail(waiting, flow, index, {
@@ -717,6 +747,13 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
     }
     const acceptanceString = renderedAcceptance(issue, flow, node.id, node.agent.acceptance);
     const acceptance = await deps.evaluateAcceptance(acceptanceString);
+    void deps.projection.acceptanceEvaluated({
+      issueId: issue.id,
+      nodeId: node.id,
+      runId: input.runId,
+      ok: acceptance.ok,
+      evaluation: acceptance.evaluation,
+    });
     if (!acceptance.ok) {
       await applyOnFail(issue, flow, index, {
         errorType: "agent_acceptance_failed",
@@ -730,7 +767,9 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
       acceptance: acceptanceString,
       acceptanceEvaluation: acceptance.evaluation,
     });
-    const next = await advanceOrComplete(resumed, flow, index);
+    const next = await advanceOrComplete(resumed, flow, index, {
+      acceptanceEvaluation: acceptance.evaluation,
+    });
     return { advanced: true, execution: next ? runLoop(issue.id) : Promise.resolve() };
   }
 
@@ -1002,6 +1041,9 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
         { issueId: issue.id, flowName: flow.name, nodeId: firstNode.id },
         "flow coordinator: flow.started",
       );
+      // Fire-and-forget: creates the GitHub mirror (board-origin issues) and
+      // posts the flow-started ledger entry. Never awaited, never blocking.
+      void deps.projection.flowStarted({ issueId: issue.id, flowName: flow.name });
       return {
         issueId: issue.id,
         flowName: flow.name,
@@ -1055,6 +1097,13 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
           approvalId: input.approvalId,
           decidedByUserId: input.decidedByUserId,
         });
+        void deps.projection.gateDecided({
+          issueId,
+          nodeId,
+          decision: "reject",
+          decidedByUserId: input.decidedByUserId,
+          approvalId: input.approvalId,
+        });
         await surface(
           paused,
           `Flow **${flowName}** gate \`${nodeId}\` was **rejected** — flow paused. ` +
@@ -1075,6 +1124,13 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
         nodeId,
         approvalId: input.approvalId,
         decidedByUserId: input.decidedByUserId,
+      });
+      void deps.projection.gateDecided({
+        issueId,
+        nodeId,
+        decision: "approve",
+        decidedByUserId: input.decidedByUserId,
+        approvalId: input.approvalId,
       });
       const next = await advanceOrComplete(resumed, flow, index);
       return {

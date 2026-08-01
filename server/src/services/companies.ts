@@ -146,6 +146,8 @@ export function companyService(db: Db) {
     feedbackDataSharingConsentByUserId: companies.feedbackDataSharingConsentByUserId,
     feedbackDataSharingTermsVersion: companies.feedbackDataSharingTermsVersion,
     brandColor: companies.brandColor,
+    githubProjectionEnabled: companies.githubProjectionEnabled,
+    githubProjectionRepo: companies.githubProjectionRepo,
     logoAssetId: companyLogos.assetId,
     createdAt: companies.createdAt,
     updatedAt: companies.updatedAt,
@@ -424,6 +426,21 @@ export function companyService(db: Db) {
           }
           if (companyPatch.slug !== null) {
             companyPatch.slug = companyPatch.slug.toLowerCase();
+          }
+        }
+
+        // GitHub projection needs a creation target for board-origin mirror
+        // issues — enabling without a repo (in this patch or already stored)
+        // would make the projection silently skip everything.
+        if (companyPatch.githubProjectionEnabled === true) {
+          const projectionRepo =
+            companyPatch.githubProjectionRepo !== undefined
+              ? companyPatch.githubProjectionRepo
+              : existing.githubProjectionRepo;
+          if (!projectionRepo) {
+            throw unprocessable(
+              "githubProjectionRepo (owner/name) is required to enable GitHub projection",
+            );
           }
         }
 
