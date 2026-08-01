@@ -7,6 +7,8 @@ import type {
 } from "@paperclipai/shared";
 import {
   Check,
+  ChevronDown,
+  ChevronRight,
   Copy,
   MoreHorizontal,
   RotateCcw,
@@ -668,9 +670,10 @@ function DetachedThreads(props: {
         type="button"
         onClick={() => setExpanded((current) => !current)}
         aria-expanded={expanded}
-        className="w-full text-left text-(length:--text-micro) font-medium text-muted-foreground hover:text-foreground"
+        className="flex w-full items-center gap-1 text-left text-(length:--text-micro) font-medium text-muted-foreground hover:text-foreground"
       >
-        {expanded ? "▾" : "▸"} Detached comments ({props.threads.length})
+        {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+        Detached comments ({props.threads.length})
       </button>
       {expanded ? (
         <ul className="mt-2 space-y-2">
