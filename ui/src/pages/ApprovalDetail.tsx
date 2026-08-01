@@ -219,7 +219,7 @@ export function ApprovalDetail() {
               />
             </div>
           )}
-          <ApprovalPayloadRenderer type={approval.type} payload={payload} />
+          <ApprovalPayloadRenderer type={approval.type} payload={payload} approvalId={approval.id} />
           <button
             type="button"
             className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors mt-2"

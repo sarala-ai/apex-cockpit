@@ -233,6 +233,7 @@ export const queryKeys = {
     detail: (approvalId: string) => ["approvals", "detail", approvalId] as const,
     comments: (approvalId: string) => ["approvals", "comments", approvalId] as const,
     issues: (approvalId: string) => ["approvals", "issues", approvalId] as const,
+    prDiff: (approvalId: string) => ["approvals", "pr-diff", approvalId] as const,
   },
   access: {
     invites: (companyId: string, state: string = "all", limit: number = 20) =>

@@ -8,11 +8,13 @@ import {
   resolveApprovalSchema,
   resubmitApprovalSchema,
 } from "@paperclipai/shared";
+import { z } from "zod";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
 import {
   approvalService,
   accessService,
+  activityService,
   heartbeatService,
   issueApprovalService,
   logActivity,
@@ -23,7 +25,34 @@ import { redactEventPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { resolveGateApproval } from "../apex/pipeline/gate-bridge.js";
 import { flowCoordinator, FLOW_GATE_APPROVAL_TYPE } from "../apex/flow/coordinator.js";
+import { acceptancePullRequestTarget } from "../apex/flow/agent-step.js";
+import { ApexUnavailableError, ApexInvocationError, CliApexInvoker, type ApexInvoker } from "../apex/invoke.js";
 import type { PipelineActor } from "../services/pipelines.js";
+
+/** Zod contract for github_repo's get_pull_request tool result (apex-core,
+ *  the changed-files extension) — see server/src/apex/invoke.ts module doc:
+ *  this is the SAME schema the route's response is shaped from, so a CLI
+ *  contract drift fails loudly here rather than silently in the UI. */
+const PullRequestFileSchema = z.object({
+  path: z.string(),
+  status: z.string(),
+  additions: z.number(),
+  deletions: z.number(),
+});
+const GetPullRequestResultSchema = z
+  .object({
+    status: z.string(),
+    url: z.string().optional(),
+    head_ref: z.string().optional(),
+    title: z.string().optional(),
+    additions: z.number().optional(),
+    deletions: z.number().optional(),
+    changed_files: z.number().nullable().optional(),
+    files: z.array(PullRequestFileSchema).optional(),
+    files_truncated: z.boolean().optional(),
+    error: z.string().optional(),
+  })
+  .passthrough();
 
 /** apex-tower (Task 2 §2b): a pipeline actor from the approving/rejecting board user. */
 function gateActor(req: Request): PipelineActor {
@@ -56,7 +85,7 @@ function isStatusOnlyCheapRecoveryContext(contextSnapshot: unknown) {
 
 export function approvalRoutes(
   db: Db,
-  options: { pluginWorkerManager?: PluginWorkerManager } = {},
+  options: { pluginWorkerManager?: PluginWorkerManager; apexInvoker?: ApexInvoker } = {},
 ) {
   const router = Router();
   const svc = approvalService(db);
@@ -67,6 +96,7 @@ export function approvalRoutes(
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
+  const apexInvoker: ApexInvoker = options.apexInvoker ?? new CliApexInvoker();
 
   async function requireApprovalAccess(req: Request, id: string) {
     const approval = await svc.getById(id);
@@ -506,6 +536,109 @@ export function approvalRoutes(
     });
 
     res.status(201).json(comment);
+  });
+
+  /**
+   * Read-only PR-diff summary for a flow_gate approval — fetched at VIEW
+   * time from the PR head (never frozen into the approval payload), so an
+   * already-pending approval benefits the moment this ships. Resolves the
+   * `pr_exists:<repo>#<head>` acceptance declaration the flow coordinator
+   * recorded on the issue's activity log for the A-node that fed this gate
+   * (same parsing agent-step.ts's evaluator uses — not duplicated here),
+   * then asks apex-core's github_repo.get_pull_request for the current
+   * file list. Every failure mode (no PR target found, apex CLI missing,
+   * gh failure) degrades to a structured JSON response — never a 500.
+   */
+  router.get("/approvals/:id/pr-diff", async (req, res) => {
+    const id = req.params.id as string;
+    const approval = await svc.getById(id);
+    if (!approval) {
+      res.status(404).json({ error: "Approval not found" });
+      return;
+    }
+    assertCompanyAccess(req, approval.companyId);
+
+    if (approval.type !== FLOW_GATE_APPROVAL_TYPE) {
+      res.json({ available: false, reason: "not_a_flow_gate_approval" });
+      return;
+    }
+    const payload = approval.payload as Record<string, unknown>;
+    const issueId = typeof payload.issueId === "string" ? payload.issueId : null;
+    if (!issueId) {
+      res.json({ available: false, reason: "approval payload missing issueId" });
+      return;
+    }
+
+    // Walk the issue's activity log (newest first) for the most recent
+    // agent-step acceptance that declared a pr_exists target.
+    const activityRows = await activityService(db).forIssue(issueId);
+    let prTarget: { repo: string; head: string } | null = null;
+    let acceptanceEvaluation: string | null = null;
+    for (const row of activityRows) {
+      const details = (row.details ?? {}) as Record<string, unknown>;
+      const acceptance = typeof details.acceptance === "string" ? details.acceptance : null;
+      if (!acceptance) continue;
+      const target = acceptancePullRequestTarget(acceptance);
+      if (target) {
+        prTarget = target;
+        acceptanceEvaluation =
+          typeof details.acceptanceEvaluation === "string" ? details.acceptanceEvaluation : null;
+        break;
+      }
+    }
+    if (!prTarget) {
+      res.json({ available: false, reason: "no pr_exists acceptance found for this issue" });
+      return;
+    }
+
+    try {
+      const result = await apexInvoker.invoke(
+        "github_repo",
+        "get_pull_request",
+        { repo: prTarget.repo, head: prTarget.head },
+        GetPullRequestResultSchema,
+      );
+      if (result.status !== "success") {
+        res.json({
+          available: true,
+          degraded: true,
+          repo: prTarget.repo,
+          headBranch: prTarget.head,
+          error: result.error ?? `get-pull-request reported status '${result.status}'`,
+          acceptanceEvaluation,
+        });
+        return;
+      }
+      res.json({
+        available: true,
+        degraded: false,
+        repo: prTarget.repo,
+        headBranch: result.head_ref ?? prTarget.head,
+        url: result.url ?? "",
+        title: result.title ?? "",
+        totals: {
+          additions: result.additions ?? 0,
+          deletions: result.deletions ?? 0,
+          changedFiles: result.changed_files ?? result.files?.length ?? 0,
+        },
+        files: result.files ?? [],
+        files_truncated: result.files_truncated ?? false,
+        acceptanceEvaluation,
+      });
+    } catch (err) {
+      if (err instanceof ApexUnavailableError || err instanceof ApexInvocationError) {
+        res.json({
+          available: true,
+          degraded: true,
+          repo: prTarget.repo,
+          headBranch: prTarget.head,
+          error: err.message,
+          acceptanceEvaluation,
+        });
+        return;
+      }
+      throw err;
+    }
   });
 
   return router;
