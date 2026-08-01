@@ -70,7 +70,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
   const redactedDetails = sanitizedDetails
     ? redactCurrentUserValue(sanitizedDetails, currentUserRedactionOptions)
     : null;
-  await db.insert(activityLog).values({
+  const [inserted] = await db.insert(activityLog).values({
     companyId: input.companyId,
     actorType: input.actorType,
     actorId: input.actorId,
@@ -80,7 +80,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     agentId: input.agentId ?? null,
     runId: input.runId ?? null,
     details: redactedDetails,
-  });
+  }).returning({ id: activityLog.id });
 
   publishLiveEvent({
     companyId: input.companyId,
@@ -116,4 +116,6 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     };
     publishPluginDomainEvent(event);
   }
+
+  return { id: inserted?.id ?? null };
 }

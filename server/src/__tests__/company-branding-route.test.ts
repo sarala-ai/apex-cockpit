@@ -10,6 +10,7 @@ const mockCompanyService = vi.hoisted(() => ({
   update: vi.fn(),
   archive: vi.fn(),
   remove: vi.fn(),
+  breakGlassChangeSlug: vi.fn(),
 }));
 
 const mockAgentService = vi.hoisted(() => ({
@@ -439,5 +440,151 @@ describe("PATCH /api/companies/:companyId", () => {
 
     expect(res.status).toBe(409);
     expect(res.body.code).toBe("slug_conflict");
+  });
+});
+
+describe("POST /api/companies/:companyId/slug-break-glass", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("../routes/companies.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    vi.clearAllMocks();
+  });
+
+  function consequences(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      companyId: "company-1",
+      currentSlug: "pap",
+      proposedSlug: "new-alias",
+      envVarsThatChange: [{ kind: "env_var", current: "APEX_PAP_WORKFLOWS_PATH", next: "APEX_NEW-ALIAS_WORKFLOWS_PATH", note: "n/a" }],
+      capabilitySyncTargets: [],
+      boundRepoConfigs: [],
+      warning: "test warning",
+      ...overrides,
+    };
+  }
+
+  it("rejects agent callers outright (board/instance-admin only)", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/companies/company-1/slug-break-glass")
+      .send({ newSlug: "new-alias" });
+
+    expect(res.status).toBe(403);
+    expect(mockCompanyService.breakGlassChangeSlug).not.toHaveBeenCalled();
+  });
+
+  it("rejects board callers who are not instance admins", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "session",
+      companyIds: ["company-1"],
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(app)
+      .post("/api/companies/company-1/slug-break-glass")
+      .send({ newSlug: "new-alias" });
+
+    expect(res.status).toBe(403);
+    expect(mockCompanyService.breakGlassChangeSlug).not.toHaveBeenCalled();
+  });
+
+  it("rejects a malformed newSlug before reaching the service", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app)
+      .post("/api/companies/company-1/slug-break-glass")
+      .send({ newSlug: "Not Valid!" });
+
+    expect(res.status).toBe(400);
+    expect(mockCompanyService.breakGlassChangeSlug).not.toHaveBeenCalled();
+  });
+
+  it("returns a preview (200) when confirm is omitted, without executing", async () => {
+    mockCompanyService.breakGlassChangeSlug.mockResolvedValue({
+      preview: true,
+      consequences: consequences(),
+    });
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app)
+      .post("/api/companies/company-1/slug-break-glass")
+      .send({ newSlug: "new-alias" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.preview).toBe(true);
+    expect(res.body.consequences.proposedSlug).toBe("new-alias");
+    expect(mockCompanyService.breakGlassChangeSlug).toHaveBeenCalledWith(
+      "company-1",
+      "new-alias",
+      expect.objectContaining({ confirm: undefined }),
+    );
+  });
+
+  it("executes the change and returns the company + activity id when confirm is provided", async () => {
+    mockCompanyService.breakGlassChangeSlug.mockResolvedValue({
+      preview: false,
+      company: { ...createCompany(), slug: "new-alias" },
+      consequences: consequences(),
+      activityId: "activity-123",
+    });
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app)
+      .post("/api/companies/company-1/slug-break-glass")
+      .send({ newSlug: "new-alias", confirm: "pap" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.preview).toBe(false);
+    expect(res.body.company.slug).toBe("new-alias");
+    expect(res.body.activityId).toBe("activity-123");
+    expect(mockCompanyService.breakGlassChangeSlug).toHaveBeenCalledWith(
+      "company-1",
+      "new-alias",
+      expect.objectContaining({ confirm: "pap" }),
+    );
+  });
+
+  it("surfaces the service's classified 409 on confirm mismatch", async () => {
+    const { HttpError } = await vi.importActual<typeof import("../errors.js")>("../errors.js");
+    mockCompanyService.breakGlassChangeSlug.mockRejectedValue(
+      new HttpError(409, "Break-glass slug change requires typing the CURRENT slug.", {
+        code: "slug_break_glass_confirm_mismatch",
+      }),
+    );
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app)
+      .post("/api/companies/company-1/slug-break-glass")
+      .send({ newSlug: "new-alias", confirm: "wrong" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("slug_break_glass_confirm_mismatch");
   });
 });

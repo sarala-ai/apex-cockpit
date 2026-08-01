@@ -7,6 +7,7 @@ import {
   agents,
   agentWakeupRequests,
   builtInManagedResources,
+  cloudScopeBindings,
   companies,
   companySkillVersions,
   companySkills,
@@ -58,6 +59,7 @@ describeEmbeddedPostgres("companyService", () => {
     await db.delete(agents);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
+    await db.delete(cloudScopeBindings);
     await db.delete(companies);
   });
 
@@ -179,6 +181,136 @@ describeEmbeddedPostgres("companyService", () => {
         { actorType: "user", actorId: "test-user", agentId: null, runId: null },
       ),
     ).rejects.toMatchObject({ status: 409, details: { code: "slug_conflict" } });
+  });
+
+  describe("breakGlassChangeSlug", () => {
+    const actor = { actorType: "user" as const, actorId: "test-admin", agentId: null, runId: null };
+
+    it("returns a consequences preview without writing when confirm is absent", async () => {
+      const created = await companyService(db).create({ name: "Preview Co" });
+      const result = await companyService(db).breakGlassChangeSlug(created.id, "new-alias", { actor });
+
+      expect(result.preview).toBe(true);
+      expect(result.consequences).toMatchObject({
+        companyId: created.id,
+        currentSlug: created.slug,
+        proposedSlug: "new-alias",
+      });
+      expect(result.consequences.envVarsThatChange.length).toBeGreaterThan(0);
+      expect(result.consequences.capabilitySyncTargets.length).toBeGreaterThan(0);
+      expect(result.company).toBeUndefined();
+
+      const rows = await db.select({ slug: companies.slug }).from(companies).where(eq(companies.id, created.id));
+      expect(rows[0]?.slug).toBe(created.slug);
+    });
+
+    it("still validates the shape of the new slug on preview", async () => {
+      const created = await companyService(db).create({ name: "Bad Slug Co" });
+      await expect(
+        companyService(db).breakGlassChangeSlug(created.id, "Not Valid!", { actor }),
+      ).rejects.toMatchObject({ status: 422, details: { code: "slug_invalid" } });
+    });
+
+    it("rejects break-glass on a company whose slug was never set", async () => {
+      const companyId = randomUUID();
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Never Slugged Co",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        slug: null,
+      });
+
+      await expect(
+        companyService(db).breakGlassChangeSlug(companyId, "whatever", { actor }),
+      ).rejects.toMatchObject({ status: 422, details: { code: "slug_break_glass_not_set" } });
+    });
+
+    it("rejects execution when confirm does not match the current slug", async () => {
+      const created = await companyService(db).create({ name: "Mismatch Co" });
+      await expect(
+        companyService(db).breakGlassChangeSlug(created.id, "new-alias", {
+          confirm: "wrong-slug",
+          actor,
+        }),
+      ).rejects.toMatchObject({ status: 409, details: { code: "slug_break_glass_confirm_mismatch" } });
+
+      const rows = await db.select({ slug: companies.slug }).from(companies).where(eq(companies.id, created.id));
+      expect(rows[0]?.slug).toBe(created.slug);
+    });
+
+    it("performs the change transactionally and records an audit entry with the consequences snapshot when confirm matches the current slug", async () => {
+      const created = await companyService(db).create({ name: "Confirmed Co" });
+      const oldSlug = created.slug!;
+
+      const result = await companyService(db).breakGlassChangeSlug(created.id, "brand-new-alias", {
+        confirm: oldSlug,
+        actor,
+      });
+
+      expect(result.preview).toBe(false);
+      expect(result.company?.slug).toBe("brand-new-alias");
+      expect(result.consequences.currentSlug).toBe(oldSlug);
+      expect(result.consequences.proposedSlug).toBe("brand-new-alias");
+      expect(result.activityId).toBeTruthy();
+
+      const rows = await db.select({ slug: companies.slug }).from(companies).where(eq(companies.id, created.id));
+      expect(rows[0]?.slug).toBe("brand-new-alias");
+
+      const [logRow] = await db
+        .select({
+          action: activityLog.action,
+          actorId: activityLog.actorId,
+          details: activityLog.details,
+        })
+        .from(activityLog)
+        .where(and(eq(activityLog.companyId, created.id), eq(activityLog.action, "company.slug_break_glass")));
+
+      expect(logRow).toMatchObject({
+        action: "company.slug_break_glass",
+        actorId: "test-admin",
+      });
+      expect(logRow?.details).toMatchObject({
+        oldSlug,
+        newSlug: "brand-new-alias",
+        consequences: { currentSlug: oldSlug, proposedSlug: "brand-new-alias" },
+      });
+    });
+
+    it("rejects executing a conflicting slug already used by another company", async () => {
+      await db.insert(companies).values({ name: "Taken Co", issuePrefix: "TKC", slug: "taken-alias" });
+      const created = await companyService(db).create({ name: "Conflicted Co" });
+
+      await expect(
+        companyService(db).breakGlassChangeSlug(created.id, "taken-alias", {
+          confirm: created.slug!,
+          actor,
+        }),
+      ).rejects.toMatchObject({ status: 409, details: { code: "slug_conflict" } });
+    });
+
+    it("lists bound repos in the consequences report so the operator knows which committed configs go stale", async () => {
+      const created = await companyService(db).create({ name: "Bound Repo Co" });
+      await db.insert(cloudScopeBindings).values({
+        scopeType: "company",
+        scopeId: created.id,
+        githubRepos: ["acme/finpilot", "acme/bloom"],
+      });
+
+      const result = await companyService(db).breakGlassChangeSlug(created.id, "new-alias-2", { actor });
+      expect(result.consequences.boundRepoConfigs.map((r) => r.repo)).toEqual(["acme/finpilot", "acme/bloom"]);
+      expect(result.consequences.warning).toContain("bound repo");
+    });
+
+    it("never allows a break-glass change through the normal update() path", async () => {
+      const created = await companyService(db).create({ name: "Normal Path Co" });
+      await expect(
+        companyService(db).update(
+          created.id,
+          { slug: "sneaky" },
+          { actorType: "user", actorId: "test-user", agentId: null, runId: null },
+        ),
+      ).rejects.toMatchObject({ status: 409, details: { code: "slug_immutable" } });
+    });
   });
 
   it("auto-provisions one paused Reflection Coach bundle for a freshly created company", async () => {

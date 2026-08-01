@@ -11,9 +11,10 @@ import { assetsApi } from "../api/assets";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, CloudUpload, Download, Upload, Lock } from "lucide-react";
+import { Settings, CloudUpload, Download, Upload, Lock, ChevronDown, ChevronRight } from "lucide-react";
 import { COMPANY_SLUG_PATTERN } from "@paperclipai/shared";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
+import { CompanySlugBreakGlassDialog } from "../components/CompanySlugBreakGlassDialog";
 import {
   Field,
   ToggleField,
@@ -45,6 +46,8 @@ export function CompanySettings() {
   const [logoUrl, setLogoUrl] = useState("");
   const [logoUploadError, setLogoUploadError] = useState<string | null>(null);
   const [slugDraft, setSlugDraft] = useState("");
+  const [slugBreakGlassDisclosureOpen, setSlugBreakGlassDisclosureOpen] = useState(false);
+  const [slugBreakGlassDialogOpen, setSlugBreakGlassDialogOpen] = useState(false);
 
   // Sync local state from selected company
   useEffect(() => {
@@ -240,6 +243,40 @@ export function CompanySettings() {
                   Permanent — set once at company creation and cannot be changed. Capability paths and env vars
                   (APEX_{selectedCompany.slug.toUpperCase()}_...) are keyed on this value.
                 </p>
+                <div>
+                  <button
+                    type="button"
+                    className="flex items-center gap-1 text-xs text-muted-foreground hover:text-destructive"
+                    onClick={() => setSlugBreakGlassDisclosureOpen((v) => !v)}
+                    data-testid="company-settings-slug-breakglass-disclosure-trigger"
+                  >
+                    {slugBreakGlassDisclosureOpen ? (
+                      <ChevronDown className="h-3 w-3" />
+                    ) : (
+                      <ChevronRight className="h-3 w-3" />
+                    )}
+                    Break glass — force change (admin only)
+                  </button>
+                  {slugBreakGlassDisclosureOpen && (
+                    <div className="mt-1.5 space-y-1.5" data-testid="company-settings-slug-breakglass-disclosure">
+                      <p className="text-xs text-muted-foreground">
+                        Bypasses write-once immutability. Shows the consequences before anything changes and
+                        requires typing this company's current slug to confirm. Intended as a rare, audited
+                        escape hatch — not a normal edit path.
+                      </p>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="border-destructive/40 text-destructive hover:bg-destructive/10"
+                        onClick={() => setSlugBreakGlassDialogOpen(true)}
+                        data-testid="company-settings-slug-breakglass-open"
+                      >
+                        Force change slug&hellip;
+                      </Button>
+                    </div>
+                  )}
+                </div>
               </div>
             ) : (
               <div className="space-y-1.5" data-testid="company-settings-slug-set">
@@ -527,6 +564,20 @@ export function CompanySettings() {
           </div>
         </div>
       </div>
+
+      {selectedCompany.slug && (
+        <CompanySlugBreakGlassDialog
+          companyId={selectedCompany.id}
+          currentSlug={selectedCompany.slug}
+          open={slugBreakGlassDialogOpen}
+          onOpenChange={(next) => {
+            setSlugBreakGlassDialogOpen(next);
+            if (!next) {
+              queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+            }
+          }}
+        />
+      )}
     </div>
   );
 }

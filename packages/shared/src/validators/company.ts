@@ -81,3 +81,17 @@ export const updateCompanyBrandingSchema = z
   );
 
 export type UpdateCompanyBranding = z.infer<typeof updateCompanyBrandingSchema>;
+
+// Break-glass slug change — the ONE deliberate escape hatch from write-once
+// immutability. `newSlug` goes through the same shape validation as any other
+// slug. `confirm` is optional so the route can be called twice: once without
+// it to fetch the consequences preview (no write), once with it — set to the
+// CURRENT slug, typed by the operator — to actually perform the change. This
+// is intentionally not a boolean: typing the old slug out is the proof of
+// deliberateness the state-lock-break pattern relies on.
+export const companySlugBreakGlassSchema = z.object({
+  newSlug: companySlugSchema,
+  confirm: z.string().min(1).optional(),
+});
+
+export type CompanySlugBreakGlass = z.infer<typeof companySlugBreakGlassSchema>;

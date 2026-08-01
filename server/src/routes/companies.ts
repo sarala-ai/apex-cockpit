@@ -10,6 +10,7 @@ import {
   companyPortabilityExportSchema,
   companyPortabilityImportSchema,
   companyPortabilityPreviewSchema,
+  companySlugBreakGlassSchema,
   createCompanySchema,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
@@ -521,6 +522,39 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       return;
     }
     res.json(company);
+  });
+
+  // Break-glass slug change — the one deliberate, audited escape hatch out of
+  // write-once slug immutability. Instance-admin-gated (stronger than the
+  // plain board access the normal settings routes accept), because this can
+  // silently orphan capability paths, env vars, and bound-repo config keyed
+  // on the old slug. Same POST body shape serves both calls:
+  //   - no `confirm` → 200 preview (consequences report only, no write)
+  //   - `confirm` set to the CURRENT slug → executes the change
+  router.post("/:companyId/slug-break-glass", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertInstanceAdmin(req);
+
+    const body = companySlugBreakGlassSchema.parse(req.body);
+    const actor = getActorInfo(req);
+
+    const result = await svc.breakGlassChangeSlug(companyId, body.newSlug, {
+      confirm: body.confirm,
+      actor,
+    });
+
+    if (result.preview) {
+      res.status(200).json({ preview: true, consequences: result.consequences });
+      return;
+    }
+
+    res.status(200).json({
+      preview: false,
+      company: result.company,
+      consequences: result.consequences,
+      activityId: result.activityId ?? null,
+    });
   });
 
   router.delete("/:companyId", async (req, res) => {
