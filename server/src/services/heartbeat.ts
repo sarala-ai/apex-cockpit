@@ -4204,6 +4204,7 @@ export async function buildPaperclipWakePayload(input: {
       includeForIssueComment: commentIds.length > 0,
       includeForAnnotationDelta: annotationDeltas.length > 0,
       interactionId,
+      preferredDocumentKey: annotationDeltas[0]?.documentKey ?? null,
     })
     : null;
   const payloadTruncated = truncated || planReviewContext?.truncated === true;

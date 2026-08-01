@@ -85,6 +85,7 @@ import {
   type SuccessfulRunHandoffState,
   type WorkspaceRuntimeService,
 } from "@paperclipai/shared";
+import { isReviewableDocumentKey } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import type { StorageService } from "../storage/types.js";
@@ -507,12 +508,12 @@ function authenticatedActorResponsibleUserId(req: Request) {
 
 function readPlanConfirmationTargetForIssue(payload: unknown, issueId: string) {
   const target = readObject(readObject(payload).target);
-  if (target.type !== "issue_document" || target.key !== "plan") return null;
+  if (target.type !== "issue_document" || !isReviewableDocumentKey(target.key)) return null;
   if (readNonEmptyString(target.issueId) !== issueId) return null;
   return {
     issueId,
     documentId: readNonEmptyString(target.documentId),
-    key: "plan",
+    key: target.key,
     revisionId: readNonEmptyString(target.revisionId),
     revisionNumber: typeof target.revisionNumber === "number" ? target.revisionNumber : null,
   };
@@ -9065,7 +9066,7 @@ export function issueRoutes(
         interaction.kind === "request_confirmation" &&
         interaction.status === "accepted" &&
         acceptedPlanTarget?.issueId === issue.id &&
-        acceptedPlanTarget.key === "plan";
+        isReviewableDocumentKey(acceptedPlanTarget.key);
       queueResolvedInteractionContinuationWakeup({
         heartbeat,
         issue: continuationWakeIssue,

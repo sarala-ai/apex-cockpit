@@ -7,6 +7,7 @@ import type {
   IssueThreadInteractionKind,
   IssueThreadInteractionStatus,
 } from "../constants.js";
+import type { ReviewableDocumentKey } from "../reviewable-documents.js";
 
 export interface DocumentTextPosition {
   sourceStart: number;
@@ -124,6 +125,12 @@ export interface DocumentAnnotationAnchorRemapSnapshot {
 
 export interface DocumentAnnotationThreadWithComments extends DocumentAnnotationThread {
   comments: DocumentAnnotationComment[];
+  /**
+   * Re-anchoring trail for this thread, oldest first. Present on single-thread
+   * reads only; list reads omit it. Lets a reviewer see which revision the
+   * comment was last cleanly anchored to, and why it stopped matching.
+   */
+  anchorHistory?: DocumentAnnotationAnchorRemapSnapshot[];
 }
 
 export interface CreateDocumentAnnotationThreadRequest {
@@ -209,7 +216,7 @@ export interface PlanReviewInteractionContext {
 }
 
 export interface PlanReviewContext {
-  documentKey: "plan";
+  documentKey: ReviewableDocumentKey;
   issueId: string;
   latestRevisionId: string | null;
   latestRevisionNumber: number | null;

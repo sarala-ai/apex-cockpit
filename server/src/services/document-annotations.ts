@@ -15,6 +15,7 @@ import {
   remapDocumentAnchor,
   selectorToAnchorSnapshot,
   verifyDocumentAnchorSelector,
+  type DocumentAnnotationAnchorRemapSnapshot,
   type DocumentAnnotationAnchorSnapshot,
   type DocumentAnnotationComment,
   type DocumentAnnotationThread,
@@ -23,6 +24,9 @@ import {
   UpdateDocumentAnnotationThread,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+
+/** Most-remapped threads are pathological; cap what a single read can return. */
+export const ANCHOR_HISTORY_LIMIT = 50;
 
 type ActorInput = {
   actorType: "agent" | "user";
@@ -251,6 +255,23 @@ export function documentAnnotationService(db: Db) {
       .then((rows: DocumentAnnotationThread[]) => rows[0] ?? null);
   }
 
+  /**
+   * Re-anchoring trail for one thread, oldest first. This is the read path for
+   * document_annotation_anchor_snapshots: when a thread orphans, it is the only
+   * record of which revision the comment last matched cleanly and why it stopped.
+   */
+  async function anchorHistoryForThread(
+    threadId: string,
+    dbOrTx: any = db,
+  ): Promise<DocumentAnnotationAnchorRemapSnapshot[]> {
+    return dbOrTx
+      .select()
+      .from(documentAnnotationAnchorSnapshots)
+      .where(eq(documentAnnotationAnchorSnapshots.threadId, threadId))
+      .orderBy(asc(documentAnnotationAnchorSnapshots.createdAt), asc(documentAnnotationAnchorSnapshots.id))
+      .limit(ANCHOR_HISTORY_LIMIT);
+  }
+
   async function commentsForThreads(threadIds: string[], dbOrTx: any = db): Promise<DocumentAnnotationComment[]> {
     if (threadIds.length === 0) return [];
     return dbOrTx
@@ -386,8 +407,11 @@ export function documentAnnotationService(db: Db) {
     getThreadForIssueDocument: async (issueId: string, key: string, threadId: string) => {
       const thread = await getThreadForIssue(issueId, key, threadId);
       if (!thread) return null;
-      const comments = await commentsForThreads([thread.id]);
-      return { ...thread, comments };
+      const [comments, anchorHistory] = await Promise.all([
+        commentsForThreads([thread.id]),
+        anchorHistoryForThread(thread.id),
+      ]);
+      return { ...thread, comments, anchorHistory };
     },
 
     getThreadForRoutineDocument: async (routineId: string, key: string, threadId: string) => {
@@ -395,8 +419,11 @@ export function documentAnnotationService(db: Db) {
       if (!doc) return null;
       const thread = await getThreadForRoutine(routineId, key, threadId, doc.companyId, doc.documentId);
       if (!thread) return null;
-      const comments = await commentsForThreads([thread.id]);
-      return { ...thread, comments };
+      const [comments, anchorHistory] = await Promise.all([
+        commentsForThreads([thread.id]),
+        anchorHistoryForThread(thread.id),
+      ]);
+      return { ...thread, comments, anchorHistory };
     },
 
     getThreadForCaseDocument: async (caseId: string, key: string, threadId: string) => {
@@ -404,8 +431,11 @@ export function documentAnnotationService(db: Db) {
       if (!doc) return null;
       const thread = await getThreadForCase(caseId, key, threadId, doc.companyId, doc.documentId);
       if (!thread) return null;
-      const comments = await commentsForThreads([thread.id]);
-      return { ...thread, comments };
+      const [comments, anchorHistory] = await Promise.all([
+        commentsForThreads([thread.id]),
+        anchorHistoryForThread(thread.id),
+      ]);
+      return { ...thread, comments, anchorHistory };
     },
 
     createThread: async (

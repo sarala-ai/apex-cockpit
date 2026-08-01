@@ -486,6 +486,110 @@ describe("IssueDocumentAnnotations", () => {
     expect(reason!.textContent).toMatch(/draft/i);
   });
 
+  it("collects orphaned threads under Detached comments and explains the detachment", async () => {
+    mockAnnotationsApi.list.mockResolvedValue([
+      makeThread({ id: "open-1" }),
+      makeThread({ id: "orphan-1", anchorState: "orphaned", currentRevisionNumber: 7 }),
+    ]);
+    mockAnnotationsApi.get.mockResolvedValue({
+      ...makeThread({ id: "orphan-1", anchorState: "orphaned", currentRevisionNumber: 7 }),
+      anchorHistory: [
+        {
+          id: "snap-1",
+          companyId: "co-1",
+          threadId: "orphan-1",
+          documentId: "doc-1",
+          fromRevisionId: "rev-4",
+          fromRevisionNumber: 4,
+          toRevisionId: "rev-5",
+          toRevisionNumber: 5,
+          previousAnchor: {
+            selectedText: "should keep the editor",
+            prefixText: "We ",
+            suffixText: ".",
+            normalizedStart: 0,
+            normalizedEnd: 22,
+            markdownStart: 0,
+            markdownEnd: 22,
+          },
+          nextAnchor: {
+            selectedText: "should keep the editor",
+            prefixText: "We ",
+            suffixText: ".",
+            normalizedStart: 4,
+            normalizedEnd: 26,
+            markdownStart: 4,
+            markdownEnd: 26,
+          },
+          anchorState: "active",
+          anchorConfidence: "fuzzy",
+          failureReason: null,
+          createdAt: new Date("2026-04-02T00:00:00Z"),
+        },
+        {
+          id: "snap-2",
+          companyId: "co-1",
+          threadId: "orphan-1",
+          documentId: "doc-1",
+          fromRevisionId: "rev-5",
+          fromRevisionNumber: 5,
+          toRevisionId: "rev-6",
+          toRevisionNumber: 6,
+          previousAnchor: {
+            selectedText: "should keep the editor",
+            prefixText: "We ",
+            suffixText: ".",
+            normalizedStart: 4,
+            normalizedEnd: 26,
+            markdownStart: 4,
+            markdownEnd: 26,
+          },
+          nextAnchor: null,
+          anchorState: "orphaned",
+          anchorConfidence: "none",
+          failureReason: "quote_mismatch",
+          createdAt: new Date("2026-04-03T00:00:00Z"),
+        },
+      ],
+    });
+    const root = createRoot(container);
+    const queryClient = makeQueryClient();
+    const doc = makeDoc();
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Harness doc={doc} initialPanelOpen />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+    await flush();
+
+    const section = container.querySelector('[data-testid="document-annotation-detached"]');
+    expect(section).not.toBeNull();
+    expect(section!.textContent).toContain("Detached comments (1)");
+    // Collapsed by default: no history is fetched until the reviewer asks.
+    expect(container.querySelector('[data-detached-thread-id="orphan-1"]')).toBeNull();
+    expect(mockAnnotationsApi.get).not.toHaveBeenCalled();
+
+    const toggle = section!.querySelector("button")!;
+    await act(async () => {
+      toggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    await flush();
+
+    expect(container.querySelector('[data-detached-thread-id="orphan-1"]')).not.toBeNull();
+    const reason = container.querySelector(
+      '[data-testid="document-annotation-detached-reason-orphan-1"]',
+    );
+    expect(reason).not.toBeNull();
+    expect(reason!.textContent).toContain("Last matched at revision 5");
+    expect(reason!.textContent).toContain("detached at revision 6");
+    expect(reason!.textContent).toContain("the quoted text no longer appears");
+  });
+
   it("shows open and resolved threads together in a single list (no filter tabs)", async () => {
     mockAnnotationsApi.list.mockResolvedValue([
       makeThread({ id: "open-1" }),

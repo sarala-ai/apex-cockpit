@@ -185,6 +185,10 @@ export const queryKeys = {
     list: (companyId: string) => ["projects", companyId] as const,
     detail: (id: string) => ["projects", "detail", id] as const,
   },
+  documentAnnotations: {
+    // Re-anchoring trail for one thread. Append-only, so it never needs invalidating.
+    anchorHistory: (threadId: string) => ["document-annotations", "anchor-history", threadId] as const,
+  },
   cases: {
     list: (companyId: string) => ["cases", companyId] as const,
     detail: (id: string) => ["cases", "detail", id] as const,

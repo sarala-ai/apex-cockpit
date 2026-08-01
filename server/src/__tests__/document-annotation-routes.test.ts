@@ -179,7 +179,12 @@ async function createApp(actor: "board" | "agent" = "board", actorCompanyId = co
       };
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
+  // Agent mutations run through the task-watchdog scope resolver, which reads
+  // heartbeat_runs. No watchdog run exists in these tests, so return no rows.
+  const db = {
+    select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }),
+  };
+  app.use("/api", issueRoutes(db as any, {} as any));
   app.use(errorHandler);
   return app;
 }
@@ -313,6 +318,61 @@ describe("document annotation routes", () => {
     await request(await createApp("agent", otherCompanyId))
       .get(`/api/issues/${issueId}/documents/plan/annotations`)
       .expect(403);
+  });
+
+  it("lets an agent actor reply in a thread and resolve it", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: issueId,
+      companyId,
+      title: "Annotation API",
+      status: "in_progress",
+      assigneeAgentId: "77777777-7777-4777-8777-777777777777",
+    });
+
+    await request(await createApp("agent"))
+      .post(`/api/issues/${issueId}/documents/spec/annotations/${annotationThread.id}/comments`)
+      .send({ body: "Rewrote that paragraph in revision 2." })
+      .expect(201);
+    expect(mockAnnotationService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "spec",
+      annotationThread.id,
+      expect.objectContaining({ body: "Rewrote that paragraph in revision 2." }),
+      expect.objectContaining({ actorType: "agent", agentId: "77777777-7777-4777-8777-777777777777" }),
+    );
+
+    await request(await createApp("agent"))
+      .patch(`/api/issues/${issueId}/documents/spec/annotations/${annotationThread.id}`)
+      .send({ status: "resolved" })
+      .expect(200);
+    expect(mockAnnotationService.updateThread).toHaveBeenCalledWith(
+      issueId,
+      "spec",
+      annotationThread.id,
+      { status: "resolved" },
+      expect.objectContaining({ actorType: "agent" }),
+    );
+  });
+
+  it("rejects agent cross-company annotation replies and resolutions", async () => {
+    await request(await createApp("agent", otherCompanyId))
+      .post(`/api/issues/${issueId}/documents/plan/annotations/${annotationThread.id}/comments`)
+      .send({ body: "Should not land" })
+      .expect(403);
+    await request(await createApp("agent", otherCompanyId))
+      .patch(`/api/issues/${issueId}/documents/plan/annotations/${annotationThread.id}`)
+      .send({ status: "resolved" })
+      .expect(403);
+    expect(mockAnnotationService.addComment).not.toHaveBeenCalled();
+    expect(mockAnnotationService.updateThread).not.toHaveBeenCalled();
+  });
+
+  it("rejects annotation thread statuses outside the accepted set", async () => {
+    await request(await createApp("agent"))
+      .patch(`/api/issues/${issueId}/documents/plan/annotations/${annotationThread.id}`)
+      .send({ status: "deleted" })
+      .expect(400);
+    expect(mockAnnotationService.updateThread).not.toHaveBeenCalled();
   });
 
   it("adds annotation comments without waking the assignee and resolves threads", async () => {

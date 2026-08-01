@@ -45,6 +45,8 @@ Read tools:
 - `paperclipListDocuments`
 - `paperclipGetDocument`
 - `paperclipListDocumentRevisions`
+- `paperclipListDocumentAnnotations`
+- `paperclipGetDocumentAnnotationThread`
 - `paperclipListProjects`
 - `paperclipGetProject`
 - `paperclipGetIssueWorkspaceRuntime`
@@ -68,6 +70,8 @@ Write tools:
 - `paperclipRequestConfirmation`
 - `paperclipUpsertIssueDocument`
 - `paperclipRestoreIssueDocumentRevision`
+- `paperclipReplyToDocumentAnnotation`
+- `paperclipSetDocumentAnnotationThreadStatus`
 - `paperclipControlIssueWorkspaceServices`
 - `paperclipCreateApproval`
 - `paperclipLinkIssueApproval`
