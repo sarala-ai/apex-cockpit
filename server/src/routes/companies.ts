@@ -7,6 +7,8 @@ import { agents as agentsTable } from "@paperclipai/db";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
   companyArtifactsQuerySchema,
+  companyIssuePrefixSchema,
+  companySlugSchema,
   companyPortabilityExportSchema,
   companyPortabilityImportSchema,
   companyPortabilityPreviewSchema,
@@ -131,6 +133,35 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     }
     const filtered = Object.fromEntries(Object.entries(stats).filter(([companyId]) => allowed.has(companyId)));
     res.json(filtered);
+  });
+
+  // Preview of the identity (issue prefix + slug) svc.create() would allocate
+  // for ?name=, without writing anything — same authorization gate as company
+  // creation itself (POST /), since this exists purely to inform that flow.
+  // Placed ahead of "/:companyId" so it isn't swallowed as a companyId param.
+  //
+  // Optional ?prefix= / ?slug= check availability of an operator-edited value
+  // instead of the derived default (wizard dirty-field tracking) — malformed
+  // shapes are ignored here (ok as query input; the wizard already validates
+  // shape client-side against the same companyIssuePrefixSchema/
+  // companySlugSchema patterns before it would ever send one) rather than
+  // rejected, so a shape mismatch just falls back to the derived default.
+  router.get("/identity-preview", async (req, res) => {
+    assertBoard(req);
+    if (!(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)) {
+      throw forbidden("Instance admin required");
+    }
+    const name = typeof req.query.name === "string" ? req.query.name : "";
+    const prefixOverrideRaw = typeof req.query.prefix === "string" ? req.query.prefix : undefined;
+    const slugOverrideRaw = typeof req.query.slug === "string" ? req.query.slug : undefined;
+    const parsedPrefix = prefixOverrideRaw ? companyIssuePrefixSchema.safeParse(prefixOverrideRaw) : undefined;
+    const parsedSlug = slugOverrideRaw ? companySlugSchema.safeParse(slugOverrideRaw) : undefined;
+    res.json(
+      await svc.identityPreview(name, {
+        issuePrefix: parsedPrefix?.success ? parsedPrefix.data : undefined,
+        slug: parsedSlug?.success ? parsedSlug.data : undefined,
+      }),
+    );
   });
 
   // Common malformed path when companyId is empty in "/api/companies/{companyId}/issues".

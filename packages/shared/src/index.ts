@@ -434,6 +434,7 @@ export {
 
 export type {
   Company,
+  CompanyIdentityPreview,
   CompanySlugBreakGlassConsequences,
   CompanyIssuePrefixBreakGlassConsequences,
   SlugKeyedReference,

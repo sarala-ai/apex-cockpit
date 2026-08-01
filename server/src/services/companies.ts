@@ -60,8 +60,9 @@ const SYSTEM_COMPANY_ACTOR: CompanyActivityActor = {
   runId: null,
 };
 
+const ISSUE_PREFIX_FALLBACK = "CMP";
+
 export function companyService(db: Db) {
-  const ISSUE_PREFIX_FALLBACK = "CMP";
   const environmentsSvc = environmentService(db);
   const heartbeat = heartbeatService(db);
   const builtInAgents = builtInAgentService(db);
@@ -463,13 +464,23 @@ export function companyService(db: Db) {
   // the bug this replaces: a prefix collision must not perturb the slug, and
   // a slug collision must not perturb the prefix.
   async function createCompanyWithUniquePrefix(data: typeof companies.$inferInsert) {
-    const prefixBase = deriveIssuePrefixBase(data.name);
+    // An explicitly supplied issue prefix (e.g. from the onboarding wizard's
+    // identity step) wins over derivation and is NOT retried with an
+    // auto-appended suffix on collision — silently mutating a value the
+    // caller deliberately chose would defeat the point of exposing it. It is
+    // still validated the same way (companyIssuePrefixSchema, at the route
+    // layer) and still subject to the same uniqueness constraint.
+    const explicitPrefix =
+      data.issuePrefix !== undefined && data.issuePrefix !== null && data.issuePrefix !== ""
+        ? data.issuePrefix
+        : null;
+    const prefixBase = explicitPrefix ?? deriveIssuePrefixBase(data.name);
     const slugBase = deriveSlugBase(data.name);
     const explicitSlug = data.slug !== undefined && data.slug !== null ? data.slug : null;
     let prefixAttempt = 1;
     let slugAttempt = 1;
     while (prefixAttempt < 10000 && slugAttempt < 10000) {
-      const candidatePrefix = `${prefixBase}${suffixForAttempt(prefixAttempt)}`;
+      const candidatePrefix = explicitPrefix ?? `${prefixBase}${suffixForAttempt(prefixAttempt)}`;
       // Slug is write-once and, absent an explicit value, is derived from the
       // company NAME (not the issue prefix — see deriveSlugBase). Creation is
       // the intended one-time set point.
@@ -483,12 +494,14 @@ export function companyService(db: Db) {
       } catch (error) {
         if (isSlugConflict(error)) {
           if (explicitSlug) throw slugConflictError(explicitSlug);
+          if (explicitPrefix) throw slugConflictError(candidateSlug);
           // Only the slug axis advances — the prefix candidate that just
           // succeeded (or hasn't yet been tried) is reused verbatim.
           slugAttempt += 1;
           continue;
         }
         if (isIssuePrefixConflict(error)) {
+          if (explicitPrefix) throw issuePrefixConflictError(explicitPrefix);
           // Only the prefix axis advances — the slug candidate is reused
           // verbatim on the next attempt.
           prefixAttempt += 1;
@@ -514,6 +527,104 @@ export function companyService(db: Db) {
       if (!row) return null;
       const [hydrated] = await hydrateCompanySpend([row], db);
       return enrichCompany(hydrated);
+    },
+
+    // Preview of the identity (issue prefix + slug) that create() would
+    // allocate for `name`, WITHOUT writing anything — so onboarding can show
+    // it, let the operator override it, and surface a conflict before submit
+    // instead of as a 500 afterward. Deliberately calls the same derivation
+    // helpers create() calls (deriveIssuePrefixBase / deriveSlugBase) rather
+    // than re-deriving anything, so this can never drift from what create()
+    // actually does.
+    // `overrides` lets a caller check availability of a value the operator
+    // has hand-edited away from the derived default (dirty-field tracking in
+    // the wizard) — the returned issuePrefix/slug reflect whichever value was
+    // actually checked (override if supplied, derived default otherwise), so
+    // the same response shape covers both "show me the default" and "is what
+    // I typed OK" without a second endpoint.
+    identityPreview: async (
+      name: string,
+      overrides?: { issuePrefix?: string | null; slug?: string | null },
+    ) => {
+      const trimmedName = name.trim();
+      if (!trimmedName) {
+        return {
+          name: trimmedName,
+          issuePrefix: "",
+          slug: "",
+          prefixAvailable: false,
+          slugAvailable: false,
+          suggestedPrefix: null as string | null,
+          suggestedSlug: null as string | null,
+        };
+      }
+
+      // Prefix and slug each derive from the NAME independently (see
+      // deriveIssuePrefixBase / deriveSlugBase above) — they are two
+      // independent uniqueness axes, same as createCompanyWithUniquePrefix,
+      // so their availability/suggestion logic below runs independently too
+      // rather than coupling one to the other.
+      const prefixBase = overrides?.issuePrefix?.trim() || deriveIssuePrefixBase(trimmedName);
+      const slugBase = overrides?.slug?.trim() || deriveSlugBase(trimmedName);
+
+      async function prefixTaken(prefix: string) {
+        const rows = await db
+          .select({ id: companies.id })
+          .from(companies)
+          .where(eq(companies.issuePrefix, prefix))
+          .limit(1);
+        return rows.length > 0;
+      }
+      async function slugTaken(slugValue: string) {
+        const rows = await db
+          .select({ id: companies.id })
+          .from(companies)
+          .where(eq(companies.slug, slugValue))
+          .limit(1);
+        return rows.length > 0;
+      }
+
+      const [basePrefixTaken, baseSlugTaken] = await Promise.all([
+        prefixTaken(prefixBase),
+        slugTaken(slugBase),
+      ]);
+
+      // Mirrors createCompanyWithUniquePrefix's own per-axis retry shape
+      // (prefix appends "A"s, slug appends "-2", "-3", ...) so each
+      // suggestion is one create() would actually land on — capped well
+      // short of that function's own 10000-attempt ceiling since this only
+      // needs to produce a helpful suggestion, not a guaranteed allocation.
+      let suggestedPrefix: string | null = null;
+      if (basePrefixTaken) {
+        for (let attempt = 2; attempt < 50; attempt++) {
+          const candidate = `${prefixBase}${suffixForAttempt(attempt)}`;
+          if (!(await prefixTaken(candidate))) {
+            suggestedPrefix = candidate;
+            break;
+          }
+        }
+      }
+
+      let suggestedSlug: string | null = null;
+      if (baseSlugTaken) {
+        for (let attempt = 2; attempt < 50; attempt++) {
+          const candidate = `${slugBase}${slugSuffixForAttempt(attempt)}`;
+          if (!(await slugTaken(candidate))) {
+            suggestedSlug = candidate;
+            break;
+          }
+        }
+      }
+
+      return {
+        name: trimmedName,
+        issuePrefix: prefixBase,
+        slug: slugBase,
+        prefixAvailable: !basePrefixTaken,
+        slugAvailable: !baseSlugTaken,
+        suggestedPrefix,
+        suggestedSlug,
+      };
     },
 
     create: async (
