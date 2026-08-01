@@ -1184,4 +1184,291 @@ describeEmbeddedPostgres("flow coordinator", () => {
       expect(row.permissionProfile).toBe("bounded");
     });
   });
+
+  describe("operator recovery: retryCurrentNode / abandonFlow", () => {
+    function boundedAgentFlow(): FlowDefinition {
+      return {
+        name: "agentic-recovery",
+        version: "1.0",
+        description: "agent flow for recovery tests",
+        ticket_type: "design-change",
+        nodes: [
+          {
+            id: "board_diff",
+            kind: "agent",
+            agent: {
+              prompt_template: "Produce the diff for {{identifier}}: {{title}}",
+              acceptance: "a rendered diff exists",
+              permissions: { profile: "bounded" },
+            },
+            on_fail: "pause",
+          },
+        ],
+      } as FlowDefinition;
+    }
+
+    async function overrides(issueId: string): Promise<Record<string, unknown> | null> {
+      const [row] = await db
+        .select({ assigneeAdapterOverrides: issues.assigneeAdapterOverrides })
+        .from(issues)
+        .where(eq(issues.id, issueId));
+      return (row?.assigneeAdapterOverrides as Record<string, unknown> | null) ?? null;
+    }
+
+    async function httpStatus(fn: () => Promise<unknown>): Promise<number> {
+      try {
+        await fn();
+      } catch (err) {
+        return (err as { status: number }).status;
+      }
+      throw new Error("expected fn() to throw");
+    }
+
+    describe("retryCurrentNode", () => {
+      it("re-runs a paused workflow node fresh and drives it to done", async () => {
+        const { issueId } = await seedIssue();
+        // Fails first (pauses), then succeeds on retry — the retry must issue a
+        // BRAND NEW runWorkflow call (a "re-run", not a replay of the old result).
+        const { runner, calls } = fakeRunner({
+          "simple-test": [fail, ok],
+          "health generate_health_report": [ok],
+        });
+        const coordinator = flowCoordinator(db, {
+          loadDefinition: loaderFor(choreFlow()),
+          nodeRunner: runner,
+        });
+        const started = await coordinator.startFlow({ issueId, flowName: "noop-verify" });
+        await started.execution;
+        expect((await flowState(issueId)).flowStatus).toBe("paused");
+
+        const result = await coordinator.retryCurrentNode(issueId);
+        expect(result.flowNodeId).toBe("run");
+        expect(result.flowStatus).toBe("running");
+        await result.execution;
+
+        const state = await flowState(issueId);
+        expect(state.flowStatus).toBe("done");
+        expect(calls.filter((c) => c.kind === "workflow")).toHaveLength(2); // original + retry
+        const actions = await activityActions(issueId);
+        expect(actions).toContain("flow.retry_requested");
+      });
+
+      it("re-runs a failed flow's current node (markFailed path) the same way", async () => {
+        const { issueId } = await seedIssue();
+        const flow = choreFlow();
+        const runner: FlowNodeRunner = {
+          runWorkflow: async () => {
+            throw new Error("apex CLI exploded");
+          },
+          runCheck: async () => ok,
+        };
+        const coordinator = flowCoordinator(db, { loadDefinition: loaderFor(flow), nodeRunner: runner });
+        const started = await coordinator.startFlow({ issueId, flowName: "noop-verify" });
+        await started.execution;
+        expect((await flowState(issueId)).flowStatus).toBe("failed");
+
+        const fixedRunner = fakeRunner({
+          "simple-test": [ok],
+          "health generate_health_report": [ok],
+        });
+        const recovered = flowCoordinator(db, {
+          loadDefinition: loaderFor(flow),
+          nodeRunner: fixedRunner.runner,
+        });
+        const result = await recovered.retryCurrentNode(issueId);
+        await result.execution;
+        expect((await flowState(issueId)).flowStatus).toBe("done");
+        expect(await activityActions(issueId)).toContain("flow.retry_requested");
+      });
+
+      it("re-arms an agent node with a FRESH commission (never reuses the old run)", async () => {
+        const { issueId, companyId } = await seedIssue();
+        const agentId = await seedAgent(companyId);
+        await db.update(issues).set({ assigneeAgentId: agentId }).where(eq(issues.id, issueId));
+        const staleRunId = randomUUID();
+        await db.insert(heartbeatRuns).values({ id: staleRunId, companyId, agentId, status: "failed" });
+        const commissions: string[] = [];
+        const freshRunId = randomUUID();
+        const coordinator = flowCoordinator(db, {
+          loadDefinition: loaderFor(boundedAgentFlow()),
+          nodeRunner: fakeRunner({}).runner,
+          commissionAgentRun: async () => {
+            commissions.push("commissioned");
+            return { runId: freshRunId };
+          },
+        });
+        await db.insert(heartbeatRuns).values({ id: freshRunId, companyId, agentId, status: "queued" });
+        // Simulate a paused flow parked on the agent node with a stale (failed) run linked.
+        await db
+          .update(issues)
+          .set({
+            flowName: "agentic-recovery",
+            flowNodeId: "board_diff",
+            flowStatus: "paused",
+            flowRunId: staleRunId,
+          })
+          .where(eq(issues.id, issueId));
+
+        const result = await coordinator.retryCurrentNode(issueId);
+        await result.execution;
+
+        expect(commissions).toHaveLength(1);
+        const state = await flowState(issueId);
+        expect(state.flowStatus).toBe("waiting_agent");
+        expect(state.flowRunId).toBe(freshRunId);
+        expect(state.flowRunId).not.toBe(staleRunId);
+        // A fresh instruction comment landed for the retried step.
+        const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+        expect(comments).toHaveLength(1);
+      });
+
+      it("rejects retry from running/waiting_gate/waiting_agent/done with a classified 409", async () => {
+        const { issueId } = await seedIssue();
+        const coordinator = flowCoordinator(db, {
+          loadDefinition: loaderFor(choreFlow()),
+          nodeRunner: fakeRunner({}).runner,
+        });
+        for (const flowStatus of ["running", "waiting_gate", "waiting_agent", "done"] as const) {
+          await db
+            .update(issues)
+            .set({ flowName: "noop-verify", flowNodeId: "run", flowStatus })
+            .where(eq(issues.id, issueId));
+          const status = await httpStatus(() => coordinator.retryCurrentNode(issueId));
+          expect(status).toBe(409);
+        }
+      });
+
+      it("404s an unknown issue", async () => {
+        const coordinator = flowCoordinator(db, {
+          loadDefinition: loaderFor(choreFlow()),
+          nodeRunner: fakeRunner({}).runner,
+        });
+        const status = await httpStatus(() => coordinator.retryCurrentNode(randomUUID()));
+        expect(status).toBe(404);
+      });
+
+      it("422s when the current node no longer exists in the (reloaded) flow definition", async () => {
+        const { issueId } = await seedIssue();
+        await db
+          .update(issues)
+          .set({ flowName: "noop-verify", flowNodeId: "long-gone", flowStatus: "paused" })
+          .where(eq(issues.id, issueId));
+        const coordinator = flowCoordinator(db, {
+          loadDefinition: loaderFor(choreFlow()),
+          nodeRunner: fakeRunner({}).runner,
+        });
+        const status = await httpStatus(() => coordinator.retryCurrentNode(issueId));
+        expect(status).toBe(422);
+      });
+    });
+
+    describe("abandonFlow", () => {
+      it("terminal-fails a paused flow and clears the governed permission override", async () => {
+        const { issueId, companyId } = await seedIssue();
+        const agentId = await seedAgent(companyId);
+        await applyFlowRunPermissionOverride(
+          db,
+          { id: issueId } as FlowIssue,
+          { id: "board_diff", kind: "agent", agent: { prompt_template: "x", acceptance: "y", permissions: { profile: "bounded" } }, on_fail: "pause" } as FlowNode,
+        );
+        await db
+          .update(issues)
+          .set({ flowName: "agentic-recovery", flowNodeId: "board_diff", flowStatus: "paused", assigneeAgentId: agentId })
+          .where(eq(issues.id, issueId));
+        expect(await overrides(issueId)).not.toBeNull();
+
+        const coordinator = flowCoordinator(db, {
+          loadDefinition: loaderFor(boundedAgentFlow()),
+          nodeRunner: fakeRunner({}).runner,
+        });
+        const abandoned = await coordinator.abandonFlow({ issueId, decidedByUserId: "founder" });
+        expect(abandoned.flowStatus).toBe("failed");
+        expect(await overrides(issueId)).toBeNull();
+
+        const actions = await activityActions(issueId);
+        expect(actions).toContain("flow.abandoned");
+        const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+        expect(comments.some((c) => c.body.includes("abandoned"))).toBe(true);
+      });
+
+      it("terminal-fails an already-failed flow (idempotent landing)", async () => {
+        const { issueId } = await seedIssue();
+        await db
+          .update(issues)
+          .set({ flowName: "noop-verify", flowNodeId: "run", flowStatus: "failed" })
+          .where(eq(issues.id, issueId));
+        const coordinator = flowCoordinator(db, {
+          loadDefinition: loaderFor(choreFlow()),
+          nodeRunner: fakeRunner({}).runner,
+        });
+        const abandoned = await coordinator.abandonFlow({ issueId });
+        expect(abandoned.flowStatus).toBe("failed");
+        expect(await activityActions(issueId)).toContain("flow.abandoned");
+      });
+
+      it("from waiting_gate: rejects the dangling flow_gate approval so a later decision is a harmless no-op", async () => {
+        const { issueId } = await seedIssue();
+        const { runner } = fakeRunner({});
+        const coordinator = flowCoordinator(db, {
+          loadDefinition: loaderFor({
+            name: "gated-recovery",
+            version: "1.0",
+            description: "gated",
+            ticket_type: "bug",
+            nodes: [
+              { id: "gate1", kind: "gate", gate: { mode: "approve", prompt: "Review" }, on_fail: "pause" },
+            ],
+          } as FlowDefinition),
+          nodeRunner: runner,
+        });
+        const started = await coordinator.startFlow({ issueId, flowName: "gated-recovery" });
+        await started.execution;
+        expect((await flowState(issueId)).flowStatus).toBe("waiting_gate");
+        const [approval] = await db.select().from(approvals);
+        expect(approval.status).toBe("pending");
+
+        const abandoned = await coordinator.abandonFlow({ issueId, decidedByUserId: "founder" });
+        expect(abandoned.flowStatus).toBe("failed");
+
+        const [decided] = await db.select().from(approvals).where(eq(approvals.id, approval.id));
+        expect(decided.status).toBe("rejected");
+
+        // A stray decision on the now-rejected approval can't resurrect anything;
+        // it's also just plain not resolvable twice (approvals only resolve once).
+        const decision = await coordinator.onGateDecision({
+          approvalId: approval.id,
+          payload: approval.payload,
+          decision: "approve",
+          decidedByUserId: "someone-else",
+        });
+        expect(decision).toMatchObject({ resumed: false, reason: "stale_gate_decision" });
+        expect((await flowState(issueId)).flowStatus).toBe("failed");
+      });
+
+      it("rejects abandon from running/waiting_agent with a classified 409", async () => {
+        const { issueId } = await seedIssue();
+        const coordinator = flowCoordinator(db, {
+          loadDefinition: loaderFor(choreFlow()),
+          nodeRunner: fakeRunner({}).runner,
+        });
+        for (const flowStatus of ["running", "waiting_agent"] as const) {
+          await db
+            .update(issues)
+            .set({ flowName: "noop-verify", flowNodeId: "run", flowStatus })
+            .where(eq(issues.id, issueId));
+          const status = await httpStatus(() => coordinator.abandonFlow({ issueId }));
+          expect(status).toBe(409);
+        }
+      });
+
+      it("404s an unknown issue", async () => {
+        const coordinator = flowCoordinator(db, {
+          loadDefinition: loaderFor(choreFlow()),
+          nodeRunner: fakeRunner({}).runner,
+        });
+        const status = await httpStatus(() => coordinator.abandonFlow({ issueId: randomUUID() }));
+        expect(status).toBe(404);
+      });
+    });
+  });
 });

@@ -1182,6 +1182,104 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
       return { resumed: stale.length, agentRecovered };
     },
 
+    /**
+     * Operator recovery: re-arm the CURRENT node for re-execution. Valid only
+     * from `paused` or `failed` — the two "the loop stopped and a human must
+     * decide" terminals `waiting_gate` deliberately excludes (that's a normal
+     * wait, not a stuck state; use the gate decision instead). Re-parks the
+     * flow at `running` on the SAME node with a cleared `flowRunId`, so the
+     * next loop tick re-executes it fresh: a workflow/check node just runs
+     * again, an agent node gets a brand-new instruction comment + commission
+     * (never resurrects the old, already-terminal run). Flow identity
+     * (flowName/flowNodeId/flowStartedAt) is untouched — this is a resume,
+     * not a new flow.
+     */
+    retryCurrentNode: async (issueId: string) => {
+      const issue = await getIssue(issueId);
+      if (!issue) throw notFound("Issue not found");
+      if (!issue.flowStatus || !["paused", "failed"].includes(issue.flowStatus)) {
+        throw conflict(
+          `Flow for issue ${issueId} is not paused or failed (status: ${issue.flowStatus ?? "none"}) — cannot retry.`,
+          { errorType: "flow_invalid_transition", flowStatus: issue.flowStatus },
+        );
+      }
+      if (!issue.flowName || !issue.flowNodeId) {
+        throw unprocessable(
+          `Issue ${issueId} has no active flow node to retry.`,
+          { errorType: "flow_node_missing" },
+        );
+      }
+      const { flow } = await deps.loadDefinition(issue.flowName);
+      const index = nodeIndex(flow, issue.flowNodeId);
+      if (index < 0) {
+        throw unprocessable(
+          `Flow node '${issue.flowNodeId}' no longer exists in flow '${issue.flowName}' — cannot retry.`,
+          { errorType: "flow_node_missing" },
+        );
+      }
+      const rearmed = await transition(
+        issue,
+        { flowStatus: "running", flowRunId: null },
+        "flow.retry_requested",
+        { nodeId: issue.flowNodeId, fromStatus: issue.flowStatus },
+      );
+      return {
+        issueId: rearmed.id,
+        flowName: rearmed.flowName as string,
+        flowNodeId: rearmed.flowNodeId as string,
+        flowStatus: rearmed.flowStatus as FlowStatus,
+        execution: runLoop(issueId),
+      };
+    },
+
+    /**
+     * Operator recovery: terminal-fail the flow cleanly. Valid from
+     * `paused`, `failed` (already terminal — idempotent no-op landing) or
+     * `waiting_gate` (closes out the dangling `flow_gate` approval first, so
+     * a later stray decision on it is a harmless classified no-op rather than
+     * a live approval nobody will ever resolve). Clears the governed
+     * permission override exactly like the other terminal paths
+     * (`markFailed`, `advanceOrComplete`'s done branch) — see
+     * `applyFlowRunPermissionOverride`'s doc for why that's the only safe
+     * place to undo it.
+     */
+    abandonFlow: async (input: { issueId: string; decidedByUserId?: string | null }) => {
+      const issue = await getIssue(input.issueId);
+      if (!issue) throw notFound("Issue not found");
+      const abandonable: FlowStatus[] = ["paused", "failed", "waiting_gate"];
+      if (!issue.flowStatus || !abandonable.includes(issue.flowStatus as FlowStatus)) {
+        throw conflict(
+          `Flow for issue ${input.issueId} is not paused, failed, or waiting on a gate ` +
+            `(status: ${issue.flowStatus ?? "none"}) — cannot abandon.`,
+          { errorType: "flow_invalid_transition", flowStatus: issue.flowStatus },
+        );
+      }
+      if (issue.flowStatus === "waiting_gate") {
+        const linked = await issueApprovalsSvc.listApprovalsForIssue(issue.id);
+        const pendingGate = linked.find(
+          (approval) => approval.type === FLOW_GATE_APPROVAL_TYPE && approval.status === "pending",
+        );
+        if (pendingGate) {
+          await approvalsSvc.reject(
+            pendingGate.id,
+            input.decidedByUserId ?? "flow-coordinator",
+            "Flow abandoned by operator",
+          );
+        }
+      }
+      const abandoned = await transition(issue, { flowStatus: "failed" }, "flow.abandoned", {
+        nodeId: issue.flowNodeId,
+        fromStatus: issue.flowStatus,
+        decidedByUserId: input.decidedByUserId ?? null,
+      });
+      await clearFlowRunPermissionOverride(db, abandoned.id);
+      await surface(
+        abandoned,
+        `Flow **${abandoned.flowName}** was **abandoned** by an operator at node \`${abandoned.flowNodeId}\`.`,
+      );
+      return abandoned;
+    },
+
     /** Test/inspection surface. */
     getFlowState: getIssue,
   };
