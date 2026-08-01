@@ -289,7 +289,7 @@ describe("Sidebar", () => {
     });
   });
 
-  it("shows Skills directly below Artifacts in Work", async () => {
+  it("shows Skills under AI Governance, not Work (five-plane IA, fe8df9187)", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
     const root = await renderSidebar();
 
@@ -301,13 +301,12 @@ describe("Sidebar", () => {
     const navText = container.querySelector("nav")?.textContent ?? "";
     expect(navText).toContain("Artifacts");
     expect(navText).toContain("Skills");
-    expect(navText.indexOf("Artifacts")).toBeLessThan(navText.indexOf("Skills"));
 
     const sections = [...container.querySelectorAll("nav > div")];
     const workSection = sections.find((section) => section.textContent?.startsWith("Work"));
-    const companySection = sections.find((section) => section.textContent?.startsWith("Company"));
-    expect(workSection?.textContent).toContain("Skills");
-    expect(companySection?.textContent).not.toContain("Skills");
+    const governanceSection = sections.find((section) => section.textContent?.startsWith("AI Governance"));
+    expect(workSection?.textContent).not.toContain("Skills");
+    expect(governanceSection?.textContent).toContain("Skills");
 
     flushSync(() => {
       root.unmount();
@@ -350,23 +349,29 @@ describe("Sidebar", () => {
     const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Goals");
     expect(link?.getAttribute("href")).toBe("/goals");
 
+    // Five-plane IA (fe8df9187): Goals lives in the Product section, which
+    // renders after Work — so Goals now comes after Artifacts, not before.
     const navText = container.querySelector("nav")?.textContent ?? "";
-    expect(navText.indexOf("Goals")).toBeLessThan(navText.indexOf("Artifacts"));
+    expect(navText.indexOf("Goals")).toBeGreaterThan(navText.indexOf("Artifacts"));
+
+    const sections = [...container.querySelectorAll("nav > div")];
+    const productSection = sections.find((section) => section.textContent?.startsWith("Product"));
+    expect(productSection?.textContent).toContain("Goals");
 
     flushSync(() => {
       root.unmount();
     });
   });
 
-  it("places Timeline in the Company section", async () => {
+  it("places Timeline in the Work section (five-plane IA, fe8df9187)", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
     const root = await renderSidebar();
 
     const sections = [...container.querySelectorAll("nav > div")];
     const workSection = sections.find((section) => section.textContent?.startsWith("Work"));
-    const companySection = sections.find((section) => section.textContent?.startsWith("Company"));
-    expect(workSection?.textContent).not.toContain("Timeline");
-    expect(companySection?.textContent).toContain("Timeline");
+    const productSection = sections.find((section) => section.textContent?.startsWith("Product"));
+    expect(workSection?.textContent).toContain("Timeline");
+    expect(productSection?.textContent).not.toContain("Timeline");
 
     const timelineLink = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Timeline");
     expect(timelineLink?.getAttribute("href")).toBe("/timeline");
