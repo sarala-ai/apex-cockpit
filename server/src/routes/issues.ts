@@ -4977,6 +4977,10 @@ export function issueRoutes(
         identifier: issue.identifier,
         title: issue.title,
         description: issue.description,
+        // The agent half of the ticket travels on the agent-facing context
+        // route in full — the split is a human-reading concern, never a
+        // capability one.
+        agentBrief: issue.agentBrief ?? null,
         status: issue.status,
         workMode: issue.workMode,
         ...(blockerAttention ? { blockerAttention } : {}),

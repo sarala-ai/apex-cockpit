@@ -97,6 +97,7 @@ export type FlowIssue = {
   identifier: string | null;
   title: string;
   description: string | null;
+  agentBrief: string | null;
   assigneeAgentId: string | null;
   flowName: string | null;
   flowNodeId: string | null;
@@ -284,6 +285,7 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
     identifier: issues.identifier,
     title: issues.title,
     description: issues.description,
+    agentBrief: issues.agentBrief,
     assigneeAgentId: issues.assigneeAgentId,
     flowName: issues.flowName,
     flowNodeId: issues.flowNodeId,
@@ -381,6 +383,7 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
       identifier: issue.identifier,
       title: issue.title,
       description: issue.description,
+      agentBrief: issue.agentBrief,
       issueId: issue.id,
       flowName: flow.name,
       nodeId,

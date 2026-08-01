@@ -137,6 +137,7 @@ describeEmbeddedPostgres("githubFlowProjection", () => {
       originId?: string | null;
       githubMirrorRef?: string | null;
       description?: string | null;
+      agentBrief?: string | null;
       projectId?: string | null;
       projectWorkspaceId?: string | null;
     } = {},
@@ -148,6 +149,7 @@ describeEmbeddedPostgres("githubFlowProjection", () => {
       title: "Fix the thing",
       identifier: "APE-9",
       description: options.description ?? "The thing is broken.",
+      agentBrief: options.agentBrief ?? null,
       originKind: options.originKind ?? "manual",
       originId: options.originId ?? null,
       githubMirrorRef: options.githubMirrorRef ?? null,
@@ -203,6 +205,25 @@ describeEmbeddedPostgres("githubFlowProjection", () => {
       params: { repo: "acme/mirror", number: 77 },
     });
     expect(String(calls[1].params.body)).toContain("Flow `work` started");
+  });
+
+
+  it("mirrors the human body only — the agent brief never reaches a public issue", async () => {
+    const companyId = await seedCompany();
+    const issueId = await seedIssue(companyId, {
+      description: "The thing is broken.",
+      agentBrief: 'apex run penpot update-file --file 7adae259 {"type":"add-obj","x":5190}',
+    });
+    const { invoker, calls } = fakeInvoker();
+    const projection = githubFlowProjection(db, { invoker });
+
+    await projection.flowStarted({ issueId, flowName: "work" });
+
+    const body = String(calls[0].params.body);
+    expect(body).toContain("The thing is broken.");
+    expect(body).not.toContain("add-obj");
+    expect(body).not.toContain("apex run penpot update-file");
+    expect(body).not.toContain("7adae259");
   });
 
   it("flow start prefers the ticket's project workspace repo over the company fallback", async () => {

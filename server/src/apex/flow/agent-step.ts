@@ -54,6 +54,10 @@ export type AgentPromptContext = {
   identifier: string | null;
   title: string;
   description: string | null;
+  /** issues.agent_brief — the machine half of the ticket. Available to flow
+   *  prompt templates as `{{agent_brief}}`; the agent also receives it
+   *  natively in its task context (buildPaperclipTaskMarkdown). */
+  agentBrief: string | null;
   issueId: string;
   flowName: string | null;
   nodeId: string;
@@ -67,6 +71,7 @@ export function renderAgentPrompt(template: string, context: AgentPromptContext)
     identifier: context.identifier ?? context.issueId,
     title: context.title,
     description: context.description ?? "",
+    agent_brief: context.agentBrief ?? "",
     issue_id: context.issueId,
     flow_name: context.flowName ?? "",
     node_id: context.nodeId,
@@ -226,8 +231,9 @@ export async function evaluateAcceptanceV1(
   }
 }
 
-/** One reviewer rejection that sent this step back for rework. `feedback` is
- *  the approval's `decision_note` — the reviewer's own words, never rewritten. */
+/** One `request_changes` decision that sent this step back to be redone.
+ *  `feedback` is the approval's `decision_note` — the reviewer's own words,
+ *  never rewritten. */
 export type ChangeRequestRound = {
   round: number;
   gateNodeId: string;
@@ -270,8 +276,8 @@ export function buildChangeRequestFeedbackSection(rounds: ChangeRequestRound[]):
   const lines = [
     "## Review feedback — address this",
     "",
-    `This step's previous output was **rejected** by a human reviewer at gate \`${latest.gateNodeId}\` ` +
-      `and sent back for rework. This is rework round ${latest.round}.`,
+    `A human reviewer asked for **changes** to this step's previous output at gate ` +
+      `\`${latest.gateNodeId}\`, and it was sent back to you. This is round ${latest.round}.`,
     "",
     newestFirst.length > 1
       ? "All rounds are reproduced verbatim below, newest first. Earlier rounds are STILL BINDING — " +
@@ -291,8 +297,8 @@ export function buildChangeRequestFeedbackSection(rounds: ChangeRequestRound[]):
   }
   if (omitted > 0) {
     lines.push(
-      `_${omitted} earlier rework round${omitted === 1 ? "" : "s"} omitted here; every round is recorded ` +
-        "on this ticket's activity log as `flow.rework_requested`._",
+      `_${omitted} earlier round${omitted === 1 ? "" : "s"} omitted here; every round is recorded ` +
+        "on this ticket's activity log as `flow.changes_requested`._",
       "",
     );
   }
@@ -303,10 +309,30 @@ export function buildChangeRequestFeedbackSection(rounds: ChangeRequestRound[]):
   return lines.join("\n");
 }
 
+/**
+ * How a bounded agent step reports back on the ticket.
+ *
+ * The ticket thread is a human conversation, and an agent report is one of
+ * the few things in it a human actually has to read — so it is held to the
+ * standard of a colleague's message, not a build log. Everything the reader
+ * can already see (the instruction, the steps, the parameters, the run's
+ * own transcript) is not news and does not belong in the thread.
+ *
+ * This is production, not rendering: the shortest report is the one that was
+ * never written long.
+ */
+export const AGENT_STEP_REPORT_INSTRUCTION = [
+  "Reporting — how you close this step on the ticket:",
+  "Post ONE short comment. First line: what happened, in one sentence, in plain language.",
+  "After that, only what a reader could NOT already see — a surprise, a deviation from this instruction, or a decision someone now has to make. If there is none of that, the one sentence IS the whole comment.",
+  "Do not use emoji or status checklists. Do not restate this instruction or its parameters back. Do not list the steps you took — the activity trail already has them. Do not paste command output, payloads, or diagnostics.",
+  "If you are blocked, that is the report: name what is blocked and the single thing that would unblock it, in a few lines. What you tried, the errors, and the variations you attempted stay in this run's transcript — it is linked from the ticket and retrievable; do not paste it into the conversation.",
+].join("\n");
+
 /** The instruction comment the coordinator posts before commissioning —
  *  delivered to the agent as its wake comment. When the step is being redone
- *  after a gate rejection, the reviewer's note rides along verbatim in a
- *  clearly delimited section (see buildChangeRequestFeedbackSection). */
+ *  after a `request_changes` decision, the reviewer's reason rides along
+ *  verbatim in a delimited section (see buildChangeRequestFeedbackSection). */
 export function buildAgentInstructionComment(input: {
   flowName: string;
   nodeId: string;
@@ -318,7 +344,7 @@ export function buildAgentInstructionComment(input: {
   const rounds = input.changeRequestRounds ?? [];
   const lines = [
     `Flow **${input.flowName}** agent step \`${input.nodeId}\` — bounded agent run commissioned` +
-      (rounds.length > 0 ? ` (**rework round ${Math.max(...rounds.map((r) => r.round))}**).` : "."),
+      (rounds.length > 0 ? ` (**changes requested — round ${Math.max(...rounds.map((r) => r.round))}**).` : "."),
     "",
     "Instruction:",
     input.renderedPrompt.trim(),
@@ -331,6 +357,7 @@ export function buildAgentInstructionComment(input: {
   if (rounds.length > 0) {
     lines.push("", "---", "", buildChangeRequestFeedbackSection(rounds), "", "---");
   }
+  lines.push("", AGENT_STEP_REPORT_INSTRUCTION);
   lines.push(
     "",
     "When this run completes, the flow coordinator evaluates acceptance and advances the flow automatically.",
