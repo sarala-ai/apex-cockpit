@@ -121,7 +121,7 @@ const BRIEF_BASE = {
   },
   verified: { headline: "Verified.", ok: true, machine: [] },
   artifact: { available: false as const, reason: "none" },
-  next: { approve: "Approve → merge runs.", reject: "Reject → paused.", derived: true, note: null },
+  next: { approve: "Approve → merge runs.", requestChanges: null, reject: "Reject → paused.", derived: true, note: null },
   provenance: {
     agentName: null,
     agentId: null,

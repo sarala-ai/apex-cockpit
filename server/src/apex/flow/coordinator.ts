@@ -36,7 +36,7 @@
  */
 import { eq, and, lt, isNull, or, inArray, desc, sql as sqlExpr } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, heartbeatRuns, issues } from "@paperclipai/db";
+import { activityLog, agents, heartbeatRuns, issues } from "@paperclipai/db";
 import { conflict, notFound, unprocessable } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";
@@ -44,6 +44,7 @@ import { approvalService } from "../../services/approvals.js";
 import { issueApprovalService } from "../../services/issue-approvals.js";
 import { issueService } from "../../services/issues.js";
 import {
+  findChangeRequestTarget,
   loadFlowDefinition,
   type FlowDefinition,
   type FlowNode,
@@ -60,6 +61,7 @@ import {
   renderWorkflowParams,
   type AgentPromptContext,
   type FlowTerminalRunStatus,
+  type ChangeRequestRound,
 } from "./agent-step.js";
 import {
   applyGovernedAdapterConfigOverride,
@@ -83,6 +85,11 @@ const ACTIVE_FLOW_STATUSES: FlowStatus[] = ["running", "waiting_gate", "waiting_
 
 export const FLOW_GATE_APPROVAL_TYPE = "flow_gate";
 
+/** Activity-log action for a gate rejection that sent work back to its
+ *  authoring step. Also the durable home of the reviewer's feedback (see
+ *  `readChangeRequestRounds` for why the ledger, not a column). */
+export const FLOW_CHANGES_REQUESTED_ACTION = "flow.changes_requested";
+
 /** The flow-state slice of an issue row this module reads and writes. */
 export type FlowIssue = {
   id: string;
@@ -92,6 +99,9 @@ export type FlowIssue = {
   description: string | null;
   agentBrief: string | null;
   assigneeAgentId: string | null;
+  /** The flow's own executor — see resolveExecutorAgent for why this is not
+   *  `assigneeAgentId`. Coordinator-owned, cleared at flow-terminal. */
+  flowExecutorAgentId: string | null;
   flowName: string | null;
   flowNodeId: string | null;
   flowStatus: string | null;
@@ -280,6 +290,7 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
     description: issues.description,
     agentBrief: issues.agentBrief,
     assigneeAgentId: issues.assigneeAgentId,
+    flowExecutorAgentId: issues.flowExecutorAgentId,
     flowName: issues.flowName,
     flowNodeId: issues.flowNodeId,
     flowStatus: issues.flowStatus,
@@ -287,6 +298,16 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
     flowStartedAt: issues.flowStartedAt,
     flowAdvancedAt: issues.flowAdvancedAt,
   };
+
+  /** Record the flow's executor, once. Guarded on still-null so a concurrent
+   *  resolution never re-routes a flow already bound to an agent — the same
+   *  fill-a-vacuum-never-overwrite discipline the assignee write uses. */
+  async function rememberFlowExecutor(issueId: string, agentId: string): Promise<void> {
+    await db
+      .update(issues)
+      .set({ flowExecutorAgentId: agentId, updatedAt: deps.now() })
+      .where(and(eq(issues.id, issueId), isNull(issues.flowExecutorAgentId)));
+  }
 
   async function getIssue(issueId: string): Promise<FlowIssue | null> {
     const rows = await db.select(FLOW_COLUMNS).from(issues).where(eq(issues.id, issueId));
@@ -301,6 +322,7 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
       flowNodeId: string | null;
       flowStatus: FlowStatus | null;
       flowRunId: string | null;
+      flowExecutorAgentId: string | null;
     }>,
     action: string,
     details: Record<string, unknown>,
@@ -391,6 +413,63 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
     return renderAgentPrompt(template, promptContext(issue, flow, nodeId, template));
   }
 
+  /**
+   * Read the change-request rounds still binding on `targetNodeId`.
+   *
+   * Where this state lives, and why: the activity log, not a new column. The
+   * round history IS a decision-ledger fact (who sent what back, when, with
+   * which words) — the same ledger the GitHub projection mirrors — and the
+   * flow's TYPED columns are deliberately the pointer only (single-writer
+   * discipline, see the module doc). A `flowChangeRequestReason` column would
+   * duplicate a durable ledger entry and hold exactly one round, which is
+   * precisely the "silently drop earlier rounds" failure the design rejects.
+   *
+   * "Still binding" is a replay over the ledger in chronological order:
+   * - `flow.started` clears everything (a restarted flow is a clean slate),
+   * - `flow.gate_approved` clears the rounds raised at THAT gate (the reviewer
+   *   accepted the work, so their earlier complaints are closed),
+   * - `flow.changes_requested` for this flow + target node accumulates.
+   * Rounds are numbered at write time, so ordering never depends on
+   * same-millisecond `createdAt` ties.
+   */
+  async function readChangeRequestRounds(
+    issueId: string,
+    flowName: string,
+    targetNodeId: string,
+  ): Promise<ChangeRequestRound[]> {
+    const rows = await db
+      .select({ action: activityLog.action, details: activityLog.details, createdAt: activityLog.createdAt })
+      .from(activityLog)
+      .where(and(eq(activityLog.entityType, "issue"), eq(activityLog.entityId, issueId)))
+      .orderBy(activityLog.createdAt);
+    let rounds: ChangeRequestRound[] = [];
+    for (const row of rows) {
+      const details = (row.details ?? {}) as Record<string, unknown>;
+      if (row.action === "flow.started") {
+        rounds = [];
+        continue;
+      }
+      if (row.action === "flow.gate_approved") {
+        const gateNodeId = typeof details.nodeId === "string" ? details.nodeId : null;
+        if (gateNodeId) rounds = rounds.filter((entry) => entry.gateNodeId !== gateNodeId);
+        continue;
+      }
+      if (row.action !== FLOW_CHANGES_REQUESTED_ACTION) continue;
+      if (details.flowName !== flowName || details.targetNodeId !== targetNodeId) continue;
+      const feedback = typeof details.reason === "string" ? details.reason : "";
+      const gateNodeId = typeof details.gateNodeId === "string" ? details.gateNodeId : "";
+      if (!feedback.trim() || !gateNodeId) continue;
+      rounds.push({
+        round: typeof details.round === "number" ? details.round : rounds.length + 1,
+        gateNodeId,
+        feedback,
+        decidedByUserId: typeof details.decidedByUserId === "string" ? details.decidedByUserId : null,
+        at: row.createdAt instanceof Date ? row.createdAt.toISOString() : null,
+      });
+    }
+    return rounds;
+  }
+
   async function markFailed(issue: FlowIssue, failure: NodeFailure): Promise<void> {
     const next = await transition(issue, { flowStatus: "failed" }, "flow.failed", {
       errorType: failure.errorType,
@@ -420,9 +499,16 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
   ): Promise<FlowIssue | null> {
     const nextNode = flow.nodes[index + 1];
     if (!nextNode) {
-      await transition(issue, { flowStatus: "done", flowRunId: null }, "flow.completed", {
-        completedNodeId: flow.nodes[index]?.id ?? null,
-      });
+      await transition(
+        issue,
+        // Executor binding released only on genuine completion. `failed` and
+        // `paused` deliberately KEEP it: `retryCurrentNode` resumes the SAME
+        // flow, and re-resolving from `assigneeAgentId` at that point is
+        // exactly the reviewer-hijack this column exists to prevent.
+        { flowStatus: "done", flowRunId: null, flowExecutorAgentId: null },
+        "flow.completed",
+        { completedNodeId: flow.nodes[index]?.id ?? null },
+      );
       void deps.projection.flowCompleted({
         issueId: issue.id,
         completedNodeId: flow.nodes[index]?.id ?? null,
@@ -552,13 +638,136 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
     return null;
   }
 
-  /** Resolve the agent that executes this node: the issue's assignee, or —
-   *  when unassigned — the company's single assignable agent (deterministic
-   *  dispatch; anything ambiguous is a classified failure, never a guess). */
+  type ChangeRequestOutcome =
+    | {
+        changesRequested: true;
+        gateNodeId: string;
+        targetNodeId: string;
+        targetSource: "declared" | "derived";
+        round: number;
+        execution: Promise<void>;
+      }
+    | {
+        changesRequested: false;
+        gateNodeId: string;
+        targetNodeId: null;
+        /** Why changes could not be requested here — surfaced, never swallowed. */
+        reason: "no_prior_agent_node" | "declared_target_missing" | "declared_target_not_agent" | "no_reason_given";
+      };
+
+  /**
+   * `request_changes` — the flow analogue of a pipeline review stage's
+   * `request_changes` decision (services/pipelines.ts `reviewCase`): redo the
+   * work with a required reason, routed back to a named earlier step. It is a
+   * DIFFERENT decision from `reject`: reject means this should not happen at
+   * all (the flow stops), request_changes means redo it.
+   *
+   * Preconditions (flow parked at `waiting_gate` on `gateNodeId`) are the
+   * CALLER's to establish — `transition`'s compare-and-set is still the race
+   * guard.
+   *
+   * Re-arms the TARGET node (see `findChangeRequestTarget`), not the gate.
+   * Re-arming the gate is what `retryCurrentNode` does from here, and it is
+   * useless: it reopens the same question over the same unchanged artifact.
+   *
+   * No double-commission risk: this only moves the pointer and hands off to
+   * `runLoop`, so the re-commission goes through `executeAgentNode`'s existing
+   * deferral-aware guard — if a run already holds the issue's execution lock,
+   * `commissionAgentRun` returns null, the flow stays at `waiting_agent`, and
+   * heartbeat promotes the deferred wake when the live run finishes.
+   */
+  async function attemptRequestChanges(
+    issue: FlowIssue,
+    flow: FlowDefinition,
+    input: { gateNodeId: string; reason: string; decidedByUserId: string; approvalId: string | null },
+  ): Promise<ChangeRequestOutcome> {
+    const reason = input.reason.trim();
+    const target = findChangeRequestTarget(flow, input.gateNodeId);
+    if (!target.found) {
+      return { changesRequested: false, gateNodeId: input.gateNodeId, targetNodeId: null, reason: target.reason };
+    }
+    if (!reason) {
+      return { changesRequested: false, gateNodeId: input.gateNodeId, targetNodeId: null, reason: "no_reason_given" };
+    }
+    const prior = await readChangeRequestRounds(issue.id, flow.name, target.node.id);
+    const round = prior.length + 1;
+    const returned = await transition(
+      issue,
+      { flowNodeId: target.node.id, flowStatus: "running", flowRunId: null },
+      FLOW_CHANGES_REQUESTED_ACTION,
+      {
+        gateNodeId: input.gateNodeId,
+        targetNodeId: target.node.id,
+        targetSource: target.source,
+        reason,
+        decidedByUserId: input.decidedByUserId,
+        approvalId: input.approvalId,
+        round,
+      },
+    );
+    void deps.projection.changesRequested({
+      issueId: returned.id,
+      gateNodeId: input.gateNodeId,
+      targetNodeId: target.node.id,
+      reason,
+      decidedByUserId: input.decidedByUserId,
+      round,
+    });
+    const between = flow.nodes.slice(target.index + 1, nodeIndex(flow, input.gateNodeId));
+    await surface(
+      returned,
+      `Flow **${flow.name}** gate \`${input.gateNodeId}\`: **changes requested** — the work goes back to ` +
+        `\`${target.node.id}\` (round ${round}). Your reason is delivered to that step verbatim.` +
+        (between.length > 0
+          ? `\n\nThe ${between.length} step${between.length === 1 ? "" : "s"} between it and this gate ` +
+            `(${between.map((n) => `\`${n.id}\``).join(", ")}) re-run on the way back, so the gate reopens ` +
+            `only on work that has passed the same automated bar.`
+          : "") +
+        `\n\n> ${reason.split("\n").join("\n> ")}`,
+    );
+    return {
+      changesRequested: true,
+      gateNodeId: input.gateNodeId,
+      targetNodeId: target.node.id,
+      targetSource: target.source,
+      round,
+      execution: runLoop(issue.id),
+    };
+  }
+
+  /**
+   * Resolve the agent that executes this flow's agent nodes.
+   *
+   * Order: the flow's OWN recorded executor (`flowExecutorAgentId`) → the
+   * issue's assignee → the company's single assignable agent (deterministic
+   * dispatch; anything ambiguous is a classified failure, never a guess). The
+   * first resolution is written back to `flowExecutorAgentId` and every later
+   * node of the same flow uses it.
+   *
+   * Why the flow keeps its own column instead of re-reading `assigneeAgentId`
+   * each time: `assigneeAgentId` has a SECOND writer. The per-issue execution
+   * policy (services/issue-execution-policy.ts, `buildPendingStagePatch`)
+   * reassigns the issue to the REVIEWER when it intercepts a done-transition,
+   * deliberately excluding the executor so review is independent. Re-reading
+   * that column mid-flow therefore commissioned the flow's next agent step to
+   * the reviewer — silently defeating the independence the execution policy
+   * exists to enforce. Resolving once and remembering is the fix; it also
+   * makes a mid-flow reassignment by a human no longer silently re-route the
+   * remaining steps, which was never intended either.
+   *
+   * The coordinator still fills an assignee vacuum on first resolution (so the
+   * ticket has a visible owner), but never re-routes an existing assignment.
+   */
   async function resolveExecutorAgent(issue: FlowIssue): Promise<
     { ok: true; agentId: string; assigned: boolean } | { ok: false; failure: NodeFailure }
   > {
-    if (issue.assigneeAgentId) return { ok: true, agentId: issue.assigneeAgentId, assigned: false };
+    if (issue.flowExecutorAgentId) {
+      return { ok: true, agentId: issue.flowExecutorAgentId, assigned: false };
+    }
+    if (issue.assigneeAgentId) {
+      await rememberFlowExecutor(issue.id, issue.assigneeAgentId);
+      return { ok: true, agentId: issue.assigneeAgentId, assigned: false };
+    }
     // Invokable statuses (shared agent-eligibility taxonomy): the commissioned
     // wakeup must actually dispatch, so paused/terminated/pending_approval
     // agents (e.g. auto-provisioned built-ins parked as `paused`) don't count.
@@ -595,12 +804,19 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
     if (assigned.length === 0) {
       // Someone assigned concurrently — re-read and use theirs.
       const fresh = await getIssue(issue.id);
-      if (fresh?.assigneeAgentId) return { ok: true, agentId: fresh.assigneeAgentId, assigned: false };
+      if (fresh?.flowExecutorAgentId) {
+        return { ok: true, agentId: fresh.flowExecutorAgentId, assigned: false };
+      }
+      if (fresh?.assigneeAgentId) {
+        await rememberFlowExecutor(issue.id, fresh.assigneeAgentId);
+        return { ok: true, agentId: fresh.assigneeAgentId, assigned: false };
+      }
       return {
         ok: false,
         failure: { errorType: "flow_agent_unavailable", message: "agent assignment raced and no assignee remains" },
       };
     }
+    await rememberFlowExecutor(issue.id, agentId);
     return { ok: true, agentId, assigned: true };
   }
 
@@ -626,6 +842,12 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
       agent.prompt_template,
       promptContext(issue, flow, node.id, acceptance),
     );
+    // Rework feedback rides the SAME channel the instruction already uses (the
+    // wake comment) rather than a second one: whatever the founder wrote at the
+    // gate is part of this step's brief now, not an out-of-band note the agent
+    // may or may not read. Empty on a first pass — the section only appears
+    // when this node was actually sent back.
+    const changeRequestRounds = await readChangeRequestRounds(issue.id, flow.name, node.id);
     // Park first (single-writer CAS out of `running`): waiting_agent now means
     // "run commissioned (or commissioning), awaiting completion".
     const waiting = await transition(
@@ -638,6 +860,7 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
         agentAutoAssigned: executor.assigned,
         acceptance,
         budget: agent.budget ?? null,
+        changeRequestRound: changeRequestRounds.length > 0 ? Math.max(...changeRequestRounds.map((r) => r.round)) : null,
       },
     );
     // The instruction comment is the run's wake comment — the channel the
@@ -653,6 +876,7 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
           renderedPrompt,
           acceptance,
           budget: agent.budget ?? null,
+          changeRequestRounds,
         }),
         {},
       );
@@ -1011,6 +1235,9 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
           flowNodeId: firstNode.id,
           flowStatus: "running",
           flowRunId: null,
+          // A new flow resolves its executor afresh; never inherits the
+          // previous flow's binding.
+          flowExecutorAgentId: null,
           flowStartedAt: stamp,
           flowAdvancedAt: stamp,
           updatedAt: stamp,
@@ -1056,14 +1283,24 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
       };
     },
 
-    /** Event hook: a `flow_gate` approval was decided. Approve advances past
-     *  the gate and resumes; reject pauses + surfaces. Stale/mismatched
-     *  decisions are classified no-ops (the approval stays decided). */
+    /** Event hook: a `flow_gate` approval was decided. The decision vocabulary
+     *  is the pipelines one (`PipelineReviewDecision`): approve advances past
+     *  the gate and resumes; `request_changes` routes the work back to the
+     *  gate's change-request target with the reviewer's reason; reject stops
+     *  the flow (paused). Stale/mismatched decisions are classified no-ops
+     *  (the approval stays decided). */
     onGateDecision: async (input: {
       approvalId: string;
       payload: unknown;
-      decision: "approve" | "reject";
+      decision: "approve" | "reject" | "request_changes";
       decidedByUserId: string;
+      /** The reviewer's reason (`approvals.decision_note`). Required by the
+       *  route for both `reject` and `request_changes` (classified 400), the
+       *  way a review stage's `requireRejectReason` /
+       *  `requireRequestChangesReason` do. Optional in this signature so a
+       *  decision arriving from any other caller still lands somewhere honest
+       *  rather than throwing mid-transition. */
+      reason?: string | null;
     }) => {
       const payload = (input.payload ?? {}) as Record<string, unknown>;
       const issueId = typeof payload.issueId === "string" ? payload.issueId : null;
@@ -1094,11 +1331,73 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
         );
         return { resumed: false as const, reason: "stale_gate_decision" as const };
       }
+      // `request_changes` — redo the work with a required reason, routed back
+      // to the gate's change-request target. Distinct from `reject`, which
+      // means the work should not happen at all.
+      if (input.decision === "request_changes") {
+        let flow: FlowDefinition | null = null;
+        try {
+          flow = (await deps.loadDefinition(flowName)).flow;
+        } catch (err) {
+          logger.error(
+            { err, issueId, flowName, nodeId },
+            "flow coordinator: could not load the flow definition to route request_changes — falling back to pause",
+          );
+        }
+        const outcome = flow
+          ? await attemptRequestChanges(issue, flow, {
+              gateNodeId: nodeId,
+              reason: input.reason ?? "",
+              decidedByUserId: input.decidedByUserId,
+              approvalId: input.approvalId,
+            })
+          : null;
+        if (outcome?.changesRequested) {
+          return {
+            resumed: true as const,
+            reason: "changes_requested" as const,
+            targetNodeId: outcome.targetNodeId,
+            round: outcome.round,
+            execution: outcome.execution,
+          };
+        }
+        // Nothing to send the work back to. Keep today's pause behaviour, and
+        // say WHICH case it is rather than the old undifferentiated
+        // "restart or amend the flow".
+        const blocked = outcome?.reason ?? "flow_definition_unavailable";
+        const why =
+          blocked === "no_prior_agent_node"
+            ? `no agent step precedes this gate in flow \`${flowName}\`, so there is no step to send the work back to`
+            : blocked === "declared_target_missing"
+              ? `this gate declares a request_changes target that no longer exists in flow \`${flowName}\``
+              : blocked === "declared_target_not_agent"
+                ? `this gate's declared request_changes target is not an agent step, so it cannot act on your reason`
+                : blocked === "no_reason_given"
+                  ? "no reason was recorded with the decision, and a reason is what the redoing step acts on"
+                  : "the flow definition could not be read, so the work could not be routed back automatically";
+        const paused = await transition(issue, { flowStatus: "paused" }, "flow.changes_request_blocked", {
+          nodeId,
+          approvalId: input.approvalId,
+          decidedByUserId: input.decidedByUserId,
+          blocked,
+        });
+        await surface(
+          paused,
+          `Flow **${flowName}** gate \`${nodeId}\`: **changes requested**, but the flow is paused because ${why}. ` +
+            `Restart or amend the flow to continue.`,
+        );
+        return { resumed: false as const, reason: "changes_request_blocked" as const, blocked };
+      }
       if (input.decision === "reject") {
+        // Reject = this should not happen at all. The flow stops; it does NOT
+        // go back for another round (that is `request_changes`). Paused rather
+        // than failed so the audit trail and `abandonFlow`/`retryCurrentNode`
+        // remain available to the operator.
         const paused = await transition(issue, { flowStatus: "paused" }, "flow.gate_rejected", {
           nodeId,
           approvalId: input.approvalId,
           decidedByUserId: input.decidedByUserId,
+          reason: input.reason ?? null,
         });
         void deps.projection.gateDecided({
           issueId,
@@ -1109,8 +1408,9 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
         });
         await surface(
           paused,
-          `Flow **${flowName}** gate \`${nodeId}\` was **rejected** — flow paused. ` +
-            `A rejection is a new decision point; restart or amend the flow to continue.`,
+          `Flow **${flowName}** gate \`${nodeId}\` was **rejected** — flow paused. Rejection means this work ` +
+            `should not proceed at all; to send it back for another round instead, request changes.` +
+            (input.reason?.trim() ? `\n\n> ${input.reason.trim().split("\n").join("\n> ")}` : ""),
         );
         return { resumed: false as const, reason: "rejected" as const };
       }
@@ -1289,6 +1589,53 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
         flowStatus: rearmed.flowStatus as FlowStatus,
         execution: runLoop(issueId),
       };
+    },
+
+    /**
+     * `request_changes` as a directly callable operation: send a gate's work
+     * back to its change-request target, carrying the reviewer's reason.
+     *
+     * Valid only from `waiting_gate` on `gateNodeId` — this is a REVIEW
+     * decision, not an operator recovery (`retryCurrentNode` covers
+     * paused/failed, and at a gate it would only reopen the same gate over the
+     * same artifact, which is the gap this closes).
+     *
+     * The decided approval is deliberately left decided: it is the audit
+     * record of the round. The gate creates a NEW pending approval when the
+     * flow walks back into it (`executeGateNode` always creates one), so no
+     * stale approval lingers and the rounds are separately readable.
+     */
+    requestChangesFromGate: async (
+      issueId: string,
+      input: { gateNodeId: string; reason: string; decidedByUserId: string; approvalId?: string | null },
+    ) => {
+      const issue = await getIssue(issueId);
+      if (!issue) throw notFound("Issue not found");
+      if (issue.flowStatus !== "waiting_gate" || issue.flowNodeId !== input.gateNodeId) {
+        throw conflict(
+          `Flow for issue ${issueId} is not waiting at gate '${input.gateNodeId}' ` +
+            `(status: ${issue.flowStatus ?? "none"}, node: ${issue.flowNodeId ?? "none"}) — cannot request changes.`,
+          { errorType: "flow_invalid_transition", flowStatus: issue.flowStatus },
+        );
+      }
+      if (!issue.flowName) {
+        throw unprocessable(`Issue ${issueId} has no active flow.`, {
+          errorType: "flow_node_missing",
+        });
+      }
+      if (!input.reason?.trim()) {
+        throw unprocessable(
+          "Requesting changes requires a reason — it is what the step redoing the work acts on.",
+          { errorType: "gate_review_reason_required" },
+        );
+      }
+      const { flow } = await deps.loadDefinition(issue.flowName);
+      return attemptRequestChanges(issue, flow, {
+        gateNodeId: input.gateNodeId,
+        reason: input.reason,
+        decidedByUserId: input.decidedByUserId,
+        approvalId: input.approvalId ?? null,
+      });
     },
 
     /**
