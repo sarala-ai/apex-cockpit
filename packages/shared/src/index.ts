@@ -434,6 +434,8 @@ export {
 
 export type {
   Company,
+  CompanySlugBreakGlassConsequences,
+  SlugKeyedReference,
   Environment,
   EnvironmentDeleteBlastRadius,
   EnvironmentDeleteBlockedReason,
@@ -1138,6 +1140,7 @@ export {
   updateCompanySchema,
   updateCompanyBrandingSchema,
   companySlugSchema,
+  companySlugBreakGlassSchema,
   COMPANY_SLUG_PATTERN,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
@@ -1155,6 +1158,7 @@ export {
   type CreateCompany,
   type UpdateCompany,
   type UpdateCompanyBranding,
+  type CompanySlugBreakGlass,
   type UpsertIssueFeedbackVote,
   type ExternalObjectCanonicalIdentityInput,
   type ExternalObjectMentionSourceInput,

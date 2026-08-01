@@ -26,10 +26,12 @@ export {
   updateCompanySchema,
   updateCompanyBrandingSchema,
   companySlugSchema,
+  companySlugBreakGlassSchema,
   COMPANY_SLUG_PATTERN,
   type CreateCompany,
   type UpdateCompany,
   type UpdateCompanyBranding,
+  type CompanySlugBreakGlass,
 } from "./company.js";
 export {
   environmentDriverSchema,

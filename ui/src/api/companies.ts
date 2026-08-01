@@ -7,9 +7,17 @@ import type {
   CompanyPortabilityImportResult,
   CompanyPortabilityPreviewRequest,
   CompanyPortabilityPreviewResult,
+  CompanySlugBreakGlassConsequences,
   UpdateCompanyBranding,
 } from "@paperclipai/shared";
 import { api } from "./client";
+
+export interface CompanySlugBreakGlassResult {
+  preview: boolean;
+  consequences: CompanySlugBreakGlassConsequences;
+  company?: Company;
+  activityId?: string | null;
+}
 
 export type CompanyStats = Record<string, { agentCount: number; issueCount: number }>;
 
@@ -47,6 +55,14 @@ export const companiesApi = {
   ) => api.patch<Company>(`/companies/${companyId}`, data),
   updateBranding: (companyId: string, data: UpdateCompanyBranding) =>
     api.patch<Company>(`/companies/${companyId}/branding`, data),
+  // Break-glass slug change — the one deliberate escape hatch out of write-once
+  // immutability. Omit `confirm` to fetch the consequences preview (no write);
+  // pass `confirm` set to the CURRENT slug to execute. NEVER reachable through
+  // `update()` — see companyService.breakGlassChangeSlug.
+  slugBreakGlassPreview: (companyId: string, newSlug: string) =>
+    api.post<CompanySlugBreakGlassResult>(`/companies/${companyId}/slug-break-glass`, { newSlug }),
+  slugBreakGlassExecute: (companyId: string, newSlug: string, confirm: string) =>
+    api.post<CompanySlugBreakGlassResult>(`/companies/${companyId}/slug-break-glass`, { newSlug, confirm }),
   archive: (companyId: string) => api.post<Company>(`/companies/${companyId}/archive`, {}),
   remove: (companyId: string) => api.delete<{ ok: true }>(`/companies/${companyId}`),
   exportBundle: (

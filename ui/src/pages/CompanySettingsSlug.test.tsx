@@ -8,6 +8,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 
 const mockCompaniesApi = vi.hoisted(() => ({
   update: vi.fn(),
+  slugBreakGlassPreview: vi.fn(),
+  slugBreakGlassExecute: vi.fn(),
 }));
 
 const mockAssetsApi = vi.hoisted(() => ({
@@ -198,6 +200,30 @@ describe("CompanySettings — slug field", () => {
     expect(container.querySelector('[data-testid="company-settings-slug-set"]')).toBeFalsy();
     // No editable input for slug when it's already set.
     expect(readonly?.querySelector("input")).toBeFalsy();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps the break-glass affordance behind a closed disclosure by default, revealed on toggle", async () => {
+    selectedCompany = baseCompany({ slug: "pap" });
+    const root = await render();
+
+    // Closed by default: the disclosure toggle is present, but the destructive
+    // "Force change slug" action and its dialog trigger are not rendered yet.
+    const trigger = container.querySelector('[data-testid="company-settings-slug-breakglass-disclosure-trigger"]');
+    expect(trigger).toBeTruthy();
+    expect(container.querySelector('[data-testid="company-settings-slug-breakglass-open"]')).toBeFalsy();
+
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const openButton = container.querySelector('[data-testid="company-settings-slug-breakglass-open"]');
+    expect(openButton).toBeTruthy();
+    expect(openButton?.textContent).toContain("Force change slug");
 
     await act(async () => {
       root.unmount();

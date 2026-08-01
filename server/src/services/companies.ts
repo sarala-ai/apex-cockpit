@@ -33,6 +33,7 @@ import {
   routineDocuments,
   cloudScopeBindings,
 } from "@paperclipai/db";
+import { companySlugSchema, type CompanySlugBreakGlassConsequences } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { environmentService } from "./environments.js";
 import { heartbeatService } from "./heartbeat.js";
@@ -250,6 +251,87 @@ export function companyService(db: Db) {
         `(APEX_${existingSlug.toUpperCase()}_...). Current slug: "${existingSlug}".`,
       { code: "slug_immutable" },
     );
+  }
+
+  function slugBreakGlassConfirmMismatchError(currentSlug: string) {
+    return conflict(
+      `Break-glass slug change requires typing the CURRENT slug ("${currentSlug}") as confirm — this is the ` +
+        `deliberateness proof for the one escape hatch out of write-once immutability.`,
+      { code: "slug_break_glass_confirm_mismatch" },
+    );
+  }
+
+  function slugBreakGlassNotSetError() {
+    return unprocessable(
+      "Break-glass slug change only applies once a slug is already set — use the normal update() path to set it the first time.",
+      { code: "slug_break_glass_not_set" },
+    );
+  }
+
+  // NEVER exposed through the normal update() path — companyService.update
+  // rejects any change to a non-null slug outright (see slugImmutableError).
+  // This is the one deliberate, loud, audited escape hatch: it is returned
+  // as a dry-run preview whenever `confirm` is absent, and the SAME report is
+  // snapshotted into the activity log entry when the change is performed, so
+  // what the operator saw and what got recorded are provably the same thing.
+  async function buildSlugBreakGlassConsequences(
+    database: Pick<Db, "select">,
+    companyId: string,
+    currentSlug: string,
+    proposedSlug: string,
+  ): Promise<CompanySlugBreakGlassConsequences> {
+    const binding = await database
+      .select({ githubRepos: cloudScopeBindings.githubRepos })
+      .from(cloudScopeBindings)
+      .where(and(eq(cloudScopeBindings.scopeType, "company"), eq(cloudScopeBindings.scopeId, companyId)))
+      .then((rows) => rows[0] ?? null);
+    const boundRepos = binding?.githubRepos ?? [];
+
+    const currentUpper = currentSlug.toUpperCase();
+    const nextUpper = proposedSlug.toUpperCase();
+
+    return {
+      companyId,
+      currentSlug,
+      proposedSlug,
+      envVarsThatChange: [
+        {
+          kind: "env_var",
+          current: `APEX_${currentUpper}_WORKFLOWS_PATH`,
+          next: `APEX_${nextUpper}_WORKFLOWS_PATH`,
+          note: "Per-company workflows capability env var — any shell, systemd unit, or CI job that reads this name by the old slug will silently stop resolving after the change.",
+        },
+        {
+          kind: "env_var",
+          current: `APEX_${currentUpper}_SKILLS_PATH`,
+          next: `APEX_${nextUpper}_SKILLS_PATH`,
+          note: "Per-company skills capability env var, same convention as the workflows path.",
+        },
+      ],
+      capabilitySyncTargets: [
+        {
+          kind: "capability_sync_path",
+          current: `~/.apex/company/${currentSlug}/`,
+          next: `~/.apex/company/${proposedSlug}/`,
+          note: "Convention root apex-core resolves capability paths from for this company. This command does NOT move or re-key anything under this path — the old directory (and its .sync-lock.json) is orphaned until moved by hand.",
+        },
+        {
+          kind: "capability_sync_path",
+          current: `~/.apex/company/${currentSlug}/.sync-lock.json`,
+          next: `~/.apex/company/${proposedSlug}/.sync-lock.json`,
+          note: "Capability sync lock file (workflows + skills items, synced_at, digests). Sync will treat the new slug as a fresh, never-synced alias until this is manually relocated.",
+        },
+      ],
+      boundRepoConfigs: boundRepos.map((repo) => ({
+        repo,
+        note: "This repo is bound to the company via cloudScopeBindings. If its committed .apex/settings.yaml carries `company: " +
+          currentSlug +
+          "`, that config is now stale — this command does NOT open a PR to update it. Update it by hand (or via a PR) in this repo.",
+      })),
+      warning: boundRepos.length > 0
+        ? `${boundRepos.length} bound repo(s) may carry the old slug in committed config — see boundRepoConfigs. Nothing outside this database row is touched by this command.`
+        : "No repos are currently bound to this company via cloudScopeBindings, but capability sync paths and env vars derived from the old slug are still orphaned by this change — see capabilitySyncTargets and envVarsThatChange.",
+    };
   }
 
   async function createCompanyWithUniquePrefix(data: typeof companies.$inferInsert) {
@@ -613,6 +695,109 @@ export function companyService(db: Db) {
         counts.financeEvents === 0;
 
       return { isEmpty, counts };
+    },
+
+    // The ONE deliberate escape hatch out of write-once slug immutability —
+    // modeled on the state-lock-break pattern: an explicit command, never
+    // reachable through the normal update() path, that shows the operator
+    // exactly what breaks BEFORE anything happens, and requires typing the
+    // CURRENT slug (not a boolean) as proof of deliberateness.
+    //
+    // Called with no `confirm` — returns the consequences report only, does
+    // NOT touch the row. Called with `confirm` equal to the current slug —
+    // performs the change in a transaction and records an audit entry
+    // snapshotting the exact same consequences report the operator saw.
+    breakGlassChangeSlug: async (
+      id: string,
+      newSlug: string,
+      opts: { confirm?: string; actor: CompanyActivityActor },
+    ): Promise<{
+      preview: boolean;
+      consequences: CompanySlugBreakGlassConsequences;
+      company?: ReturnType<typeof enrichCompany>;
+      activityId?: string | null;
+    }> => {
+      const parsedSlug = companySlugSchema.safeParse(newSlug);
+      if (!parsedSlug.success) {
+        throw unprocessable(parsedSlug.error.issues[0]?.message ?? "Invalid slug", { code: "slug_invalid" });
+      }
+      const normalizedNewSlug = parsedSlug.data;
+
+      const existing = await getCompanyQuery(db)
+        .where(eq(companies.id, id))
+        .then((rows) => rows[0] ?? null);
+      if (!existing) throw notFound("Company not found");
+      if (!existing.slug) throw slugBreakGlassNotSetError();
+
+      if (opts.confirm === undefined) {
+        const consequences = await buildSlugBreakGlassConsequences(db, id, existing.slug, normalizedNewSlug);
+        return { preview: true, consequences };
+      }
+
+      if (opts.confirm !== existing.slug) {
+        throw slugBreakGlassConfirmMismatchError(existing.slug);
+      }
+
+      const oldSlug = existing.slug;
+
+      const result = await db.transaction(async (tx) => {
+        const txExisting = await getCompanyQuery(tx)
+          .where(eq(companies.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!txExisting || !txExisting.slug) throw notFound("Company not found");
+        if (txExisting.slug !== oldSlug) {
+          // Slug moved out from under this call between the pre-check and the
+          // transaction (e.g. a concurrent break-glass) — re-validate rather
+          // than blindly overwrite.
+          throw slugBreakGlassConfirmMismatchError(txExisting.slug);
+        }
+
+        const consequences = await buildSlugBreakGlassConsequences(tx, id, oldSlug, normalizedNewSlug);
+
+        let updated;
+        try {
+          updated = await tx
+            .update(companies)
+            .set({ slug: normalizedNewSlug, updatedAt: new Date() })
+            .where(eq(companies.id, id))
+            .returning()
+            .then((rows) => rows[0] ?? null);
+        } catch (error) {
+          if (isSlugConflict(error)) throw slugConflictError(normalizedNewSlug);
+          throw error;
+        }
+        if (!updated) throw notFound("Company not found");
+
+        const [hydrated] = await hydrateCompanySpend([{
+          ...updated,
+          logoAssetId: txExisting.logoAssetId,
+        }], tx);
+
+        return { company: enrichCompany(hydrated), consequences };
+      });
+
+      const activity = await logActivity(db, {
+        companyId: id,
+        actorType: opts.actor.actorType,
+        actorId: opts.actor.actorId,
+        agentId: opts.actor.agentId ?? null,
+        runId: opts.actor.runId ?? null,
+        action: "company.slug_break_glass",
+        entityType: "company",
+        entityId: id,
+        details: {
+          oldSlug,
+          newSlug: normalizedNewSlug,
+          consequences: result.consequences,
+        },
+      });
+
+      return {
+        preview: false,
+        company: result.company,
+        consequences: result.consequences,
+        activityId: activity.id,
+      };
     },
 
     stats: () =>
