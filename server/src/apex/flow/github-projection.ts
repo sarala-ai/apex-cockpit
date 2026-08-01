@@ -89,6 +89,17 @@ export type FlowProjectionHooks = {
     decidedByUserId: string;
     approvalId: string;
   }): Promise<void>;
+  /** A `request_changes` decision at a gate: the work went back to an earlier
+   *  step. A decision-ledger event in its own right — the reviewer's words are
+   *  the reason the next round exists, so they are mirrored, not just the verdict. */
+  changesRequested(event: {
+    issueId: string;
+    gateNodeId: string;
+    targetNodeId: string;
+    reason: string;
+    decidedByUserId: string;
+    round: number;
+  }): Promise<void>;
   flowCompleted(event: {
     issueId: string;
     completedNodeId: string | null;
@@ -109,6 +120,7 @@ export const noopFlowProjection: FlowProjectionHooks = {
   acceptanceEvaluated: async () => {},
   gateOpened: async () => {},
   gateDecided: async () => {},
+  changesRequested: async () => {},
   flowCompleted: async () => {},
   flowFailed: async () => {},
 };
@@ -398,6 +410,17 @@ export function githubFlowProjection(
           target,
           `**Gate \`${event.nodeId}\` ${event.decision === "approve" ? "approved" : "rejected"}**` +
             `\n- by: ${event.decidedByUserId}\n- at: ${now().toISOString()}`,
+        );
+      }),
+
+    changesRequested: (event) =>
+      project("changes_requested", event.issueId, async (_ctx, target) => {
+        await comment(
+          target,
+          `**Gate \`${event.gateNodeId}\`: changes requested (round ${event.round})**` +
+            `\n- sent back to: \`${event.targetNodeId}\`` +
+            `\n- by: ${event.decidedByUserId}\n- at: ${now().toISOString()}` +
+            `\n\n> ${event.reason.split("\n").join("\n> ")}`,
         );
       }),
 

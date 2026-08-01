@@ -57,6 +57,17 @@ export const gateNodeConfigSchema = z.object({
    *  both live in core's review_passes.py — never restated here). Tolerant of
    *  an older apex-core that does not emit the key at all. */
   requires: z.array(z.string()).nullish(),
+  /** Where a `request_changes` decision at this gate sends the work back to —
+   *  the flow analogue of a pipeline review stage's `requestChangesToStageKey`
+   *  (server/src/services/pipelines.ts), named the same way so there is ONE
+   *  mental model across both subsystems.
+   *
+   *  Tolerant, not contractual (same posture as `agent.permissions`):
+   *  apex-core's flow_models.GateNodeConfig does not emit this key yet, so in
+   *  practice the target is DERIVED (see `findChangeRequestTarget`). Core
+   *  follow-up: add `request_changes_to: str | None` to GateNodeConfig so flow
+   *  authors can name a target explicitly. */
+  request_changes_to: z.string().nullish(),
 });
 
 /** One review pass as apex-core defines it — id, label, persona, and the ONE
@@ -91,6 +102,60 @@ export const flowDefinitionSchema = z.object({
 
 export type FlowNode = z.infer<typeof flowNodeSchema>;
 export type FlowDefinition = z.infer<typeof flowDefinitionSchema>;
+
+export type ChangeRequestTarget =
+  | { found: true; node: FlowNode; index: number; source: "declared" | "derived" }
+  | { found: false; reason: "no_prior_agent_node" | "declared_target_missing" | "declared_target_not_agent" };
+
+/**
+ * Where a `request_changes` decision at `gateNodeId` sends the work back to —
+ * the flow analogue of `targetStageKeyForReviewDecision(config, "request_changes")`
+ * in server/src/services/pipelines.ts.
+ *
+ * Lives here, not in the coordinator, because two surfaces must agree: the
+ * coordinator (which re-arms the node) and the decision brief (which tells the
+ * founder BEFORE they click what requesting changes will do). Divergence would
+ * be a lie in the UI, so both import this.
+ *
+ * Resolution order, mirroring the pipelines contract:
+ * 1. DECLARED — the gate's `request_changes_to`, exactly as a review stage
+ *    names `requestChangesToStageKey`. A declared target that does not exist,
+ *    or is not an agent node, is a classified failure rather than a silent
+ *    fallback: the flow author asked for something specific.
+ * 2. DERIVED — the nearest PRIOR node of kind `agent`, scanning backwards.
+ *    That is the authoring step: the only node kind that turns an instruction
+ *    into a fresh artifact, and therefore the only one that can act on a
+ *    reviewer's comment. This default exists because apex-core does not emit
+ *    `request_changes_to` yet.
+ *
+ * Nodes BETWEEN the target and the gate are deliberately not skipped — they
+ * re-run as the flow advances forward again (implicit linear edges), so the
+ * gate never reopens over work that has not passed the same automated bar.
+ *
+ * `no_prior_agent_node` (e.g. `feature.yml`'s `promote` gate, which is node 0)
+ * means changes cannot be requested here at all; the caller must say so rather
+ * than invent a target.
+ */
+export function findChangeRequestTarget(
+  flow: FlowDefinition,
+  gateNodeId: string,
+): ChangeRequestTarget {
+  const gateIndex = flow.nodes.findIndex((node) => node.id === gateNodeId);
+  if (gateIndex < 0) return { found: false, reason: "no_prior_agent_node" };
+  const declared = flow.nodes[gateIndex]?.gate?.request_changes_to?.trim();
+  if (declared) {
+    const index = flow.nodes.findIndex((node) => node.id === declared);
+    if (index < 0) return { found: false, reason: "declared_target_missing" };
+    const node = flow.nodes[index] as FlowNode;
+    if (node.kind !== "agent" || !node.agent) return { found: false, reason: "declared_target_not_agent" };
+    return { found: true, node, index, source: "declared" };
+  }
+  for (let index = gateIndex - 1; index >= 0; index -= 1) {
+    const node = flow.nodes[index] as FlowNode;
+    if (node.kind === "agent" && node.agent) return { found: true, node, index, source: "derived" };
+  }
+  return { found: false, reason: "no_prior_agent_node" };
+}
 
 const flowShowSuccessSchema = z.object({
   status: z.literal("success"),

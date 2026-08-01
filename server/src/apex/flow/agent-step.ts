@@ -226,17 +226,99 @@ export async function evaluateAcceptanceV1(
   }
 }
 
+/** One reviewer rejection that sent this step back for rework. `feedback` is
+ *  the approval's `decision_note` — the reviewer's own words, never rewritten. */
+export type ChangeRequestRound = {
+  round: number;
+  gateNodeId: string;
+  feedback: string;
+  decidedByUserId: string | null;
+  at: string | null;
+};
+
+/** How many rounds are reproduced verbatim in the instruction before the tail
+ *  is elided. Bounded so an eleventh rejection cannot crowd the actual
+ *  instruction out of the agent's context; the elision is stated, never silent. */
+export const CHANGE_REQUEST_VERBATIM_LIMIT = 5;
+
+/**
+ * Render the reviewer-feedback section appended to a re-commissioned step's
+ * instruction.
+ *
+ * Two decisions worth stating, because both were live options:
+ *
+ * 1. VERBATIM, never summarised. The cockpit paraphrasing a human's review
+ *    would be judgment laundered as plumbing — the reviewer wrote the words
+ *    that define "done" for this round, and the agent must read those words,
+ *    not our compression of them.
+ * 2. EVERY round is carried, newest first, not just the latest. A round-1
+ *    correction stays binding after round 2 is raised: dropping it invites the
+ *    agent to fix the new complaint by regressing the old fix, and the founder
+ *    would then have to re-raise it — the exact loop rework exists to end. The
+ *    latest round is labelled as such and placed first so the agent knows
+ *    which one it is being asked to close now, and a round count is stated so
+ *    "we have been round this three times" is legible rather than implied.
+ *    Only past CHANGE_REQUEST_VERBATIM_LIMIT is the tail elided, with a
+ *    pointer to the ticket's activity log where every round is durable.
+ */
+export function buildChangeRequestFeedbackSection(rounds: ChangeRequestRound[]): string {
+  if (rounds.length === 0) return "";
+  const newestFirst = [...rounds].sort((a, b) => b.round - a.round);
+  const shown = newestFirst.slice(0, CHANGE_REQUEST_VERBATIM_LIMIT);
+  const omitted = newestFirst.length - shown.length;
+  const latest = newestFirst[0] as ChangeRequestRound;
+  const lines = [
+    "## Review feedback — address this",
+    "",
+    `This step's previous output was **rejected** by a human reviewer at gate \`${latest.gateNodeId}\` ` +
+      `and sent back for rework. This is rework round ${latest.round}.`,
+    "",
+    newestFirst.length > 1
+      ? "All rounds are reproduced verbatim below, newest first. Earlier rounds are STILL BINDING — " +
+        "do not regress a fix made for an earlier round while addressing the latest one."
+      : "The reviewer's note is reproduced verbatim below.",
+    "",
+  ];
+  for (const entry of shown) {
+    const who = entry.decidedByUserId ? ` by ${entry.decidedByUserId}` : "";
+    const when = entry.at ? ` · ${entry.at}` : "";
+    lines.push(
+      `### Round ${entry.round}${entry.round === latest.round ? " (latest)" : ""} — gate \`${entry.gateNodeId}\`${who}${when}`,
+      "",
+      entry.feedback.trim(),
+      "",
+    );
+  }
+  if (omitted > 0) {
+    lines.push(
+      `_${omitted} earlier rework round${omitted === 1 ? "" : "s"} omitted here; every round is recorded ` +
+        "on this ticket's activity log as `flow.rework_requested`._",
+      "",
+    );
+  }
+  lines.push(
+    "Redo the work so it satisfies the acceptance criteria above AND every point raised here, " +
+      "then the flow returns to the same gate for a fresh decision.",
+  );
+  return lines.join("\n");
+}
+
 /** The instruction comment the coordinator posts before commissioning —
- *  delivered to the agent as its wake comment. */
+ *  delivered to the agent as its wake comment. When the step is being redone
+ *  after a gate rejection, the reviewer's note rides along verbatim in a
+ *  clearly delimited section (see buildChangeRequestFeedbackSection). */
 export function buildAgentInstructionComment(input: {
   flowName: string;
   nodeId: string;
   renderedPrompt: string;
   acceptance: string;
   budget: Record<string, unknown> | null | undefined;
+  changeRequestRounds?: ChangeRequestRound[];
 }): string {
+  const rounds = input.changeRequestRounds ?? [];
   const lines = [
-    `Flow **${input.flowName}** agent step \`${input.nodeId}\` — bounded agent run commissioned.`,
+    `Flow **${input.flowName}** agent step \`${input.nodeId}\` — bounded agent run commissioned` +
+      (rounds.length > 0 ? ` (**rework round ${Math.max(...rounds.map((r) => r.round))}**).` : "."),
     "",
     "Instruction:",
     input.renderedPrompt.trim(),
@@ -245,6 +327,9 @@ export function buildAgentInstructionComment(input: {
   ];
   if (input.budget && Object.keys(input.budget).length > 0) {
     lines.push(`Budget (advisory in v1 — not runtime-enforced): ${JSON.stringify(input.budget)}`);
+  }
+  if (rounds.length > 0) {
+    lines.push("", "---", "", buildChangeRequestFeedbackSection(rounds), "", "---");
   }
   lines.push(
     "",

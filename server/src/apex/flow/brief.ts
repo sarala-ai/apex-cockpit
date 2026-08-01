@@ -33,6 +33,7 @@ import { acceptancePullRequestTarget } from "./agent-step.js";
 import { enrichDesignFiles, type DesignArchiveFetcher } from "./design-artifact.js";
 import {
   FlowDefinitionError,
+  findChangeRequestTarget,
   type FlowDefinition,
   type FlowNode,
   type LoadedFlowDefinition,
@@ -429,6 +430,10 @@ export type RiskSection = {
 
 export type NextSection = {
   approve: string;
+  /** The `request_changes` consequence — redo with a required reason, routed
+   *  back to the gate's change-request target. Null when this gate has no
+   *  target to route to (the sentence then lives in `reject` alone). */
+  requestChanges: string | null;
   reject: string;
   /** true when the text came from the flow definition; false = generic fallback. */
   derived: boolean;
@@ -457,6 +462,7 @@ function describeNode(node: FlowNode): string {
 
 const GENERIC_NEXT: NextSection = {
   approve: "Approve → the flow continues past this gate and runs its remaining steps automatically.",
+  requestChanges: null,
   reject:
     "Reject → the flow stops here and is left paused. Nothing is merged or undone; any work already published stays as it is, for you to handle.",
   derived: false,
@@ -464,10 +470,37 @@ const GENERIC_NEXT: NextSection = {
 };
 
 /**
+ * The `request_changes` half of "what happens next", derived from the same
+ * flow definition the coordinator will act on (`findChangeRequestTarget` is
+ * shared, so the promise and the behaviour cannot drift).
+ *
+ * Returns null when this gate cannot route changes anywhere — the caller then
+ * says so on the reject line instead of promising a rerun that never happens.
+ */
+export function deriveRequestChangesStep(
+  flow: FlowDefinition,
+  gateNodeId: string,
+): string | null {
+  const target = findChangeRequestTarget(flow, gateNodeId);
+  if (!target.found) return null;
+  const gateIndex = flow.nodes.findIndex((node) => node.id === gateNodeId);
+  const between = flow.nodes.slice(target.index + 1, gateIndex);
+  const betweenText =
+    between.length > 0
+      ? ` ${between.map((node) => `\`${node.id}\``).join(", ")} re-run${between.length === 1 ? "s" : ""} on the way back, then`
+      : " Then";
+  return (
+    `Request changes (a reason is required) → step \`${target.node.id}\` reruns with your reason ` +
+    `delivered to it verbatim.${betweenText} this gate reopens on the new work for a fresh decision.`
+  );
+}
+
+/**
  * Derive "what happens next" from the flow's own definition: find this gate
  * node, then describe the node(s) after it. The rejection consequence is the
- * coordinator's documented behaviour (onGateDecision → pause + surface), and
- * is stated concretely against the artifact when we know what the artifact is.
+ * coordinator's documented behaviour (onGateDecision → rework the authoring
+ * step, or pause when there is none), and is stated concretely against the
+ * artifact when we know what the artifact is.
  */
 export function deriveNextSteps(
   flow: FlowDefinition | null,
@@ -476,27 +509,35 @@ export function deriveNextSteps(
   note: string | null = null,
 ): NextSection {
   const artifactNoun = artifact ? "the pull request" : "the change";
-  const rejectText =
+  const pauseRejectText =
     `Reject → the flow stops at this gate and stays paused; nothing further runs automatically. ` +
     (artifact
       ? `${artifactNoun} (${artifact.repo} · ${artifact.headBranch}) stays open for you to handle.`
       : `${artifactNoun} is left as it is for you to handle.`);
 
   if (!flow || !gateNodeId) {
-    return { ...GENERIC_NEXT, reject: rejectText, note };
+    return { ...GENERIC_NEXT, reject: pauseRejectText, note };
   }
   const index = flow.nodes.findIndex((node) => node.id === gateNodeId);
   if (index < 0) {
     return {
       ...GENERIC_NEXT,
-      reject: rejectText,
+      reject: pauseRejectText,
       note: note ?? `gate '${gateNodeId}' is not present in flow '${flow.name}'`,
     };
   }
+  // Every decision's consequence is derived from the flow, not just approve:
+  // the founder must know BEFORE clicking that requesting changes starts
+  // another round (and where it goes), and that rejecting does not.
+  const requestChangesText = deriveRequestChangesStep(flow, gateNodeId);
+  const rejectText = requestChangesText
+    ? pauseRejectText
+    : `${pauseRejectText} No step precedes this gate that could redo the work, so requesting changes is not available here.`;
   const remaining = flow.nodes.slice(index + 1);
   if (remaining.length === 0) {
     return {
       approve: "Approve → this is the flow's last gate; the flow completes.",
+      requestChanges: requestChangesText,
       reject: rejectText,
       derived: true,
       note,
@@ -513,6 +554,7 @@ export function deriveNextSteps(
       : "";
   return {
     approve: `Approve → ${describeNode(next)}${scope}${tail}`,
+    requestChanges: requestChangesText,
     reject: rejectText,
     derived: true,
     note,

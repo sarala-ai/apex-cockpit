@@ -10,6 +10,7 @@ import {
 } from "@paperclipai/shared";
 import { z } from "zod";
 import { validate } from "../middleware/validate.js";
+import { badRequest } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import {
   approvalService,
@@ -426,9 +427,23 @@ export function approvalRoutes(
   router.post("/approvals/:id/reject", validate(resolveApprovalSchema), async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    if (!(await requireApprovalAccess(req, id))) {
+    const existing = await requireApprovalAccess(req, id);
+    if (!existing) {
       res.status(404).json({ error: "Approval not found" });
       return;
+    }
+    // A flow gate is a review stage, and a review stage requires a reason for
+    // any non-approve decision — exactly what a pipeline review stage's
+    // `requireRejectReason` enforces (services/pipelines.ts `reviewCase`).
+    // Classified at the door, before the approval is resolved, so a reasonless
+    // decision never becomes a decided-but-unexplained ledger entry.
+    const reviewerNote =
+      typeof req.body.decisionNote === "string" ? req.body.decisionNote.trim() : "";
+    if (existing.type === FLOW_GATE_APPROVAL_TYPE && reviewerNote.length === 0) {
+      throw badRequest(
+        "Rejecting a flow gate requires a decision note explaining why the work should not proceed.",
+        { errorType: "gate_review_reason_required", decision: "reject", approvalId: id },
+      );
     }
     const decidedByUserId = req.actor.userId ?? "board";
     const { approval, applied } = await svc.reject(id, decidedByUserId, req.body.decisionNote);
@@ -452,14 +467,17 @@ export function approvalRoutes(
       });
     }
 
-    // Flow coordinator gate hook: a rejected flow_gate pauses the flow and
-    // surfaces it (rejection is a new decision point, not a retry loop).
+    // Flow coordinator gate hook: a rejected flow_gate STOPS the flow (paused).
+    // Rejection means the work should not proceed at all; sending it back for
+    // another round is the separate `request_changes` decision, which rides
+    // POST /approvals/:id/request-revision.
     if (applied && approval.type === FLOW_GATE_APPROVAL_TYPE) {
       await flowCoordinator(db).onGateDecision({
         approvalId: approval.id,
         payload: approval.payload,
         decision: "reject",
         decidedByUserId: req.actor.userId ?? "board",
+        reason: req.body.decisionNote ?? null,
       });
     }
 
@@ -487,9 +505,23 @@ export function approvalRoutes(
     async (req, res) => {
       assertBoard(req);
       const id = req.params.id as string;
-      if (!(await requireApprovalAccess(req, id))) {
+      const existing = await requireApprovalAccess(req, id);
+      if (!existing) {
         res.status(404).json({ error: "Approval not found" });
         return;
+      }
+      // On a flow gate this route IS the `request_changes` decision (the fork's
+      // existing "redo with feedback" verb on an approval). The reason is
+      // required the way a pipeline review stage's `requireRequestChangesReason`
+      // requires it, because the reason is the whole instruction: it is
+      // delivered verbatim to the step that redoes the work.
+      const reviewerNote =
+        typeof req.body.decisionNote === "string" ? req.body.decisionNote.trim() : "";
+      if (existing.type === FLOW_GATE_APPROVAL_TYPE && reviewerNote.length === 0) {
+        throw badRequest(
+          "Requesting changes at a flow gate requires a reason: it is delivered verbatim to the step that redoes the work.",
+          { errorType: "gate_review_reason_required", decision: "request_changes", approvalId: id },
+        );
       }
       const decidedByUserId = req.actor.userId ?? "board";
       const approval = await svc.requestRevision(id, decidedByUserId, req.body.decisionNote);
@@ -503,6 +535,28 @@ export function approvalRoutes(
         entityId: approval.id,
         details: { type: approval.type },
       });
+
+      // Route the decision into the flow: the work goes back to the gate's
+      // change-request target and the flow resumes in the background (the
+      // re-commissioned agent step can take minutes — never block the
+      // decision response on it).
+      if (approval.type === FLOW_GATE_APPROVAL_TYPE) {
+        const decision = await flowCoordinator(db).onGateDecision({
+          approvalId: approval.id,
+          payload: approval.payload,
+          decision: "request_changes",
+          decidedByUserId,
+          reason: req.body.decisionNote ?? null,
+        });
+        if (decision.resumed) {
+          void decision.execution.catch((err) => {
+            logger.error(
+              { err, approvalId: approval.id },
+              "flow coordinator: background advancement after request_changes rejected",
+            );
+          });
+        }
+      }
 
       res.json(redactApprovalPayload(approval));
     },
