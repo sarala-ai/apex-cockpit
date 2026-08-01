@@ -6901,6 +6901,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
       publishRunLifecyclePluginEvent(updated);
+      notifyFlowCoordinatorOfTerminalRun(updated);
       return { run: updated, updated: true as const };
     }
 
@@ -6911,6 +6912,42 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
 
     return { run: current, updated: false as const };
+  }
+
+  /** A-node bridge (work-loop flows): when a run the flow coordinator
+   *  commissioned reaches a terminal status, hand completion back to the
+   *  coordinator — the narrow event seam mirroring the approvals gate hook.
+   *  `interrupted` is deliberately excluded (the process-loss retry may
+   *  revive it; the flow sweep resolves abandoned chains). Fire-and-forget:
+   *  run finalization must never block on flow advancement, and the sweep is
+   *  the at-least-once recovery if this in-process notify is lost. */
+  function notifyFlowCoordinatorOfTerminalRun(run: typeof heartbeatRuns.$inferSelect) {
+    if (!["succeeded", "failed", "timed_out", "cancelled"].includes(run.status)) return;
+    const context = parseObject(run.contextSnapshot);
+    if (context.flowAgentStep !== true) return;
+    const issueId = readNonEmptyString(context.issueId);
+    const flowNodeId = readNonEmptyString(context.flowNodeId);
+    if (!issueId || !flowNodeId) return;
+    const flowName = readNonEmptyString(context.flowName);
+    void (async () => {
+      // Lazy import: keeps the flow module out of heartbeat's static graph
+      // (the coordinator lazily imports heartbeat on its commission path).
+      const { flowCoordinator } = await import("../apex/flow/coordinator.js");
+      const result = await flowCoordinator(db).onAgentRunCompletion({
+        runId: run.id,
+        issueId,
+        flowName,
+        flowNodeId,
+        runStatus: run.status as "succeeded" | "failed" | "timed_out" | "cancelled",
+        error: run.error ?? null,
+      });
+      if ("execution" in result && result.execution) await result.execution;
+    })().catch((err) => {
+      logger.warn(
+        { err, runId: run.id, issueId, flowNodeId },
+        "flow coordinator agent-run completion hook failed (classified: flow_completion_hook_failed) — sweep will recover",
+      );
+    });
   }
 
   function publishRunLifecyclePluginEvent(run: typeof heartbeatRuns.$inferSelect) {

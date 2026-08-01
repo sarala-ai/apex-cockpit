@@ -2470,6 +2470,7 @@ const issueListSelect = {
   flowName: issues.flowName,
   flowNodeId: issues.flowNodeId,
   flowStatus: issues.flowStatus,
+  flowRunId: issues.flowRunId,
   flowStartedAt: issues.flowStartedAt,
   flowAdvancedAt: issues.flowAdvancedAt,
   startedAt: issues.startedAt,

@@ -66,11 +66,15 @@ export const issues = pgTable(
     executionWorkspaceSettings: jsonb("execution_workspace_settings").$type<Record<string, unknown>>(),
     sourceTrust: jsonb("source_trust").$type<SourceTrustMetadata | null>(),
     // Flow-coordinator state (work-loop typed flows). Typed columns by doctrine
-    // (never jsonb): the coordinator is the ONLY writer of these five columns.
+    // (never jsonb): the coordinator is the ONLY writer of these six columns.
     flowName: text("flow_name"),
     flowNodeId: text("flow_node_id"),
     // 'running' | 'waiting_gate' | 'waiting_agent' | 'paused' | 'done' | 'failed'
     flowStatus: text("flow_status"),
+    // Heartbeat run commissioned for the current agent node (A-node bridge):
+    // set while flowStatus='waiting_agent', the completion hook + sweep match
+    // run completions against it. Nullable — a wakeup can be deferred.
+    flowRunId: uuid("flow_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     flowStartedAt: timestamp("flow_started_at", { withTimezone: true }),
     flowAdvancedAt: timestamp("flow_advanced_at", { withTimezone: true }),
     startedAt: timestamp("started_at", { withTimezone: true }),

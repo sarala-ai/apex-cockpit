@@ -39,9 +39,12 @@ export function startFlowCoordinatorSweep(
     intervalMs,
     initialDelayMs: Math.min(intervalMs, 60_000),
     run: async () => {
-      const { resumed } = await coordinator.sweep(intervalMs);
-      if (resumed > 0) {
-        logger.info({ resumed }, "flow coordinator sweep: resumed stale running flows");
+      const { resumed, agentRecovered } = await coordinator.sweep(intervalMs);
+      if (resumed > 0 || agentRecovered > 0) {
+        logger.info(
+          { resumed, agentRecovered },
+          "flow coordinator sweep: resumed stale running flows / recovered waiting_agent flows",
+        );
       }
     },
   });

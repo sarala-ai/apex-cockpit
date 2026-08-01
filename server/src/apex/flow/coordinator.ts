@@ -16,22 +16,27 @@
  * Interruption is by exception, not by schedule: gates and failures surface
  * (approval / issue comment + activity); clean advancement is silent.
  *
- * Honest v1 boundaries (see also node-executors.ts):
- * - agent nodes do NOT fake an agent run. The fork's checkout/execution
- *   machinery (heartbeat.ts) creates its own heartbeat run inside the
- *   scheduler-adapter loop and needs more context than a flow node carries,
- *   so v1 parks the flow at `waiting_agent`, surfaces an issue comment
- *   naming exactly what the step needs, and (when the issue has an
- *   assignee agent) queues a best-effort wakeup. There is no automatic
- *   acceptance evaluation and no automatic resume for agent nodes.
+ * Honest v1 boundaries (see also node-executors.ts and agent-step.ts):
+ * - agent nodes drive a REAL bounded agent run through the fork's native
+ *   execution machinery (heartbeat.ts) — never a parallel executor. The
+ *   coordinator posts the node's rendered prompt + acceptance as a system
+ *   issue comment, commissions a heartbeat run via `wakeup` with that
+ *   comment id (the dispatch path renders it into the agent prompt as the
+ *   wake comment), records the run linkage on `flowRunId`, and parks at
+ *   `waiting_agent` (= run commissioned, awaiting completion). A narrow
+ *   hook at the run-status seam (setRunStatusIfRunning) calls
+ *   `onAgentRunCompletion`; the sweep is at-least-once recovery. Acceptance
+ *   v1 = run succeeded, plus `file_exists:<path>` artifact verification
+ *   when declared (agent-step.ts documents exactly what is checked).
+ *   Budgets are advisory in v1 — recorded and surfaced, not enforced.
  * - "inbox items" are an issue comment + activity-log entry. The fork's
  *   inbox is a computed read model (no insert API), so flow surfacing rides
  *   the primitives that feed it rather than pretending a feed exists.
  * - no fan-out: one flow per issue, nodes strictly sequential.
  */
-import { eq, and, lt, isNull, or, inArray } from "drizzle-orm";
+import { eq, and, lt, isNull, or, inArray, desc, sql as sqlExpr } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { issues } from "@paperclipai/db";
+import { agents, heartbeatRuns, issues } from "@paperclipai/db";
 import { conflict, notFound, unprocessable } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";
@@ -45,6 +50,15 @@ import {
   type LoadedFlowDefinition,
 } from "./definition.js";
 import { CliFlowNodeRunner, type FlowNodeRunner } from "./node-executors.js";
+import {
+  FLOW_AGENT_CONTEXT_KEY,
+  FLOW_AGENT_WAKE_REASON,
+  FLOW_TERMINAL_RUN_STATUSES,
+  buildAgentInstructionComment,
+  evaluateAcceptanceV1,
+  renderAgentPrompt,
+  type FlowTerminalRunStatus,
+} from "./agent-step.js";
 
 export const FLOW_STATUSES = [
   "running",
@@ -67,22 +81,36 @@ type FlowIssue = {
   companyId: string;
   identifier: string | null;
   title: string;
+  description: string | null;
   assigneeAgentId: string | null;
   flowName: string | null;
   flowNodeId: string | null;
   flowStatus: string | null;
+  flowRunId: string | null;
   flowStartedAt: Date | null;
   flowAdvancedAt: Date | null;
 };
 
 type NodeFailure = { errorType: string; message: string };
 
+/** What the launcher hands the agent machinery — the narrowest seam. */
+export type AgentRunCommission = {
+  agentId: string;
+  instructionCommentId: string;
+  renderedPrompt: string;
+};
+
 export type FlowCoordinatorDeps = {
   loadDefinition: (name: string) => Promise<LoadedFlowDefinition>;
   nodeRunner: FlowNodeRunner;
-  /** Best-effort nudge for agent nodes when the issue has an assignee agent.
-   *  Failures are classified and logged, never fatal to the flow. */
-  queueAgentWakeup: (issue: FlowIssue, node: FlowNode) => Promise<void>;
+  /** Commission a REAL bounded agent run through the fork's native execution
+   *  path (heartbeat wakeup). Returns the created run's id, or null when the
+   *  machinery declined (skipped/deferred) — never throws silently. */
+  commissionAgentRun: (
+    issue: FlowIssue,
+    node: FlowNode,
+    commission: AgentRunCommission,
+  ) => Promise<{ runId: string } | null>;
   now: () => Date;
 };
 
@@ -100,32 +128,42 @@ export class FlowStateConflictError extends Error {
   }
 }
 
-async function defaultQueueAgentWakeup(db: Db, issue: FlowIssue, node: FlowNode): Promise<void> {
-  if (!issue.assigneeAgentId) return;
+/** Default commission: the fork's native execution path, nothing else.
+ *  The wakeup's `commentId` is the instruction channel — heartbeat dispatch
+ *  loads that comment (wakeCommentContext) and renders it into the agent's
+ *  prompt via buildPaperclipTaskMarkdown's "Latest wake comment" fence. */
+async function defaultCommissionAgentRun(
+  db: Db,
+  issue: FlowIssue,
+  node: FlowNode,
+  commission: AgentRunCommission,
+): Promise<{ runId: string } | null> {
   // Lazy import: heartbeat.ts is enormous and only needed on this path.
   const { heartbeatService } = await import("../../services/heartbeat.js");
-  await heartbeatService(db).wakeup(issue.assigneeAgentId, {
+  const run = await heartbeatService(db).wakeup(commission.agentId, {
     source: "automation",
     triggerDetail: "system",
-    reason: "flow_agent_step",
-    payload: { issueId: issue.id, flowName: issue.flowName, flowNodeId: node.id },
+    reason: FLOW_AGENT_WAKE_REASON,
+    payload: { issueId: issue.id, commentId: commission.instructionCommentId },
     contextSnapshot: {
       source: "flow.agent_step",
       issueId: issue.id,
+      commentId: commission.instructionCommentId,
       flowName: issue.flowName,
       flowNodeId: node.id,
-      promptTemplate: node.agent?.prompt_template ?? null,
-      acceptance: node.agent?.acceptance ?? null,
+      [FLOW_AGENT_CONTEXT_KEY]: true,
     },
   });
+  return run ? { runId: (run as { id: string }).id } : null;
 }
 
 export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> = {}) {
   const deps: FlowCoordinatorDeps = {
     loadDefinition: overrides.loadDefinition ?? loadFlowDefinition,
     nodeRunner: overrides.nodeRunner ?? new CliFlowNodeRunner(),
-    queueAgentWakeup:
-      overrides.queueAgentWakeup ?? ((issue, node) => defaultQueueAgentWakeup(db, issue, node)),
+    commissionAgentRun:
+      overrides.commissionAgentRun ??
+      ((issue, node, commission) => defaultCommissionAgentRun(db, issue, node, commission)),
     now: overrides.now ?? (() => new Date()),
   };
   const issuesSvc = issueService(db);
@@ -137,10 +175,12 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
     companyId: issues.companyId,
     identifier: issues.identifier,
     title: issues.title,
+    description: issues.description,
     assigneeAgentId: issues.assigneeAgentId,
     flowName: issues.flowName,
     flowNodeId: issues.flowNodeId,
     flowStatus: issues.flowStatus,
+    flowRunId: issues.flowRunId,
     flowStartedAt: issues.flowStartedAt,
     flowAdvancedAt: issues.flowAdvancedAt,
   };
@@ -153,7 +193,12 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
   /** Compare-and-set transition on the flow columns + classified activity log. */
   async function transition(
     issue: FlowIssue,
-    patch: Partial<{ flowName: string | null; flowNodeId: string | null; flowStatus: FlowStatus | null }>,
+    patch: Partial<{
+      flowName: string | null;
+      flowNodeId: string | null;
+      flowStatus: FlowStatus | null;
+      flowRunId: string | null;
+    }>,
     action: string,
     details: Record<string, unknown>,
   ): Promise<FlowIssue> {
@@ -236,12 +281,12 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
   ): Promise<FlowIssue | null> {
     const nextNode = flow.nodes[index + 1];
     if (!nextNode) {
-      await transition(issue, { flowStatus: "done" }, "flow.completed", {
+      await transition(issue, { flowStatus: "done", flowRunId: null }, "flow.completed", {
         completedNodeId: flow.nodes[index]?.id ?? null,
       });
       return null;
     }
-    return transition(issue, { flowNodeId: nextNode.id }, "flow.advanced", {
+    return transition(issue, { flowNodeId: nextNode.id, flowRunId: null }, "flow.advanced", {
       fromNodeId: flow.nodes[index]?.id ?? null,
       toNodeId: nextNode.id,
       toNodeKind: nextNode.kind,
@@ -261,8 +306,11 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
       { issueId: issue.id, flowName: issue.flowName, nodeId: node.id, onFail: node.on_fail, ...failure },
       "flow coordinator: node failed",
     );
+    // skip/jump must land back in `running` — a failure can arrive while the
+    // flow is parked at `waiting_agent` (agent-run completion), and only
+    // `running` flows advance.
     if (node.on_fail === "skip") {
-      const advanced = await transition(issue, {}, "flow.node_skipped", {
+      const advanced = await transition(issue, { flowStatus: "running" }, "flow.node_skipped", {
         nodeId: node.id,
         errorType: failure.errorType,
         error: failure.message,
@@ -280,7 +328,7 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
         });
         return null;
       }
-      return transition(issue, { flowNodeId: target }, "flow.jumped", {
+      return transition(issue, { flowNodeId: target, flowStatus: "running", flowRunId: null }, "flow.jumped", {
         fromNodeId: node.id,
         toNodeId: target,
         errorType: failure.errorType,
@@ -353,6 +401,58 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
     return null;
   }
 
+  /** Resolve the agent that executes this node: the issue's assignee, or —
+   *  when unassigned — the company's single assignable agent (deterministic
+   *  dispatch; anything ambiguous is a classified failure, never a guess). */
+  async function resolveExecutorAgent(issue: FlowIssue): Promise<
+    { ok: true; agentId: string; assigned: boolean } | { ok: false; failure: NodeFailure }
+  > {
+    if (issue.assigneeAgentId) return { ok: true, agentId: issue.assigneeAgentId, assigned: false };
+    // Invokable statuses (shared agent-eligibility taxonomy): the commissioned
+    // wakeup must actually dispatch, so paused/terminated/pending_approval
+    // agents (e.g. auto-provisioned built-ins parked as `paused`) don't count.
+    const candidates = await db
+      .select({ id: agents.id })
+      .from(agents)
+      .where(
+        and(
+          eq(agents.companyId, issue.companyId),
+          inArray(agents.status, ["active", "idle", "running", "error"]),
+        ),
+      );
+    if (candidates.length !== 1) {
+      return {
+        ok: false,
+        failure: {
+          errorType: "flow_agent_unavailable",
+          message:
+            candidates.length === 0
+              ? "no assignee agent on the issue and no assignable agent exists in the company"
+              : `no assignee agent on the issue and ${candidates.length} assignable agents exist — ambiguous, assign one explicitly`,
+        },
+      };
+    }
+    const agentId = candidates[0].id;
+    // Assignment write guarded on still-unassigned: the coordinator only
+    // fills a vacuum, it never re-routes someone else's assignment.
+    const stamp = deps.now();
+    const assigned = await db
+      .update(issues)
+      .set({ assigneeAgentId: agentId, updatedAt: stamp })
+      .where(and(eq(issues.id, issue.id), isNull(issues.assigneeAgentId)))
+      .returning({ id: issues.id });
+    if (assigned.length === 0) {
+      // Someone assigned concurrently — re-read and use theirs.
+      const fresh = await getIssue(issue.id);
+      if (fresh?.assigneeAgentId) return { ok: true, agentId: fresh.assigneeAgentId, assigned: false };
+      return {
+        ok: false,
+        failure: { errorType: "flow_agent_unavailable", message: "agent assignment raced and no assignee remains" },
+      };
+    }
+    return { ok: true, agentId, assigned: true };
+  }
+
   async function executeAgentNode(
     issue: FlowIssue,
     flow: FlowDefinition,
@@ -366,35 +466,256 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
         message: `agent node '${node.id}' carries no agent config`,
       });
     }
-    const waiting = await transition(issue, { flowStatus: "waiting_agent" }, "flow.agent_step_pending", {
+    const executor = await resolveExecutorAgent(issue);
+    if (!executor.ok) {
+      return applyOnFail(issue, flow, index, executor.failure);
+    }
+    const renderedPrompt = renderAgentPrompt(agent.prompt_template, {
+      identifier: issue.identifier,
+      title: issue.title,
+      description: issue.description,
+      issueId: issue.id,
+      flowName: flow.name,
       nodeId: node.id,
       acceptance: agent.acceptance,
-      budget: agent.budget ?? null,
-      assigneeAgentId: issue.assigneeAgentId,
     });
-    // Honest placeholder — v1 does not drive a bounded agent run end-to-end.
-    await surface(
-      waiting,
-      `Flow **${flow.name}** is waiting on agent step \`${node.id}\`.\n\n` +
-        `This step needs a bounded agent run the coordinator does not drive yet (v1):\n` +
-        `- prompt: ${agent.prompt_template.trim()}\n` +
-        `- acceptance: ${agent.acceptance}\n` +
-        (agent.budget ? `- budget: ${JSON.stringify(agent.budget)}\n` : "") +
-        (waiting.assigneeAgentId
-          ? `\nA wakeup was queued for the issue's assignee agent.`
-          : `\nNo assignee agent on this issue — assign one and run the step, then advance the flow manually.`),
+    // Park first (single-writer CAS out of `running`): waiting_agent now means
+    // "run commissioned (or commissioning), awaiting completion".
+    const waiting = await transition(
+      issue,
+      { flowStatus: "waiting_agent", flowRunId: null },
+      "flow.agent_step_pending",
+      {
+        nodeId: node.id,
+        agentId: executor.agentId,
+        agentAutoAssigned: executor.assigned,
+        acceptance: agent.acceptance,
+        budget: agent.budget ?? null,
+      },
     );
-    if (waiting.assigneeAgentId) {
-      try {
-        await deps.queueAgentWakeup(waiting, node);
-      } catch (err) {
-        logger.warn(
-          { err, issueId: issue.id, nodeId: node.id },
-          "flow coordinator: agent wakeup failed (classified: agent_wakeup_failed) — flow stays waiting_agent",
+    // The instruction comment is the run's wake comment — the channel the
+    // dispatch path renders into the agent's prompt. Its failure is fatal to
+    // the step (a run without its instruction is not this node's run).
+    let instructionCommentId: string;
+    try {
+      const comment = await issuesSvc.addComment(
+        waiting.id,
+        buildAgentInstructionComment({
+          flowName: flow.name,
+          nodeId: node.id,
+          renderedPrompt,
+          acceptance: agent.acceptance,
+          budget: agent.budget ?? null,
+        }),
+        {},
+      );
+      instructionCommentId = (comment as { id: string }).id;
+    } catch (err) {
+      return applyOnFail(waiting, flow, index, {
+        errorType: "agent_instruction_comment_failed",
+        message: `could not post the agent step's instruction comment: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+    try {
+      const commissioned = await deps.commissionAgentRun(waiting, node, {
+        agentId: executor.agentId,
+        instructionCommentId,
+        renderedPrompt,
+      });
+      if (!commissioned) {
+        // Deferred/skipped wakeup. Deferral is the common real case: the issue
+        // already has an active run holding the execution lock, and heartbeat
+        // will PROMOTE the deferred wake (carrying our flow context) once it
+        // finishes — the completion hook accepts a null flowRunId, and the
+        // sweep re-links by context markers. A hard skip (heartbeat disabled,
+        // company inactive) leaves nothing to promote — the sweep classifies
+        // that as agent_run_not_commissioned after the staleness window.
+        // Either way: surfaced + classified, never silent, never a premature
+        // pause that strands the promoted run.
+        const deferred = await transition(waiting, {}, "flow.agent_run_deferred", {
+          nodeId: node.id,
+          agentId: executor.agentId,
+          instructionCommentId,
+        });
+        await surface(
+          deferred,
+          `Flow **${flow.name}** agent step \`${node.id}\`: the wakeup was deferred behind the agent's ` +
+            `current run (or declined). The step's instruction is queued; the flow stays at ` +
+            `\`waiting_agent\` and advances when the promoted run completes (the sweep classifies a ` +
+            `pause if no run ever materializes).`,
         );
+        return null;
       }
+      await transition(waiting, { flowRunId: commissioned.runId }, "flow.agent_run_commissioned", {
+        nodeId: node.id,
+        runId: commissioned.runId,
+        agentId: executor.agentId,
+        instructionCommentId,
+      });
+    } catch (err) {
+      if (err instanceof FlowStateConflictError) throw err;
+      return applyOnFail(waiting, flow, index, {
+        errorType:
+          err instanceof Error && "errorType" in err && typeof (err as { errorType?: unknown }).errorType === "string"
+            ? (err as { errorType: string }).errorType
+            : "agent_run_commission_failed",
+        message: `commissioning the bounded agent run failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
     }
     return null;
+  }
+
+  /** Shared completion logic for the run-status hook and the sweep. The issue
+   *  MUST currently be parked at `waiting_agent` on this node. */
+  async function processAgentRunCompletion(
+    issue: FlowIssue,
+    input: { runId: string; runStatus: FlowTerminalRunStatus; error?: string | null },
+  ): Promise<{ advanced: boolean; reason?: string; execution?: Promise<void> }> {
+    const { flow } = await deps.loadDefinition(issue.flowName as string);
+    const index = nodeIndex(flow, issue.flowNodeId);
+    if (index < 0) {
+      await markFailed(issue, {
+        errorType: "flow_node_missing",
+        message: `current node '${issue.flowNodeId}' not found in flow '${issue.flowName}'`,
+      });
+      return { advanced: false, reason: "flow_node_missing" };
+    }
+    const node = flow.nodes[index] as FlowNode;
+    if (node.kind !== "agent" || !node.agent) {
+      await markFailed(issue, {
+        errorType: "flow_node_config_missing",
+        message: `run ${input.runId} completed for node '${node.id}' which is no longer an agent node`,
+      });
+      return { advanced: false, reason: "flow_node_config_missing" };
+    }
+    if (input.runStatus !== "succeeded") {
+      await applyOnFail(issue, flow, index, {
+        errorType: `agent_run_${input.runStatus}`,
+        message:
+          input.error ?? `commissioned agent run ${input.runId} ended with status '${input.runStatus}'`,
+      });
+      return { advanced: false, reason: `agent_run_${input.runStatus}` };
+    }
+    const acceptance = await evaluateAcceptanceV1(node.agent.acceptance);
+    if (!acceptance.ok) {
+      await applyOnFail(issue, flow, index, {
+        errorType: "agent_acceptance_failed",
+        message: `${acceptance.message} (run ${input.runId} succeeded; ${acceptance.evaluation})`,
+      });
+      return { advanced: false, reason: "agent_acceptance_failed" };
+    }
+    const resumed = await transition(issue, { flowStatus: "running" }, "flow.agent_step_succeeded", {
+      nodeId: node.id,
+      runId: input.runId,
+      acceptance: node.agent.acceptance,
+      acceptanceEvaluation: acceptance.evaluation,
+    });
+    const next = await advanceOrComplete(resumed, flow, index);
+    return { advanced: true, execution: next ? runLoop(issue.id) : Promise.resolve() };
+  }
+
+  /** Sweep-side recovery for a stale `waiting_agent` flow. Returns true when
+   *  the flow was moved (advanced, paused, or failed), false for no-op. */
+  async function recoverWaitingAgent(issue: FlowIssue): Promise<boolean> {
+    const pauseClassified = async (failure: NodeFailure): Promise<boolean> => {
+      const { flow } = await deps.loadDefinition(issue.flowName as string);
+      const index = nodeIndex(flow, issue.flowNodeId);
+      if (index < 0) {
+        await markFailed(issue, {
+          errorType: "flow_node_missing",
+          message: `current node '${issue.flowNodeId}' not found in flow '${issue.flowName}' (during: ${failure.message})`,
+        });
+        return true;
+      }
+      await applyOnFail(issue, flow, index, failure);
+      return true;
+    };
+
+    let linkedRunId = issue.flowRunId;
+    if (!linkedRunId) {
+      // No recorded commission: either the launch crashed before linkage, or
+      // the wakeup was deferred and heartbeat later promoted it into a run
+      // carrying our flow context markers. Look for that run before giving
+      // up (querying heartbeat's own jsonb snapshot is its supported read
+      // pattern — flow STATE stays in typed columns).
+      const marker = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            sqlExpr`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+            sqlExpr`${heartbeatRuns.contextSnapshot} ->> 'flowNodeId' = ${issue.flowNodeId}`,
+            sqlExpr`${heartbeatRuns.contextSnapshot} ->> 'flowAgentStep' = 'true'`,
+          ),
+        )
+        .orderBy(desc(heartbeatRuns.createdAt))
+        .limit(1)
+        .then((r) => r[0] ?? null);
+      if (!marker) {
+        return pauseClassified({
+          errorType: "agent_run_not_commissioned",
+          message:
+            "flow parked at waiting_agent past the staleness window with no commissioned run recorded " +
+            "and no run carrying this step's context — the launch was interrupted or the wakeup was skipped",
+        });
+      }
+      linkedRunId = marker.id;
+    }
+
+    // Resolve the run, following the heartbeat process-loss retry chain
+    // (bounded — a chain deeper than 5 is itself suspicious).
+    let runId = linkedRunId;
+    let run =
+      (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then((r) => r[0])) ?? null;
+    for (let depth = 0; run && depth < 5; depth += 1) {
+      const retry = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.retryOfRunId, run.id))
+        .orderBy(desc(heartbeatRuns.createdAt))
+        .limit(1)
+        .then((r) => r[0] ?? null);
+      if (!retry) break;
+      run = retry;
+      runId = retry.id;
+    }
+    if (!run) {
+      return pauseClassified({
+        errorType: "agent_run_lost",
+        message: `commissioned run ${runId} no longer exists — cannot observe completion`,
+      });
+    }
+    if (["queued", "running", "scheduled_retry"].includes(run.status)) {
+      if (runId !== issue.flowRunId) {
+        // The machinery retried the run; re-link so the completion hook matches.
+        await transition(issue, { flowRunId: runId }, "flow.agent_run_relinked", {
+          nodeId: issue.flowNodeId,
+          fromRunId: issue.flowRunId,
+          toRunId: runId,
+        });
+        return true;
+      }
+      return false; // still in flight — correct silence
+    }
+    if (run.status === "interrupted") {
+      // Terminal-but-revivable ended the chain without a retry: classify.
+      return pauseClassified({
+        errorType: "agent_run_interrupted",
+        message: `commissioned run ${runId} was interrupted and no retry followed`,
+      });
+    }
+    if ((FLOW_TERMINAL_RUN_STATUSES as readonly string[]).includes(run.status)) {
+      const result = await processAgentRunCompletion(
+        runId === issue.flowRunId ? issue : { ...issue, flowRunId: runId },
+        { runId, runStatus: run.status as FlowTerminalRunStatus, error: run.error ?? null },
+      );
+      if (result.execution) await result.execution;
+      return true;
+    }
+    return pauseClassified({
+      errorType: "agent_run_status_unknown",
+      message: `commissioned run ${runId} is in unrecognized status '${run.status}'`,
+    });
   }
 
   /** Drive the flow while it is `running`; parks/stops set a non-running
@@ -522,6 +843,7 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
           flowName: flow.name,
           flowNodeId: firstNode.id,
           flowStatus: "running",
+          flowRunId: null,
           flowStartedAt: stamp,
           flowAdvancedAt: stamp,
           updatedAt: stamp,
@@ -636,6 +958,51 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
       };
     },
 
+    /** Event hook: a commissioned agent run reached a terminal status (called
+     *  from the narrow seam in heartbeat's setRunStatusIfRunning, and by the
+     *  sweep as at-least-once recovery). Stale/mismatched completions are
+     *  classified no-ops. */
+    onAgentRunCompletion: async (input: {
+      runId: string;
+      issueId: string;
+      flowName: string | null;
+      flowNodeId: string | null;
+      runStatus: FlowTerminalRunStatus;
+      error?: string | null;
+    }) => {
+      const issue = await getIssue(input.issueId);
+      const stale =
+        !issue ||
+        issue.flowStatus !== "waiting_agent" ||
+        (input.flowNodeId !== null && issue.flowNodeId !== input.flowNodeId) ||
+        (input.flowName !== null && issue.flowName !== input.flowName) ||
+        (issue.flowRunId !== null && issue.flowRunId !== input.runId);
+      if (stale) {
+        logger.warn(
+          {
+            runId: input.runId,
+            issueId: input.issueId,
+            expected: { flowName: input.flowName, flowNodeId: input.flowNodeId, flowStatus: "waiting_agent" },
+            actual: issue
+              ? {
+                  flowName: issue.flowName,
+                  flowNodeId: issue.flowNodeId,
+                  flowStatus: issue.flowStatus,
+                  flowRunId: issue.flowRunId,
+                }
+              : null,
+          },
+          "flow coordinator: stale agent-run completion (classified: stale_agent_completion) — no-op",
+        );
+        return { advanced: false as const, reason: "stale_agent_completion" as const };
+      }
+      return processAgentRunCompletion(issue as FlowIssue, {
+        runId: input.runId,
+        runStatus: input.runStatus,
+        error: input.error ?? null,
+      });
+    },
+
     /** Periodic sweep: resume `running` flows whose advancement loop died
      *  (process restart, crash) — flowAdvancedAt older than `staleMs`.
      *  Re-executes the CURRENT node (documented at-least-once semantics:
@@ -662,7 +1029,32 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
         });
         await runLoop(row.id);
       }
-      return { resumed: stale.length };
+
+      // waiting_agent recovery: the completion hook is best-effort in-process;
+      // this path is the at-least-once guarantee. Resolve the commissioned
+      // run (following the process-loss retry chain), then either process its
+      // terminal status, re-link to a live retry, or classify the loss.
+      const staleAgent = await db
+        .select(FLOW_COLUMNS)
+        .from(issues)
+        .where(and(eq(issues.flowStatus, "waiting_agent"), lt(issues.flowAdvancedAt, cutoff)));
+      let agentRecovered = 0;
+      for (const row of staleAgent as FlowIssue[]) {
+        try {
+          const outcome = await recoverWaitingAgent(row);
+          if (outcome) agentRecovered += 1;
+        } catch (err) {
+          if (err instanceof FlowStateConflictError) {
+            logger.error({ err, issueId: row.id }, "flow coordinator: sweep agent recovery hit a state conflict — skipping");
+            continue;
+          }
+          logger.error(
+            { err, issueId: row.id, flowRunId: row.flowRunId },
+            "flow coordinator: sweep agent recovery failed (classified: agent_sweep_failed)",
+          );
+        }
+      }
+      return { resumed: stale.length, agentRecovered };
     },
 
     /** Test/inspection surface. */

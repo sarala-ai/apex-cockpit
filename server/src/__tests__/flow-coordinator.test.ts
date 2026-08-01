@@ -7,6 +7,7 @@ import {
   approvals,
   companies,
   createDb,
+  heartbeatRuns,
   issueApprovals,
   issueComments,
   issues,
@@ -102,6 +103,7 @@ describeEmbeddedPostgres("flow coordinator", () => {
     await db.delete(activityLog);
     await db.delete(issueComments);
     await db.delete(issues);
+    await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -136,6 +138,7 @@ describeEmbeddedPostgres("flow coordinator", () => {
         flowName: issues.flowName,
         flowNodeId: issues.flowNodeId,
         flowStatus: issues.flowStatus,
+        flowRunId: issues.flowRunId,
         flowStartedAt: issues.flowStartedAt,
         flowAdvancedAt: issues.flowAdvancedAt,
       })
@@ -407,8 +410,8 @@ describeEmbeddedPostgres("flow coordinator", () => {
     });
   });
 
-  describe("agent nodes (honest v1 placeholder)", () => {
-    function agentFlow(): FlowDefinition {
+  describe("agent nodes (A-node bridge)", () => {
+    function agentFlow(overrides: { acceptance?: string; promptTemplate?: string } = {}): FlowDefinition {
       return {
         name: "agentic",
         version: "1.0",
@@ -419,8 +422,8 @@ describeEmbeddedPostgres("flow coordinator", () => {
             id: "board_diff",
             kind: "agent",
             agent: {
-              prompt_template: "Produce the diff",
-              acceptance: "a rendered diff exists",
+              prompt_template: overrides.promptTemplate ?? "Produce the diff for {{identifier}}: {{title}}",
+              acceptance: overrides.acceptance ?? "a rendered diff exists",
               budget: { max_turns: 15 },
             },
             on_fail: "pause",
@@ -429,14 +432,57 @@ describeEmbeddedPostgres("flow coordinator", () => {
       } as FlowDefinition;
     }
 
-    it("parks at waiting_agent with a comment naming what the step needs (no assignee)", async () => {
-      const { issueId } = await seedIssue();
-      const wakeups: unknown[] = [];
+    async function seedAgentIssue(options: { assign?: boolean; extraAgent?: boolean } = { assign: true }) {
+      const companyId = randomUUID();
+      await db.insert(companies).values({
+        id: companyId,
+        name: "APEX",
+        issuePrefix: `T${Math.floor(Math.random() * 100000)}`,
+      });
+      const agentId = await seedAgent(companyId);
+      if (options.extraAgent) await seedAgent(companyId);
+      const issueId = randomUUID();
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "make the board diff",
+        identifier: `APE-${Math.floor(Math.random() * 100000)}`,
+        description: "the change under review",
+        assigneeAgentId: options.assign ? agentId : null,
+      });
+      return { companyId, agentId, issueId };
+    }
+
+    async function seedRun(companyId: string, agentId: string, status: string, extra: Record<string, unknown> = {}) {
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        status,
+        ...extra,
+      });
+      return runId;
+    }
+
+    it("launcher packages flow context: instruction comment + commission + run linkage", async () => {
+      const { issueId, agentId, companyId } = await seedAgentIssue({ assign: true });
+      const commissions: Array<{ issueId: string; nodeId: string; agentId: string; commentId: string; prompt: string }> = [];
+      // flowRunId is FK-checked against heartbeat_runs — commission must hand
+      // back a real run id, exactly like the native machinery does.
+      const runId = await seedRun(companyId, agentId, "queued");
       const coordinator = flowCoordinator(db, {
         loadDefinition: loaderFor(agentFlow()),
         nodeRunner: fakeRunner({}).runner,
-        queueAgentWakeup: async (issue, node) => {
-          wakeups.push({ issueId: issue.id, nodeId: node.id });
+        commissionAgentRun: async (issue, node, commission) => {
+          commissions.push({
+            issueId: issue.id,
+            nodeId: node.id,
+            agentId: commission.agentId,
+            commentId: commission.instructionCommentId,
+            prompt: commission.renderedPrompt,
+          });
+          return { runId };
         },
       });
 
@@ -446,49 +492,129 @@ describeEmbeddedPostgres("flow coordinator", () => {
       const state = await flowState(issueId);
       expect(state.flowStatus).toBe("waiting_agent");
       expect(state.flowNodeId).toBe("board_diff");
-      expect(wakeups).toHaveLength(0); // no assignee agent -> no wakeup
+      expect(state.flowRunId).toBe(runId);
+
+      expect(commissions).toHaveLength(1);
+      expect(commissions[0].issueId).toBe(issueId);
+      expect(commissions[0].nodeId).toBe("board_diff");
+      expect(commissions[0].agentId).toBe(agentId);
+      // prompt template interpolated from the issue
+      expect(commissions[0].prompt).toContain("make the board diff");
+      expect(commissions[0].prompt).toMatch(/APE-\d+/);
+
+      // the instruction comment exists, is system-authored, and IS the one
+      // handed to the commission (the run's wake comment)
       const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
       expect(comments).toHaveLength(1);
-      expect(comments[0].body).toContain("Produce the diff");
+      expect(comments[0].id).toBe(commissions[0].commentId);
+      expect(comments[0].authorType).toBe("system");
+      expect(comments[0].body).toContain("make the board diff");
       expect(comments[0].body).toContain("a rendered diff exists");
-      expect(comments[0].body).toContain("No assignee agent");
-      expect(await activityActions(issueId)).toContain("flow.agent_step_pending");
+      expect(comments[0].body).toContain("max_turns");
+
+      const actions = await activityActions(issueId);
+      expect(actions).toContain("flow.agent_step_pending");
+      expect(actions).toContain("flow.agent_run_commissioned");
     });
 
-    it("queues a best-effort wakeup when the issue has an assignee agent", async () => {
-      const companyId = randomUUID();
-      await db.insert(companies).values({ id: companyId, name: "APEX" });
-      const agentId = await seedAgent(companyId);
-      const issueId = randomUUID();
-      await db.insert(issues).values({ id: issueId, companyId, title: "agent issue", assigneeAgentId: agentId });
-
-      const wakeups: unknown[] = [];
+    it("auto-assigns the company's single assignable agent when the issue has none", async () => {
+      const { issueId, agentId, companyId } = await seedAgentIssue({ assign: false });
+      const runId = await seedRun(companyId, agentId, "queued");
+      const commissions: string[] = [];
       const coordinator = flowCoordinator(db, {
         loadDefinition: loaderFor(agentFlow()),
         nodeRunner: fakeRunner({}).runner,
-        queueAgentWakeup: async (issue, node) => {
-          wakeups.push({ issueId: issue.id, nodeId: node.id });
+        commissionAgentRun: async (_issue, _node, commission) => {
+          commissions.push(commission.agentId);
+          return { runId };
         },
       });
 
       const started = await coordinator.startFlow({ issueId, flowName: "agentic" });
       await started.execution;
 
+      expect(commissions).toEqual([agentId]);
+      const [row] = await db.select({ assigneeAgentId: issues.assigneeAgentId }).from(issues).where(eq(issues.id, issueId));
+      expect(row.assigneeAgentId).toBe(agentId);
       expect((await flowState(issueId)).flowStatus).toBe("waiting_agent");
-      expect(wakeups).toEqual([{ issueId, nodeId: "board_diff" }]);
     });
 
-    it("a wakeup failure is classified but leaves the flow parked (not failed)", async () => {
-      const companyId = randomUUID();
-      await db.insert(companies).values({ id: companyId, name: "APEX" });
-      const agentId = await seedAgent(companyId);
-      const issueId = randomUUID();
-      await db.insert(issues).values({ id: issueId, companyId, title: "agent issue", assigneeAgentId: agentId });
-
+    it("no assignable agent (or ambiguity) is a classified pause, never silent", async () => {
+      const { issueId } = await seedAgentIssue({ assign: false, extraAgent: true });
       const coordinator = flowCoordinator(db, {
         loadDefinition: loaderFor(agentFlow()),
         nodeRunner: fakeRunner({}).runner,
-        queueAgentWakeup: async () => {
+        commissionAgentRun: async () => {
+          throw new Error("must not commission without an agent");
+        },
+      });
+
+      const started = await coordinator.startFlow({ issueId, flowName: "agentic" });
+      await started.execution;
+
+      const state = await flowState(issueId);
+      expect(state.flowStatus).toBe("paused");
+      const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+      expect(comments.some((c) => c.body.includes("flow_agent_unavailable"))).toBe(true);
+    });
+
+    it("a declined wakeup (null commission) stays waiting_agent, classified + surfaced (deferral promotes later)", async () => {
+      const { issueId } = await seedAgentIssue({ assign: true });
+      const coordinator = flowCoordinator(db, {
+        loadDefinition: loaderFor(agentFlow()),
+        nodeRunner: fakeRunner({}).runner,
+        commissionAgentRun: async () => null,
+      });
+
+      const started = await coordinator.startFlow({ issueId, flowName: "agentic" });
+      await started.execution;
+
+      const state = await flowState(issueId);
+      expect(state.flowStatus).toBe("waiting_agent");
+      expect(state.flowRunId).toBeNull();
+      expect(await activityActions(issueId)).toContain("flow.agent_run_deferred");
+      const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+      expect(comments.some((c) => c.body.includes("deferred"))).toBe(true);
+    });
+
+    it("sweep resolves a promoted run by context markers when no linkage was recorded", async () => {
+      const { issueId, companyId, agentId } = await seedAgentIssue({ assign: true });
+      // A promoted run carrying the flow context markers, already terminal.
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        status: "succeeded",
+        contextSnapshot: { issueId, flowName: "agentic", flowNodeId: "board_diff", flowAgentStep: true },
+      });
+      const past = new Date(Date.now() - 60 * 60 * 1000);
+      await db
+        .update(issues)
+        .set({
+          flowName: "agentic",
+          flowNodeId: "board_diff",
+          flowStatus: "waiting_agent",
+          flowRunId: null,
+          flowStartedAt: past,
+          flowAdvancedAt: past,
+        })
+        .where(eq(issues.id, issueId));
+      const coordinator = flowCoordinator(db, {
+        loadDefinition: loaderFor(agentFlow()),
+        nodeRunner: fakeRunner({}).runner,
+      });
+      const { agentRecovered } = await coordinator.sweep(5 * 60_000);
+      expect(agentRecovered).toBe(1);
+      expect((await flowState(issueId)).flowStatus).toBe("done");
+    });
+
+    it("a commission failure is classified and routed through on_fail", async () => {
+      const { issueId } = await seedAgentIssue({ assign: true });
+      const coordinator = flowCoordinator(db, {
+        loadDefinition: loaderFor(agentFlow()),
+        nodeRunner: fakeRunner({}).runner,
+        commissionAgentRun: async () => {
           throw new Error("heartbeat unavailable");
         },
       });
@@ -496,7 +622,224 @@ describeEmbeddedPostgres("flow coordinator", () => {
       const started = await coordinator.startFlow({ issueId, flowName: "agentic" });
       await started.execution;
 
-      expect((await flowState(issueId)).flowStatus).toBe("waiting_agent");
+      const state = await flowState(issueId);
+      expect(state.flowStatus).toBe("paused");
+      const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+      expect(comments.some((c) => c.body.includes("agent_run_commission_failed"))).toBe(true);
+    });
+
+    describe("completion hook", () => {
+      async function commissionedFlow(acceptance?: string) {
+        const seeded = await seedAgentIssue({ assign: true });
+        const runId = await seedRun(seeded.companyId, seeded.agentId, "succeeded");
+        const coordinator = flowCoordinator(db, {
+          loadDefinition: loaderFor(agentFlow({ acceptance })),
+          nodeRunner: fakeRunner({}).runner,
+          commissionAgentRun: async () => ({ runId }),
+        });
+        const started = await coordinator.startFlow({ issueId: seeded.issueId, flowName: "agentic" });
+        await started.execution;
+        expect((await flowState(seeded.issueId)).flowStatus).toBe("waiting_agent");
+        return { ...seeded, runId, coordinator };
+      }
+
+      it("run succeeded -> acceptance v1 -> flow advances to done", async () => {
+        const { issueId, runId, coordinator } = await commissionedFlow();
+        const result = await coordinator.onAgentRunCompletion({
+          runId,
+          issueId,
+          flowName: "agentic",
+          flowNodeId: "board_diff",
+          runStatus: "succeeded",
+        });
+        expect(result.advanced).toBe(true);
+        if ("execution" in result && result.execution) await result.execution;
+
+        const state = await flowState(issueId);
+        expect(state.flowStatus).toBe("done");
+        expect(state.flowRunId).toBeNull();
+        const actions = await activityActions(issueId);
+        expect(actions).toContain("flow.agent_step_succeeded");
+        expect(actions).toContain("flow.completed");
+      });
+
+      it("run failed -> classified pause via on_fail", async () => {
+        const { issueId, runId, coordinator } = await commissionedFlow();
+        const result = await coordinator.onAgentRunCompletion({
+          runId,
+          issueId,
+          flowName: "agentic",
+          flowNodeId: "board_diff",
+          runStatus: "failed",
+          error: "adapter exploded",
+        });
+        expect(result.advanced).toBe(false);
+
+        const state = await flowState(issueId);
+        expect(state.flowStatus).toBe("paused");
+        const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+        expect(comments.some((c) => c.body.includes("agent_run_failed") && c.body.includes("adapter exploded"))).toBe(true);
+      });
+
+      it("file_exists acceptance verifies the artifact (pass and fail)", async () => {
+        const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+        const { tmpdir } = await import("node:os");
+        const { join } = await import("node:path");
+        const dir = await mkdtemp(join(tmpdir(), "flow-acceptance-"));
+        try {
+          const artifact = join(dir, "artifact.txt");
+
+          // fail first: artifact missing
+          const missing = await commissionedFlow(`file_exists:${artifact}`);
+          const failed = await missing.coordinator.onAgentRunCompletion({
+            runId: missing.runId,
+            issueId: missing.issueId,
+            flowName: "agentic",
+            flowNodeId: "board_diff",
+            runStatus: "succeeded",
+          });
+          expect(failed).toMatchObject({ advanced: false, reason: "agent_acceptance_failed" });
+          expect((await flowState(missing.issueId)).flowStatus).toBe("paused");
+
+          // pass: artifact present
+          await writeFile(artifact, "diff");
+          const present = await commissionedFlow(`file_exists:${artifact}`);
+          const passed = await present.coordinator.onAgentRunCompletion({
+            runId: present.runId,
+            issueId: present.issueId,
+            flowName: "agentic",
+            flowNodeId: "board_diff",
+            runStatus: "succeeded",
+          });
+          expect(passed.advanced).toBe(true);
+          if ("execution" in passed && passed.execution) await passed.execution;
+          expect((await flowState(present.issueId)).flowStatus).toBe("done");
+        } finally {
+          await rm(dir, { recursive: true, force: true });
+        }
+      });
+
+      it("a stale or mismatched completion is a classified no-op", async () => {
+        const { issueId, runId, coordinator } = await commissionedFlow();
+        // wrong node
+        expect(
+          await coordinator.onAgentRunCompletion({
+            runId,
+            issueId,
+            flowName: "agentic",
+            flowNodeId: "other_node",
+            runStatus: "succeeded",
+          }),
+        ).toMatchObject({ advanced: false, reason: "stale_agent_completion" });
+        // wrong run id
+        expect(
+          await coordinator.onAgentRunCompletion({
+            runId: randomUUID(),
+            issueId,
+            flowName: "agentic",
+            flowNodeId: "board_diff",
+            runStatus: "succeeded",
+          }),
+        ).toMatchObject({ advanced: false, reason: "stale_agent_completion" });
+        expect((await flowState(issueId)).flowStatus).toBe("waiting_agent");
+      });
+    });
+
+    describe("sweep recovery for waiting_agent", () => {
+      async function parkStale(input: {
+        runStatus?: string | null;
+        linkRun?: boolean;
+      }) {
+        const seeded = await seedAgentIssue({ assign: true });
+        const runId =
+          input.runStatus != null ? await seedRun(seeded.companyId, seeded.agentId, input.runStatus) : null;
+        const past = new Date(Date.now() - 60 * 60 * 1000);
+        await db
+          .update(issues)
+          .set({
+            flowName: "agentic",
+            flowNodeId: "board_diff",
+            flowStatus: "waiting_agent",
+            flowRunId: input.linkRun === false ? null : runId,
+            flowStartedAt: past,
+            flowAdvancedAt: past,
+          })
+          .where(eq(issues.id, seeded.issueId));
+        const coordinator = flowCoordinator(db, {
+          loadDefinition: loaderFor(agentFlow()),
+          nodeRunner: fakeRunner({}).runner,
+          commissionAgentRun: async () => {
+            throw new Error("sweep must not re-commission in v1");
+          },
+        });
+        return { ...seeded, runId, coordinator };
+      }
+
+      it("terminal succeeded run advances the flow", async () => {
+        const { issueId, coordinator } = await parkStale({ runStatus: "succeeded" });
+        const { agentRecovered } = await coordinator.sweep(5 * 60_000);
+        expect(agentRecovered).toBe(1);
+        expect((await flowState(issueId)).flowStatus).toBe("done");
+      });
+
+      it("terminal failed run routes on_fail (pause) with classification", async () => {
+        const { issueId, coordinator } = await parkStale({ runStatus: "timed_out" });
+        const { agentRecovered } = await coordinator.sweep(5 * 60_000);
+        expect(agentRecovered).toBe(1);
+        expect((await flowState(issueId)).flowStatus).toBe("paused");
+        const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+        expect(comments.some((c) => c.body.includes("agent_run_timed_out"))).toBe(true);
+      });
+
+      it("an in-flight run is left alone", async () => {
+        const { issueId, coordinator } = await parkStale({ runStatus: "running" });
+        const { agentRecovered } = await coordinator.sweep(5 * 60_000);
+        expect(agentRecovered).toBe(0);
+        expect((await flowState(issueId)).flowStatus).toBe("waiting_agent");
+      });
+
+      it("no recorded commission after the staleness window is a classified pause", async () => {
+        const { issueId, coordinator } = await parkStale({ runStatus: null, linkRun: false });
+        const { agentRecovered } = await coordinator.sweep(5 * 60_000);
+        expect(agentRecovered).toBe(1);
+        expect((await flowState(issueId)).flowStatus).toBe("paused");
+        const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+        expect(comments.some((c) => c.body.includes("agent_run_not_commissioned"))).toBe(true);
+      });
+
+      it("an interrupted run with a live retry re-links the flow to the retry", async () => {
+        const { issueId, runId, coordinator, companyId, agentId } = await parkStale({ runStatus: "interrupted" });
+        const retryId = await seedRun(companyId, agentId, "running", { retryOfRunId: runId });
+        const { agentRecovered } = await coordinator.sweep(5 * 60_000);
+        expect(agentRecovered).toBe(1);
+        const state = await flowState(issueId);
+        expect(state.flowStatus).toBe("waiting_agent");
+        expect(state.flowRunId).toBe(retryId);
+        expect(await activityActions(issueId)).toContain("flow.agent_run_relinked");
+      });
+
+      it("a fresh waiting_agent flow is untouched", async () => {
+        const seeded = await seedAgentIssue({ assign: true });
+        const runId = await seedRun(seeded.companyId, seeded.agentId, "succeeded");
+        await db
+          .update(issues)
+          .set({
+            flowName: "agentic",
+            flowNodeId: "board_diff",
+            flowStatus: "waiting_agent",
+            flowRunId: runId,
+            flowStartedAt: new Date(),
+            flowAdvancedAt: new Date(),
+          })
+          .where(eq(issues.id, seeded.issueId));
+        const coordinator = flowCoordinator(db, {
+          loadDefinition: loaderFor(agentFlow()),
+          nodeRunner: fakeRunner({}).runner,
+        });
+        const { agentRecovered } = await coordinator.sweep(5 * 60_000);
+        expect(agentRecovered).toBe(0);
+        expect((await flowState(seeded.issueId)).flowStatus).toBe("waiting_agent");
+      });
     });
   });
 
