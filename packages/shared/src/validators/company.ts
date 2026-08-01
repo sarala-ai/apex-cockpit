@@ -31,7 +31,7 @@ export const companySlugSchema = z
 
 // Issue prefix shape: uppercase letters/digits, must start with a letter,
 // 1-10 characters. This is intentionally looser than deriveIssuePrefixBase's
-// output (which only ever produces 1-4 letters from a company name) because
+// output (which only ever produces 1-5 characters from a company name) because
 // an operator may want to hand-pick a prefix (at creation, or via the
 // break-glass escape hatch) that doesn't match any company name at all.
 export const COMPANY_ISSUE_PREFIX_PATTERN = /^[A-Z][A-Z0-9]{0,9}$/;
