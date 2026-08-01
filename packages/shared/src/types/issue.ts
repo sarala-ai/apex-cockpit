@@ -710,6 +710,9 @@ export interface Issue {
   ancestors?: IssueAncestor[];
   title: string;
   description: string | null;
+  /** The machine half of the ticket (ids, payload shapes, exact commands).
+   *  Rendered collapsed for humans; delivered to agents in full. */
+  agentBrief?: string | null;
   status: IssueStatus;
   workMode: IssueWorkMode;
   priority: IssuePriority;
