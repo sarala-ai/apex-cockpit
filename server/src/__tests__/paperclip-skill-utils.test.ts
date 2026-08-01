@@ -78,6 +78,17 @@ describe("paperclip skill utils", () => {
     ).rejects.toThrow();
   });
 
+  it("tells agents to answer review annotations in the thread they were made on", async () => {
+    const skillBody = await fs.readFile(path.resolve(repoRoot, "skills/paperclip/SKILL.md"), "utf8");
+
+    expect(skillBody).toContain("Document Review Annotations");
+    expect(skillBody).toContain("Reply where the comment was made");
+    expect(skillBody).toContain("Resolve the thread when you have addressed it");
+    expect(skillBody).toContain("/annotations/:threadId/comments");
+    expect(skillBody).toContain("paperclipReplyToDocumentAnnotation");
+    expect(skillBody).toContain("paperclipSetDocumentAnnotationThreadStatus");
+  });
+
   it("keeps the create-issue-interaction-ui guide as a maintainer-only skill", async () => {
     const skillPath = path.resolve(repoRoot, ".agents/skills/create-issue-interaction-ui/SKILL.md");
     const skillBody = await fs.readFile(skillPath, "utf8");

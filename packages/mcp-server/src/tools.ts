@@ -4,6 +4,7 @@ import {
   askUserQuestionsPayloadSchema,
   checkoutIssueSchema,
   createApprovalSchema,
+  createDocumentAnnotationCommentSchema,
   createIssueInputSchema,
   issueThreadInteractionContinuationPolicySchema,
   requestCheckboxConfirmationPayloadSchema,
@@ -358,6 +359,67 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
         client.requestJson(
           "GET",
           `/issues/${encodeURIComponent(issueId)}/documents/${encodeURIComponent(key)}/revisions`,
+        ),
+    ),
+    makeTool(
+      "paperclipListDocumentAnnotations",
+      "List review annotation threads on an issue document (anchored, threaded review comments)",
+      z.object({
+        issueId: issueIdSchema,
+        key: documentKeySchema,
+        status: z.enum(["open", "resolved", "all"]).optional(),
+        includeComments: z.boolean().optional(),
+      }),
+      async ({ issueId, key, status, includeComments }) => {
+        const params = new URLSearchParams();
+        if (status) params.set("status", status);
+        if (includeComments) params.set("includeComments", "true");
+        const qs = params.toString();
+        return client.requestJson(
+          "GET",
+          `/issues/${encodeURIComponent(issueId)}/documents/${encodeURIComponent(key)}/annotations${qs ? `?${qs}` : ""}`,
+        );
+      },
+    ),
+    makeTool(
+      "paperclipGetDocumentAnnotationThread",
+      "Get one review annotation thread on an issue document, with its comments",
+      z.object({ issueId: issueIdSchema, key: documentKeySchema, threadId: z.string().uuid() }),
+      async ({ issueId, key, threadId }) =>
+        client.requestJson(
+          "GET",
+          `/issues/${encodeURIComponent(issueId)}/documents/${encodeURIComponent(key)}/annotations/${encodeURIComponent(threadId)}`,
+        ),
+    ),
+    makeTool(
+      "paperclipReplyToDocumentAnnotation",
+      "Reply inside a review annotation thread on an issue document",
+      z.object({
+        issueId: issueIdSchema,
+        key: documentKeySchema,
+        threadId: z.string().uuid(),
+      }).merge(createDocumentAnnotationCommentSchema),
+      async ({ issueId, key, threadId, ...body }) =>
+        client.requestJson(
+          "POST",
+          `/issues/${encodeURIComponent(issueId)}/documents/${encodeURIComponent(key)}/annotations/${encodeURIComponent(threadId)}/comments`,
+          { body },
+        ),
+    ),
+    makeTool(
+      "paperclipSetDocumentAnnotationThreadStatus",
+      "Resolve or reopen a review annotation thread on an issue document",
+      z.object({
+        issueId: issueIdSchema,
+        key: documentKeySchema,
+        threadId: z.string().uuid(),
+        status: z.enum(["open", "resolved"]),
+      }),
+      async ({ issueId, key, threadId, status }) =>
+        client.requestJson(
+          "PATCH",
+          `/issues/${encodeURIComponent(issueId)}/documents/${encodeURIComponent(key)}/annotations/${encodeURIComponent(threadId)}`,
+          { body: { status } },
         ),
     ),
     makeTool(

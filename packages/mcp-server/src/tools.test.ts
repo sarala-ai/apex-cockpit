@@ -133,6 +133,102 @@ describe("paperclip MCP tools", () => {
     });
   });
 
+  it("lists document annotation threads with status and comment options", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse([{ id: "thread-1" }]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipListDocumentAnnotations");
+    await tool.execute({ issueId: "PAP-1135", key: "spec", status: "open", includeComments: true });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/issues/PAP-1135/documents/spec/annotations?status=open&includeComments=true",
+    );
+    expect(init.method).toBe("GET");
+  });
+
+  it("gets a single document annotation thread", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse({ id: "thread-1" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipGetDocumentAnnotationThread");
+    await tool.execute({
+      issueId: "PAP-1135",
+      key: "plan",
+      threadId: "55555555-5555-4555-8555-555555555555",
+    });
+
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/issues/PAP-1135/documents/plan/annotations/55555555-5555-4555-8555-555555555555",
+    );
+  });
+
+  it("replies inside a document annotation thread", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse({ id: "comment-1" }, 201));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipReplyToDocumentAnnotation");
+    await tool.execute({
+      issueId: "PAP-1135",
+      key: "plan",
+      threadId: "55555555-5555-4555-8555-555555555555",
+      body: "Addressed in revision 3.",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/issues/PAP-1135/documents/plan/annotations/55555555-5555-4555-8555-555555555555/comments",
+    );
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({ body: "Addressed in revision 3." });
+  });
+
+  it("resolves and reopens a document annotation thread through the thread patch route", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse({ id: "thread-1", status: "resolved" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipSetDocumentAnnotationThreadStatus");
+    await tool.execute({
+      issueId: "PAP-1135",
+      key: "plan",
+      threadId: "55555555-5555-4555-8555-555555555555",
+      status: "resolved",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/issues/PAP-1135/documents/plan/annotations/55555555-5555-4555-8555-555555555555",
+    );
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(String(init.body))).toEqual({ status: "resolved" });
+  });
+
+  it("does not expose annotation verbs beyond what the routes already allow agents", async () => {
+    const names = new Set(createToolDefinitions(makeClient()).map((tool) => tool.name));
+    // Creating a thread requires a human text selection anchor, and deleting
+    // threads/comments has no route at all — neither is exposed to agents.
+    expect(names.has("paperclipCreateDocumentAnnotationThread")).toBe(false);
+    expect(names.has("paperclipDeleteDocumentAnnotationThread")).toBe(false);
+    expect(names.has("paperclipDeleteDocumentAnnotationComment")).toBe(false);
+  });
+
+  it("rejects annotation thread statuses the API does not accept", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipSetDocumentAnnotationThreadStatus");
+    const response = await tool.execute({
+      issueId: "PAP-1135",
+      key: "plan",
+      threadId: "55555555-5555-4555-8555-555555555555",
+      status: "deleted",
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(response.content[0]?.text.toLowerCase()).toContain("error");
+  });
+
   it("controls issue workspace services through the current execution workspace", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(mockJsonResponse({
