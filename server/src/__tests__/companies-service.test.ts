@@ -81,6 +81,106 @@ describeEmbeddedPostgres("companyService", () => {
     expect(rows.map((row) => row.issuePrefix).sort()).toEqual(["ARO", "AROA"]);
   });
 
+  it("derives a slug from the allocated issue prefix when none is supplied at creation", async () => {
+    const created = await companyService(db).create({
+      name: "Aron & Sharon",
+    });
+
+    expect(created.issuePrefix).toBe("ARO");
+    expect(created.slug).toBe("aro");
+  });
+
+  it("accepts an explicit slug at creation", async () => {
+    const created = await companyService(db).create({
+      name: "Aron & Sharon",
+      slug: "custom-slug",
+    });
+
+    expect(created.slug).toBe("custom-slug");
+  });
+
+  it("rejects creation with a slug already used by another company", async () => {
+    await db.insert(companies).values({
+      name: "Existing Co",
+      issuePrefix: "EXC",
+      slug: "taken",
+    });
+
+    await expect(
+      companyService(db).create({ name: "New Co", slug: "taken" }),
+    ).rejects.toMatchObject({ status: 409, details: { code: "slug_conflict" } });
+  });
+
+  it("sets slug once when the current value is null (legacy un-backfilled company)", async () => {
+    const companyId = randomUUID();
+    // Simulate a company created before the slug column/backfill existed by
+    // inserting directly, bypassing the service (which always derives a slug
+    // at creation).
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Null Slug Co",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      slug: null,
+    });
+
+    const updated = await companyService(db).update(
+      companyId,
+      { slug: "Now-Set" },
+      { actorType: "user", actorId: "test-user", agentId: null, runId: null },
+    );
+
+    expect(updated?.slug).toBe("now-set");
+  });
+
+  it("rejects any update to a company slug once it is already set, even to the same value", async () => {
+    const created = await companyService(db).create({
+      name: "Sluggish Co",
+    });
+    expect(created.slug).toBeTruthy();
+
+    await expect(
+      companyService(db).update(
+        created.id,
+        { slug: "different-slug" },
+        { actorType: "user", actorId: "test-user", agentId: null, runId: null },
+      ),
+    ).rejects.toMatchObject({ status: 409, details: { code: "slug_immutable" } });
+
+    await expect(
+      companyService(db).update(
+        created.id,
+        { slug: created.slug! },
+        { actorType: "user", actorId: "test-user", agentId: null, runId: null },
+      ),
+    ).rejects.toMatchObject({ status: 409, details: { code: "slug_immutable" } });
+
+    const rows = await db.select({ slug: companies.slug }).from(companies).where(eq(companies.id, created.id));
+    expect(rows[0]?.slug).toBe(created.slug);
+  });
+
+  it("rejects setting a null slug to a value already used by another company", async () => {
+    await db.insert(companies).values({
+      name: "Other Co",
+      issuePrefix: "OTC",
+      slug: "already-used",
+    });
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Null Slug Co Two",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      slug: null,
+    });
+
+    await expect(
+      companyService(db).update(
+        companyId,
+        { slug: "already-used" },
+        { actorType: "user", actorId: "test-user", agentId: null, runId: null },
+      ),
+    ).rejects.toMatchObject({ status: 409, details: { code: "slug_conflict" } });
+  });
+
   it("auto-provisions one paused Reflection Coach bundle for a freshly created company", async () => {
     const created = await companyService(db).create({
       name: "Fresh Company",

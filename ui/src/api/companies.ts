@@ -21,6 +21,8 @@ export const companiesApi = {
     name: string;
     description?: string | null;
     budgetMonthlyCents?: number;
+    // One-time, at creation — see companySlugSchema. Omit to auto-derive.
+    slug?: string;
   }) =>
     api.post<Company>("/companies", data),
   update: (
@@ -37,6 +39,9 @@ export const companiesApi = {
         | "feedbackDataSharingEnabled"
         | "brandColor"
         | "logoAssetId"
+        // Write-once: only accepted by the server when the company's current
+        // slug is null. See companyService.update.
+        | "slug"
       >
     >,
   ) => api.patch<Company>(`/companies/${companyId}`, data),

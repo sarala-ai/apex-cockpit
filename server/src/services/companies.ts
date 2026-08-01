@@ -33,7 +33,7 @@ import {
   routineDocuments,
   cloudScopeBindings,
 } from "@paperclipai/db";
-import { notFound, unprocessable } from "../errors.js";
+import { conflict, notFound, unprocessable } from "../errors.js";
 import { environmentService } from "./environments.js";
 import { heartbeatService } from "./heartbeat.js";
 import { logActivity } from "./activity-log.js";
@@ -133,6 +133,7 @@ export function companyService(db: Db) {
     description: companies.description,
     status: companies.status,
     issuePrefix: companies.issuePrefix,
+    slug: companies.slug,
     issueCounter: companies.issueCounter,
     budgetMonthlyCents: companies.budgetMonthlyCents,
     spentMonthlyCents: companies.spentMonthlyCents,
@@ -216,14 +217,14 @@ export function companyService(db: Db) {
     return "A".repeat(attempt - 1);
   }
 
-  function isIssuePrefixConflict(error: unknown) {
+  function isConstraintViolation(error: unknown, constraintName: string) {
     const seen = new Set<unknown>();
     let current = error;
     while (typeof current === "object" && current !== null && !seen.has(current)) {
       seen.add(current);
       const maybe = current as { code?: string; constraint?: string; constraint_name?: string; cause?: unknown };
       const constraint = maybe.constraint ?? maybe.constraint_name;
-      if (maybe.code === "23505" && constraint === "companies_issue_prefix_idx") {
+      if (maybe.code === "23505" && constraint === constraintName) {
         return true;
       }
       current = maybe.cause;
@@ -231,18 +232,50 @@ export function companyService(db: Db) {
     return false;
   }
 
+  function isIssuePrefixConflict(error: unknown) {
+    return isConstraintViolation(error, "companies_issue_prefix_idx");
+  }
+
+  function isSlugConflict(error: unknown) {
+    return isConstraintViolation(error, "companies_slug_idx");
+  }
+
+  function slugConflictError(slug: string) {
+    return conflict(`Slug "${slug}" is already in use by another company.`, { code: "slug_conflict" });
+  }
+
+  function slugImmutableError(existingSlug: string) {
+    return conflict(
+      `Company slug is permanent and cannot be changed once set — it names capability paths and env vars ` +
+        `(APEX_${existingSlug.toUpperCase()}_...). Current slug: "${existingSlug}".`,
+      { code: "slug_immutable" },
+    );
+  }
+
   async function createCompanyWithUniquePrefix(data: typeof companies.$inferInsert) {
     const base = deriveIssuePrefixBase(data.name);
+    const explicitSlug = data.slug !== undefined && data.slug !== null ? data.slug : null;
     let suffix = 1;
     while (suffix < 10000) {
       const candidate = `${base}${suffixForAttempt(suffix)}`;
+      // Slug is write-once and, absent an explicit value, is derived from the
+      // allocated issue prefix (same source of uniqueness) rather than left
+      // null — creation is the intended one-time set point.
+      const slugValue = explicitSlug ?? candidate.toLowerCase();
       try {
         const rows = await db
           .insert(companies)
-          .values({ ...data, issuePrefix: candidate })
+          .values({ ...data, issuePrefix: candidate, slug: slugValue })
           .returning();
         return rows[0];
       } catch (error) {
+        if (isSlugConflict(error)) {
+          if (explicitSlug) throw slugConflictError(explicitSlug);
+          // Derived slug collided independently of the issue prefix (rare) —
+          // retry with the next candidate, which derives a different slug too.
+          suffix += 1;
+          continue;
+        }
         if (!isIssuePrefixConflict(error)) throw error;
       }
       suffix += 1;
@@ -298,6 +331,20 @@ export function companyService(db: Db) {
         if (!existing) return null;
 
         const { logoAssetId, ...companyPatch } = data;
+
+        // Slug is write-once: once a company has a non-null slug, capability env
+        // vars and paths are already keyed on it, so any further update attempt —
+        // including re-sending the same value — is rejected. Setting it for the
+        // first time (existing.slug is null) is the only allowed path.
+        if (companyPatch.slug !== undefined) {
+          if (existing.slug) {
+            throw slugImmutableError(existing.slug);
+          }
+          if (companyPatch.slug !== null) {
+            companyPatch.slug = companyPatch.slug.toLowerCase();
+          }
+        }
+
         const willReactivate = existing.status !== "active" && companyPatch.status === "active";
         const willArchive = existing.status !== "archived" && companyPatch.status === "archived";
 
@@ -313,12 +360,20 @@ export function companyService(db: Db) {
           }
         }
 
-        const updated = await tx
-          .update(companies)
-          .set({ ...companyPatch, updatedAt: new Date() })
-          .where(eq(companies.id, id))
-          .returning()
-          .then((rows) => rows[0] ?? null);
+        let updated;
+        try {
+          updated = await tx
+            .update(companies)
+            .set({ ...companyPatch, updatedAt: new Date() })
+            .where(eq(companies.id, id))
+            .returning()
+            .then((rows) => rows[0] ?? null);
+        } catch (error) {
+          if (isSlugConflict(error) && typeof companyPatch.slug === "string") {
+            throw slugConflictError(companyPatch.slug);
+          }
+          throw error;
+        }
         if (!updated) return null;
 
         let agentsRestored = 0;

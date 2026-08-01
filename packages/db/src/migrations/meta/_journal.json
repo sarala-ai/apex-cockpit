@@ -1058,6 +1058,20 @@
       "when": 1784700000000,
       "tag": "0152_issue_flow_state",
       "breakpoints": true
+    },
+    {
+      "idx": 153,
+      "version": "7",
+      "when": 1784700000000,
+      "tag": "0153_company_slug",
+      "breakpoints": true
+    },
+    {
+      "idx": 154,
+      "version": "7",
+      "when": 1784800000000,
+      "tag": "0154_company_slug_backfill",
+      "breakpoints": true
     }
   ]
 }

@@ -11,7 +11,8 @@ import { assetsApi } from "../api/assets";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, CloudUpload, Download, Upload } from "lucide-react";
+import { Settings, CloudUpload, Download, Upload, Lock } from "lucide-react";
+import { COMPANY_SLUG_PATTERN } from "@paperclipai/shared";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
@@ -43,6 +44,7 @@ export function CompanySettings() {
   const [attachmentMaxMiB, setAttachmentMaxMiB] = useState(String(DEFAULT_COMPANY_ATTACHMENT_MAX_MIB));
   const [logoUrl, setLogoUrl] = useState("");
   const [logoUploadError, setLogoUploadError] = useState<string | null>(null);
+  const [slugDraft, setSlugDraft] = useState("");
 
   // Sync local state from selected company
   useEffect(() => {
@@ -52,6 +54,7 @@ export function CompanySettings() {
     setBrandColor(selectedCompany.brandColor ?? "");
     setAttachmentMaxMiB(String(Math.round((selectedCompany.attachmentMaxBytes ?? DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES) / BYTES_PER_MIB)));
     setLogoUrl(selectedCompany.logoUrl ?? "");
+    setSlugDraft(selectedCompany.slug ?? "");
   }, [selectedCompany]);
 
   const attachmentMaxBytes = Number.parseInt(attachmentMaxMiB, 10) * BYTES_PER_MIB;
@@ -89,6 +92,25 @@ export function CompanySettings() {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     }
   });
+
+  const slugValid = COMPANY_SLUG_PATTERN.test(slugDraft.trim().toLowerCase());
+
+  const slugMutation = useMutation({
+    mutationFn: (value: string) => companiesApi.update(selectedCompanyId!, { slug: value }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    }
+  });
+
+  function handleSetSlug() {
+    const trimmed = slugDraft.trim().toLowerCase();
+    if (!trimmed || !COMPANY_SLUG_PATTERN.test(trimmed)) return;
+    const confirmed = window.confirm(
+      `Set company slug to "${trimmed}"? This cannot be changed later — it permanently names this company's capability paths and env vars (APEX_${trimmed.toUpperCase()}_...).`
+    );
+    if (!confirmed) return;
+    slugMutation.mutate(trimmed);
+  }
 
   const syncLogoState = (nextLogoUrl: string | null) => {
     setLogoUrl(nextLogoUrl ?? "");
@@ -203,6 +225,52 @@ export function CompanySettings() {
               placeholder="Optional company description"
               onChange={(e) => setDescription(e.target.value)}
             />
+          </Field>
+          <Field
+            label="Slug"
+            hint="Stable identifier used for capability paths and env vars (APEX_<SLUG>_...). Changing it changes those env names."
+          >
+            {selectedCompany.slug ? (
+              <div className="space-y-1.5" data-testid="company-settings-slug-readonly">
+                <div className="flex items-center gap-2 rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-sm">
+                  <Lock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <span className="font-mono">{selectedCompany.slug}</span>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Permanent — set once at company creation and cannot be changed. Capability paths and env vars
+                  (APEX_{selectedCompany.slug.toUpperCase()}_...) are keyed on this value.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-1.5" data-testid="company-settings-slug-set">
+                <input
+                  className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
+                  type="text"
+                  value={slugDraft}
+                  placeholder="acme"
+                  onChange={(e) => setSlugDraft(e.target.value.toLowerCase())}
+                />
+                <p className="text-xs text-destructive">
+                  This cannot be changed later. It will permanently name this company's capability paths and env vars
+                  (APEX_{(slugDraft.trim() || "SLUG").toUpperCase()}_...).
+                </p>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleSetSlug}
+                    disabled={!slugValid || slugMutation.isPending}
+                  >
+                    {slugMutation.isPending ? "Setting..." : "Set slug"}
+                  </Button>
+                  {slugMutation.isError && (
+                    <span className="text-xs text-destructive">
+                      {slugMutation.error instanceof Error ? slugMutation.error.message : "Failed to set slug"}
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
           </Field>
         </div>
       </div>

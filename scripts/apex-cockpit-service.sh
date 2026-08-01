@@ -50,7 +50,7 @@ install() {
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>PATH</key><string>/opt/homebrew/bin:/opt/homebrew/share/google-cloud-sdk/bin:/usr/local/bin:/usr/bin:/bin:$HOME/.rd/bin</string>
+    <key>PATH</key><string>$HOME/.local/bin:/opt/homebrew/bin:/opt/homebrew/share/google-cloud-sdk/bin:/usr/local/bin:/usr/bin:/bin:$HOME/.rd/bin</string>
     <key>HOME</key><string>$HOME</string>
     <!-- Backing services, provided by the umbrella compose (docker compose up
          in apex/ = db + eval; gateway/penpot behind their profiles). Declared
@@ -60,6 +60,16 @@ install() {
     <key>APEX_OTLP_ENDPOINT</key><string>http://localhost:8000</string>
     <key>APEX_GATEWAY_URL</key><string>http://localhost:4444</string>
     <key>APEX_PENPOT_URL</key><string>http://localhost:9001</string>
+    <!-- Attribution registry stage: the apex CLI the cockpit shells out to
+         resolves its env from APEX_ENV; without it the inventory classifier
+         skips the state-DAG registry lookup and the "by registry" column
+         stays inert. Single-operator dev machine ⇒ everything is env dev. -->
+    <key>APEX_ENV</key><string>dev</string>
+    <!-- Attribution refresh scans local checkouts of bound repos; the default
+         became empty (review finding 14 — no hardcoded operator paths in
+         code), so the operator's parent dir is declared HERE, where operator
+         config belongs. -->
+    <key>APEX_REPO_ROOTS</key><string>/Users/srinivas/Dev/repos/sarala_org</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key>

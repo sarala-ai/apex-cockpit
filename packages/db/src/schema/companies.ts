@@ -1,4 +1,5 @@
 import { pgTable, uuid, text, integer, timestamp, boolean, uniqueIndex } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { orgs } from "./orgs.js";
 
 export const companies = pgTable(
@@ -15,6 +16,12 @@ export const companies = pgTable(
     pauseReason: text("pause_reason"),
     pausedAt: timestamp("paused_at", { withTimezone: true }),
     issuePrefix: text("issue_prefix").notNull().default("PAP"),
+    // Write-once: set at creation (or by the one-time 0153 backfill for companies
+    // created before this column existed). Per-company capability env vars derive
+    // from it (APEX_<SLUG>_WORKFLOWS_PATH, per the capability-sync spec), so once
+    // non-null it is never rewritten — enforced in companyService.update, not just
+    // here. Nullable only to cover the not-yet-backfilled edge case.
+    slug: text("slug"),
     issueCounter: integer("issue_counter").notNull().default(0),
     budgetMonthlyCents: integer("budget_monthly_cents").notNull().default(0),
     spentMonthlyCents: integer("spent_monthly_cents").notNull().default(0),
@@ -37,5 +44,8 @@ export const companies = pgTable(
   },
   (table) => ({
     issuePrefixUniqueIdx: uniqueIndex("companies_issue_prefix_idx").on(table.issuePrefix),
+    slugUniqueIdx: uniqueIndex("companies_slug_idx")
+      .on(table.slug)
+      .where(sql`${table.slug} IS NOT NULL`),
   }),
 );

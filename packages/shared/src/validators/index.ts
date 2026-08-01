@@ -25,6 +25,8 @@ export {
   createCompanySchema,
   updateCompanySchema,
   updateCompanyBrandingSchema,
+  companySlugSchema,
+  COMPANY_SLUG_PATTERN,
   type CreateCompany,
   type UpdateCompany,
   type UpdateCompanyBranding,
