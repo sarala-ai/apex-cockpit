@@ -219,6 +219,81 @@ describe("GET /approvals/:id/brief", () => {
       verifiedAt: "2026-08-01T07:40:20.528Z",
       gateOpenedAt: "2026-08-01T07:40:21.814Z",
     });
+
+    // The artifact declares its KIND server-side, so the UI's renderer
+    // registry never has to sniff file extensions of its own.
+    expect(res.body.artifact.artifactKind).toBe("design");
+
+    // Risk + reversibility, derived from the post-gate merge workflow.
+    expect(res.body.risk).toMatchObject({ reversibility: "reversible", derived: true });
+    expect(res.body.risk.reversibilityLine).toMatch(/revert/);
+
+    // How long the founder has been the bottleneck.
+    expect(res.body.waitingSince).toBe("2026-08-01T07:40:21.814Z");
+  });
+
+  it("carries per-file diff hunks and the binary flag through to the artifact", async () => {
+    mockApprovalService.getById.mockResolvedValue(FLOW_GATE_APPROVAL);
+    mockActivityService.forIssue.mockResolvedValue(ACTIVITY_ROWS);
+    const invoke = vi.fn().mockResolvedValue({
+      ...PR_SUCCESS,
+      changed_files: 2,
+      files: [
+        {
+          path: "server/src/a.ts",
+          status: "modified",
+          additions: 2,
+          deletions: 1,
+          binary: false,
+          patch: "@@ -1 +1 @@\n-old\n+new",
+          patch_truncated: false,
+        },
+        {
+          path: "product/apex-platform.penpot",
+          status: "modified",
+          additions: 0,
+          deletions: 0,
+          binary: true,
+          patch: null,
+          patch_truncated: false,
+        },
+      ],
+    });
+
+    const res = await request(await createApp({ invoke })).get("/api/approvals/approval-1/brief");
+
+    expect(res.status).toBe(200);
+    expect(res.body.artifact.files[0].patch).toContain("+new");
+    expect(res.body.artifact.files[1].binary).toBe(true);
+    // A .penpot in the changeset makes the whole thing a design review.
+    expect(res.body.artifact.artifactKind).toBe("design");
+  });
+
+  it("classifies a pure code changeset as code and marks a deploy as going live", async () => {
+    mockApprovalService.getById.mockResolvedValue(FLOW_GATE_APPROVAL);
+    mockActivityService.forIssue.mockResolvedValue(ACTIVITY_ROWS);
+    const loadFlowDefinition = vi.fn().mockResolvedValue({
+      path: "/flows/bug.yml",
+      flow: {
+        ...DESIGN_CHANGE_FLOW.flow,
+        nodes: [
+          DESIGN_CHANGE_FLOW.flow.nodes[1],
+          { id: "deploy", kind: "workflow", workflow: { workflow: "cloud_run_deploy", params: {} }, on_fail: "pause" },
+        ],
+      },
+    });
+    const invoke = vi.fn().mockResolvedValue({
+      ...PR_SUCCESS,
+      files: [{ path: "server/src/a.ts", status: "modified", additions: 2, deletions: 1, patch: "@@\n+x" }],
+    });
+
+    const res = await request(await createApp({ invoke, loadFlowDefinition }))
+      .get("/api/approvals/approval-1/brief");
+
+    expect(res.status).toBe(200);
+    expect(res.body.artifact.artifactKind).toBe("code");
+    expect(res.body.risk.reversibility).toBe("reversible_with_effort");
+    expect(res.body.risk.risks.join(" ")).toContain("cloud_run_deploy");
   });
 
   it("derives a different next-step sentence when the flow's post-gate node changes", async () => {

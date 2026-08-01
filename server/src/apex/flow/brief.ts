@@ -38,6 +38,15 @@ const PullRequestFileSchema = z.object({
   status: z.string(),
   additions: z.number(),
   deletions: z.number(),
+  /** The file's unified diff hunks. Optional at this seam on purpose: an
+   *  older apex-core (before the get_pull_request patch extension) simply
+   *  omits it and the UI falls back to the file list, rather than the brief
+   *  failing to assemble. */
+  patch: z.string().nullish(),
+  /** GitHub reported no patch AND no changes — a blob, not an empty diff. */
+  binary: z.boolean().nullish(),
+  /** This file's diff was cut (by core's budget, or by GitHub itself). */
+  patch_truncated: z.boolean().nullish(),
 });
 export const GetPullRequestResultSchema = z
   .object({
@@ -55,6 +64,81 @@ export const GetPullRequestResultSchema = z
   .passthrough();
 
 export type PullRequestFile = z.infer<typeof PullRequestFileSchema>;
+
+// ---------------------------------------------------------------------------
+// Artifact KIND — classified here, once, server-side
+// ---------------------------------------------------------------------------
+
+/**
+ * What kind of thing the reviewer is being asked to look at. The UI keys its
+ * artifact-renderer registry off this and never re-derives it: one classifier,
+ * one vocabulary, one place to fix when a new artifact type shows up.
+ */
+export type ArtifactKind = "code" | "design" | "plan" | "doc" | "unknown";
+
+/** Binary design-tool documents. A PR touching one of these IS a design change. */
+const DESIGN_EXTENSIONS = new Set(["penpot", "fig", "sketch", "xd", "afdesign"]);
+const CODE_EXTENSIONS = new Set([
+  "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "go", "rs", "java", "kt", "rb",
+  "php", "cs", "swift", "c", "h", "cc", "cpp", "hpp", "scala", "clj", "ex",
+  "exs", "sh", "bash", "zsh", "sql", "tf", "tfvars", "yaml", "yml", "json",
+  "toml", "ini", "css", "scss", "less", "html", "vue", "svelte", "proto",
+  "graphql", "gradle", "dockerfile",
+]);
+const DOC_EXTENSIONS = new Set(["md", "mdx", "txt", "rst", "adoc"]);
+/** Markdown living under one of these is a PLAN, not prose documentation. */
+const PLAN_DIR_RE = /(^|\/)(specs?|plans?|rfcs?|proposals?|adrs?)(\/|$)/i;
+const PLAN_NAME_RE = /(^|[./-])(spec|plan|tasks|proposal|rfc|adr)([.-]|$)/i;
+
+function extensionOf(path: string): string {
+  const base = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
+  const dot = base.lastIndexOf(".");
+  if (dot <= 0) return base; // "Dockerfile", "Makefile" — the name IS the type
+  return base.slice(dot + 1);
+}
+
+/** The kind of a single path. `null` = this file votes for nothing. */
+export function classifyPath(path: string): ArtifactKind | null {
+  const ext = extensionOf(path);
+  if (DESIGN_EXTENSIONS.has(ext)) return "design";
+  if (DOC_EXTENSIONS.has(ext)) {
+    const base = path.slice(path.lastIndexOf("/") + 1);
+    return PLAN_DIR_RE.test(path) || PLAN_NAME_RE.test(base) ? "plan" : "doc";
+  }
+  if (CODE_EXTENSIONS.has(ext)) return "code";
+  return null;
+}
+
+/**
+ * Classify a whole changeset.
+ *
+ * The rule, stated once so it is arguable rather than emergent:
+ *  1. ANY design document present ⇒ `design`. A .penpot in the diff is the
+ *     point of the review; it is never outvoted by the files around it.
+ *  2. Otherwise the kind holding the most files wins.
+ *  3. Ties break by precedence code > plan > doc — the reviewer is better
+ *     served being shown the more consequential surface.
+ *  4. No files, or nothing recognised ⇒ `unknown` (the fallback renderer).
+ */
+export function classifyArtifactKind(files: { path: string }[]): ArtifactKind {
+  const counts = new Map<ArtifactKind, number>();
+  for (const file of files) {
+    const kind = classifyPath(file.path);
+    if (!kind) continue;
+    if (kind === "design") return "design";
+    counts.set(kind, (counts.get(kind) ?? 0) + 1);
+  }
+  let best: ArtifactKind = "unknown";
+  let bestCount = 0;
+  for (const kind of ["code", "plan", "doc"] as const) {
+    const count = counts.get(kind) ?? 0;
+    if (count > bestCount) {
+      best = kind;
+      bestCount = count;
+    }
+  }
+  return best;
+}
 
 export type PrDiffSummary =
   | { available: false; reason: string }
@@ -77,6 +161,9 @@ export type PrDiffSummary =
       files: PullRequestFile[];
       files_truncated: boolean;
       acceptanceEvaluation: string | null;
+      /** Which renderer the UI should reach for. Derived HERE from the
+       *  changed paths — the UI never re-derives it. */
+      artifactKind: ArtifactKind;
     };
 
 /** One row of the issue's activity log, as much of it as the brief reads. */
@@ -171,6 +258,7 @@ export async function fetchPullRequestSummary(
       files: result.files ?? [],
       files_truncated: result.files_truncated ?? false,
       acceptanceEvaluation,
+      artifactKind: classifyArtifactKind(result.files ?? []),
     };
   } catch (err) {
     if (err instanceof ApexUnavailableError || err instanceof ApexInvocationError) {
@@ -262,6 +350,63 @@ export function describeAcceptance(
 // ---------------------------------------------------------------------------
 // 4. What happens next — DERIVED from the flow definition
 // ---------------------------------------------------------------------------
+
+/**
+ * How hard the post-gate consequence is to take back. Ordered least → most
+ * severe; `deriveReversibility` takes the WORST across every post-gate node,
+ * because a flow is only as reversible as its least reversible step.
+ */
+export type Reversibility = "reversible" | "reversible_with_effort" | "irreversible" | "unknown";
+
+const REVERSIBILITY_RANK: Record<Reversibility, number> = {
+  reversible: 0,
+  unknown: 1,
+  reversible_with_effort: 2,
+  irreversible: 3,
+};
+
+/** Vocabulary shown to the reviewer, one line per level. */
+const REVERSIBILITY_LINE: Record<Reversibility, string> = {
+  reversible: "Reversible — what runs after this gate can be undone (a merge by a revert commit).",
+  reversible_with_effort:
+    "Reversible with effort — the change goes live and can only be taken back by rolling forward or redeploying.",
+  irreversible: "NOT reversible — a step after this gate destroys or replaces something permanently.",
+  unknown: "Reversibility unknown — the flow's post-gate steps could not be read.",
+};
+
+/** Name-shape rules over the post-gate workflow a flow actually runs. Kept
+ *  deliberately small and readable: these are the four verbs APEX flows use
+ *  today (merge / deploy / release / destroy). An unmatched name stays
+ *  `unknown` rather than being optimistically called reversible. */
+const IRREVERSIBLE_RE = /destroy|delete|teardown|tear-down|drop|purge|revoke|rotate|prune/i;
+const LIVE_CHANGE_RE = /deploy|release|publish|promote|rollout|roll-out|ship|apply/i;
+const MERGE_RE = /merge|land|commit|push|pr-merge/i;
+
+/** Reversibility of ONE post-gate node. */
+export function nodeReversibility(node: FlowNode): Reversibility {
+  if (node.kind === "workflow" && node.workflow) {
+    const name = node.workflow.workflow;
+    if (IRREVERSIBLE_RE.test(name)) return "irreversible";
+    if (MERGE_RE.test(name)) return "reversible";
+    if (LIVE_CHANGE_RE.test(name)) return "reversible_with_effort";
+    return "unknown";
+  }
+  // Checks read, they don't change the world. Another gate pauses again, and
+  // an agent step's own gate is where its consequence is decided.
+  if (node.kind === "check" || node.kind === "gate") return "reversible";
+  if (node.kind === "agent") return "reversible_with_effort";
+  return "unknown";
+}
+
+export type RiskSection = {
+  reversibility: Reversibility;
+  /** The one-line reversibility statement shown under "On approval". */
+  reversibilityLine: string;
+  /** Concrete risks, in the vocabulary the board-approval brief already uses. */
+  risks: string[];
+  /** true when reversibility came from the flow definition, not a fallback. */
+  derived: boolean;
+};
 
 export type NextSection = {
   approve: string;
@@ -355,6 +500,92 @@ export function deriveNextSteps(
   };
 }
 
+/**
+ * Derive the risk + reversibility of approving THIS gate.
+ *
+ * Reversibility is the worst level across every node after the gate — a flow
+ * whose second post-gate step destroys a bucket is not made safe by its first
+ * step being a merge. Risks are stated concretely (naming the workflow, the
+ * failed check, the unreadable artifact) so the line is worth reading; the
+ * labels match the board-approval brief's existing "Risks" section rather
+ * than inventing a second vocabulary.
+ */
+export function deriveRisk(input: {
+  flow: FlowDefinition | null;
+  gateNodeId: string | null;
+  verified: VerifiedSection;
+  artifact: PrDiffSummary;
+}): RiskSection {
+  const { flow, gateNodeId, verified, artifact } = input;
+  const risks: string[] = [];
+
+  let reversibility: Reversibility = "unknown";
+  let derived = false;
+  const index = flow && gateNodeId ? flow.nodes.findIndex((n) => n.id === gateNodeId) : -1;
+  if (flow && index >= 0) {
+    derived = true;
+    const remaining = flow.nodes.slice(index + 1);
+    if (remaining.length === 0) {
+      // Nothing runs. Approving closes the flow and changes nothing further.
+      reversibility = "reversible";
+    } else {
+      reversibility = "reversible";
+      for (const node of remaining) {
+        const level = nodeReversibility(node);
+        if (REVERSIBILITY_RANK[level] > REVERSIBILITY_RANK[reversibility]) {
+          reversibility = level;
+        }
+        if (level === "irreversible" && node.kind === "workflow" && node.workflow) {
+          risks.push(
+            `Workflow \`${node.workflow.workflow}\` runs after this gate and destroys or replaces something — there is no undo step in this flow.`,
+          );
+        }
+        if (level === "reversible_with_effort" && node.kind === "workflow" && node.workflow) {
+          risks.push(
+            `Workflow \`${node.workflow.workflow}\` runs after this gate, so the change goes live as soon as you approve.`,
+          );
+        }
+        if (level === "unknown" && node.kind === "workflow" && node.workflow) {
+          risks.push(
+            `Workflow \`${node.workflow.workflow}\` runs after this gate and its effect could not be classified — check what it does before approving.`,
+          );
+        }
+      }
+    }
+  }
+
+  if (verified.ok === false) {
+    risks.push("The step's automatic check did NOT pass — you are approving over a failed check.");
+  } else if (verified.ok === null) {
+    risks.push("Nothing about this change was machine-verified; the review is entirely yours.");
+  }
+
+  if (artifact.available === false) {
+    risks.push("No artifact is linked to this gate, so there is nothing to inspect before approving.");
+  } else if (artifact.degraded) {
+    risks.push(`The artifact could not be loaded (${artifact.error}) — you would be approving it unseen.`);
+  } else {
+    if (artifact.files_truncated) {
+      risks.push("The changed-file list is truncated — some changed files are not shown below.");
+    }
+    if (artifact.artifactKind === "design" || artifact.artifactKind === "unknown") {
+      const binaries = artifact.files.filter((f) => f.binary === true).length;
+      if (binaries > 0) {
+        risks.push(
+          `${binaries} changed file${binaries === 1 ? " is" : "s are"} binary, so no line-level diff exists for ${binaries === 1 ? "it" : "them"}.`,
+        );
+      }
+    }
+  }
+
+  return {
+    reversibility,
+    reversibilityLine: REVERSIBILITY_LINE[reversibility],
+    risks,
+    derived,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // 5. Who / what did the work
 // ---------------------------------------------------------------------------
@@ -435,7 +666,12 @@ export type FlowGateBrief =
       verified: VerifiedSection;
       artifact: PrDiffSummary;
       next: NextSection;
+      risk: RiskSection;
       provenance: ProvenanceSection;
+      /** When this gate started waiting for a human — the UI turns it into
+       *  "waiting 3 hours". Falls back through the activity log's stamps so a
+       *  gate opened before this field existed still reports something. */
+      waitingSince: string | null;
       /** Machine identifiers — details affordance only, never the headline. */
       machine: {
         approvalId: string;
@@ -546,7 +782,9 @@ export async function assembleFlowGateBrief(input: {
     verified,
     artifact,
     next,
+    risk: deriveRisk({ flow, gateNodeId: nodeId, verified, artifact }),
     provenance,
+    waitingSince: provenance.gateOpenedAt ?? provenance.verifiedAt ?? provenance.commissionedAt,
     machine: {
       approvalId: input.approvalId,
       issueId,

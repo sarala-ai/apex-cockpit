@@ -4,7 +4,8 @@ import { useQuery } from "@tanstack/react-query";
 import { formatCents } from "../lib/utils";
 import { approvalsApi, type ApprovalPrDiff } from "../api/approvals";
 import { queryKeys } from "../lib/queryKeys";
-import { StatusBadge } from "./StatusBadge";
+import { formatWaitingFor } from "../lib/approval-waiting";
+import { resolveArtifactRenderer } from "./artifact-renderers";
 
 export const typeLabel: Record<string, string> = {
   hire_agent: "Hire Agent",
@@ -236,19 +237,6 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
   );
 }
 
-function PullRequestFileRow({ file }: { file: { path: string; status: string; additions: number; deletions: number } }) {
-  return (
-    <li className="flex items-center gap-2 text-xs">
-      <StatusBadge status={file.status} />
-      <span className="min-w-0 flex-1 truncate font-mono">{file.path}</span>
-      <span className="shrink-0 text-muted-foreground">
-        <span className="text-green-600 dark:text-green-400">+{file.additions}</span>{" "}
-        <span className="text-red-600 dark:text-red-400">-{file.deletions}</span>
-      </span>
-    </li>
-  );
-}
-
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
     <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
@@ -257,7 +245,14 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** The artifact block — the PR the reviewer should actually look at. */
+/**
+ * The artifact block — the PR the reviewer should actually look at.
+ *
+ * The BODY of this block is not written here. It comes from the
+ * artifact-renderer registry, keyed by the `artifactKind` the server
+ * classified. Adding a renderer for a new artifact type must require zero
+ * edits to this component; if that stops being true, the seam has leaked.
+ */
 function ArtifactBlock({ artifact }: { artifact: ApprovalPrDiff }) {
   if (artifact.available === false) {
     return <p className="text-xs text-muted-foreground">No linked pull request found for this gate.</p>;
@@ -286,13 +281,9 @@ function ArtifactBlock({ artifact }: { artifact: ApprovalPrDiff }) {
           · {artifact.totals.changedFiles} file{artifact.totals.changedFiles === 1 ? "" : "s"}
         </span>
       </div>
-      {artifact.files.length > 0 && (
-        <ul className="space-y-1 border-t border-border/60 pt-2">
-          {artifact.files.map((file) => (
-            <PullRequestFileRow key={file.path} file={file} />
-          ))}
-        </ul>
-      )}
+      <div className="border-t border-border/60 pt-2">
+        {resolveArtifactRenderer(artifact).render(artifact)}
+      </div>
       {artifact.files_truncated && (
         <p className="text-(length:--text-micro) text-muted-foreground">
           Showing the first {artifact.files.length} changed files — more were truncated.
@@ -359,7 +350,8 @@ export function FlowGatePayload({
     );
   }
 
-  const { decision, verified, artifact, next, provenance, machine } = data;
+  const { decision, verified, artifact, next, risk, provenance, machine } = data;
+  const waiting = formatWaitingFor(data.waitingSince);
   const verifiedTone =
     verified.ok === true
       ? "border-emerald-500/25 bg-emerald-500/10"
@@ -397,6 +389,15 @@ export function FlowGatePayload({
             {decision.subject}
           </p>
         )}
+        {waiting && (
+          <p
+            className={`text-xs ${waiting.stale ? "font-medium text-amber-700 dark:text-amber-300" : "text-muted-foreground"}`}
+            data-testid="flow-gate-waiting-for"
+          >
+            {waiting.label}
+            {waiting.stale ? " — you are the bottleneck here." : ""}
+          </p>
+        )}
       </div>
 
       {/* 2 — what the system already verified */}
@@ -411,12 +412,43 @@ export function FlowGatePayload({
         <ArtifactBlock artifact={artifact} />
       </div>
 
-      {/* 4 — what happens next (derived from the flow definition) */}
+      {/* 4 — what happens next (derived from the flow definition), and how
+          hard it is to take back. "On approval" / "Risks" deliberately reuse
+          the board-approval brief's labels — one vocabulary across every
+          approval type, not a second one for flow gates. */}
       <div className="space-y-1.5 rounded-lg border border-border/60 bg-background/60 px-3.5 py-3">
-        <SectionLabel>What happens next</SectionLabel>
+        <SectionLabel>On approval</SectionLabel>
         <p className="leading-6 text-foreground">{next.approve}</p>
         <p className="leading-6 text-muted-foreground">{next.reject}</p>
+        {risk && (
+          <p
+            className={`leading-6 ${
+              risk.reversibility === "irreversible"
+                ? "font-medium text-red-700 dark:text-red-300"
+                : risk.reversibility === "reversible_with_effort"
+                  ? "text-amber-700 dark:text-amber-300"
+                  : "text-muted-foreground"
+            }`}
+            data-testid="flow-gate-reversibility"
+          >
+            {risk.reversibilityLine}
+          </p>
+        )}
       </div>
+
+      {risk && risk.risks.length > 0 && (
+        <div className="space-y-1.5" data-testid="flow-gate-risks">
+          <SectionLabel>Risks</SectionLabel>
+          <ul className="space-y-1 text-sm text-muted-foreground">
+            {risk.risks.map((item) => (
+              <li key={item} className="flex items-start gap-2">
+                <span className="mt-2 h-1.5 w-1.5 rounded-full bg-muted-foreground/60" />
+                <span className="leading-6">{item}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* 5 — who / what did the work */}
       {(who || stamps.length > 0 || provenance.permissionProfile) && (
