@@ -1,0 +1,19 @@
+-- Fixture vs staff: is this agent a real worker, or machinery built to
+-- validate the machinery? The live board currently has a test fixture
+-- ("Loop Validator"-class agents created to prove the flow loop runs) sitting
+-- in the same picker as the agents that do real work — one wrong pick and a
+-- real ticket is assigned to a probe.
+--
+-- Nullable ON PURPOSE, with no backfill. Every existing row predates the
+-- distinction, and guessing "staff" for all of them would silently declare
+-- something nobody checked — the exact write-once-silently defect the
+-- reversibility pass exists to catch. Null renders as "undeclared" and keeps
+-- today's behaviour; only an explicit 'fixture' excludes an agent from
+-- assignment and invocation.
+-- Named "roster_kind", not "kind": an agent "kind" already exists in this
+-- codebase and means something else entirely — the observe taxonomy
+-- `apex.agent.kind` (coding | product | workflow), a different axis with
+-- different values (packages/shared/src/observe.ts AgentKindSchema). A bare
+-- `agents.kind` would leave every reader guessing which of the two they are
+-- looking at.
+ALTER TABLE "agents" ADD COLUMN IF NOT EXISTS "roster_kind" text;

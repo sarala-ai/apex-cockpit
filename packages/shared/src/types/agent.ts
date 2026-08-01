@@ -13,7 +13,7 @@ import type {
   TrustAuthorizationPolicy,
   TrustPreset,
 } from "../trust-policy.js";
-import type { AgentOrgChainHealth } from "../agent-eligibility.js";
+import type { AgentOrgChainHealth, AgentRosterKind } from "../agent-eligibility.js";
 import type { AgentApiKeyScope } from "../validators/agent.js";
 
 export interface AgentPermissions extends Record<string, unknown> {
@@ -85,6 +85,13 @@ export interface Agent {
   name: string;
   urlKey: string;
   role: AgentRole;
+  /**
+   * "staff" | "fixture" | null. Null means UNDECLARED — the agent predates
+   * the distinction and nobody has said which it is; surfaces render that
+   * honestly rather than assuming "staff". A "fixture" is machinery built to
+   * validate the machinery, and is excluded from assignment and invocation.
+   */
+  rosterKind: AgentRosterKind | null;
   title: string | null;
   icon: string | null;
   status: AgentStatus;

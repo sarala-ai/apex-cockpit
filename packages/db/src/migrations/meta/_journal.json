@@ -1093,6 +1093,13 @@
       "when": 1785800000000,
       "tag": "0157_github_projection",
       "breakpoints": true
+    },
+    {
+      "idx": 158,
+      "version": "7",
+      "when": 1785900000000,
+      "tag": "0158_agent_roster_kind",
+      "breakpoints": true
     }
   ]
 }

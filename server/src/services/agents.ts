@@ -303,13 +303,14 @@ export function agentService(db: Db) {
     });
   }
 
-  function toEligibilityAgent(row: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name" | "status" | "reportsTo">): AgentEligibilityAgent {
+  function toEligibilityAgent(row: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name" | "status" | "reportsTo" | "rosterKind">): AgentEligibilityAgent {
     return {
       id: row.id,
       companyId: row.companyId,
       name: row.name,
       status: row.status,
       reportsTo: row.reportsTo,
+      rosterKind: row.rosterKind,
     };
   }
 
