@@ -42,7 +42,7 @@ function humanComment(id: string, text: string): ThreadMessage {
     createdAt: new Date("2026-08-01T07:00:00.000Z"),
     content: [{ type: "text", text }],
     metadata: { custom: { kind: "comment", anchorId: `comment-${id}` } },
-  } as ThreadMessage;
+  } as unknown as ThreadMessage;
 }
 
 /** The real instruction comment agent-step.ts posts — the wall of machine
