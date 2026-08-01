@@ -7,7 +7,11 @@
 // `isError`.
 
 import { api } from "./client";
-import type { WorkflowDetailResponse, WorkflowListResponse } from "@paperclipai/shared";
+import type {
+  WorkflowDetailResponse,
+  WorkflowListResponse,
+  WorkflowValidateResponse,
+} from "@paperclipai/shared";
 
 // `companyId` (amendment: per-company env vars) scopes company-layer path
 // entries to that company on the server; omitted degrades to today's
@@ -20,4 +24,9 @@ export const workflowsApi = {
   list: (companyId?: string | null) => api.get<WorkflowListResponse>(`/apex/workflows${companyQuery(companyId)}`),
   show: (name: string, companyId?: string | null) =>
     api.get<WorkflowDetailResponse>(`/apex/workflows/${encodeURIComponent(name)}${companyQuery(companyId)}`),
+  // POST /apex/workflows/validate — validates not-yet-saved builder YAML
+  // against apex-core's `apex validate --workflow <file> --json` (see
+  // server/src/routes/apex-workflows.ts). Always 200s with a classified
+  // body; callers branch on `status` the same way as list/show.
+  validate: (yaml: string) => api.post<WorkflowValidateResponse>("/apex/workflows/validate", { yaml }),
 };

@@ -41,6 +41,7 @@ import { RunDetail } from "./pages/RunDetail";
 import { Gateway } from "./pages/Gateway";
 import { Workflows } from "./pages/Workflows";
 import { WorkflowDetail } from "./pages/WorkflowDetail";
+import { WorkflowEditor } from "./pages/WorkflowEditor";
 import { Design } from "./pages/Design";
 import { Activity } from "./pages/Activity";
 import { Inbox } from "./pages/Inbox";
@@ -96,7 +97,9 @@ function boardRoutes() {
       <Route path="observe/runs/:runId" element={<RunDetail />} />
       <Route path="gateway" element={<Gateway />} />
       <Route path="workflows" element={<Workflows />} />
+      <Route path="workflows/new" element={<WorkflowEditor />} />
       <Route path="workflows/:name" element={<WorkflowDetail />} />
+      <Route path="workflows/:name/edit" element={<WorkflowEditor />} />
       <Route path="design" element={<Design />} />
       <Route path="timeline" element={<Timeline />} />
       <Route path="onboarding" element={<OnboardingRoutePage />} />
@@ -479,7 +482,9 @@ export function App() {
           <Route path="observe/runs/:runId" element={<UnprefixedBoardRedirect />} />
           <Route path="gateway" element={<UnprefixedBoardRedirect />} />
           <Route path="workflows" element={<UnprefixedBoardRedirect />} />
+          <Route path="workflows/new" element={<UnprefixedBoardRedirect />} />
           <Route path="workflows/:name" element={<UnprefixedBoardRedirect />} />
+          <Route path="workflows/:name/edit" element={<UnprefixedBoardRedirect />} />
           <Route path="design" element={<UnprefixedBoardRedirect />} />
           <Route path="pipelines" element={<UnprefixedBoardRedirect />} />
           <Route path="pipelines/:pipelineId" element={<UnprefixedBoardRedirect />} />

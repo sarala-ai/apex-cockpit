@@ -4,12 +4,13 @@
 // (server/src/routes/apex-workflows.ts). Same degraded-CLI honesty as
 // Workflows.tsx — see WorkflowsErrorState.
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, Boxes } from "lucide-react";
+import { ArrowLeft, Boxes, Pencil } from "lucide-react";
 import { Link, useParams } from "@/lib/router";
 import { workflowsApi } from "@/api/workflows";
 import { useCompany } from "../context/CompanyContext";
 import { WorkflowsErrorState } from "./Workflows";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { WorkflowDetailResponse } from "@paperclipai/shared";
 
@@ -60,13 +61,21 @@ export function WorkflowDetailBody({
       {/* Header */}
       <Card>
         <CardContent className="space-y-2 pt-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-sm font-semibold" title={data.path}>
-              {data.name}
-            </h1>
-            <Badge variant="outline">{data.layer}</Badge>
-            <Badge variant="outline">{data.lifecycle}</Badge>
-            {data.version && <span className="text-xs text-muted-foreground">v{data.version}</span>}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="text-sm font-semibold" title={data.path}>
+                {data.name}
+              </h1>
+              <Badge variant="outline">{data.layer}</Badge>
+              <Badge variant="outline">{data.lifecycle}</Badge>
+              {data.version && <span className="text-xs text-muted-foreground">v{data.version}</span>}
+            </div>
+            <Button asChild variant="outline" size="sm">
+              <Link to={`/workflows/${encodeURIComponent(data.name)}/edit`}>
+                <Pencil className="mr-1.5 h-3.5 w-3.5" />
+                Edit
+              </Link>
+            </Button>
           </div>
           {data.description && <p className="text-xs text-muted-foreground">{data.description}</p>}
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">

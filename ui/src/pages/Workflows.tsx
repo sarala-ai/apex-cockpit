@@ -7,7 +7,7 @@
 // ({status:"error",error_type:"cli_missing_command",...}) is an everyday
 // state, not a crash path: see `WorkflowsErrorState`.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, GitCompare, Layers, RefreshCw, Workflow as WorkflowIcon } from "lucide-react";
+import { AlertTriangle, GitCompare, Layers, Plus, RefreshCw, Workflow as WorkflowIcon } from "lucide-react";
 import { Link } from "@/lib/router";
 import { workflowsApi } from "@/api/workflows";
 import { capabilitySyncApi } from "@/api/capability-sync";
@@ -285,15 +285,23 @@ export function WorkflowsBody({
 
 function Header({ count }: { count?: number }) {
   return (
-    <div>
-      <h1 className="flex items-center gap-2 text-lg font-semibold">
-        <WorkflowIcon className="h-5 w-5" />
-        Workflows
-        {typeof count === "number" && <span className="text-sm font-normal text-muted-foreground">({count})</span>}
-      </h1>
-      <p className="text-sm text-muted-foreground">
-        apex-core's workflow catalog — what's runnable, by layer, and what shadows what.
-      </p>
+    <div className="flex flex-wrap items-start justify-between gap-2">
+      <div>
+        <h1 className="flex items-center gap-2 text-lg font-semibold">
+          <WorkflowIcon className="h-5 w-5" />
+          Workflows
+          {typeof count === "number" && <span className="text-sm font-normal text-muted-foreground">({count})</span>}
+        </h1>
+        <p className="text-sm text-muted-foreground">
+          apex-core's workflow catalog — what's runnable, by layer, and what shadows what.
+        </p>
+      </div>
+      <Button asChild size="sm">
+        <Link to="/workflows/new">
+          <Plus className="mr-1.5 h-4 w-4" />
+          New workflow
+        </Link>
+      </Button>
     </div>
   );
 }
