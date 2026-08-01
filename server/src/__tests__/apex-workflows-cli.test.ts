@@ -68,4 +68,39 @@ describe("WorkflowsCliClient — degraded-CLI classification", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.error_type).toBe("parse_failed");
   });
+
+  it("amendment (per-company env vars): sets APEX_COMPANY_SLUG when a companySlug is given", async () => {
+    mockRun({ status: "ok", stdout: JSON.stringify({ status: "success", workflows: [] }) });
+    const client = new WorkflowsCliClient();
+    await client.list("acme");
+    expect(mockedRun.mock.calls[0]?.[4]).toEqual({ APEX_COMPANY_SLUG: "acme" });
+  });
+
+  it("amendment: omits APEX_COMPANY_SLUG when no companySlug is given — today's behavior exactly", async () => {
+    mockRun({ status: "ok", stdout: JSON.stringify({ status: "success", workflows: [] }) });
+    const client = new WorkflowsCliClient();
+    await client.list();
+    expect(mockedRun.mock.calls[0]?.[4]).toBeUndefined();
+  });
+
+  it("amendment: threads companySlug through show() too", async () => {
+    mockRun({
+      status: "ok",
+      stdout: JSON.stringify({
+        status: "success",
+        name: "w1",
+        lifecycle: "stable",
+        path: "/p",
+        source: "apex-core",
+        layer: "built-in",
+        inputs: [],
+        steps: [],
+        outputs: [],
+        definition_yaml: "name: w1\n",
+      }),
+    });
+    const client = new WorkflowsCliClient();
+    await client.show("w1", "acme");
+    expect(mockedRun.mock.calls[0]?.[4]).toEqual({ APEX_COMPANY_SLUG: "acme" });
+  });
 });

@@ -2,6 +2,7 @@ export * from "./observe.js";
 export * from "./gateway.js";
 export * from "./design.js";
 export * from "./workflows.js";
+export * from "./capability-sync.js";
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
   getAgentOrgChainHealth,

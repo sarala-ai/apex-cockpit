@@ -6,13 +6,22 @@
 // unreleased as of this page landing, so a degraded response
 // ({status:"error",error_type:"cli_missing_command",...}) is an everyday
 // state, not a crash path: see `WorkflowsErrorState`.
-import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, Layers, Workflow as WorkflowIcon } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { AlertTriangle, GitCompare, Layers, RefreshCw, Workflow as WorkflowIcon } from "lucide-react";
 import { Link } from "@/lib/router";
 import { workflowsApi } from "@/api/workflows";
+import { capabilitySyncApi } from "@/api/capability-sync";
+import { useCompany } from "../context/CompanyContext";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import type { WorkflowError, WorkflowLayer, WorkflowListResponse, WorkflowSummary } from "@paperclipai/shared";
+import type {
+  CapabilitySyncStatusResponse,
+  WorkflowError,
+  WorkflowLayer,
+  WorkflowListResponse,
+  WorkflowSummary,
+} from "@paperclipai/shared";
 
 const LAYER_ORDER: WorkflowLayer[] = ["built-in", "user", "project"];
 const LAYER_LABEL: Record<WorkflowLayer, string> = {
@@ -105,12 +114,98 @@ function LayerGroup({ layer, workflows }: { layer: WorkflowLayer; workflows: Wor
   );
 }
 
+/**
+ * Updates/diverged banner strip (spec: capability sync + PATH-canonical
+ * resolution, Session B / T4). Fed by GET /apex/capabilities/sync — the last
+ * summary the periodic `apex capabilities sync` job holds in memory, not a
+ * live CLI call on every page load. Honest empty/degraded states:
+ *   - never run yet (`status` undefined/null summary) → renders nothing.
+ *   - the installed CLI predates `capabilities sync`
+ *     (`error_type: "cli_missing_command"`) → renders nothing, no error
+ *     spam (this is an everyday condition until Session A's T1 CLI ships,
+ *     same posture as WorkflowsErrorState for the workflows CLI itself).
+ *   - a real sync error (any other error_type) → a warning strip.
+ *   - a clean success with nothing diverged/pending → renders nothing (a
+ *     routine sync isn't noteworthy).
+ *   - diverged items and/or skills pending `--accept-skills` → the banner.
+ */
+export function CapabilitySyncBanner({
+  status,
+  onRefresh,
+  refreshing,
+}: {
+  status: CapabilitySyncStatusResponse | undefined;
+  onRefresh?: () => void;
+  refreshing?: boolean;
+}) {
+  if (!status?.summary) return null;
+  const { summary, ranAt } = status;
+
+  const RefreshButton = onRefresh ? (
+    <Button type="button" variant="outline" size="sm" onClick={onRefresh} disabled={refreshing} className="h-6 gap-1.5 px-2 text-xs">
+      <RefreshCw className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`} />
+      {refreshing ? "Syncing…" : "Refresh"}
+    </Button>
+  ) : null;
+
+  if (summary.status === "error") {
+    if (summary.error_type === "cli_missing_command") return null;
+    return (
+      <Card className="border-rose-500/30 bg-rose-500/5" data-testid="capability-sync-banner">
+        <CardContent className="flex flex-wrap items-center justify-between gap-3 py-2.5 text-xs">
+          <span className="flex items-center gap-2 text-rose-600 dark:text-rose-400">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+            Capability sync failed: {summary.message}
+          </span>
+          {RefreshButton}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const divergedCount = summary.diverged.length;
+  const pendingCount = summary.pending_skills.length;
+  if (divergedCount === 0 && pendingCount === 0) return null;
+
+  return (
+    <Card className="border-amber-500/30 bg-amber-500/5" data-testid="capability-sync-banner">
+      <CardContent className="flex flex-wrap items-center justify-between gap-3 py-2.5 text-xs">
+        <span className="flex items-center gap-2 text-amber-700 dark:text-amber-400">
+          <GitCompare className="h-3.5 w-3.5 shrink-0" />
+          {divergedCount > 0 && (
+            <span>
+              {divergedCount} diverged item{divergedCount === 1 ? "" : "s"} (local edits kept, not overwritten)
+            </span>
+          )}
+          {divergedCount > 0 && pendingCount > 0 && <span aria-hidden>·</span>}
+          {pendingCount > 0 && (
+            <span>
+              {pendingCount} skill update{pendingCount === 1 ? "" : "s"} pending review (
+              <span className="font-mono">--accept-skills</span>)
+            </span>
+          )}
+        </span>
+        <span className="flex items-center gap-2 text-muted-foreground">
+          <span title={ranAt ?? undefined}>synced {ranAt ? new Date(ranAt).toLocaleString() : "—"}</span>
+          {RefreshButton}
+        </span>
+      </CardContent>
+    </Card>
+  );
+}
+
 export function WorkflowsBody({
   isLoading,
   data,
+  capabilitySync,
+  onRefreshCapabilitySync,
+  refreshingCapabilitySync,
 }: {
   isLoading: boolean;
   data: WorkflowListResponse | undefined;
+  capabilitySync?: CapabilitySyncStatusResponse;
+  onRefreshCapabilitySync?: () => void;
+  refreshingCapabilitySync?: boolean;
 }) {
   if (isLoading) {
     return <div className="p-6 text-sm text-muted-foreground">Loading workflows…</div>;
@@ -120,6 +215,7 @@ export function WorkflowsBody({
     return (
       <div className="space-y-4 p-4">
         <Header />
+        <CapabilitySyncBanner status={capabilitySync} onRefresh={onRefreshCapabilitySync} refreshing={refreshingCapabilitySync} />
         <WorkflowsErrorState
           error={
             data ?? {
@@ -145,6 +241,7 @@ export function WorkflowsBody({
   return (
     <div className="space-y-4 p-4">
       <Header count={data.workflows.length} />
+      <CapabilitySyncBanner status={capabilitySync} onRefresh={onRefreshCapabilitySync} refreshing={refreshingCapabilitySync} />
       {data.workflows.length === 0 ? (
         <Card>
           <CardContent className="py-4 text-xs text-muted-foreground">
@@ -178,10 +275,34 @@ function Header({ count }: { count?: number }) {
 }
 
 export function Workflows() {
+  const { selectedCompanyId } = useCompany();
+  const queryClient = useQueryClient();
+
   const list = useQuery({
-    queryKey: ["apex", "workflows"],
-    queryFn: workflowsApi.list,
+    queryKey: ["apex", "workflows", selectedCompanyId],
+    queryFn: () => workflowsApi.list(selectedCompanyId),
   });
 
-  return <WorkflowsBody isLoading={list.isLoading} data={list.data} />;
+  const capabilitySyncStatusKey = ["apex", "capabilities", "sync"] as const;
+  const capabilitySync = useQuery({
+    queryKey: capabilitySyncStatusKey,
+    queryFn: capabilitySyncApi.status,
+  });
+
+  const refresh = useMutation({
+    mutationFn: capabilitySyncApi.sync,
+    onSuccess: (data) => {
+      queryClient.setQueryData(capabilitySyncStatusKey, data);
+    },
+  });
+
+  return (
+    <WorkflowsBody
+      isLoading={list.isLoading}
+      data={list.data}
+      capabilitySync={capabilitySync.data}
+      onRefreshCapabilitySync={() => refresh.mutate()}
+      refreshingCapabilitySync={refresh.isPending}
+    />
+  );
 }

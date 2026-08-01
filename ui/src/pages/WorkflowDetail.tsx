@@ -7,6 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Boxes } from "lucide-react";
 import { Link, useParams } from "@/lib/router";
 import { workflowsApi } from "@/api/workflows";
+import { useCompany } from "../context/CompanyContext";
 import { WorkflowsErrorState } from "./Workflows";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -204,10 +205,11 @@ export function WorkflowDetailBody({
 
 export function WorkflowDetail() {
   const { name } = useParams<{ name: string }>();
+  const { selectedCompanyId } = useCompany();
 
   const detail = useQuery({
-    queryKey: ["apex", "workflows", name],
-    queryFn: () => workflowsApi.show(name as string),
+    queryKey: ["apex", "workflows", name, selectedCompanyId],
+    queryFn: () => workflowsApi.show(name as string, selectedCompanyId),
     enabled: !!name,
   });
 
