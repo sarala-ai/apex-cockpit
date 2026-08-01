@@ -15,6 +15,7 @@ import { eq } from "drizzle-orm";
 import { companies, type Db } from "@paperclipai/db";
 import type { WorkflowError } from "@paperclipai/shared";
 import { WorkflowsCliClient } from "../apex/workflows-cli.js";
+import { WorkflowValidateCliClient } from "../apex/workflow-validate-cli.js";
 import { getAttributionsByWorkflow } from "../observe/resource-attribution-store.js";
 import { assertBoardOrAgent } from "./authz.js";
 
@@ -39,7 +40,11 @@ export async function resolveCompanySlug(db: Db, companyId: string | undefined):
   return row ? row.issuePrefix.toLowerCase() : undefined;
 }
 
-export function apexWorkflowsRoutes(db: Db, client: WorkflowsCliClient = new WorkflowsCliClient()) {
+export function apexWorkflowsRoutes(
+  db: Db,
+  client: WorkflowsCliClient = new WorkflowsCliClient(),
+  validateClient: WorkflowValidateCliClient = new WorkflowValidateCliClient(),
+) {
   const router = Router();
 
   // GET /apex/workflows[?companyId=] — the catalog: every workflow the CLI
@@ -86,6 +91,32 @@ export function apexWorkflowsRoutes(db: Db, client: WorkflowsCliClient = new Wor
       ...result.data,
       footprint: { resources, count: resources.length, note: FOOTPRINT_NOTE },
     });
+  });
+
+  // POST /apex/workflows/validate — body {yaml: string}. Validates
+  // not-yet-saved workflow-builder YAML against apex-core's
+  // `apex validate --workflow <file> --json` (see workflow-validate-cli.ts).
+  // Writes the YAML to a temp file for the duration of the shell-out; the
+  // client always removes it (success, CLI failure, or a thrown error) via
+  // its own try/finally.
+  router.post("/apex/workflows/validate", async (req, res) => {
+    assertBoardOrAgent(req);
+    const yaml = typeof req.body?.yaml === "string" ? req.body.yaml : null;
+    if (yaml === null) {
+      res.status(400).json({
+        status: "error",
+        error_type: "bad_request",
+        message: "Request body must include a string `yaml` field.",
+        remediation: null,
+      });
+      return;
+    }
+    const result = await validateClient.validate(yaml);
+    if (!result.ok) {
+      res.json(errorPayload(result.error));
+      return;
+    }
+    res.json(result.data);
   });
 
   return router;

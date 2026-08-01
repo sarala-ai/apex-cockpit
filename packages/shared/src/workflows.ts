@@ -112,3 +112,24 @@ export const WorkflowDetailResponseSchema = z.union([
   WorkflowErrorSchema,
 ]);
 export type WorkflowDetailResponse = z.infer<typeof WorkflowDetailResponseSchema>;
+
+// ── Validate (apex-core's `apex validate --workflow <path> --json`) ──
+//
+// Raw CLI JSON (apex_platform/tools/apex_validate.py `_print_json`, reused for
+// both server and workflow/flow validation — hence the generic "servers" key
+// even when validating a single workflow):
+//   {"servers":[{"name","errors","warnings","issues":[{"severity","message",
+//     "tool","suggestion"}]}],"totals":{"errors","warnings"},"passed"}
+// The route flattens this into the simpler {valid, errors[], warnings[]}
+// shape below (issue *messages* only — the CLI's per-issue tool/suggestion
+// detail isn't surfaced to the builder UI yet).
+
+export const WorkflowValidateSuccessSchema = z.object({
+  valid: z.boolean(),
+  errors: z.array(z.string()),
+  warnings: z.array(z.string()),
+});
+export type WorkflowValidateSuccess = z.infer<typeof WorkflowValidateSuccessSchema>;
+
+export const WorkflowValidateResponseSchema = z.union([WorkflowValidateSuccessSchema, WorkflowErrorSchema]);
+export type WorkflowValidateResponse = z.infer<typeof WorkflowValidateResponseSchema>;
