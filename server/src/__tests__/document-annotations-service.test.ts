@@ -323,6 +323,87 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
     expect(cleanup.resolvedThreadIds).toEqual([]);
   });
 
+  it("returns the re-anchoring trail on single-thread reads and omits it from list reads", async () => {
+    const { issueId, document } = await createIssueWithDocument();
+    const thread = await annotations.createThread(
+      issueId,
+      "plan",
+      {
+        baseRevisionId: document.latestRevisionId!,
+        baseRevisionNumber: document.latestRevisionNumber,
+        selector: {
+          quote: { exact: "selected text", prefix: "Alpha ", suffix: " omega" },
+          position: { normalizedStart: 6, normalizedEnd: 19, markdownStart: 6, markdownEnd: 19 },
+        },
+        body: "Please review this passage",
+      },
+      { actorType: "user", actorId: "board-user", userId: "board-user" },
+    );
+
+    // Revision 2 shifts the passage: the anchor survives.
+    const shifted = await docs.upsertIssueDocument({
+      issueId,
+      key: "plan",
+      title: "Plan",
+      format: "markdown",
+      body: "Preamble. Alpha selected text omega",
+      baseRevisionId: document.latestRevisionId,
+    });
+    await annotations.remapOpenThreadsForDocument({
+      issueId,
+      key: "plan",
+      documentId: document.id,
+      nextRevisionId: shifted.document.latestRevisionId,
+      nextRevisionNumber: shifted.document.latestRevisionNumber,
+      nextBody: shifted.document.body,
+    });
+
+    // Revision 3 removes it entirely: the anchor orphans.
+    const rewritten = await docs.upsertIssueDocument({
+      issueId,
+      key: "plan",
+      title: "Plan",
+      format: "markdown",
+      body: "Something else entirely",
+      baseRevisionId: shifted.document.latestRevisionId,
+    });
+    await annotations.remapOpenThreadsForDocument({
+      issueId,
+      key: "plan",
+      documentId: document.id,
+      nextRevisionId: rewritten.document.latestRevisionId,
+      nextRevisionNumber: rewritten.document.latestRevisionNumber,
+      nextBody: rewritten.document.body,
+    });
+
+    const single = await annotations.getThreadForIssueDocument(issueId, "plan", thread.id);
+    expect(single?.anchorState).toBe("orphaned");
+    expect(single?.anchorHistory).toHaveLength(2);
+    expect(single?.anchorHistory?.[0]).toMatchObject({
+      fromRevisionNumber: 1,
+      toRevisionNumber: 2,
+      failureReason: null,
+    });
+    expect(single?.anchorHistory?.[0]?.nextAnchor).not.toBeNull();
+    const detachment = single?.anchorHistory?.[1];
+    expect(detachment).toMatchObject({
+      fromRevisionNumber: 2,
+      toRevisionNumber: 3,
+      anchorState: "orphaned",
+      nextAnchor: null,
+    });
+    // The passage the reviewer commented on is still recoverable from the trail.
+    expect(detachment?.previousAnchor.selectedText).toBe("selected text");
+    expect(detachment?.failureReason).toBeTruthy();
+
+    const listed = await annotations.listThreadsForIssueDocument(issueId, "plan", {
+      status: "all",
+      includeComments: true,
+    });
+    expect(listed).toHaveLength(1);
+    expect((listed[0] as { anchorHistory?: unknown }).anchorHistory).toBeUndefined();
+  });
+
   it("builds compact open plan review context and excludes resolved threads", async () => {
     const { companyId, issueId, document } = await createIssueWithDocument();
     const longBody = "x".repeat(PLAN_REVIEW_CONTEXT_LIMITS.maxBodyChars + 25);

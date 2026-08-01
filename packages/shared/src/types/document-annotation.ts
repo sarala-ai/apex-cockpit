@@ -125,6 +125,12 @@ export interface DocumentAnnotationAnchorRemapSnapshot {
 
 export interface DocumentAnnotationThreadWithComments extends DocumentAnnotationThread {
   comments: DocumentAnnotationComment[];
+  /**
+   * Re-anchoring trail for this thread, oldest first. Present on single-thread
+   * reads only; list reads omit it. Lets a reviewer see which revision the
+   * comment was last cleanly anchored to, and why it stopped matching.
+   */
+  anchorHistory?: DocumentAnnotationAnchorRemapSnapshot[];
 }
 
 export interface CreateDocumentAnnotationThreadRequest {
