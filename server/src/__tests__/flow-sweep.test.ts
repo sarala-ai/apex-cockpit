@@ -25,7 +25,7 @@ describe("startFlowCoordinatorSweep", () => {
   it("runs coordinator.sweep with the tick interval as staleness", async () => {
     vi.useFakeTimers();
     try {
-      const sweep = vi.fn(async () => ({ resumed: 0 }));
+      const sweep = vi.fn(async () => ({ resumed: 0, agentRecovered: 0 }));
       const stop = startFlowCoordinatorSweep({} as never, {
         coordinator: { sweep } as unknown as FlowCoordinator,
         intervalMs: 60_000,
@@ -43,7 +43,7 @@ describe("startFlowCoordinatorSweep", () => {
   });
 
   it("interval 0 is a no-op", () => {
-    const sweep = vi.fn(async () => ({ resumed: 0 }));
+    const sweep = vi.fn(async () => ({ resumed: 0, agentRecovered: 0 }));
     const stop = startFlowCoordinatorSweep({} as never, {
       coordinator: { sweep } as unknown as FlowCoordinator,
       intervalMs: 0,
