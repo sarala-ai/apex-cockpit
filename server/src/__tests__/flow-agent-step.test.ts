@@ -4,9 +4,11 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   acceptanceArtifactPath,
+  acceptancePullRequestTarget,
   buildAgentInstructionComment,
   evaluateAcceptanceV1,
   renderAgentPrompt,
+  renderWorkflowParams,
 } from "../apex/flow/agent-step.js";
 
 const context = {
@@ -65,6 +67,61 @@ describe("acceptance v1", () => {
   it("relative paths resolve against the launch dir", () => {
     expect(acceptanceArtifactPath("file_exists: rel/out.txt", "/launch")).toBe("/launch/rel/out.txt");
     expect(acceptanceArtifactPath("file_exists:/abs/out.txt", "/launch")).toBe("/abs/out.txt");
+  });
+});
+
+describe("acceptance v1 — pr_exists", () => {
+  it("parses pr_exists:<repo>#<head> and ignores non-matching strings", () => {
+    expect(acceptancePullRequestTarget("pr_exists:sarala-ai/apex-design#design/APE-7")).toEqual({
+      repo: "sarala-ai/apex-design",
+      head: "design/APE-7",
+    });
+    expect(acceptancePullRequestTarget("pr_exists:no-hash-here")).toBeNull();
+    expect(acceptancePullRequestTarget("file_exists:/x")).toBeNull();
+    expect(acceptancePullRequestTarget("a PR exists")).toBeNull();
+  });
+
+  it("passes when the injected check finds the PR and records its URL", async () => {
+    const calls: Array<[string, string]> = [];
+    const result = await evaluateAcceptanceV1("pr_exists:sarala-ai/apex-design#design/APE-7", {
+      checkPullRequest: async (repo, head) => {
+        calls.push([repo, head]);
+        return { exists: true, url: "https://github.com/sarala-ai/apex-design/pull/3", number: 3 };
+      },
+    });
+    expect(calls).toEqual([["sarala-ai/apex-design", "design/APE-7"]]);
+    expect(result.ok).toBe(true);
+    expect(result.evaluation).toContain("pr_exists verified");
+    expect(result.evaluation).toContain("https://github.com/sarala-ai/apex-design/pull/3");
+  });
+
+  it("fails classified when no open PR exists for the head branch", async () => {
+    const result = await evaluateAcceptanceV1("pr_exists:sarala-ai/apex-design#design/APE-7", {
+      checkPullRequest: async () => ({
+        exists: false,
+        message: "No open pull request on sarala-ai/apex-design with head branch 'design/APE-7'",
+      }),
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.message).toContain("acceptance pull request not found");
+      expect(result.message).toContain("design/APE-7");
+    }
+  });
+});
+
+describe("renderWorkflowParams", () => {
+  it("interpolates string values and passes non-strings through", () => {
+    const out = renderWorkflowParams(
+      { repo: "sarala-ai/apex-design", head: "design/{{identifier}}", retries: 2, flag: true },
+      context,
+    );
+    expect(out).toEqual({
+      repo: "sarala-ai/apex-design",
+      head: "design/APE-42",
+      retries: 2,
+      flag: true,
+    });
   });
 });
 

@@ -57,6 +57,8 @@ import {
   buildAgentInstructionComment,
   evaluateAcceptanceV1,
   renderAgentPrompt,
+  renderWorkflowParams,
+  type AgentPromptContext,
   type FlowTerminalRunStatus,
 } from "./agent-step.js";
 
@@ -111,6 +113,9 @@ export type FlowCoordinatorDeps = {
     node: FlowNode,
     commission: AgentRunCommission,
   ) => Promise<{ runId: string } | null>;
+  /** Acceptance evaluator (v1 grammar: run-success / file_exists / pr_exists).
+   *  Injectable so tests never shell the apex CLI for pr_exists. */
+  evaluateAcceptance: typeof evaluateAcceptanceV1;
   now: () => Date;
 };
 
@@ -164,6 +169,7 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
     commissionAgentRun:
       overrides.commissionAgentRun ??
       ((issue, node, commission) => defaultCommissionAgentRun(db, issue, node, commission)),
+    evaluateAcceptance: overrides.evaluateAcceptance ?? evaluateAcceptanceV1,
     now: overrides.now ?? (() => new Date()),
   };
   const issuesSvc = issueService(db);
@@ -258,6 +264,33 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
 
   function nodeIndex(flow: FlowDefinition, nodeId: string | null): number {
     return flow.nodes.findIndex((node) => node.id === nodeId);
+  }
+
+  /** The issue-derived interpolation context shared by A-node prompts,
+   *  acceptance templates, and W-node params. `acceptance` is the RENDERED
+   *  acceptance string (or "" where none applies). */
+  function promptContext(
+    issue: FlowIssue,
+    flow: FlowDefinition,
+    nodeId: string,
+    acceptance: string,
+  ): AgentPromptContext {
+    return {
+      identifier: issue.identifier,
+      title: issue.title,
+      description: issue.description,
+      issueId: issue.id,
+      flowName: flow.name,
+      nodeId,
+      acceptance,
+    };
+  }
+
+  /** Render an A-node's acceptance template against the issue — the agent's
+   *  instruction and the completion-time evaluator must see the SAME
+   *  concrete string (e.g. pr_exists:…#design/APE-7). */
+  function renderedAcceptance(issue: FlowIssue, flow: FlowDefinition, nodeId: string, template: string): string {
+    return renderAgentPrompt(template, promptContext(issue, flow, nodeId, template));
   }
 
   async function markFailed(issue: FlowIssue, failure: NodeFailure): Promise<void> {
@@ -470,15 +503,11 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
     if (!executor.ok) {
       return applyOnFail(issue, flow, index, executor.failure);
     }
-    const renderedPrompt = renderAgentPrompt(agent.prompt_template, {
-      identifier: issue.identifier,
-      title: issue.title,
-      description: issue.description,
-      issueId: issue.id,
-      flowName: flow.name,
-      nodeId: node.id,
-      acceptance: agent.acceptance,
-    });
+    const acceptance = renderedAcceptance(issue, flow, node.id, agent.acceptance);
+    const renderedPrompt = renderAgentPrompt(
+      agent.prompt_template,
+      promptContext(issue, flow, node.id, acceptance),
+    );
     // Park first (single-writer CAS out of `running`): waiting_agent now means
     // "run commissioned (or commissioning), awaiting completion".
     const waiting = await transition(
@@ -489,7 +518,7 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
         nodeId: node.id,
         agentId: executor.agentId,
         agentAutoAssigned: executor.assigned,
-        acceptance: agent.acceptance,
+        acceptance,
         budget: agent.budget ?? null,
       },
     );
@@ -504,7 +533,7 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
           flowName: flow.name,
           nodeId: node.id,
           renderedPrompt,
-          acceptance: agent.acceptance,
+          acceptance,
           budget: agent.budget ?? null,
         }),
         {},
@@ -596,7 +625,8 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
       });
       return { advanced: false, reason: `agent_run_${input.runStatus}` };
     }
-    const acceptance = await evaluateAcceptanceV1(node.agent.acceptance);
+    const acceptanceString = renderedAcceptance(issue, flow, node.id, node.agent.acceptance);
+    const acceptance = await deps.evaluateAcceptance(acceptanceString);
     if (!acceptance.ok) {
       await applyOnFail(issue, flow, index, {
         errorType: "agent_acceptance_failed",
@@ -607,7 +637,7 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
     const resumed = await transition(issue, { flowStatus: "running" }, "flow.agent_step_succeeded", {
       nodeId: node.id,
       runId: input.runId,
-      acceptance: node.agent.acceptance,
+      acceptance: acceptanceString,
       acceptanceEvaluation: acceptance.evaluation,
     });
     const next = await advanceOrComplete(resumed, flow, index);
@@ -743,9 +773,14 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
               });
               break;
             }
+            // W-node params are templates too: `head: design/{{identifier}}`
+            // resolves against the ticket before the workflow runs.
             const result = await deps.nodeRunner.runWorkflow({
               workflow: node.workflow.workflow,
-              params: node.workflow.params ?? {},
+              params: renderWorkflowParams(
+                node.workflow.params ?? {},
+                promptContext(issue, flow, node.id, ""),
+              ),
             });
             issue = result.ok
               ? await (async () => {
