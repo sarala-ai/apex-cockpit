@@ -7,6 +7,7 @@ import type {
   IssueThreadInteractionKind,
   IssueThreadInteractionStatus,
 } from "../constants.js";
+import type { ReviewableDocumentKey } from "../reviewable-documents.js";
 
 export interface DocumentTextPosition {
   sourceStart: number;
@@ -209,7 +210,7 @@ export interface PlanReviewInteractionContext {
 }
 
 export interface PlanReviewContext {
-  documentKey: "plan";
+  documentKey: ReviewableDocumentKey;
   issueId: string;
   latestRevisionId: string | null;
   latestRevisionNumber: number | null;

@@ -1039,6 +1039,13 @@ export {
 } from "./document-anchors.js";
 
 export {
+  isReviewableDocumentKey,
+  pickReviewableDocumentKey,
+  REVIEWABLE_DOCUMENT_KEYS,
+  type ReviewableDocumentKey,
+} from "./reviewable-documents.js";
+
+export {
   formatExternalObjectMentionSourceLabel,
   type ExternalObjectCanonicalIdentity,
   type ExternalObjectCanonicalUrl,
