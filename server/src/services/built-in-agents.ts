@@ -138,6 +138,24 @@ export interface RequiredBuiltInAgent {
 
 const BUILT_IN_AGENT_KEY_PATTERN = /^[a-z][a-z0-9_-]*$/;
 
+// Naming convention for built-in agent displayName (which becomes the
+// created agent's `name` — see the `name: definition.displayName` call
+// sites below): agent names surface on tickets, PRs, and GitHub audit
+// comments read by humans who are not engineers, so they must read as a
+// business role, not an internal engineering identifier. Concretely:
+//   - Space-separated Title Case words (e.g. "Reflection Coach",
+//     "Workflow Verification Agent"), never camelCase/glued-together
+//     identifiers (e.g. "LoopValidator" — a real name this convention
+//     exists to rule out; "Workflow Verification Agent" or "QA Agent" is
+//     the readable equivalent for the same role).
+//   - Prefer "<Function> Agent" (e.g. "Briefs Agent") unless the role/title
+//     alone already reads naturally as a name (e.g. "Reflection Coach").
+// Enforced mechanically below (shape only — the "does this read as a
+// business role" judgment call still lives with whoever adds the
+// definition); this does NOT touch existing rows in any live database — see
+// the "renaming existing agents" note in the founder's identity-fix request.
+const BUILT_IN_AGENT_DISPLAY_NAME_PATTERN = /^[A-Z][a-zA-Z0-9']*(\s[A-Z][a-zA-Z0-9']*)*$/;
+
 const BUILT_INS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../built-ins/agents");
 
 function readBuiltInText(relativePath: string) {
@@ -369,6 +387,13 @@ export function validateBuiltInAgentDefinitions(definitions: BuiltInAgentDefinit
     seenKeys.add(definition.key);
     if (!definition.displayName.trim()) {
       throw new Error(`Built-in agent ${definition.key} requires a displayName`);
+    }
+    if (!BUILT_IN_AGENT_DISPLAY_NAME_PATTERN.test(definition.displayName)) {
+      throw new Error(
+        `Built-in agent ${definition.key} displayName "${definition.displayName}" must read as a business role ` +
+          `— space-separated Title Case words (e.g. "Workflow Verification Agent"), not a glued-together ` +
+          `identifier like "LoopValidator".`,
+      );
     }
     if (!definition.shortPurpose.trim()) {
       throw new Error(`Built-in agent ${definition.key} requires a shortPurpose`);

@@ -435,6 +435,7 @@ export {
 export type {
   Company,
   CompanySlugBreakGlassConsequences,
+  CompanyIssuePrefixBreakGlassConsequences,
   SlugKeyedReference,
   Environment,
   EnvironmentDeleteBlastRadius,
@@ -1142,6 +1143,9 @@ export {
   companySlugSchema,
   companySlugBreakGlassSchema,
   COMPANY_SLUG_PATTERN,
+  companyIssuePrefixSchema,
+  companyIssuePrefixBreakGlassSchema,
+  COMPANY_ISSUE_PREFIX_PATTERN,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
   feedbackVoteValueSchema,

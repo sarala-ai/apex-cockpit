@@ -1,4 +1,9 @@
-export type { Company, CompanySlugBreakGlassConsequences, SlugKeyedReference } from "./company.js";
+export type {
+  Company,
+  CompanySlugBreakGlassConsequences,
+  CompanyIssuePrefixBreakGlassConsequences,
+  SlugKeyedReference,
+} from "./company.js";
 export type {
   Environment,
   EnvironmentDeleteBlastRadius,

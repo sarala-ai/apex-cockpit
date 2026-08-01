@@ -26,6 +26,28 @@ export interface CompanySlugBreakGlassConsequences {
   warning: string;
 }
 
+// Returned by companyService.breakGlassChangeIssuePrefix, mirroring
+// CompanySlugBreakGlassConsequences's dual role (dry-run preview AND the
+// snapshot persisted into the activity log entry when performed).
+//
+// Unlike the slug, issue identifiers (`issues.identifier`, e.g. "APEX-1") are
+// a STORED column, not computed at read time (see companyService's
+// buildIssuePrefixBreakGlassConsequences for the identifier-rewrite decision
+// this informed). So a prefix change is not purely forward-looking the way a
+// slug change is: existing identifiers get rewritten transactionally in the
+// same operation, and this report tells the operator how many rows that
+// touches plus what it can't reach (e.g. old identifiers already baked into
+// external GitHub mirror issue titles/bodies).
+export interface CompanyIssuePrefixBreakGlassConsequences {
+  companyId: string;
+  currentPrefix: string;
+  proposedPrefix: string;
+  existingIssueCount: number;
+  sampleRewrittenIdentifiers: Array<{ current: string; next: string }>;
+  githubProjectionRepo: string | null;
+  warning: string;
+}
+
 export interface Company {
   id: string;
   name: string;

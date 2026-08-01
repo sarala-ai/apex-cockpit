@@ -28,10 +28,14 @@ export {
   companySlugSchema,
   companySlugBreakGlassSchema,
   COMPANY_SLUG_PATTERN,
+  companyIssuePrefixSchema,
+  companyIssuePrefixBreakGlassSchema,
+  COMPANY_ISSUE_PREFIX_PATTERN,
   type CreateCompany,
   type UpdateCompany,
   type UpdateCompanyBranding,
   type CompanySlugBreakGlass,
+  type CompanyIssuePrefixBreakGlass,
 } from "./company.js";
 export {
   environmentDriverSchema,
