@@ -14,6 +14,9 @@
  *      the machine string is carried alongside for a details affordance,
  *      never as the headline)
  *   3. what to look at              (the artifact — the PR summary)
+ *   3b. what YOU are checking      (the review passes the gate declares, as
+ *      one-line questions — DERIVED from the flow definition, never authored
+ *      here; docs/architecture/review-passes.md)
  *   4. what happens next            (DERIVED from the flow definition's
  *      post-gate nodes via `apex flows show`, never hardcoded)
  *   5. who/what did the work        (agent display name, permission profile,
@@ -28,7 +31,13 @@ import { z } from "zod";
 import { ApexUnavailableError, ApexInvocationError, type ApexInvoker } from "../invoke.js";
 import { acceptancePullRequestTarget } from "./agent-step.js";
 import { enrichDesignFiles, type DesignArchiveFetcher } from "./design-artifact.js";
-import { FlowDefinitionError, type FlowDefinition, type FlowNode, type LoadedFlowDefinition } from "./definition.js";
+import {
+  FlowDefinitionError,
+  type FlowDefinition,
+  type FlowNode,
+  type LoadedFlowDefinition,
+  type ReviewPass,
+} from "./definition.js";
 
 /** Zod contract for github_repo's get_pull_request tool result (apex-core,
  *  the changed-files extension) — the SAME schema both the pr-diff route and
@@ -597,6 +606,44 @@ export function deriveRisk(input: {
 }
 
 // ---------------------------------------------------------------------------
+// 4b. What YOU are supposed to be checking — the gate's review passes
+// ---------------------------------------------------------------------------
+
+/** One pre-decision question, as the flow's gate declared it. */
+export type ReviewPassItem = { id: string; label: string; question: string };
+
+/**
+ * The passes THIS gate asks, in the order the flow declared them.
+ *
+ * Deliberately not a completion requirement: these are questions shown
+ * before the decision, never checkboxes that block it
+ * (docs/architecture/review-passes.md — a forced tick becomes a reflex and
+ * teaches people to lie). A gate that declares none renders nothing; an
+ * unavailable flow definition renders nothing. Silence is the honest
+ * degraded state — an empty "Before you decide" heading would imply the
+ * questions were checked and found empty.
+ */
+export function collectReviewPasses(
+  flow: FlowDefinition | null,
+  gateNodeId: string | null,
+  catalog: Record<string, ReviewPass>,
+): ReviewPassItem[] {
+  if (!flow || !gateNodeId) return [];
+  const node = flow.nodes.find((n) => n.id === gateNodeId);
+  const ids = node?.gate?.requires ?? [];
+  const items: ReviewPassItem[] = [];
+  for (const id of ids) {
+    const entry = catalog[id];
+    // No catalog entry = an apex-core older than this pass id. Skipping is
+    // right: the cockpit does not author question text, so inventing one
+    // here would fork the doctrine.
+    if (!entry) continue;
+    items.push({ id: entry.id, label: entry.label, question: entry.question });
+  }
+  return items;
+}
+
+// ---------------------------------------------------------------------------
 // 5. Who / what did the work
 // ---------------------------------------------------------------------------
 
@@ -675,6 +722,8 @@ export type FlowGateBrief =
       decision: DecisionSection;
       verified: VerifiedSection;
       artifact: PrDiffSummary;
+      /** What the approver is supposed to be checking. May be empty. */
+      reviewPasses: ReviewPassItem[];
       next: NextSection;
       risk: RiskSection;
       provenance: ProvenanceSection;
@@ -764,10 +813,13 @@ export async function assembleFlowGateBrief(input: {
 
   // --- what happens next, derived from the flow definition ---------------
   let flow: FlowDefinition | null = null;
+  let reviewPassCatalog: Record<string, ReviewPass> = {};
   let flowNote: string | null = null;
   if (flowName) {
     try {
-      flow = (await input.loadFlowDefinition(flowName)).flow;
+      const loaded = await input.loadFlowDefinition(flowName);
+      flow = loaded.flow;
+      reviewPassCatalog = loaded.reviewPasses ?? {};
     } catch (err) {
       flowNote =
         err instanceof FlowDefinitionError || err instanceof ApexUnavailableError
@@ -812,6 +864,7 @@ export async function assembleFlowGateBrief(input: {
     },
     verified,
     artifact,
+    reviewPasses: collectReviewPasses(flow, nodeId, reviewPassCatalog),
     next,
     risk: deriveRisk({ flow, gateNodeId: nodeId, verified, artifact }),
     provenance,

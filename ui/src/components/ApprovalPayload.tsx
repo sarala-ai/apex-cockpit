@@ -6,6 +6,7 @@ import { approvalsApi, type ApprovalPrDiff } from "../api/approvals";
 import { queryKeys } from "../lib/queryKeys";
 import { formatWaitingFor } from "../lib/approval-waiting";
 import { resolveArtifactRenderer } from "./artifact-renderers";
+import { ReviewPassChecklist } from "./ReviewPassChecklist";
 
 export const typeLabel: Record<string, string> = {
   hire_agent: "Hire Agent",
@@ -316,9 +317,16 @@ function formatStamp(value: string | null): string | null {
 export function FlowGatePayload({
   payload,
   approvalId,
+  acknowledgedReviewPasses,
+  onAcknowledgedReviewPassesChange,
 }: {
   payload: Record<string, unknown>;
   approvalId?: string;
+  /** Review passes the approver has ticked, when this surface also submits
+   *  the decision. Omitting the pair renders the questions read-only rather
+   *  than offering a checkbox that would record nothing. */
+  acknowledgedReviewPasses?: string[];
+  onAcknowledgedReviewPassesChange?: (ids: string[]) => void;
 }) {
   const prompt = firstNonEmptyString(payload.prompt);
   const [showMachine, setShowMachine] = useState(false);
@@ -412,6 +420,14 @@ export function FlowGatePayload({
         <ArtifactBlock artifact={artifact} />
       </div>
 
+      {/* 3b — what you are supposed to be checking (renders nothing when the
+          gate declares no passes) */}
+      <ReviewPassChecklist
+        passes={data.reviewPasses ?? []}
+        acknowledged={acknowledgedReviewPasses}
+        onChange={onAcknowledgedReviewPassesChange}
+      />
+
       {/* 4 — what happens next (derived from the flow definition), and how
           hard it is to take back. "On approval" / "Risks" deliberately reuse
           the board-approval brief's labels — one vocabulary across every
@@ -493,17 +509,30 @@ export function ApprovalPayloadRenderer({
   payload,
   hidePrimaryTitle = false,
   approvalId,
+  acknowledgedReviewPasses,
+  onAcknowledgedReviewPassesChange,
 }: {
   type: string;
   payload: Record<string, unknown>;
   hidePrimaryTitle?: boolean;
   approvalId?: string;
+  acknowledgedReviewPasses?: string[];
+  onAcknowledgedReviewPassesChange?: (ids: string[]) => void;
 }) {
   if (type === "hire_agent") return <HireAgentPayload payload={payload} />;
   if (type === "budget_override_required") return <BudgetOverridePayload payload={payload} />;
   if (type === "request_board_approval") {
     return <BoardApprovalPayload payload={payload} hideTitle={hidePrimaryTitle} />;
   }
-  if (type === "flow_gate") return <FlowGatePayload payload={payload} approvalId={approvalId} />;
+  if (type === "flow_gate") {
+    return (
+      <FlowGatePayload
+        payload={payload}
+        approvalId={approvalId}
+        acknowledgedReviewPasses={acknowledgedReviewPasses}
+        onAcknowledgedReviewPassesChange={onAcknowledgedReviewPassesChange}
+      />
+    );
+  }
   return <CeoStrategyPayload payload={payload} />;
 }

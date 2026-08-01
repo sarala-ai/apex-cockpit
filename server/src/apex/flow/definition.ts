@@ -52,7 +52,24 @@ export const agentNodeConfigSchema = z.object({
 export const gateNodeConfigSchema = z.object({
   mode: z.enum(["approve", "notify"]),
   prompt: z.string().nullish(),
+  /** Review-pass identifiers this gate asks the approver
+   *  (apex-core `flows/*.yml` `gate.requires`; vocabulary and question text
+   *  both live in core's review_passes.py — never restated here). Tolerant of
+   *  an older apex-core that does not emit the key at all. */
+  requires: z.array(z.string()).nullish(),
 });
+
+/** One review pass as apex-core defines it — id, label, persona, and the ONE
+ *  question shown at the gate. The cockpit renders this text; it never
+ *  authors it (docs/architecture/review-passes.md is the single source). */
+export const reviewPassSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  persona: z.string(),
+  question: z.string().min(1),
+});
+
+export type ReviewPass = z.infer<typeof reviewPassSchema>;
 
 export const flowNodeSchema = z.object({
   id: z.string().min(1),
@@ -79,6 +96,10 @@ const flowShowSuccessSchema = z.object({
   status: z.literal("success"),
   path: z.string(),
   flow: flowDefinitionSchema,
+  /** Catalog subset for the passes this flow's gates ask for. Defaulted, so a
+   *  cockpit talking to an apex-core that predates review passes still loads
+   *  flows — it just has no questions to show. */
+  review_passes: z.record(z.string(), reviewPassSchema).default({}),
 });
 
 const flowListSuccessSchema = z.object({
@@ -107,7 +128,11 @@ const flowErrorEnvelopeSchema = z.object({
   error: z.string(),
 });
 
-export type LoadedFlowDefinition = { path: string; flow: FlowDefinition };
+export type LoadedFlowDefinition = {
+  path: string;
+  flow: FlowDefinition;
+  reviewPasses: Record<string, ReviewPass>;
+};
 export type FlowListRow = z.infer<typeof flowListSuccessSchema>["flows"][number];
 
 /** A classified flow-definition failure (not_found | invalid_flow | contract). */
@@ -178,7 +203,7 @@ function tryParseErrorEnvelope(stdout: string): z.infer<typeof flowErrorEnvelope
 /** Load one flow definition by name via `apex flows show <name> --output json`. */
 export async function loadFlowDefinition(name: string): Promise<LoadedFlowDefinition> {
   const out = await runFlowsCommand(["show", name], flowShowSuccessSchema, `show ${name}`);
-  return { path: out.path, flow: out.flow };
+  return { path: out.path, flow: out.flow, reviewPasses: out.review_passes };
 }
 
 /** List flows visible to the apex install via `apex flows list --output json`. */
