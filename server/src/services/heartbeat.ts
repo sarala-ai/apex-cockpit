@@ -4529,6 +4529,10 @@ export function buildPaperclipTaskMarkdown(input: {
     title: string;
     workMode?: string | null;
     description?: string | null;
+    /** The machine-facing half of the ticket (issues.agent_brief). Hidden
+     *  behind a collapsed section for humans; delivered to the agent here,
+     *  in the same fenced task-context block the description always used. */
+    agentBrief?: string | null;
   } | null;
   ancestors?: Array<{
     id: string;
@@ -4615,6 +4619,14 @@ export function buildPaperclipTaskMarkdown(input: {
     const description = issue.description?.trim();
     if (description) {
       lines.push("", "Issue description:", fenceTaskText(description));
+    }
+    const agentBrief = issue.agentBrief?.trim();
+    if (agentBrief) {
+      lines.push(
+        "",
+        "Agent brief (machine detail for this ticket — ids, payload shapes, exact commands):",
+        fenceTaskText(agentBrief),
+      );
     }
   }
   if (ancestors.length > 0) {
@@ -5226,6 +5238,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         identifier: issues.identifier,
         title: issues.title,
         description: issues.description,
+        agentBrief: issues.agentBrief,
         status: issues.status,
         workMode: issues.workMode,
         priority: issues.priority,
@@ -10657,6 +10670,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           priority: issueContext.priority,
           workMode: issueContext.workMode,
           description: issueContext.description,
+          agentBrief: issueContext.agentBrief,
           projectId: issueContext.projectId,
           projectWorkspaceId: issueContext.projectWorkspaceId,
           executionWorkspaceId: issueContext.executionWorkspaceId,
@@ -10733,6 +10747,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             title: issueRef.title,
             workMode: issueRef.workMode,
             description: issueRef.description,
+            agentBrief: issueRef.agentBrief,
           }
         : null,
       ancestors: issueAncestors,
@@ -10751,6 +10766,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         identifier: issueRef.identifier,
         title: issueRef.title,
         description: issueRef.description,
+        agentBrief: issueRef.agentBrief,
         workMode: issueRef.workMode,
       };
     } else {

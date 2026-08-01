@@ -383,6 +383,10 @@ const createIssueBaseSchema = z.object({
   inheritExecutionWorkspaceFromIssueId: z.string().uuid().optional().nullable(),
   title: z.string().min(1),
   description: multilineTextSchema.optional().nullable(),
+  // The machine half of a ticket — ids, payload shapes, exact commands. Kept
+  // out of `description` so the human body stays readable; delivered to the
+  // agent unchanged via its task context.
+  agentBrief: multilineTextSchema.optional().nullable(),
   status: z.enum(ISSUE_STATUSES),
   workMode: z.enum(ISSUE_WORK_MODES).optional().default("standard"),
   harnessKind: z.enum(ISSUE_HARNESS_KINDS).optional().nullable(),

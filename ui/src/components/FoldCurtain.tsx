@@ -97,7 +97,7 @@ export function FoldCurtain({
     : undefined;
 
   return (
-    <div className={cn("fold-curtain", className)} data-expanded={expanded ? "true" : "false"}>
+    <div className={cn("fold-curtain", className)} data-testid="fold-curtain" data-curtained={shouldCurtain ? "true" : "false"} data-expanded={expanded ? "true" : "false"}>
       <div
         ref={contentRef}
         className={cn(
@@ -125,6 +125,7 @@ export function FoldCurtain({
             variant="ghost"
             size="sm"
             aria-expanded={expanded}
+            data-testid="fold-curtain-toggle"
             onClick={() => {
               setAllowTransition(true);
               setExpanded((v) => !v);

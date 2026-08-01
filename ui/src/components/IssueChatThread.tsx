@@ -108,6 +108,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { FoldCurtain } from "./FoldCurtain";
 import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
 import { WorkspaceFileMarkdownBody } from "./WorkspaceFileMarkdownBody";
 import { MarkdownEditor, type MentionOption, type MarkdownEditorRef } from "./MarkdownEditor";
@@ -1866,7 +1867,16 @@ function IssueChatAssistantMessage({
               <div className="text-sm italic text-muted-foreground">Comment deleted</div>
             ) : (
               <div className="min-w-0 max-w-full space-y-3">
-                <IssueChatAssistantParts message={message} hasCoT={false} />
+                {/* Safeguard, not the fix. An agent report is an authored
+                 *  comment and must never be hidden — but a report long
+                 *  enough to dominate the thread is a report that was written
+                 *  wrong, and the real correction is the instruction that
+                 *  produced it (agent-step.ts, AGENT_STEP_REPORT_INSTRUCTION).
+                 *  This only stops one bad report from burying the
+                 *  conversation while that lands. */}
+                <FoldCurtain collapsedHeight={280} activationBuffer={80}>
+                  <IssueChatAssistantParts message={message} hasCoT={false} />
+                </FoldCurtain>
                 {notices.length > 0 ? (
                   <div className="space-y-2">
                     {notices.map((notice, index) => (

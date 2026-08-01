@@ -322,6 +322,75 @@ describe("IssueChatThread", () => {
     markdownBodyRenderMock.mockClear();
   });
 
+  it("never hides an authored agent report, but clamps an over-long one with Show more", () => {
+    const report = ["Opened PR #2 for the board note.", ...Array.from({ length: 40 }, (_, i) => `line ${i}`)].join("\n");
+    const renderReport = () => {
+      const root = createRoot(container);
+      act(() => {
+        root.render(
+          <MemoryRouter>
+            <IssueChatThread
+              comments={[{
+                id: "agent-report",
+                companyId: "company-1",
+                issueId: "issue-1",
+                authorAgentId: "agent-1",
+                authorUserId: null,
+                body: report,
+                authorType: "agent" as const,
+                presentation: null,
+                metadata: null,
+                createdAt: new Date("2026-08-01T12:00:00.000Z"),
+                updatedAt: new Date("2026-08-01T12:00:00.000Z"),
+              }]}
+              currentUserId="user-board"
+              linkedRuns={[]}
+              timelineEvents={[]}
+              liveRuns={[]}
+              onAdd={async () => {}}
+              showComposer={false}
+              enableLiveTranscriptPolling={false}
+            />
+          </MemoryRouter>,
+        );
+      });
+      return root;
+    };
+
+    // Short enough to fit: no curtain toggle, and the report reads in full.
+    let root = renderReport();
+    expect(container.textContent).toContain("Opened PR #2 for the board note.");
+    expect(container.querySelector('[data-testid="fold-curtain"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="fold-curtain-toggle"]')).toBeNull();
+    act(() => root.unmount());
+
+    // A report tall enough to dominate the thread clamps instead — the comment
+    // is still there (authored comments are never hidden), just curtained.
+    const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => 900 });
+    try {
+      root = renderReport();
+      const curtain = container.querySelector('[data-testid="fold-curtain"]');
+      expect(curtain?.getAttribute("data-curtained")).toBe("true");
+      expect(curtain?.getAttribute("data-expanded")).toBe("false");
+      const toggle = container.querySelector('[data-testid="fold-curtain-toggle"]') as HTMLButtonElement;
+      expect(toggle).not.toBeNull();
+      expect(toggle.textContent).toContain("Show more");
+      expect(container.textContent).toContain("Opened PR #2 for the board note.");
+
+      act(() => {
+        toggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      expect(
+        container.querySelector('[data-testid="fold-curtain"]')?.getAttribute("data-expanded"),
+      ).toBe("true");
+      act(() => root.unmount());
+    } finally {
+      if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
+      else delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollHeight;
+    }
+  });
+
   it("collapses flow machine correspondence by default and expands it in place", () => {
     const root = createRoot(container);
     const at = (minute: number) => new Date(Date.UTC(2026, 7, 1, 7, minute, 0));

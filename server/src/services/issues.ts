@@ -2433,6 +2433,10 @@ const issueListSelect = {
       )
     END
   `,
+  // The agent brief is never carried by a list surface: nothing on a board
+  // card or inbox row reads it, and it is the field most likely to be large.
+  // Selected as a constant NULL so the row shape stays whole.
+  agentBrief: sql<string | null>`NULL::text`,
   status: issues.status,
   workMode: issues.workMode,
   harnessKind: issues.harnessKind,

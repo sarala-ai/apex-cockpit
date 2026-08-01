@@ -54,6 +54,10 @@ export type AgentPromptContext = {
   identifier: string | null;
   title: string;
   description: string | null;
+  /** issues.agent_brief — the machine half of the ticket. Available to flow
+   *  prompt templates as `{{agent_brief}}`; the agent also receives it
+   *  natively in its task context (buildPaperclipTaskMarkdown). */
+  agentBrief: string | null;
   issueId: string;
   flowName: string | null;
   nodeId: string;
@@ -67,6 +71,7 @@ export function renderAgentPrompt(template: string, context: AgentPromptContext)
     identifier: context.identifier ?? context.issueId,
     title: context.title,
     description: context.description ?? "",
+    agent_brief: context.agentBrief ?? "",
     issue_id: context.issueId,
     flow_name: context.flowName ?? "",
     node_id: context.nodeId,
@@ -226,6 +231,26 @@ export async function evaluateAcceptanceV1(
   }
 }
 
+/**
+ * How a bounded agent step reports back on the ticket.
+ *
+ * The ticket thread is a human conversation, and an agent report is one of
+ * the few things in it a human actually has to read — so it is held to the
+ * standard of a colleague's message, not a build log. Everything the reader
+ * can already see (the instruction, the steps, the parameters, the run's
+ * own transcript) is not news and does not belong in the thread.
+ *
+ * This is production, not rendering: the shortest report is the one that was
+ * never written long.
+ */
+export const AGENT_STEP_REPORT_INSTRUCTION = [
+  "Reporting — how you close this step on the ticket:",
+  "Post ONE short comment. First line: what happened, in one sentence, in plain language.",
+  "After that, only what a reader could NOT already see — a surprise, a deviation from this instruction, or a decision someone now has to make. If there is none of that, the one sentence IS the whole comment.",
+  "Do not use emoji or status checklists. Do not restate this instruction or its parameters back. Do not list the steps you took — the activity trail already has them. Do not paste command output, payloads, or diagnostics.",
+  "If you are blocked, that is the report: name what is blocked and the single thing that would unblock it, in a few lines. What you tried, the errors, and the variations you attempted stay in this run's transcript — it is linked from the ticket and retrievable; do not paste it into the conversation.",
+].join("\n");
+
 /** The instruction comment the coordinator posts before commissioning —
  *  delivered to the agent as its wake comment. */
 export function buildAgentInstructionComment(input: {
@@ -246,6 +271,7 @@ export function buildAgentInstructionComment(input: {
   if (input.budget && Object.keys(input.budget).length > 0) {
     lines.push(`Budget (advisory in v1 — not runtime-enforced): ${JSON.stringify(input.budget)}`);
   }
+  lines.push("", AGENT_STEP_REPORT_INSTRUCTION);
   lines.push(
     "",
     "When this run completes, the flow coordinator evaluates acceptance and advances the flow automatically.",
