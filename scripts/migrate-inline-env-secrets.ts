@@ -1,10 +1,7 @@
 import { eq } from "drizzle-orm";
 import { agents, createDb } from "@paperclipai/db";
-import { secretService } from "../server/src/services/secrets.js";
+import { secretService, SENSITIVE_ENV_KEY_RE } from "../server/src/services/secrets.js";
 import { syncAgentAdapterEnvBindings } from "../server/src/services/agent-secret-bindings.js";
-
-const SENSITIVE_ENV_KEY_RE =
-  /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
 
 type EnvBinding =
   | string
