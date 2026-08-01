@@ -79,6 +79,7 @@ import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatDurationMs, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { InlineEditor } from "../components/InlineEditor";
+import { AgentBriefSection } from "../components/AgentBriefSection";
 import {
   IssueChatThread,
   type IssueChatComposerHandle,
@@ -4558,6 +4559,11 @@ export function IssueDetail() {
           onDropFile={async (file) => {
             await uploadAttachment.mutateAsync(file);
           }}
+        />
+
+        <AgentBriefSection
+          value={issue.agentBrief}
+          onSave={(agentBrief) => updateIssue.mutateAsync({ agentBrief })}
         />
       </div>
 
