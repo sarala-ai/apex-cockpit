@@ -213,3 +213,15 @@ export async function getAttributionsForProject(
     .where(and(eq(resourceAttributions.companyId, companyId), eq(resourceAttributions.projectId, projectId)));
   return new Map(rows.map((r) => [r.resourceUri, r]));
 }
+
+/**
+ * The footprint join for the Workflows detail route: every resource this
+ * cockpit's `resource_attributions` table has recorded against a given
+ * workflow name, ACROSS companies (a workflow name isn't company-scoped —
+ * it's whatever the CLI attributed, manual or auto_mapped). Deliberately NOT
+ * a live cloud query — see the `note` the route attaches alongside this, this
+ * is db-known attribution only.
+ */
+export async function getAttributionsByWorkflow(db: Db, workflow: string): Promise<ResourceAttributionRow[]> {
+  return db.select().from(resourceAttributions).where(eq(resourceAttributions.workflow, workflow));
+}
