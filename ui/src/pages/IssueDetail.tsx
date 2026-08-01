@@ -7,6 +7,7 @@ import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSha
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
 import { approvalsApi } from "../api/approvals";
+import { apexFlowsApi } from "../api/apex-flows";
 import { activityApi, type RunForIssue } from "../api/activity";
 import { heartbeatsApi, type ActiveRunForIssue, type LiveRunForIssue } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -176,6 +177,7 @@ import {
   Plus,
   Repeat,
   SlidersHorizontal,
+  Workflow,
   XCircle,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -1514,6 +1516,8 @@ export function IssueDetail() {
   const { pushToast } = useToastActions();
   const { isMobile } = useSidebar();
   const [moreOpen, setMoreOpen] = useState(false);
+  const [startFlowOpen, setStartFlowOpen] = useState(false);
+  const [startFlowName, setStartFlowName] = useState<string>("");
   const [copied, setCopied] = useState(false);
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
   const [fileViewerPromptOpen, setFileViewerPromptOpen] = useState(false);
@@ -2359,6 +2363,36 @@ export function IssueDetail() {
       pushToast({
         title: "Monitor check failed",
         body: err instanceof Error ? err.message : "Unable to trigger the monitor right now",
+        tone: "error",
+      });
+    },
+  });
+
+  // Flow coordinator (work-loop typed flows): available definitions come from
+  // `apex flows list` via the server; only fetched while the dialog is open.
+  const { data: availableFlows, isLoading: flowsLoading, error: flowsError } = useQuery({
+    queryKey: ["apex-flows", "definitions"],
+    queryFn: () => apexFlowsApi.list(),
+    enabled: startFlowOpen,
+    staleTime: 60_000,
+  });
+
+  const startFlow = useMutation({
+    mutationFn: (flowName: string) => apexFlowsApi.start(issueId!, flowName),
+    onSuccess: (started) => {
+      invalidateIssueDetail();
+      invalidateIssueCollections();
+      setStartFlowOpen(false);
+      pushToast({
+        title: `Flow ${started.flowName} started`,
+        body: `Running from node ${started.flowNodeId}`,
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Start flow failed",
+        body: err instanceof Error ? err.message : "Unable to start the flow",
         tone: "error",
       });
     },
@@ -4397,6 +4431,17 @@ export function IssueDetail() {
                 </>
               ) : null}
               <button
+                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+                onClick={() => {
+                  setStartFlowName("");
+                  setStartFlowOpen(true);
+                  setMoreOpen(false);
+                }}
+              >
+                <Workflow className="h-3 w-3" />
+                Start flow...
+              </button>
+              <button
                 className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
                 onClick={() => {
                   updateIssue.mutate(
@@ -4953,6 +4998,62 @@ export function IssueDetail() {
               variant={treeControlMode === "cancel" ? "destructive" : "default"}
             >
               {executeTreeControl.isPending ? "Applying..." : treeControlPrimaryButtonLabel}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Start flow dialog (work-loop typed flows) */}
+      <Dialog open={startFlowOpen} onOpenChange={setStartFlowOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Start flow</DialogTitle>
+            <DialogDescription>
+              Attach a typed flow to this task; the coordinator advances it deterministically
+              (workflows and checks run, gates open approvals).
+            </DialogDescription>
+          </DialogHeader>
+          {flowsLoading ? (
+            <p className="text-xs text-muted-foreground">Loading flows...</p>
+          ) : flowsError ? (
+            <p className="text-xs text-destructive">
+              {flowsError instanceof Error ? flowsError.message : "Unable to load flow definitions"}
+            </p>
+          ) : (
+            <div className="space-y-1">
+              {(availableFlows?.flows ?? [])
+                .filter((flow) => !flow.error)
+                .map((flow) => (
+                  <button
+                    key={flow.name}
+                    className={cn(
+                      "flex w-full items-center gap-2 rounded border border-border px-2 py-1.5 text-left text-xs hover:bg-accent/50",
+                      startFlowName === flow.name && "border-primary bg-accent/50",
+                    )}
+                    onClick={() => setStartFlowName(flow.name)}
+                  >
+                    <Workflow className="h-3 w-3 shrink-0" />
+                    <span className="font-mono">{flow.name}</span>
+                    <span className="ml-auto text-muted-foreground">
+                      {flow.ticket_type} · {flow.node_count} node{flow.node_count === 1 ? "" : "s"} ·{" "}
+                      {flow.gate_count} gate{flow.gate_count === 1 ? "" : "s"}
+                    </span>
+                  </button>
+                ))}
+              {(availableFlows?.flows ?? []).filter((flow) => !flow.error).length === 0 ? (
+                <p className="text-xs text-muted-foreground">No flow definitions found.</p>
+              ) : null}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setStartFlowOpen(false)} disabled={startFlow.isPending}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => startFlow.mutate(startFlowName)}
+              disabled={!startFlowName || startFlow.isPending}
+            >
+              {startFlow.isPending ? "Starting..." : "Start flow"}
             </Button>
           </DialogFooter>
         </DialogContent>

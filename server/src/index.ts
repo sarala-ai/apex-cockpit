@@ -1114,6 +1114,13 @@ export async function startServer(): Promise<StartedServer> {
   // scheduling shape as the attribution-refresh job above.
   const stopGithubIssueIngestScheduler = startGithubIssueIngestScheduler(db as any);
 
+  // Flow-coordinator sweep (work-loop typed flows) — resumes `running` flows
+  // whose advancement loop died with the process. Event-driven advancement
+  // (start API, gate decisions) stays primary; this is recovery only. Every
+  // APEX_FLOW_TICK_MINUTES (default 5m; 0 disables).
+  const { startFlowCoordinatorSweep } = await import("./apex/flow/sweep.js");
+  const stopFlowCoordinatorSweep = startFlowCoordinatorSweep(db as any);
+
   // Wait for external adapters to finish loading before accepting requests.
   // Without this, adapter type validation (assertKnownAdapterType) would
   // reject valid external adapter types during the startup loading window.
@@ -1202,6 +1209,7 @@ export async function startServer(): Promise<StartedServer> {
       }
       stopAttributionRefreshScheduler();
       stopGithubIssueIngestScheduler();
+      stopFlowCoordinatorSweep();
       await waitForHeartbeatSchedulerIdle();
 
       const telemetryClient = getTelemetryClient();

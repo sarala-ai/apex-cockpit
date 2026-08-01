@@ -22,6 +22,7 @@ import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { redactEventPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { resolveGateApproval } from "../apex/pipeline/gate-bridge.js";
+import { flowCoordinator, FLOW_GATE_APPROVAL_TYPE } from "../apex/flow/coordinator.js";
 import type { PipelineActor } from "../services/pipelines.js";
 
 /** apex-tower (Task 2 §2b): a pipeline actor from the approving/rejecting board user. */
@@ -238,6 +239,27 @@ export function approvalRoutes(
       });
     }
 
+    // Flow coordinator gate hook: an approved flow_gate advances the issue's
+    // typed flow past the gate node and resumes deterministic advancement in
+    // the background (a subsequent workflow node can run for minutes — never
+    // block the decision response on it).
+    if (applied && approval.type === FLOW_GATE_APPROVAL_TYPE) {
+      const decision = await flowCoordinator(db).onGateDecision({
+        approvalId: approval.id,
+        payload: approval.payload,
+        decision: "approve",
+        decidedByUserId: req.actor.userId ?? "board",
+      });
+      if (decision.resumed) {
+        void decision.execution.catch((err) => {
+          logger.error(
+            { err, approvalId: approval.id },
+            "flow coordinator: background advancement after gate approval rejected",
+          );
+        });
+      }
+    }
+
     if (applied) {
       const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
       const linkedIssueIds = linkedIssues.map((issue) => issue.id);
@@ -350,6 +372,17 @@ export function approvalRoutes(
         entityType: "approval",
         entityId: approval.id,
         details: { transitioned: gate.transitioned, toStageKey: gate.toStageKey ?? null, note: gate.note ?? null },
+      });
+    }
+
+    // Flow coordinator gate hook: a rejected flow_gate pauses the flow and
+    // surfaces it (rejection is a new decision point, not a retry loop).
+    if (applied && approval.type === FLOW_GATE_APPROVAL_TYPE) {
+      await flowCoordinator(db).onGateDecision({
+        approvalId: approval.id,
+        payload: approval.payload,
+        decision: "reject",
+        decidedByUserId: req.actor.userId ?? "board",
       });
     }
 
