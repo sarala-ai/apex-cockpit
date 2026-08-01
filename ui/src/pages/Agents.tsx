@@ -17,6 +17,7 @@ import { MembershipAction } from "../components/MembershipAction";
 import { StarToggle } from "../components/StarToggle";
 import { EntityRow } from "../components/EntityRow";
 import { BuiltInAgentBadge, BuiltInLifecycleChip } from "../components/BuiltInAgentBadges";
+import { FixtureAgentBadge } from "../components/FixtureAgentBadge";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
@@ -24,7 +25,7 @@ import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle, Bot, Plus, List, GitBranch } from "lucide-react";
-import { AGENT_ROLE_LABELS, type Agent, type Environment, type EnvironmentCapabilities } from "@paperclipai/shared";
+import { AGENT_ROLE_LABELS, isFixtureAgent, type Agent, type Environment, type EnvironmentCapabilities } from "@paperclipai/shared";
 import {
   isStarred,
   resourceMembershipState,
@@ -352,29 +353,36 @@ export function Agents() {
     const agentJoinLeavePending = agentPending && membershipMutation.variables?.starred === undefined;
     const agentStarred = isStarred(membershipsQuery.data, "agent", agent.id);
     const builtInState = builtInByAgentId.get(agent.id);
-    // Provenance badge + lifecycle chip + inline `Set up`. Rendered inline in
+    // Provenance badges (built-in, fixture) + lifecycle chip + inline `Set up`.
+    // Rendered inline in
     // `meta` at xl (where there's room and the meta columns align) and on a
     // dedicated full-width line beneath the name below xl, so the chips never
     // starve the name — the row's primary identifier — at narrow widths.
-    const builtInCluster = builtInState ? (
+    const isFixture = isFixtureAgent(agent.rosterKind);
+    const provenanceCluster = builtInState || isFixture ? (
       <>
-        <BuiltInAgentBadge />
-        <BuiltInLifecycleChip status={builtInState.status} />
-        {builtInState.status === "needs_setup" && (
-          <span
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-            }}
-          >
-            <Button
-              size="xs"
-              variant="outline"
-              onClick={() => setConfigureState(builtInState)}
-            >
-              Set up
-            </Button>
-          </span>
+        {isFixture && <FixtureAgentBadge />}
+        {builtInState && (
+          <>
+            <BuiltInAgentBadge />
+            <BuiltInLifecycleChip status={builtInState.status} />
+            {builtInState.status === "needs_setup" && (
+              <span
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }}
+              >
+                <Button
+                  size="xs"
+                  variant="outline"
+                  onClick={() => setConfigureState(builtInState)}
+                >
+                  Set up
+                </Button>
+              </span>
+            )}
+          </>
         )}
       </>
     ) : null;
@@ -403,17 +411,17 @@ export function Agents() {
           <AgentStatusCapsule status={agent.status} />
         )}
         secondaryRow={
-          builtInCluster ? (
+          provenanceCluster ? (
             <div className="xl:hidden flex flex-wrap items-center gap-1.5">
-              {builtInCluster}
+              {provenanceCluster}
             </div>
           ) : undefined
         }
         meta={
           <div className="flex items-center gap-3">
-            {builtInCluster && (
+            {provenanceCluster && (
               <div className="hidden xl:flex items-center gap-1.5">
-                {builtInCluster}
+                {provenanceCluster}
               </div>
             )}
             <div className="hidden xl:flex items-center gap-3">
@@ -681,6 +689,11 @@ function OrgTreeNode({
               {agent?.title ? ` - ${agent.title}` : ""}
             </span>
           </div>
+          {isFixtureAgent(agent?.rosterKind) && (
+            <div className="flex items-center gap-1.5 shrink-0">
+              <FixtureAgentBadge />
+            </div>
+          )}
           {builtInState && (
             <div className="flex items-center gap-1.5 shrink-0">
               <BuiltInAgentBadge />

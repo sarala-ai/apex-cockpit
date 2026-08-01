@@ -6,6 +6,7 @@ import {
   buildCompanyUserProfileMap,
   buildIssueMentionOptions,
   buildMarkdownMentionOptions,
+  isAgentTaskTarget,
 } from "./company-members";
 
 const activeMember = (overrides: Partial<CompanyMember>): CompanyMember => ({
@@ -144,5 +145,24 @@ describe("company-members helpers", () => {
     expect(buildMarkdownMentionOptions({ members: users })).toEqual([
       { id: "user:user-1", name: "Taylor", kind: "user", userId: "user-1" },
     ]);
+  });
+});
+
+describe("isAgentTaskTarget", () => {
+  // A fixture's status is healthy — that is exactly why it kept showing up in
+  // pickers next to the agents that ship real work.
+  it("excludes a fixture even when its status is active", () => {
+    expect(isAgentTaskTarget({ status: "active", rosterKind: "fixture" })).toBe(false);
+  });
+
+  it("offers staff and undeclared agents", () => {
+    expect(isAgentTaskTarget({ status: "active", rosterKind: "staff" })).toBe(true);
+    expect(isAgentTaskTarget({ status: "active", rosterKind: null })).toBe(true);
+    expect(isAgentTaskTarget({ status: "active" })).toBe(true);
+  });
+
+  it("keeps the lifecycle exclusions it already had", () => {
+    expect(isAgentTaskTarget({ status: "terminated" })).toBe(false);
+    expect(isAgentTaskTarget({ status: "pending_approval" })).toBe(false);
   });
 });

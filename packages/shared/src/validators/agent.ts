@@ -68,9 +68,15 @@ export const agentRuntimeConfigSchema = z.object({
   }).strict().optional(),
 }).catchall(z.unknown());
 
+/** Is this a real worker or machinery built to validate the machinery?
+ *  Optional everywhere and never defaulted — an agent nobody has classified
+ *  stays undeclared rather than being silently called staff. */
+export const agentRosterKindSchema = z.enum(["staff", "fixture"]);
+
 export const createAgentSchema = z.object({
   name: z.string().min(1),
   role: z.enum(AGENT_ROLES).optional().default("general"),
+  rosterKind: agentRosterKindSchema.optional().nullable(),
   title: z.string().optional().nullable(),
   icon: z.enum(AGENT_ICON_NAMES).optional().nullable(),
   reportsTo: z.string().uuid().optional().nullable(),

@@ -1189,6 +1189,7 @@ export {
   agentSkillSnapshotSchema,
   agentSkillSyncSchema,
   type AgentSkillSync,
+  agentRosterKindSchema,
   createAgentSchema,
   builtInAgentEmptyMutationSchema,
   builtInAgentProvisionSchema,
