@@ -721,6 +721,19 @@ export function IssueRunLedgerContent({
                     {run.runId.slice(0, 8)}
                   </Link>
                   <span>by {agentName}</span>
+                  {/* Who did the work is only half the provenance: a reader
+                      also needs the authority it held. Governed runs name
+                      their enforced profile; everything else is honest about
+                      being the adapter's default bypass rather than silent. */}
+                  {run.permissionMode === "governed" ? (
+                    <span
+                      data-testid="run-permission-profile"
+                      className="rounded-md border border-border px-1.5 py-0.5 text-(length:--text-micro) text-muted-foreground"
+                      title="Commissioned by the flow coordinator with an enforced permission profile — dangerously-skip-permissions off, an explicit allowed-tools grant instead."
+                    >
+                      {run.permissionProfile ? `governed · ${run.permissionProfile}` : "governed"}
+                    </span>
+                  ) : null}
                   {onBehalfOfLabel ? (
                     <span
                       data-testid="run-on-behalf-of"

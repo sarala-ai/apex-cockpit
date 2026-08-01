@@ -254,6 +254,7 @@ export {
 } from "./trust-policy.js";
 
 export {
+  agentRosterKindSchema,
   createAgentSchema,
   builtInAgentEmptyMutationSchema,
   builtInAgentProvisionSchema,

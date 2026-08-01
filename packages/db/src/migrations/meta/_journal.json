@@ -1107,6 +1107,13 @@
       "when": 1786000000000,
       "tag": "0159_issue_flow_executor_agent",
       "breakpoints": true
+    },
+    {
+      "idx": 160,
+      "version": "7",
+      "when": 1786000001000,
+      "tag": "0160_agent_roster_kind",
+      "breakpoints": true
     }
   ]
 }

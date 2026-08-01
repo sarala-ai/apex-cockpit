@@ -5,8 +5,24 @@ export type AgentEligibilityLifecycleReason =
   | "terminated"
   | "pending_approval"
   | "paused"
+  | "fixture"
   | "invalid_org_chain"
   | "unknown_status";
+
+/**
+ * Is this agent a real worker, or machinery built to validate the machinery?
+ *
+ * "fixture" is the only value that changes behaviour: a fixture may still be
+ * inspected, run by hand, and kept forever, but it is never offered for real
+ * work. `null`/undefined means UNDECLARED (every row created before the
+ * distinction existed) and behaves exactly as before — silently defaulting
+ * those to "staff" would assert something nobody checked.
+ */
+export type AgentRosterKind = "staff" | "fixture";
+
+export function isFixtureAgent(rosterKind: AgentRosterKind | string | null | undefined): boolean {
+  return rosterKind === "fixture";
+}
 
 export interface AgentEligibilityAgent {
   id: string;
@@ -14,6 +30,8 @@ export interface AgentEligibilityAgent {
   name: string;
   status: AgentStatus | string;
   reportsTo?: string | null;
+  /** "staff" | "fixture" | null (undeclared). See AgentRosterKind. */
+  rosterKind?: AgentRosterKind | string | null;
 }
 
 export interface AgentOrgChainEntry {
@@ -200,6 +218,20 @@ export function getAgentWorkEligibility(input: {
   agents: AgentEligibilityAgent[];
 }): AgentWorkEligibility {
   const orgChainHealth = getAgentOrgChainHealth(input);
+
+  // A fixture is excluded before any other question is asked: its status is
+  // usually perfectly healthy, which is exactly why status alone never keeps
+  // it out of a picker.
+  if (isFixtureAgent(input.agent.rosterKind)) {
+    return {
+      assignable: false,
+      invokable: false,
+      assignabilityReason: "fixture",
+      invokabilityReason: "fixture",
+      orgChainHealth,
+    };
+  }
+
   const assignabilityReason: AgentEligibilityLifecycleReason = !isAgentStatusAssignableToWork(input.agent.status)
     ? input.agent.status === "terminated"
       ? "terminated"

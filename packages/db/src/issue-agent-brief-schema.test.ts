@@ -29,7 +29,6 @@ describe("issues.agent_brief", () => {
     const entry = journal.entries.find((candidate) => candidate.tag === "0158_issue_agent_brief");
     expect(entry).toBeDefined();
     expect(entry?.idx).toBe(158);
-    expect(Math.max(...journal.entries.map((candidate) => candidate.idx))).toBe(158);
 
     const sql = readFileSync(join(migrationsDir, "0158_issue_agent_brief.sql"), "utf8");
     expect(sql).toMatch(/ALTER TABLE "issues" ADD COLUMN IF NOT EXISTS "agent_brief" text;/);

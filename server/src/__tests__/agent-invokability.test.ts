@@ -11,11 +11,34 @@ function agent(partial: Partial<AgentOrgRow> & Pick<AgentOrgRow, "id">): AgentOr
     name: partial.id,
     reportsTo: null,
     status: "active",
+    rosterKind: null,
     ...partial,
   };
 }
 
 describe("agent invokability", () => {
+  it("blocks a fixture agent whose lifecycle state is otherwise perfectly healthy", () => {
+    // The whole point of the roster_kind column: status says "active", the org
+    // chain is clean, and it still must not be invoked for real work.
+    const rows = [agent({ id: "loop-probe", rosterKind: "fixture" })];
+
+    expect(evaluateAgentInvokability(rows[0], rows)).toMatchObject({
+      invokable: false,
+      reason: "fixture",
+      invalidOrgChain: false,
+      details: { agentId: "loop-probe", rosterKind: "fixture" },
+    });
+  });
+
+  it("leaves undeclared and staff agents invokable", () => {
+    // Null is UNDECLARED, not "fixture" — existing rows keep working.
+    const undeclared = [agent({ id: "legacy" })];
+    const staff = [agent({ id: "worker", rosterKind: "staff" })];
+
+    expect(evaluateAgentInvokability(undeclared[0], undeclared)).toEqual({ invokable: true });
+    expect(evaluateAgentInvokability(staff[0], staff)).toEqual({ invokable: true });
+  });
+
   it("blocks active descendants under a terminated manager as invalid-org-chain", () => {
     const rows = [
       agent({ id: "ceo", status: "terminated" }),

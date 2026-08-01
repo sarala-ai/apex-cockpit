@@ -1,6 +1,7 @@
 import type { CompanyMember, CompanyUserDirectoryEntry } from "@/api/access";
 import type { InlineEntityOption } from "@/components/InlineEntitySelector";
 import type { MentionOption } from "@/components/MarkdownEditor";
+import { isFixtureAgent } from "@paperclipai/shared";
 import type { Agent, Issue, Project } from "@paperclipai/shared";
 
 export interface CompanyUserProfile {
@@ -84,12 +85,28 @@ export function buildCompanyUserMentionOptions(
   }));
 }
 
+/**
+ * May this agent be offered as a target for real work in a picker?
+ *
+ * Fixtures are excluded on top of the lifecycle checks because their status
+ * is usually a healthy "idle" — nothing about their state keeps them out, and
+ * the founder's board has a live case of a fixture sitting in the same picker
+ * as the agents that ship work. The server enforces the same rule
+ * (packages/shared/src/agent-eligibility.ts, consulted by both assignment and
+ * invocation); this keeps the option from being offered in the first place,
+ * rather than letting a click end in a 409.
+ *
+ * An UNDECLARED agent (rosterKind null) stays offered: it predates the
+ * distinction, and quietly hiding rows nobody has classified would be a
+ * silent behaviour change dressed as a safety feature.
+ */
 export function isAgentTaskTarget(
-  agent: Pick<Agent, "status"> & Partial<Pick<Agent, "orgChainHealth">>,
+  agent: Pick<Agent, "status"> & Partial<Pick<Agent, "orgChainHealth" | "rosterKind">>,
 ): boolean {
   return (
     agent.status !== "terminated" &&
     agent.status !== "pending_approval" &&
+    !isFixtureAgent(agent.rosterKind) &&
     agent.orgChainHealth?.status !== "invalid_org_chain"
   );
 }

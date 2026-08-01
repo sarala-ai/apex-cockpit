@@ -1,6 +1,14 @@
 import { redactCommandText } from "@paperclipai/adapter-utils";
 
-const SECRET_FIELD_NAME_PATTERN =
+/**
+ * The ONE list of "this name means a secret". Exported because a second copy
+ * is how the two halves of secret handling drifted apart: this list has always
+ * included a bare `token`, while the persistence-side list in
+ * services/secrets.ts did not — so `APEX_GATEWAY_TOKEN` and `GITHUB_TOKEN`
+ * were redacted on read (looking handled) while remaining plaintext at rest,
+ * invisible to strict mode and skipped by the inline-env migration.
+ */
+export const SECRET_FIELD_NAME_PATTERN =
   String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)[A-Za-z0-9_-]*`;
 
 const SECRET_PAYLOAD_KEY_RE = new RegExp(SECRET_FIELD_NAME_PATTERN, "i");

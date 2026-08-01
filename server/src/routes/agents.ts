@@ -3198,6 +3198,7 @@ export function agentRoutes(
         name: agentsTable.name,
         reportsTo: agentsTable.reportsTo,
         status: agentsTable.status,
+        rosterKind: agentsTable.rosterKind,
       })
       .from(agentsTable)
       .where(eq(agentsTable.companyId, agent.companyId));

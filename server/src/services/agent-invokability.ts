@@ -7,11 +7,12 @@ type AgentStatus = (typeof agents.$inferSelect)["status"];
 
 export type AgentOrgRow = Pick<
   typeof agents.$inferSelect,
-  "id" | "companyId" | "name" | "reportsTo" | "status"
+  "id" | "companyId" | "name" | "reportsTo" | "status" | "rosterKind"
 >;
 
 export type AgentInvokabilityBlockReason =
   | "missing"
+  | "fixture"
   | "paused"
   | "terminated"
   | "pending_approval"
@@ -61,6 +62,7 @@ function toEligibilityAgent(row: AgentOrgRow): AgentEligibilityAgent {
     name: row.name,
     status: row.status,
     reportsTo: row.reportsTo,
+    rosterKind: row.rosterKind,
   };
 }
 
@@ -84,6 +86,15 @@ export function evaluateAgentInvokability(
   });
 
   if (eligibility.invokable) return { invokable: true };
+
+  if (eligibility.invokabilityReason === "fixture") {
+    return blocked(
+      "fixture",
+      "Agent is a test fixture — machinery for validating the machinery, not a worker",
+      { agentId: agent.id, rosterKind: agent.rosterKind ?? null },
+      false,
+    );
+  }
 
   const directStatusReason = eligibility.invokabilityReason === "unknown_status"
     ? "unknown_status"
@@ -127,6 +138,7 @@ export async function evaluateAgentInvokabilityFromDb(
       name: agents.name,
       reportsTo: agents.reportsTo,
       status: agents.status,
+      rosterKind: agents.rosterKind,
     })
     .from(agents)
     .where(eq(agents.companyId, agent.companyId));
