@@ -558,7 +558,7 @@ describeEmbeddedPostgres("flow coordinator", () => {
       expect(comments.some((c) => c.body.includes("flow_agent_unavailable"))).toBe(true);
     });
 
-    it("a declined wakeup (null commission) is a classified pause", async () => {
+    it("a declined wakeup (null commission) stays waiting_agent, classified + surfaced (deferral promotes later)", async () => {
       const { issueId } = await seedAgentIssue({ assign: true });
       const coordinator = flowCoordinator(db, {
         loadDefinition: loaderFor(agentFlow()),
@@ -570,10 +570,43 @@ describeEmbeddedPostgres("flow coordinator", () => {
       await started.execution;
 
       const state = await flowState(issueId);
-      expect(state.flowStatus).toBe("paused");
+      expect(state.flowStatus).toBe("waiting_agent");
       expect(state.flowRunId).toBeNull();
+      expect(await activityActions(issueId)).toContain("flow.agent_run_deferred");
       const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
-      expect(comments.some((c) => c.body.includes("agent_run_not_commissioned"))).toBe(true);
+      expect(comments.some((c) => c.body.includes("deferred"))).toBe(true);
+    });
+
+    it("sweep resolves a promoted run by context markers when no linkage was recorded", async () => {
+      const { issueId, companyId, agentId } = await seedAgentIssue({ assign: true });
+      // A promoted run carrying the flow context markers, already terminal.
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        status: "succeeded",
+        contextSnapshot: { issueId, flowName: "agentic", flowNodeId: "board_diff", flowAgentStep: true },
+      });
+      const past = new Date(Date.now() - 60 * 60 * 1000);
+      await db
+        .update(issues)
+        .set({
+          flowName: "agentic",
+          flowNodeId: "board_diff",
+          flowStatus: "waiting_agent",
+          flowRunId: null,
+          flowStartedAt: past,
+          flowAdvancedAt: past,
+        })
+        .where(eq(issues.id, issueId));
+      const coordinator = flowCoordinator(db, {
+        loadDefinition: loaderFor(agentFlow()),
+        nodeRunner: fakeRunner({}).runner,
+      });
+      const { agentRecovered } = await coordinator.sweep(5 * 60_000);
+      expect(agentRecovered).toBe(1);
+      expect((await flowState(issueId)).flowStatus).toBe("done");
     });
 
     it("a commission failure is classified and routed through on_fail", async () => {

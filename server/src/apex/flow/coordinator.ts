@@ -34,7 +34,7 @@
  *   the primitives that feed it rather than pretending a feed exists.
  * - no fan-out: one flow per issue, nodes strictly sequential.
  */
-import { eq, and, lt, isNull, or, inArray, desc, notInArray } from "drizzle-orm";
+import { eq, and, lt, isNull, or, inArray, desc, sql as sqlExpr } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, heartbeatRuns, issues } from "@paperclipai/db";
 import { conflict, notFound, unprocessable } from "../../errors.js";
@@ -408,13 +408,16 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
     { ok: true; agentId: string; assigned: boolean } | { ok: false; failure: NodeFailure }
   > {
     if (issue.assigneeAgentId) return { ok: true, agentId: issue.assigneeAgentId, assigned: false };
+    // Invokable statuses (shared agent-eligibility taxonomy): the commissioned
+    // wakeup must actually dispatch, so paused/terminated/pending_approval
+    // agents (e.g. auto-provisioned built-ins parked as `paused`) don't count.
     const candidates = await db
       .select({ id: agents.id })
       .from(agents)
       .where(
         and(
           eq(agents.companyId, issue.companyId),
-          notInArray(agents.status, ["terminated", "pending_approval"]),
+          inArray(agents.status, ["active", "idle", "running", "error"]),
         ),
       );
     if (candidates.length !== 1) {
@@ -520,12 +523,28 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
         renderedPrompt,
       });
       if (!commissioned) {
-        return applyOnFail(waiting, flow, index, {
-          errorType: "agent_run_not_commissioned",
-          message:
-            "the agent execution machinery declined the wakeup (skipped or deferred behind an active run) — " +
-            "no bounded run was commissioned for this step",
+        // Deferred/skipped wakeup. Deferral is the common real case: the issue
+        // already has an active run holding the execution lock, and heartbeat
+        // will PROMOTE the deferred wake (carrying our flow context) once it
+        // finishes — the completion hook accepts a null flowRunId, and the
+        // sweep re-links by context markers. A hard skip (heartbeat disabled,
+        // company inactive) leaves nothing to promote — the sweep classifies
+        // that as agent_run_not_commissioned after the staleness window.
+        // Either way: surfaced + classified, never silent, never a premature
+        // pause that strands the promoted run.
+        const deferred = await transition(waiting, {}, "flow.agent_run_deferred", {
+          nodeId: node.id,
+          agentId: executor.agentId,
+          instructionCommentId,
         });
+        await surface(
+          deferred,
+          `Flow **${flow.name}** agent step \`${node.id}\`: the wakeup was deferred behind the agent's ` +
+            `current run (or declined). The step's instruction is queued; the flow stays at ` +
+            `\`waiting_agent\` and advances when the promoted run completes (the sweep classifies a ` +
+            `pause if no run ever materializes).`,
+        );
+        return null;
       }
       await transition(waiting, { flowRunId: commissioned.runId }, "flow.agent_run_commissioned", {
         nodeId: node.id,
@@ -612,21 +631,40 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
       return true;
     };
 
-    if (!issue.flowRunId) {
-      // Crash window between parking and recording the commission, or the
-      // wakeup was declined and the on_fail write itself was lost. Never
-      // silent: classify and route on_fail.
-      return pauseClassified({
-        errorType: "agent_run_not_commissioned",
-        message:
-          "flow parked at waiting_agent past the staleness window with no commissioned run recorded — " +
-          "the launch was interrupted before linkage",
-      });
+    let linkedRunId = issue.flowRunId;
+    if (!linkedRunId) {
+      // No recorded commission: either the launch crashed before linkage, or
+      // the wakeup was deferred and heartbeat later promoted it into a run
+      // carrying our flow context markers. Look for that run before giving
+      // up (querying heartbeat's own jsonb snapshot is its supported read
+      // pattern — flow STATE stays in typed columns).
+      const marker = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            sqlExpr`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+            sqlExpr`${heartbeatRuns.contextSnapshot} ->> 'flowNodeId' = ${issue.flowNodeId}`,
+            sqlExpr`${heartbeatRuns.contextSnapshot} ->> 'flowAgentStep' = 'true'`,
+          ),
+        )
+        .orderBy(desc(heartbeatRuns.createdAt))
+        .limit(1)
+        .then((r) => r[0] ?? null);
+      if (!marker) {
+        return pauseClassified({
+          errorType: "agent_run_not_commissioned",
+          message:
+            "flow parked at waiting_agent past the staleness window with no commissioned run recorded " +
+            "and no run carrying this step's context — the launch was interrupted or the wakeup was skipped",
+        });
+      }
+      linkedRunId = marker.id;
     }
 
     // Resolve the run, following the heartbeat process-loss retry chain
     // (bounded — a chain deeper than 5 is itself suspicious).
-    let runId = issue.flowRunId;
+    let runId = linkedRunId;
     let run =
       (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then((r) => r[0])) ?? null;
     for (let depth = 0; run && depth < 5; depth += 1) {
@@ -644,7 +682,7 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
     if (!run) {
       return pauseClassified({
         errorType: "agent_run_lost",
-        message: `commissioned run ${issue.flowRunId} no longer exists — cannot observe completion`,
+        message: `commissioned run ${runId} no longer exists — cannot observe completion`,
       });
     }
     if (["queued", "running", "scheduled_retry"].includes(run.status)) {
