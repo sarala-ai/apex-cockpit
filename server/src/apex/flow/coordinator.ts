@@ -414,13 +414,13 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
   }
 
   /**
-   * Read the rework rounds still binding on `authoringNodeId`.
+   * Read the change-request rounds still binding on `targetNodeId`.
    *
    * Where this state lives, and why: the activity log, not a new column. The
-   * rework history IS a decision-ledger fact (who sent what back, when, with
+   * round history IS a decision-ledger fact (who sent what back, when, with
    * which words) — the same ledger the GitHub projection mirrors — and the
    * flow's TYPED columns are deliberately the pointer only (single-writer
-   * discipline, see the module doc). A `flowReworkFeedback` column would
+   * discipline, see the module doc). A `flowChangeRequestReason` column would
    * duplicate a durable ledger entry and hold exactly one round, which is
    * precisely the "silently drop earlier rounds" failure the design rejects.
    *
@@ -428,14 +428,14 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
    * - `flow.started` clears everything (a restarted flow is a clean slate),
    * - `flow.gate_approved` clears the rounds raised at THAT gate (the reviewer
    *   accepted the work, so their earlier complaints are closed),
-   * - `flow.rework_requested` for this flow + authoring node accumulates.
+   * - `flow.changes_requested` for this flow + target node accumulates.
    * Rounds are numbered at write time, so ordering never depends on
    * same-millisecond `createdAt` ties.
    */
   async function readChangeRequestRounds(
     issueId: string,
     flowName: string,
-    authoringNodeId: string,
+    targetNodeId: string,
   ): Promise<ChangeRequestRound[]> {
     const rows = await db
       .select({ action: activityLog.action, details: activityLog.details, createdAt: activityLog.createdAt })
@@ -455,8 +455,8 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
         continue;
       }
       if (row.action !== FLOW_CHANGES_REQUESTED_ACTION) continue;
-      if (details.flowName !== flowName || details.authoringNodeId !== authoringNodeId) continue;
-      const feedback = typeof details.feedback === "string" ? details.feedback : "";
+      if (details.flowName !== flowName || details.targetNodeId !== targetNodeId) continue;
+      const feedback = typeof details.reason === "string" ? details.reason : "";
       const gateNodeId = typeof details.gateNodeId === "string" ? details.gateNodeId : "";
       if (!feedback.trim() || !gateNodeId) continue;
       rounds.push({
