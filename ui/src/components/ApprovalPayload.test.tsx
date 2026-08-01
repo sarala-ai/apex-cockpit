@@ -6,9 +6,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApprovalPayloadRenderer, approvalLabel } from "./ApprovalPayload";
 
-const mockGetPrDiff = vi.hoisted(() => vi.fn());
+const mockGetBrief = vi.hoisted(() => vi.fn());
 vi.mock("../api/approvals", () => ({
-  approvalsApi: { getPrDiff: mockGetPrDiff },
+  approvalsApi: { getBrief: mockGetBrief },
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -19,6 +19,14 @@ async function flushReact() {
     await Promise.resolve();
     await new Promise((resolve) => window.setTimeout(resolve, 0));
   });
+}
+
+/** Flush until react-query has settled the brief query — a single
+ *  macrotask flush is flaky when the suite runs under load. */
+async function flushUntil(predicate: () => boolean, attempts = 20) {
+  for (let i = 0; i < attempts && !predicate(); i += 1) {
+    await flushReact();
+  }
 }
 
 describe("approvalLabel", () => {
@@ -100,13 +108,69 @@ describe("ApprovalPayloadRenderer", () => {
   });
 });
 
-describe("FlowGatePayload (via ApprovalPayloadRenderer type='flow_gate')", () => {
+/** The full brief the server assembles for the real APE-5 gate. */
+const FULL_BRIEF = {
+  available: true as const,
+  decision: {
+    headline: "Approve a design change",
+    subject: "Board note: record the first governed design-change loop on Flows & gates",
+    detail: "1 file changed in sarala-ai/apex-design — product/apex-platform.penpot.",
+    flowPurpose: "A bounded agent step authors a design-board change…",
+    ticketIdentifier: "APE-5",
+  },
+  verified: {
+    headline: "Verified: the agent's run succeeded and the pull request it was required to open exists.",
+    ok: true,
+    machine: [
+      "pr_exists:sarala-ai/apex-design#design/APE-5",
+      "v1: run success + pr_exists verified (sarala-ai/apex-design#design/APE-5)",
+    ],
+  },
+  artifact: {
+    available: true as const,
+    degraded: false as const,
+    repo: "sarala-ai/apex-design",
+    headBranch: "design/APE-5",
+    url: "https://github.com/sarala-ai/apex-design/pull/2",
+    title: "APE-5: Record first governed design-change loop",
+    totals: { additions: 8, deletions: 2, changedFiles: 1 },
+    files: [{ path: "product/apex-platform.penpot", status: "modified", additions: 8, deletions: 2 }],
+    files_truncated: false,
+    acceptanceEvaluation: "v1: run success + pr_exists verified (sarala-ai/apex-design#design/APE-5)",
+  },
+  next: {
+    approve: "Approve → workflow `design-pr-merge` runs on sarala-ai/apex-design (design/APE-5) and the flow completes.",
+    reject:
+      "Reject → the flow stops at this gate and stays paused; nothing further runs automatically. the pull request (sarala-ai/apex-design · design/APE-5) stays open for you to handle.",
+    derived: true,
+    note: null,
+  },
+  provenance: {
+    agentName: "Designer",
+    agentId: "1673fb38-3674-4e7f-8546-4e9b56c5f49e",
+    runId: "27dd2f74-3c3c-46b1-b0e5-b2434e78644d",
+    permissionProfile: "bounded",
+    permissionMode: "governed",
+    commissionedAt: "2026-08-01T07:36:26.687Z",
+    verifiedAt: "2026-08-01T07:40:20.528Z",
+    gateOpenedAt: "2026-08-01T07:40:21.814Z",
+  },
+  machine: {
+    approvalId: "approval-1",
+    issueId: "1ab7eaf8-da14-454b-979c-7a11942fa629",
+    flowName: "design-change",
+    nodeId: "design_gate",
+    ticketType: "design-change",
+  },
+};
+
+describe("FlowGatePayload decision brief (via ApprovalPayloadRenderer type='flow_gate')", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
   let queryClient: QueryClient;
 
   beforeEach(() => {
-    mockGetPrDiff.mockReset();
+    mockGetBrief.mockReset();
     container = document.createElement("div");
     document.body.appendChild(container);
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -128,9 +192,9 @@ describe("FlowGatePayload (via ApprovalPayloadRenderer type='flow_gate')", () =>
             type="flow_gate"
             approvalId="approval-1"
             payload={{
-              flowName: "design-change-flow",
-              nodeId: "gate-review",
-              prompt: "Review the proposed design change before merging.",
+              flowName: "design-change",
+              nodeId: "design_gate",
+              prompt: "Review the design-board diff (.penpot pull request).",
             }}
           />
         </QueryClientProvider>,
@@ -138,60 +202,117 @@ describe("FlowGatePayload (via ApprovalPayloadRenderer type='flow_gate')", () =>
     });
   }
 
-  it("renders the PR title, totals, and file list on success", async () => {
-    mockGetPrDiff.mockResolvedValue({
-      available: true,
-      degraded: false,
-      repo: "sarala-ai/apex-design",
-      headBranch: "design/APE-5",
-      url: "https://github.com/sarala-ai/apex-design/pull/2",
-      title: "APE-5: Record first governed design-change loop",
-      totals: { additions: 8, deletions: 2, changedFiles: 1 },
-      files: [
-        { path: "product/apex-platform.penpot", status: "modified", additions: 8, deletions: 2 },
-      ],
-      files_truncated: false,
-      acceptanceEvaluation: "v1: run success + pr_exists verified (sarala-ai/apex-design#design/APE-5)",
-    });
-
+  it("renders all five brief sections in decision order", async () => {
+    mockGetBrief.mockResolvedValue(FULL_BRIEF);
     renderGate();
-    await flushReact();
+    await flushUntil(() => !(container.textContent ?? "").includes("Preparing the decision brief"));
 
-    expect(container.textContent).toContain("Review the proposed design change before merging.");
-    expect(container.textContent).toContain("APE-5: Record first governed design-change loop");
-    expect(container.textContent).toContain("product/apex-platform.penpot");
-    expect(container.textContent).toContain("+8");
-    expect(container.textContent).toContain("-2");
-    expect(container.textContent).toContain("1 file");
-    expect(container.textContent).toContain("v1: run success + pr_exists verified");
+    const text = container.textContent ?? "";
+    // 1 — what is being decided
+    expect(text).toContain("You are deciding");
+    expect(text).toContain("Approve a design change");
+    expect(text).toContain("1 file changed in sarala-ai/apex-design");
+    expect(text).toContain("APE-5: Board note: record the first governed design-change loop");
+    // 2 — what was verified, in English
+    expect(text).toContain("Already checked");
+    expect(text).toContain("the agent's run succeeded and the pull request it was required to open exists");
+    // 3 — what to look at
+    expect(text).toContain("What to look at");
+    expect(text).toContain("APE-5: Record first governed design-change loop");
+    expect(text).toContain("product/apex-platform.penpot");
+    expect(text).toContain("1 file");
+    // 4 — what happens next
+    expect(text).toContain("What happens next");
+    expect(text).toContain("design-pr-merge");
+    expect(text).toContain("stops at this gate");
+    // 5 — who did the work
+    expect(text).toContain("Designer");
+    expect(text).toContain("bounded permissions");
+
+    // Section order: the decision comes before the artifact, which comes
+    // before the consequences.
+    const order = ["You are deciding", "Already checked", "What to look at", "What happens next"];
+    const positions = order.map((label) => text.indexOf(label));
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
   });
 
-  it("renders a degraded state when the CLI/gh call fails, without throwing", async () => {
-    mockGetPrDiff.mockResolvedValue({
-      available: true,
-      degraded: true,
-      repo: "sarala-ai/apex-design",
-      headBranch: "design/APE-5",
-      error: "apex CLI not found (bin: apex)",
-      acceptanceEvaluation: null,
+  it("keeps machine strings out of the visible headline and behind a details affordance", async () => {
+    mockGetBrief.mockResolvedValue(FULL_BRIEF);
+    renderGate();
+    await flushUntil(() => !!container.querySelector("#flow-gate-machine-approval-1"));
+
+    const details = container.querySelector("#flow-gate-machine-approval-1") as HTMLElement | null;
+    expect(details).not.toBeNull();
+    expect(details?.hidden).toBe(true);
+
+    const toggle = container.querySelector("button[aria-expanded]") as HTMLButtonElement;
+    expect(toggle.textContent).toContain("Technical details");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+
+    act(() => {
+      toggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    renderGate();
-    await flushReact();
+    expect((container.querySelector("#flow-gate-machine-approval-1") as HTMLElement).hidden).toBe(false);
+    expect(container.textContent).toContain("pr_exists:sarala-ai/apex-design#design/APE-5");
+    expect(container.textContent).toContain("run: 27dd2f74-3c3c-46b1-b0e5-b2434e78644d");
+  });
 
-    expect(container.textContent).toContain("Couldn");
+  it("renders a degraded artifact section without losing the rest of the brief", async () => {
+    mockGetBrief.mockResolvedValue({
+      ...FULL_BRIEF,
+      decision: { ...FULL_BRIEF.decision, detail: "A pull request on sarala-ai/apex-design (design/APE-5)." },
+      artifact: {
+        available: true,
+        degraded: true,
+        repo: "sarala-ai/apex-design",
+        headBranch: "design/APE-5",
+        error: "apex CLI not found (bin: apex)",
+        acceptanceEvaluation: null,
+      },
+    });
+    renderGate();
+    await flushUntil(() => (container.textContent ?? "").includes("apex CLI not found"));
+
     expect(container.textContent).toContain("apex CLI not found");
+    expect(container.textContent).toContain("Approve a design change");
+    expect(container.textContent).toContain("What happens next");
   });
 
-  it("renders a not-applicable state when no pr_exists acceptance is found", async () => {
-    mockGetPrDiff.mockResolvedValue({
+  it("renders a failed acceptance headline in plain language", async () => {
+    mockGetBrief.mockResolvedValue({
+      ...FULL_BRIEF,
+      verified: {
+        headline: "The check did NOT pass: the pull request the agent was required to open could not be found.",
+        ok: false,
+        machine: ["pr_exists:sarala-ai/apex-design#design/APE-5"],
+      },
+    });
+    renderGate();
+    await flushUntil(() => (container.textContent ?? "").includes("The check did NOT pass"));
+
+    expect(container.textContent).toContain("The check did NOT pass");
+    // Still not in the headline area — only behind the details toggle.
+    const details = container.querySelector("#flow-gate-machine-approval-1") as HTMLElement;
+    expect(details.hidden).toBe(true);
+  });
+
+  it("renders a not-applicable state, falling back to the gate prompt", async () => {
+    mockGetBrief.mockResolvedValue({
       available: false,
       reason: "no pr_exists acceptance found for this issue",
     });
-
     renderGate();
-    await flushReact();
+    await flushUntil(() => (container.textContent ?? "").includes("No decision brief"));
 
-    expect(container.textContent).toContain("No linked pull request found");
+    expect(container.textContent).toContain("Review the design-board diff");
+    expect(container.textContent).toContain("No decision brief could be assembled");
+  });
+
+  it("shows a loading state rather than an empty card", () => {
+    mockGetBrief.mockReturnValue(new Promise(() => {}));
+    renderGate();
+
+    expect(container.textContent).toContain("Preparing the decision brief");
   });
 });

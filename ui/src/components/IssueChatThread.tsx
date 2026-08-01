@@ -59,6 +59,11 @@ import {
   type IssueChatTranscriptEntry,
   type SegmentTiming,
 } from "../lib/issue-chat-messages";
+import {
+  FLOW_MACHINE_GROUP_KIND,
+  groupFlowMachineCorrespondence,
+  type FlowMachineGroupCustom,
+} from "../lib/flow-machine-correspondence";
 import type {
   AskUserQuestionsAnswer,
   AskUserQuestionsInteraction,
@@ -2546,6 +2551,59 @@ function StaleDispositionWarningRow({
   );
 }
 
+/**
+ * Collapsed machine trail — the founder-facing half of the decision-brief
+ * work: flow instruction/wake fences, pause + gate notices and the agent's
+ * own status flapping are grouped into ONE row, collapsed by default, so
+ * human conversation is what a reader sees first. Nothing is deleted; the
+ * rows render verbatim on expand (and always, in the Activity tab).
+ *
+ * Follows the thread's existing hand-rolled disclosure idiom
+ * (ExpiredRequestConfirmationActivity): a button with aria-expanded /
+ * aria-controls and a chevron that rotates.
+ */
+function FlowMachineGroupRow({
+  message,
+  anchorId,
+  renderMember,
+}: {
+  message: ThreadMessage;
+  anchorId?: string;
+  renderMember: (member: ThreadMessage) => ReactNode;
+}) {
+  const custom = message.metadata.custom as unknown as FlowMachineGroupCustom;
+  const members = Array.isArray(custom?.messages) ? custom.messages : [];
+  const [expanded, setExpanded] = useState(false);
+  const detailsId = `flow-activity-details-${message.id}`;
+
+  if (members.length === 0) return null;
+
+  return (
+    <div id={anchorId} className="py-1">
+      <button
+        type="button"
+        aria-expanded={expanded}
+        aria-controls={detailsId}
+        onClick={() => setExpanded((current) => !current)}
+        data-testid="flow-activity-toggle"
+        className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+      >
+        <ClipboardList className="h-3 w-3 shrink-0" />
+        <span>
+          Flow activity ({members.length})
+        </span>
+        <span className="text-muted-foreground/70">
+          {expanded ? "— hide" : "— automated steps, hidden by default"}
+        </span>
+        <ChevronDown className={cn("ml-auto h-3 w-3 shrink-0 transition-transform", expanded && "rotate-180")} />
+      </button>
+      <div id={detailsId} hidden={!expanded} className="space-y-1 pl-2">
+        {expanded ? members.map((member) => <div key={member.id}>{renderMember(member)}</div>) : null}
+      </div>
+    </div>
+  );
+}
+
 function SystemNoticeCommentRow({
   message,
   anchorId,
@@ -2748,6 +2806,16 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
   const interaction = isIssueThreadInteraction(custom.interaction)
     ? custom.interaction
     : null;
+
+  if (custom.kind === FLOW_MACHINE_GROUP_KIND) {
+    return (
+      <FlowMachineGroupRow
+        message={message}
+        anchorId={anchorId}
+        renderMember={(member) => <IssueChatSystemMessage message={member} />}
+      />
+    );
+  }
 
   if (custom.kind === "system_notice") {
     return (
@@ -4333,9 +4401,14 @@ export function IssueChatThread({
   });
   const resolvedTranscriptByRun = transcriptsByRunId ?? transcriptByRun;
   const resolvedHasOutputForRun = hasOutputForRunOverride ?? hasOutputForRun;
+  // Flow machine correspondence (instruction/wake fences, pause + gate
+  // notices, the agent's own status flapping) is grouped into one collapsed
+  // "Flow activity (N)" row here — demoted in the READING view only. Nothing
+  // is dropped: the group expands in place and the Activity tab still lists
+  // every row verbatim. See ui/src/lib/flow-machine-correspondence.ts.
   const rawMessages = useMemo(
     () =>
-      buildIssueChatMessages({
+      groupFlowMachineCorrespondence(buildIssueChatMessages({
         comments,
         interactions,
         timelineEvents,
@@ -4350,7 +4423,7 @@ export function IssueChatThread({
         agentMap,
         currentUserId,
         userLabelMap,
-      }),
+      })),
     [
       comments,
       interactions,

@@ -1,7 +1,8 @@
+import { useState } from "react";
 import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck, GitPullRequest } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { formatCents } from "../lib/utils";
-import { approvalsApi } from "../api/approvals";
+import { approvalsApi, type ApprovalPrDiff } from "../api/approvals";
 import { queryKeys } from "../lib/queryKeys";
 import { StatusBadge } from "./StatusBadge";
 
@@ -248,13 +249,78 @@ function PullRequestFileRow({ file }: { file: { path: string; status: string; ad
   );
 }
 
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
+      {children}
+    </p>
+  );
+}
+
+/** The artifact block — the PR the reviewer should actually look at. */
+function ArtifactBlock({ artifact }: { artifact: ApprovalPrDiff }) {
+  if (artifact.available === false) {
+    return <p className="text-xs text-muted-foreground">No linked pull request found for this gate.</p>;
+  }
+  if (artifact.degraded) {
+    return (
+      <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
+        Couldn&rsquo;t load {artifact.repo}#{artifact.headBranch}: {artifact.error}
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-2 rounded-md border border-border/60 bg-background/60 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <a
+          href={artifact.url}
+          target="_blank"
+          rel="noreferrer"
+          className="min-w-0 truncate font-medium text-foreground hover:underline"
+        >
+          {artifact.title || `${artifact.repo}#${artifact.headBranch}`}
+        </a>
+        <span className="shrink-0 text-xs text-muted-foreground">
+          <span className="text-green-600 dark:text-green-400">+{artifact.totals.additions}</span>{" "}
+          <span className="text-red-600 dark:text-red-400">-{artifact.totals.deletions}</span>{" "}
+          · {artifact.totals.changedFiles} file{artifact.totals.changedFiles === 1 ? "" : "s"}
+        </span>
+      </div>
+      {artifact.files.length > 0 && (
+        <ul className="space-y-1 border-t border-border/60 pt-2">
+          {artifact.files.map((file) => (
+            <PullRequestFileRow key={file.path} file={file} />
+          ))}
+        </ul>
+      )}
+      {artifact.files_truncated && (
+        <p className="text-(length:--text-micro) text-muted-foreground">
+          Showing the first {artifact.files.length} changed files — more were truncated.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function formatStamp(value: string | null): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleString();
+}
+
 /**
- * Flow-gate approval payload — the gate's prompt plus the PR the preceding
- * A-node's `pr_exists:<repo>#<head>` acceptance points at, fetched at VIEW
- * time (server/src/routes/approvals.ts GET /approvals/:id/pr-diff) so an
- * already-pending approval benefits the moment this ships, not just new
- * ones. Loading / not-applicable / degraded (CLI or gh unavailable) states
- * are rendered explicitly — the fetch never throws into this component.
+ * Flow-gate approval surface — a DECISION BRIEF, not a log.
+ *
+ * Founder critique this answers, verbatim: reviewing a flow-gated ticket
+ * today means "reviewing agent slop" — the ticket is loaded with machine
+ * correspondence and "I don't know what to interpret, where to start and
+ * where to end." So the reviewer's eye lands on the decision, then the
+ * artifact, and nothing else: sections read in decision order (what is being
+ * decided → what was already verified → what to look at → what happens next
+ * → who did the work), raw acceptance strings and UUIDs live behind a
+ * details affordance, and every section degrades independently because the
+ * server assembles them failure-isolated (GET /approvals/:id/brief).
  */
 export function FlowGatePayload({
   payload,
@@ -264,70 +330,126 @@ export function FlowGatePayload({
   approvalId?: string;
 }) {
   const prompt = firstNonEmptyString(payload.prompt);
-  const flowName = firstNonEmptyString(payload.flowName);
-  const nodeId = firstNonEmptyString(payload.nodeId);
+  const [showMachine, setShowMachine] = useState(false);
 
   const { data, isLoading } = useQuery({
-    queryKey: queryKeys.approvals.prDiff(approvalId ?? ""),
-    queryFn: () => approvalsApi.getPrDiff(approvalId as string),
+    queryKey: queryKeys.approvals.brief(approvalId ?? ""),
+    queryFn: () => approvalsApi.getBrief(approvalId as string),
     enabled: !!approvalId,
     staleTime: 15_000,
   });
 
-  return (
-    <div className="mt-3 space-y-3 text-sm">
-      {(flowName || nodeId) && (
-        <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-          {flowName && <span className="font-mono">{flowName}</span>}
-          {nodeId && <span>gate &lsquo;{nodeId}&rsquo;</span>}
-        </div>
-      )}
-      {prompt && <p className="leading-6 text-foreground/90">{prompt}</p>}
+  if (!approvalId) {
+    return prompt ? <p className="mt-3 leading-6 text-sm text-foreground/90">{prompt}</p> : null;
+  }
+  if (isLoading) {
+    return <p className="mt-3 text-xs text-muted-foreground">Preparing the decision brief…</p>;
+  }
+  if (!data || data.available === false) {
+    // No brief (not a flow gate, no issue, or the assembler found nothing) —
+    // fall back to the gate's own prompt rather than showing an empty card.
+    return (
+      <div className="mt-3 space-y-2 text-sm">
+        {prompt && <p className="leading-6 text-foreground/90">{prompt}</p>}
+        <p className="text-xs text-muted-foreground">
+          No decision brief could be assembled for this gate
+          {data && "reason" in data && data.reason ? ` (${data.reason})` : ""}.
+        </p>
+      </div>
+    );
+  }
 
-      {!approvalId ? null : isLoading ? (
-        <p className="text-xs text-muted-foreground">Loading pull request…</p>
-      ) : !data ? (
-        <p className="text-xs text-muted-foreground">Couldn&rsquo;t load the pull request.</p>
-      ) : data.available === false ? (
-        <p className="text-xs text-muted-foreground">No linked pull request found for this gate.</p>
-      ) : data.degraded ? (
-        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
-          Couldn&rsquo;t load {data.repo}#{data.headBranch}: {data.error}
-        </div>
-      ) : (
-        <div className="space-y-2 rounded-md border border-border/60 bg-background/60 p-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <a
-              href={data.url}
-              target="_blank"
-              rel="noreferrer"
-              className="min-w-0 truncate font-medium text-foreground hover:underline"
-            >
-              {data.title || `${data.repo}#${data.headBranch}`}
-            </a>
-            <span className="shrink-0 text-xs text-muted-foreground">
-              <span className="text-green-600 dark:text-green-400">+{data.totals.additions}</span>{" "}
-              <span className="text-red-600 dark:text-red-400">-{data.totals.deletions}</span>{" "}
-              · {data.totals.changedFiles} file{data.totals.changedFiles === 1 ? "" : "s"}
-            </span>
-          </div>
-          {data.files.length > 0 && (
-            <ul className="space-y-1 border-t border-border/60 pt-2">
-              {data.files.map((file) => (
-                <PullRequestFileRow key={file.path} file={file} />
-              ))}
-            </ul>
-          )}
-          {data.files_truncated && (
-            <p className="text-(length:--text-micro) text-muted-foreground">
-              Showing the first {data.files.length} changed files — more were truncated.
-            </p>
-          )}
-          {data.acceptanceEvaluation && (
-            <p className="border-t border-border/60 pt-2 text-(length:--text-micro) text-muted-foreground">
-              {data.acceptanceEvaluation}
-            </p>
-          )}
+  const { decision, verified, artifact, next, provenance, machine } = data;
+  const verifiedTone =
+    verified.ok === true
+      ? "border-emerald-500/25 bg-emerald-500/10"
+      : verified.ok === false
+        ? "border-red-500/25 bg-red-500/10"
+        : "border-border/60 bg-muted/30";
+  const machineLines = [
+    ...verified.machine,
+    machine.flowName ? `flow: ${machine.flowName}` : null,
+    machine.nodeId ? `gate node: ${machine.nodeId}` : null,
+    provenance.runId ? `run: ${provenance.runId}` : null,
+    provenance.agentId ? `agent: ${provenance.agentId}` : null,
+    `approval: ${machine.approvalId}`,
+    next.note ? `note: ${next.note}` : null,
+  ].filter((line): line is string => !!line);
+
+  const who = provenance.agentName ?? (provenance.agentId ? "An agent" : null);
+  const stamps = [
+    provenance.commissionedAt ? `started ${formatStamp(provenance.commissionedAt)}` : null,
+    provenance.gateOpenedAt ? `gate opened ${formatStamp(provenance.gateOpenedAt)}` : null,
+  ].filter((line): line is string => !!line);
+
+  return (
+    <div className="mt-4 space-y-4 text-sm" data-testid="flow-gate-decision-brief">
+      {/* 1 — what is being decided */}
+      <div className="space-y-1">
+        <SectionLabel>You are deciding</SectionLabel>
+        <p className="text-base font-medium leading-6 text-foreground">
+          {decision.headline}
+          {decision.detail ? <span className="font-normal text-foreground/80"> — {decision.detail}</span> : null}
+        </p>
+        {decision.subject && (
+          <p className="leading-6 text-muted-foreground">
+            {decision.ticketIdentifier ? `${decision.ticketIdentifier}: ` : ""}
+            {decision.subject}
+          </p>
+        )}
+      </div>
+
+      {/* 2 — what the system already verified */}
+      <div className={`rounded-lg border px-3.5 py-3 ${verifiedTone}`}>
+        <SectionLabel>Already checked</SectionLabel>
+        <p className="mt-1 leading-6 text-foreground">{verified.headline}</p>
+      </div>
+
+      {/* 3 — what to look at */}
+      <div className="space-y-1.5">
+        <SectionLabel>What to look at</SectionLabel>
+        <ArtifactBlock artifact={artifact} />
+      </div>
+
+      {/* 4 — what happens next (derived from the flow definition) */}
+      <div className="space-y-1.5 rounded-lg border border-border/60 bg-background/60 px-3.5 py-3">
+        <SectionLabel>What happens next</SectionLabel>
+        <p className="leading-6 text-foreground">{next.approve}</p>
+        <p className="leading-6 text-muted-foreground">{next.reject}</p>
+      </div>
+
+      {/* 5 — who / what did the work */}
+      {(who || stamps.length > 0 || provenance.permissionProfile) && (
+        <p className="text-xs leading-5 text-muted-foreground">
+          {who ? <span className="text-foreground/80">{who}</span> : null}
+          {who && provenance.permissionProfile ? ` · ${provenance.permissionProfile} permissions` : null}
+          {stamps.length > 0 ? `${who || provenance.permissionProfile ? " · " : ""}${stamps.join(" · ")}` : null}
+        </p>
+      )}
+
+      {/* the machine trail — present, but never the headline */}
+      {machineLines.length > 0 && (
+        <div>
+          <button
+            type="button"
+            aria-expanded={showMachine}
+            aria-controls={`flow-gate-machine-${machine.approvalId}`}
+            onClick={() => setShowMachine((current) => !current)}
+            className="text-(length:--text-micro) text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+          >
+            {showMachine ? "Hide technical details" : "Technical details"}
+          </button>
+          <ul
+            id={`flow-gate-machine-${machine.approvalId}`}
+            hidden={!showMachine}
+            className="mt-1.5 space-y-0.5 rounded-md bg-muted/40 px-3 py-2 font-mono text-(length:--text-micro) text-muted-foreground"
+          >
+            {machineLines.map((line) => (
+              <li key={line} className="break-all">
+                {line}
+              </li>
+            ))}
+          </ul>
         </div>
       )}
     </div>

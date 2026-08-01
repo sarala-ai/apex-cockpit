@@ -35,6 +35,56 @@ export type ApprovalPrDiff =
       acceptanceEvaluation: string | null;
     };
 
+/** The flow-gate DECISION BRIEF (server: GET /approvals/:id/brief). Answers,
+ *  in decision order: what is being decided → what was already verified →
+ *  what to look at → what happens next → who did the work. Machine strings
+ *  (raw acceptance declarations, UUIDs, run ids) are confined to
+ *  `verified.machine` and `machine`, never to a headline. */
+export type ApprovalBriefVerified = {
+  headline: string;
+  ok: boolean | null;
+  machine: string[];
+};
+export type ApprovalBriefNext = {
+  approve: string;
+  reject: string;
+  derived: boolean;
+  note: string | null;
+};
+export type ApprovalBriefProvenance = {
+  agentName: string | null;
+  agentId: string | null;
+  runId: string | null;
+  permissionProfile: string | null;
+  permissionMode: string | null;
+  commissionedAt: string | null;
+  verifiedAt: string | null;
+  gateOpenedAt: string | null;
+};
+export type ApprovalBrief =
+  | { available: false; reason: string }
+  | {
+      available: true;
+      decision: {
+        headline: string;
+        subject: string | null;
+        detail: string | null;
+        flowPurpose: string | null;
+        ticketIdentifier: string | null;
+      };
+      verified: ApprovalBriefVerified;
+      artifact: ApprovalPrDiff;
+      next: ApprovalBriefNext;
+      provenance: ApprovalBriefProvenance;
+      machine: {
+        approvalId: string;
+        issueId: string;
+        flowName: string | null;
+        nodeId: string | null;
+        ticketType: string | null;
+      };
+    };
+
 export const approvalsApi = {
   list: (companyId: string, status?: string) =>
     api.get<Approval[]>(
@@ -56,4 +106,5 @@ export const approvalsApi = {
     api.post<ApprovalComment>(`/approvals/${id}/comments`, { body }),
   listIssues: (id: string) => api.get<Issue[]>(`/approvals/${id}/issues`),
   getPrDiff: (id: string) => api.get<ApprovalPrDiff>(`/approvals/${id}/pr-diff`),
+  getBrief: (id: string) => api.get<ApprovalBrief>(`/approvals/${id}/brief`),
 };
