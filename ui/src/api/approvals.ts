@@ -73,6 +73,9 @@ export type ApprovalBriefVerified = {
 };
 export type ApprovalBriefNext = {
   approve: string;
+  /** The `request_changes` consequence — which step reruns with the
+   *  reviewer's reason. Null when this gate has no step to route back to. */
+  requestChanges: string | null;
   reject: string;
   derived: boolean;
   note: string | null;

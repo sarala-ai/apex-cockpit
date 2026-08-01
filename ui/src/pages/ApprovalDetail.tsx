@@ -15,6 +15,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { CheckCircle2, ChevronRight, Sparkles } from "lucide-react";
 import type { ApprovalComment } from "@paperclipai/shared";
 import { MarkdownBody } from "../components/MarkdownBody";
+import { GateReviewReasonDialog, type GateReviewDecision } from "../components/GateReviewReasonDialog";
 
 export function ApprovalDetail() {
   const { approvalId } = useParams<{ approvalId: string }>();
@@ -89,6 +90,12 @@ export function ApprovalDetail() {
   // actually checked (docs/architecture/review-passes.md).
   const [acknowledgedPasses, setAcknowledgedPasses] = useState<string[]>([]);
 
+  // A flow gate is a review stage: every non-approve decision carries a reason
+  // (the server 400s without one, and for request_changes the reason IS the
+  // instruction the redoing step receives). Asking for it in a dialog is how
+  // the founder meets that rule rather than discovering it as an error.
+  const [gateReview, setGateReview] = useState<GateReviewDecision | null>(null);
+
   const approveMutation = useMutation({
     mutationFn: () => approvalsApi.approve(approvalId!, undefined, acknowledgedPasses),
     onSuccess: () => {
@@ -100,18 +107,21 @@ export function ApprovalDetail() {
   });
 
   const rejectMutation = useMutation({
-    mutationFn: () => approvalsApi.reject(approvalId!, undefined, acknowledgedPasses),
+    mutationFn: (decisionNote?: string) =>
+      approvalsApi.reject(approvalId!, decisionNote, acknowledgedPasses),
     onSuccess: () => {
       setError(null);
+      setGateReview(null);
       refresh();
     },
     onError: (err) => setError(err instanceof Error ? err.message : "Reject failed"),
   });
 
   const revisionMutation = useMutation({
-    mutationFn: () => approvalsApi.requestRevision(approvalId!),
+    mutationFn: (decisionNote?: string) => approvalsApi.requestRevision(approvalId!, decisionNote),
     onSuccess: () => {
       setError(null);
+      setGateReview(null);
       refresh();
     },
     onError: (err) => setError(err instanceof Error ? err.message : "Revision request failed"),
@@ -153,6 +163,10 @@ export function ApprovalDetail() {
   const linkedAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
   const isActionable = approval.status === "pending" || approval.status === "revision_requested";
   const isBudgetApproval = approval.type === "budget_override_required";
+  // `flow_gate` is created by the flow coordinator, not by the approvals API,
+  // so it is deliberately absent from APPROVAL_TYPES (clients must not be able
+  // to mint one). Compare as a string, the same way ApprovalPayload does.
+  const isFlowGate = (approval.type as string) === "flow_gate";
   const TypeIcon = typeIcon[approval.type] ?? defaultTypeIcon;
   const showApprovedBanner = searchParams.get("resolved") === "approved" && approval.status === "approved";
   const primaryLinkedIssue = linkedIssues?.[0] ?? null;
@@ -285,7 +299,7 @@ export function ApprovalDetail() {
               <Button
                 variant="destructive"
                 size="sm"
-                onClick={() => rejectMutation.mutate()}
+                onClick={() => (isFlowGate ? setGateReview("reject") : rejectMutation.mutate(undefined))}
                 disabled={rejectMutation.isPending}
               >
                 Reject
@@ -301,10 +315,15 @@ export function ApprovalDetail() {
             <Button
               size="sm"
               variant="outline"
-              onClick={() => revisionMutation.mutate()}
+              onClick={() =>
+                isFlowGate ? setGateReview("request_changes") : revisionMutation.mutate(undefined)
+              }
               disabled={revisionMutation.isPending}
+              data-testid={isFlowGate ? "gate-request-changes" : undefined}
             >
-              Request revision
+              {/* On a flow gate this route IS the request_changes decision —
+                  the label says what it does, not what the endpoint is called. */}
+              {isFlowGate ? "Request changes" : "Request revision"}
             </Button>
           )}
           {approval.status === "revision_requested" && (
@@ -333,6 +352,20 @@ export function ApprovalDetail() {
           )}
         </div>
       </div>
+
+      <GateReviewReasonDialog
+        open={gateReview !== null}
+        decision={gateReview ?? "request_changes"}
+        onOpenChange={(next) => {
+          if (!next) setGateReview(null);
+        }}
+        isPending={rejectMutation.isPending || revisionMutation.isPending}
+        error={error}
+        onConfirm={(reason) => {
+          if (gateReview === "reject") rejectMutation.mutate(reason);
+          else revisionMutation.mutate(reason);
+        }}
+      />
 
       <div className="border border-border rounded-lg p-4 space-y-3">
         <h3 className="text-sm font-medium">Comments ({comments?.length ?? 0})</h3>

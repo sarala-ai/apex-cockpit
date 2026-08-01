@@ -435,6 +435,14 @@ export function FlowGatePayload({
       <div className="space-y-1.5 rounded-lg border border-border/60 bg-background/60 px-3.5 py-3">
         <SectionLabel>On approval</SectionLabel>
         <p className="leading-6 text-foreground">{next.approve}</p>
+        {/* Every decision's consequence, not just approve's: the founder must
+            know BEFORE clicking that requesting changes starts another round
+            and where it goes, and that rejecting does not. */}
+        {next.requestChanges && (
+          <p className="leading-6 text-muted-foreground" data-testid="flow-gate-next-request-changes">
+            {next.requestChanges}
+          </p>
+        )}
         <p className="leading-6 text-muted-foreground">{next.reject}</p>
         {risk && (
           <p
