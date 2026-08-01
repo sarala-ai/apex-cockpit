@@ -7,7 +7,7 @@ import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSha
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
 import { approvalsApi } from "../api/approvals";
-import { apexFlowsApi } from "../api/apex-flows";
+import { apexFlowsApi, FLOW_ABANDONABLE_STATUSES, FLOW_RETRYABLE_STATUSES } from "../api/apex-flows";
 import { activityApi, type RunForIssue } from "../api/activity";
 import { heartbeatsApi, type ActiveRunForIssue, type LiveRunForIssue } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -171,11 +171,13 @@ import {
   MessageSquare,
   MoreHorizontal,
   MoreVertical,
+  Ban,
   PauseCircle,
   Paperclip,
   PlayCircle,
   Plus,
   Repeat,
+  RotateCcw,
   SlidersHorizontal,
   Workflow,
   XCircle,
@@ -1518,6 +1520,7 @@ export function IssueDetail() {
   const [moreOpen, setMoreOpen] = useState(false);
   const [startFlowOpen, setStartFlowOpen] = useState(false);
   const [startFlowName, setStartFlowName] = useState<string>("");
+  const [abandonFlowOpen, setAbandonFlowOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
   const [fileViewerPromptOpen, setFileViewerPromptOpen] = useState(false);
@@ -2393,6 +2396,47 @@ export function IssueDetail() {
       pushToast({
         title: "Start flow failed",
         body: err instanceof Error ? err.message : "Unable to start the flow",
+        tone: "error",
+      });
+    },
+  });
+
+  const retryFlow = useMutation({
+    mutationFn: () => apexFlowsApi.retry(issueId!),
+    onSuccess: (result) => {
+      invalidateIssueDetail();
+      invalidateIssueCollections();
+      pushToast({
+        title: `Flow ${result.flowName} retrying`,
+        body: `Re-running node ${result.flowNodeId}`,
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Retry failed",
+        body: err instanceof Error ? err.message : "Unable to retry the flow",
+        tone: "error",
+      });
+    },
+  });
+
+  const abandonFlow = useMutation({
+    mutationFn: () => apexFlowsApi.abandon(issueId!),
+    onSuccess: (result) => {
+      invalidateIssueDetail();
+      invalidateIssueCollections();
+      setAbandonFlowOpen(false);
+      pushToast({
+        title: `Flow ${result.flowName} abandoned`,
+        body: `Flow marked failed at node ${result.flowNodeId}`,
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Abandon failed",
+        body: err instanceof Error ? err.message : "Unable to abandon the flow",
         tone: "error",
       });
     },
@@ -3937,6 +3981,12 @@ export function IssueDetail() {
   const canShowSubtreeControls = canManageTreeControl && childIssues.length > 0;
   const canResumeSubtree = canShowSubtreeControls && activePauseHold?.isRoot === true;
   const canRestoreSubtree = canShowSubtreeControls && activeCancelHolds.length > 0;
+  const canRetryFlow = Boolean(
+    issue.flowStatus && (FLOW_RETRYABLE_STATUSES as readonly string[]).includes(issue.flowStatus),
+  );
+  const canAbandonFlow = Boolean(
+    issue.flowStatus && (FLOW_ABANDONABLE_STATUSES as readonly string[]).includes(issue.flowStatus),
+  );
   const isTerminalIssue = issue.status === "done" || issue.status === "cancelled";
   const isAgentOwnedNonTerminalIssue = Boolean(issue.assigneeAgentId) && !isTerminalIssue;
   const canPauseLeafWork = canManageTreeControl && childIssues.length === 0 && !activePauseHold && !isTerminalIssue;
@@ -4441,6 +4491,31 @@ export function IssueDetail() {
                 <Workflow className="h-3 w-3" />
                 Start flow...
               </button>
+              {canRetryFlow ? (
+                <button
+                  className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+                  disabled={retryFlow.isPending}
+                  onClick={() => {
+                    setMoreOpen(false);
+                    retryFlow.mutate();
+                  }}
+                >
+                  <RotateCcw className="h-3 w-3" />
+                  {retryFlow.isPending ? "Retrying flow..." : "Retry flow"}
+                </button>
+              ) : null}
+              {canAbandonFlow ? (
+                <button
+                  className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
+                  onClick={() => {
+                    setMoreOpen(false);
+                    setAbandonFlowOpen(true);
+                  }}
+                >
+                  <Ban className="h-3 w-3" />
+                  Abandon flow...
+                </button>
+              ) : null}
               <button
                 className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
                 onClick={() => {
@@ -5054,6 +5129,28 @@ export function IssueDetail() {
               disabled={!startFlowName || startFlow.isPending}
             >
               {startFlow.isPending ? "Starting..." : "Start flow"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Abandon flow confirm dialog (operator recovery: terminal-fail cleanly) */}
+      <Dialog open={abandonFlowOpen} onOpenChange={setAbandonFlowOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Abandon flow</DialogTitle>
+            <DialogDescription>
+              This terminal-fails flow <span className="font-mono">{issue.flowName}</span> at node{" "}
+              <span className="font-mono">{issue.flowNodeId}</span> (status {issue.flowStatus}). This cannot be
+              undone — the flow will not resume; start a new flow if the work needs to continue.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAbandonFlowOpen(false)} disabled={abandonFlow.isPending}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={() => abandonFlow.mutate()} disabled={abandonFlow.isPending}>
+              {abandonFlow.isPending ? "Abandoning..." : "Abandon flow"}
             </Button>
           </DialogFooter>
         </DialogContent>

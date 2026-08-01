@@ -162,4 +162,141 @@ describeEmbeddedPostgres("apex flows routes", () => {
     const res = await request(app()).post("/apex/flows/start").send({ issueId, flowName: "gated" });
     expect(res.status).toBe(409);
   });
+
+  describe("POST /issues/:issueId/flow/retry", () => {
+    it("re-arms a paused flow and returns 202", async () => {
+      const { issueId } = await seedIssue();
+      mockLoad.mockResolvedValue(GATED_FLOW as never);
+      await db
+        .update(issues)
+        .set({ flowName: "gated", flowNodeId: "gate1", flowStatus: "paused" })
+        .where(eq(issues.id, issueId));
+
+      const res = await request(app()).post(`/issues/${issueId}/flow/retry`).send({});
+
+      expect(res.status).toBe(202);
+      expect(res.body).toMatchObject({ issueId, flowName: "gated", flowNodeId: "gate1", flowStatus: "running" });
+
+      // Wait for the background loop to re-enter the gate (avoids a race
+      // between the fire-and-forget advancement and this test's afterEach).
+      const deadline = Date.now() + 5_000;
+      let row: { flowStatus: string | null } | undefined;
+      while (Date.now() < deadline) {
+        [row] = await db.select({ flowStatus: issues.flowStatus }).from(issues).where(eq(issues.id, issueId));
+        if (row?.flowStatus === "waiting_gate") break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(row).toMatchObject({ flowStatus: "waiting_gate" });
+    });
+
+    it("409s (classified) from an invalid state", async () => {
+      const { issueId } = await seedIssue();
+      await db
+        .update(issues)
+        .set({ flowName: "gated", flowNodeId: "gate1", flowStatus: "waiting_gate" })
+        .where(eq(issues.id, issueId));
+
+      const res = await request(app()).post(`/issues/${issueId}/flow/retry`).send({});
+      expect(res.status).toBe(409);
+      expect(res.body.error ?? res.body.message).toBeTruthy();
+    });
+
+    it("404s an unknown issue", async () => {
+      const res = await request(app()).post(`/issues/${randomUUID()}/flow/retry`).send({});
+      expect(res.status).toBe(404);
+    });
+
+    it("403s a cross-company board actor", async () => {
+      const { issueId } = await seedIssue();
+      await db
+        .update(issues)
+        .set({ flowName: "gated", flowNodeId: "gate1", flowStatus: "paused" })
+        .where(eq(issues.id, issueId));
+
+      const res = await request(
+        app({
+          type: "board",
+          userId: "user-2",
+          source: "session",
+          companyIds: [randomUUID()],
+        } as never),
+      )
+        .post(`/issues/${issueId}/flow/retry`)
+        .send({});
+      expect(res.status).toBe(403);
+    });
+  });
+
+  describe("POST /issues/:issueId/flow/abandon", () => {
+    it("terminal-fails a paused flow and returns 200", async () => {
+      const { issueId } = await seedIssue();
+      await db
+        .update(issues)
+        .set({ flowName: "gated", flowNodeId: "gate1", flowStatus: "paused" })
+        .where(eq(issues.id, issueId));
+
+      const res = await request(app()).post(`/issues/${issueId}/flow/abandon`).send({});
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ issueId, flowName: "gated", flowNodeId: "gate1", flowStatus: "failed" });
+    });
+
+    it("abandons from waiting_gate, rejecting the dangling flow_gate approval", async () => {
+      const { issueId } = await seedIssue();
+      mockLoad.mockResolvedValue(GATED_FLOW as never);
+      const started = await request(app()).post("/apex/flows/start").send({ issueId, flowName: "gated" });
+      expect(started.status).toBe(202);
+      const deadline = Date.now() + 5_000;
+      let flowStatus: string | null | undefined;
+      while (Date.now() < deadline) {
+        [{ flowStatus }] = await db.select({ flowStatus: issues.flowStatus }).from(issues).where(eq(issues.id, issueId));
+        if (flowStatus === "waiting_gate") break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(flowStatus).toBe("waiting_gate");
+
+      const res = await request(app()).post(`/issues/${issueId}/flow/abandon`).send({});
+      expect(res.status).toBe(200);
+      expect(res.body.flowStatus).toBe("failed");
+
+      const [approval] = await db.select().from(approvals).where(eq(approvals.type, "flow_gate"));
+      expect(approval.status).toBe("rejected");
+    });
+
+    it("409s (classified) from an invalid state", async () => {
+      const { issueId } = await seedIssue();
+      await db
+        .update(issues)
+        .set({ flowName: "gated", flowNodeId: "gate1", flowStatus: "running" })
+        .where(eq(issues.id, issueId));
+
+      const res = await request(app()).post(`/issues/${issueId}/flow/abandon`).send({});
+      expect(res.status).toBe(409);
+    });
+
+    it("404s an unknown issue", async () => {
+      const res = await request(app()).post(`/issues/${randomUUID()}/flow/abandon`).send({});
+      expect(res.status).toBe(404);
+    });
+
+    it("403s a cross-company board actor", async () => {
+      const { issueId } = await seedIssue();
+      await db
+        .update(issues)
+        .set({ flowName: "gated", flowNodeId: "gate1", flowStatus: "paused" })
+        .where(eq(issues.id, issueId));
+
+      const res = await request(
+        app({
+          type: "board",
+          userId: "user-2",
+          source: "session",
+          companyIds: [randomUUID()],
+        } as never),
+      )
+        .post(`/issues/${issueId}/flow/abandon`)
+        .send({});
+      expect(res.status).toBe(403);
+    });
+  });
 });
