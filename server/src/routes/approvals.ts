@@ -49,6 +49,23 @@ function gateActor(req: Request): PipelineActor {
   return { type: "system" };
 }
 
+/**
+ * Fold the approver's ticked review passes into an activity-log detail —
+ * only when something was ticked, so an untouched checklist leaves no trace
+ * that could be mistaken for "reviewed and found nothing"
+ * (docs/architecture/review-passes.md).
+ *
+ * The activity log is where this belongs rather than a new column on
+ * `approvals`: it is the decision ledger the GitHub projection already
+ * mirrors, and an acknowledgement nobody has yet proven useful does not earn
+ * a schema migration.
+ */
+function acknowledgedReviewPassDetails(value: unknown): { acknowledgedReviewPasses?: string[] } {
+  if (!Array.isArray(value)) return {};
+  const ids = value.filter((v): v is string => typeof v === "string" && v.trim().length > 0);
+  return ids.length > 0 ? { acknowledgedReviewPasses: ids.map((v) => v.trim()) } : {};
+}
+
 function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
   return {
     ...approval,
@@ -335,6 +352,7 @@ export function approvalRoutes(
           type: approval.type,
           requestedByAgentId: approval.requestedByAgentId,
           linkedIssueIds,
+          ...acknowledgedReviewPassDetails(req.body.acknowledgedReviewPasses),
         },
       });
 
@@ -453,7 +471,10 @@ export function approvalRoutes(
         action: "approval.rejected",
         entityType: "approval",
         entityId: approval.id,
-        details: { type: approval.type },
+        details: {
+          type: approval.type,
+          ...acknowledgedReviewPassDetails(req.body.acknowledgedReviewPasses),
+        },
       });
     }
 

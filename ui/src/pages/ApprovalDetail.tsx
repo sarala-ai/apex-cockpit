@@ -84,8 +84,13 @@ export function ApprovalDetail() {
     }
   };
 
+  // Review passes the founder ticked at this gate. Never a precondition for
+  // deciding — recorded alongside the decision as evidence of what was
+  // actually checked (docs/architecture/review-passes.md).
+  const [acknowledgedPasses, setAcknowledgedPasses] = useState<string[]>([]);
+
   const approveMutation = useMutation({
-    mutationFn: () => approvalsApi.approve(approvalId!),
+    mutationFn: () => approvalsApi.approve(approvalId!, undefined, acknowledgedPasses),
     onSuccess: () => {
       setError(null);
       refresh();
@@ -95,7 +100,7 @@ export function ApprovalDetail() {
   });
 
   const rejectMutation = useMutation({
-    mutationFn: () => approvalsApi.reject(approvalId!),
+    mutationFn: () => approvalsApi.reject(approvalId!, undefined, acknowledgedPasses),
     onSuccess: () => {
       setError(null);
       refresh();
@@ -219,7 +224,13 @@ export function ApprovalDetail() {
               />
             </div>
           )}
-          <ApprovalPayloadRenderer type={approval.type} payload={payload} approvalId={approval.id} />
+          <ApprovalPayloadRenderer
+            type={approval.type}
+            payload={payload}
+            approvalId={approval.id}
+            acknowledgedReviewPasses={acknowledgedPasses}
+            onAcknowledgedReviewPassesChange={setAcknowledgedPasses}
+          />
           <button
             type="button"
             className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors mt-2"

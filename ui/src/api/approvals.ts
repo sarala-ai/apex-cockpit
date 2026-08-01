@@ -77,6 +77,14 @@ export type ApprovalBriefNext = {
   derived: boolean;
   note: string | null;
 };
+/** One review pass the gate asks, as apex-core defines it. The question text
+ *  is authored in apex-core's review_passes.py and travels over the wire — the
+ *  cockpit displays doctrine, it does not restate it. */
+export type ApprovalBriefReviewPass = {
+  id: string;
+  label: string;
+  question: string;
+};
 /** Risk + reversibility of approving this gate, derived server-side from the
  *  flow definition's post-gate nodes. Uses the same "Risks" vocabulary the
  *  board-approval brief already uses. */
@@ -109,6 +117,7 @@ export type ApprovalBrief =
       };
       verified: ApprovalBriefVerified;
       artifact: ApprovalPrDiff;
+      reviewPasses: ApprovalBriefReviewPass[];
       next: ApprovalBriefNext;
       risk: ApprovalBriefRisk;
       provenance: ApprovalBriefProvenance;
@@ -130,10 +139,10 @@ export const approvalsApi = {
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Approval>(`/companies/${companyId}/approvals`, data),
   get: (id: string) => api.get<Approval>(`/approvals/${id}`),
-  approve: (id: string, decisionNote?: string) =>
-    api.post<Approval>(`/approvals/${id}/approve`, { decisionNote }),
-  reject: (id: string, decisionNote?: string) =>
-    api.post<Approval>(`/approvals/${id}/reject`, { decisionNote }),
+  approve: (id: string, decisionNote?: string, acknowledgedReviewPasses?: string[]) =>
+    api.post<Approval>(`/approvals/${id}/approve`, { decisionNote, acknowledgedReviewPasses }),
+  reject: (id: string, decisionNote?: string, acknowledgedReviewPasses?: string[]) =>
+    api.post<Approval>(`/approvals/${id}/reject`, { decisionNote, acknowledgedReviewPasses }),
   requestRevision: (id: string, decisionNote?: string) =>
     api.post<Approval>(`/approvals/${id}/request-revision`, { decisionNote }),
   resubmit: (id: string, payload?: Record<string, unknown>) =>
