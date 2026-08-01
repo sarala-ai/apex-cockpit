@@ -56,9 +56,12 @@ export const updateCompanySchema = createCompanySchema
     logoAssetId: logoAssetIdSchema,
     attachmentMaxBytes: attachmentMaxBytesSchema.optional(),
     // GitHub projection (per-company opt-in, off by default): mirror flow
-    // lifecycle onto GitHub issues in `githubProjectionRepo` ("owner/name").
-    // Enabling without a repo is rejected at the service layer for
-    // board-origin mirrors to have a creation target.
+    // lifecycle onto GitHub issues. `githubProjectionRepo` ("owner/name") is a
+    // FALLBACK ONLY — mirror targeting is primarily an ordered cascade off
+    // each ticket's project workspace repo (see
+    // server/src/apex/flow/projection-repo-resolver.ts) — so enabling
+    // projection with no repo here is allowed; only the owner/name SHAPE is
+    // validated when a value is supplied.
     githubProjectionEnabled: z.boolean().optional(),
     githubProjectionRepo: z
       .string()

@@ -14,8 +14,16 @@
  *   rejects. A GitHub/apex failure is a classified log line and a dropped
  *   event — it NEVER blocks or fails the flow (same posture as
  *   pipeline/github-issue-reflect.ts).
- * - Per-company opt-in: companies.githubProjectionEnabled +
- *   githubProjectionRepo, both off/null by default. Disabled = silent no-op.
+ * - Per-company opt-in: companies.githubProjectionEnabled, off by default.
+ *   Disabled = silent no-op.
+ * - Mirror REPO resolution is an ordered cascade (see
+ *   ./projection-repo-resolver.ts): (1) the ticket's project workspace repo —
+ *   issues.projectWorkspaceId if set, else the project's PRIMARY workspace via
+ *   issues.projectId; (2) the company fallback, githubProjectionRepo — for
+ *   tickets with no repo-bearing project binding; (3) none, projection is
+ *   skipped for that flow (classified log, flow unaffected). GitHub issues are
+ *   repo-scoped by design, so a single company-wide repo is only ever a
+ *   fallback, never the primary seam.
  * - Mirror targeting: a board-origin issue gets a mirror GitHub issue
  *   CREATED at flow start (ref stored in issues.githubMirrorRef, typed
  *   column); a github-origin issue (originKind='plugin:github') uses its own
@@ -32,11 +40,19 @@ import { companies, heartbeatRuns, issues } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import { ApexInvocationError, ApexUnavailableError, CliApexInvoker, type ApexInvoker } from "../invoke.js";
 import { parseGithubOriginId } from "../pipeline/github-issue-reflect.js";
+import { resolveMirrorRepo } from "./projection-repo-resolver.js";
 
 /** Machine-readable marker linking a mirror GitHub issue back to its board issue. */
 export function apexIssueMarker(issueId: string): string {
   return `<!-- apex:issue:${issueId} -->`;
 }
+
+/** Applied to every mirror issue created by the projection, so mirrors are
+ *  identifiable in the target repo's issue list without opening each one. The
+ *  REST create-issue path auto-creates labels the target repo doesn't have
+ *  yet (given push access) — see createMirror's label-fallback retry for the
+ *  case where that still fails. */
+export const MIRROR_LABEL = "apex:mirror";
 
 /** First https URL in an acceptance evaluation string (pr_exists evaluations
  *  embed the verified PR's html_url) — the "PR link when known". */
@@ -115,9 +131,14 @@ type ProjectionContext = {
   description: string | null;
   originKind: string;
   originId: string | null;
+  projectId: string | null;
+  projectWorkspaceId: string | null;
   githubMirrorRef: string | null;
   projectionEnabled: boolean;
-  projectionRepo: string | null;
+  /** Company fallback repo (`companies.githubProjectionRepo`) — used only
+   *  when the ticket has no repo-bearing project workspace binding. See
+   *  projection-repo-resolver.ts. */
+  projectionFallbackRepo: string | null;
 };
 
 type ProjectionTarget = { repo: string; number: number; owned: boolean };
@@ -146,9 +167,11 @@ export function githubFlowProjection(
         description: issues.description,
         originKind: issues.originKind,
         originId: issues.originId,
+        projectId: issues.projectId,
+        projectWorkspaceId: issues.projectWorkspaceId,
         githubMirrorRef: issues.githubMirrorRef,
         projectionEnabled: companies.githubProjectionEnabled,
-        projectionRepo: companies.githubProjectionRepo,
+        projectionFallbackRepo: companies.githubProjectionRepo,
       })
       .from(issues)
       .innerJoin(companies, eq(issues.companyId, companies.id))
@@ -172,18 +195,37 @@ export function githubFlowProjection(
     return null;
   }
 
-  /** Create the mirror GitHub issue for a board-origin ticket (flow START
-   *  only — live projection, no retro-creation on later events). Stores the
-   *  ref via a null-guarded compare-and-set so a race never overwrites an
-   *  existing ref. */
-  async function createMirror(ctx: ProjectionContext): Promise<ProjectionTarget | null> {
-    if (!ctx.projectionRepo) {
-      logger.warn(
-        { issueId: ctx.issueId, companyId: ctx.companyId },
-        "github projection: enabled but no githubProjectionRepo configured — mirror not created (classified: projection_repo_missing)",
+  /** create_issue with the mirror label, retried once WITHOUT the label if
+   *  the labeled create fails — a label problem (e.g. no push access to
+   *  auto-create it) must never cost the mirror issue itself. */
+  async function createIssueWithLabelFallback(
+    repo: string,
+    title: string,
+    body: string,
+  ): Promise<z.infer<typeof githubWriteResultSchema>> {
+    try {
+      return await invoker.invoke(
+        "github_repo",
+        "create_issue",
+        { repo, title, body, labels: MIRROR_LABEL },
+        githubWriteResultSchema,
       );
-      return null;
+    } catch (err) {
+      logger.warn(
+        { err, repo },
+        "github projection: labeled create_issue failed — retrying without the label (classified: projection_label_failed)",
+      );
+      return invoker.invoke("github_repo", "create_issue", { repo, title, body }, githubWriteResultSchema);
     }
+  }
+
+  /** Create the mirror GitHub issue for a board-origin ticket (flow START
+   *  only — live projection, no retro-creation on later events), in the repo
+   *  already resolved by the mirror-repo cascade (see
+   *  projection-repo-resolver.ts — the caller resolves BEFORE calling this).
+   *  Stores the ref via a null-guarded compare-and-set so a race never
+   *  overwrites an existing ref. */
+  async function createMirror(ctx: ProjectionContext, repo: string): Promise<ProjectionTarget | null> {
     const title = ctx.identifier ? `${ctx.identifier}: ${ctx.title}` : ctx.title;
     const body =
       (ctx.description ? `${ctx.description.trim()}\n\n---\n\n` : "") +
@@ -191,18 +233,13 @@ export function githubFlowProjection(
       `The board is the canonical execution store; this issue carries the ` +
       `conversation and decision-audit trail (live projection).\n\n` +
       apexIssueMarker(ctx.issueId);
-    const created = await invoker.invoke(
-      "github_repo",
-      "create_issue",
-      { repo: ctx.projectionRepo, title, body },
-      githubWriteResultSchema,
-    );
+    const created = await createIssueWithLabelFallback(repo, title, body);
     if (created.status !== "success" || typeof created.number !== "number") {
       throw new ApexInvocationError(
-        `create_issue on ${ctx.projectionRepo} reported status ${JSON.stringify(created.status)}`,
+        `create_issue on ${repo} reported status ${JSON.stringify(created.status)}`,
       );
     }
-    const ref = `${ctx.projectionRepo}#${created.number}`;
+    const ref = `${repo}#${created.number}`;
     const stored = await db
       .update(issues)
       .set({ githubMirrorRef: ref, updatedAt: now() })
@@ -221,7 +258,33 @@ export function githubFlowProjection(
       { issueId: ctx.issueId, mirrorRef: ref, url: created.url ?? null },
       "github projection: mirror issue created",
     );
-    return { repo: ctx.projectionRepo, number: created.number, owned: true };
+    return { repo, number: created.number, owned: true };
+  }
+
+  /** Runs the mirror-repo cascade and logs every classified note/outcome
+   *  along the way. Returns the resolved "owner/name" or null when the whole
+   *  cascade missed. */
+  async function resolveMirrorRepoForCreate(ctx: ProjectionContext): Promise<string | null> {
+    const resolution = await resolveMirrorRepo(db, {
+      companyId: ctx.companyId,
+      projectId: ctx.projectId,
+      projectWorkspaceId: ctx.projectWorkspaceId,
+      companyFallbackRepo: ctx.projectionFallbackRepo,
+    });
+    for (const note of resolution.notes) {
+      logger.warn(
+        { issueId: ctx.issueId, companyId: ctx.companyId, note },
+        `github projection: mirror-repo cascade note (classified: ${note})`,
+      );
+    }
+    if (resolution.repo === null) {
+      logger.warn(
+        { issueId: ctx.issueId, companyId: ctx.companyId, reason: resolution.reason },
+        `github projection: no mirror repo resolved — mirror not created (classified: ${resolution.reason})`,
+      );
+      return null;
+    }
+    return resolution.repo;
   }
 
   async function comment(target: ProjectionTarget, body: string): Promise<void> {
@@ -281,7 +344,12 @@ export function githubFlowProjection(
           );
         },
         // Flow start is the ONE point that may create the mirror.
-        async (ctx) => resolveTarget(ctx) ?? createMirror(ctx),
+        async (ctx) => {
+          const existing = resolveTarget(ctx);
+          if (existing) return existing;
+          const repo = await resolveMirrorRepoForCreate(ctx);
+          return repo ? createMirror(ctx, repo) : null;
+        },
       ),
 
     agentRunCommissioned: (event) =>

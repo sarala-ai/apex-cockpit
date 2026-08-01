@@ -41,9 +41,13 @@ export const companies = pgTable(
     brandColor: text("brand_color"),
     // GitHub projection (work-loop doctrine): mirror flow lifecycle onto GitHub
     // issues — GitHub is the canonical conversation/audit surface, the board
-    // stays the canonical execution store. Opt-in per company, off by default;
-    // `githubProjectionRepo` ("owner/name") is where mirror issues for
-    // board-origin tickets are created. See server/src/apex/flow/github-projection.ts.
+    // stays the canonical execution store. Opt-in per company, off by default.
+    // `githubProjectionRepo` ("owner/name") is a FALLBACK ONLY: mirror targeting
+    // is primarily an ordered cascade off the ticket's project workspace repo
+    // (issues.projectWorkspaceId / the project's primary workspace); this column
+    // is used only for tickets with no repo-bearing project binding. See
+    // server/src/apex/flow/projection-repo-resolver.ts and
+    // server/src/apex/flow/github-projection.ts.
     githubProjectionEnabled: boolean("github_projection_enabled").notNull().default(false),
     githubProjectionRepo: text("github_projection_repo"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
