@@ -22,21 +22,23 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { run } from "../exec.js";
-import { ApexUnavailableError, readApexResult } from "../invoke.js";
+import { ApexUnavailableError } from "../invoke.js";
 
-/** Post-envelope-flatten shape: `status` is the executed thing's own status
- *  (for `workflow run`, the inner run status — a failed workflow inside a
- *  successful CLI call still reads as failed here). */
-const toolResultSchema = z
+/**
+ * The CLI envelope itself: `status` here is the AUTHORITATIVE execution
+ * signal (exit code mirrors it). `result` is the tool's own payload — its
+ * `status` field (when present) is domain-specific ("healthy", "passed",
+ * or a nested workflow run's "success"/"failed") and must NOT be conflated
+ * with the envelope status. The acceptance run caught exactly that bug:
+ * a healthy health-report read as a failed check under naive flattening.
+ */
+const cliEnvelopeSchema = z
   .object({
     status: z.string(),
     error: z.string().optional(),
     error_type: z.string().optional(),
     message: z.string().optional(),
-    last_error: z.unknown().optional(),
-    steps_completed: z.array(z.string()).optional(),
-    steps_failed: z.array(z.string()).optional(),
-    instance_name: z.string().optional(),
+    result: z.record(z.string(), z.unknown()).optional(),
   })
   .passthrough();
 
@@ -76,7 +78,11 @@ export class CliFlowNodeRunner implements FlowNodeRunner {
       // `params` is object-typed in the tool config; the CLI parses JSON.
       args.push("--params", JSON.stringify(config.params));
     }
-    return this.execute(args, `workflow run ${config.workflow}`, undefined);
+    // The workflow engine reports its own run status in the payload — a
+    // failed workflow inside a successful CLI call must still fail the node.
+    return this.execute(args, `workflow run ${config.workflow}`, undefined, {
+      requireInnerRunSuccess: true,
+    });
   }
 
   async runCheck(config: { tool: string; args: string[]; pass_criteria: string }): Promise<NodeExecutionResult> {
@@ -101,6 +107,7 @@ export class CliFlowNodeRunner implements FlowNodeRunner {
     args: string[],
     what: string,
     env: NodeJS.ProcessEnv | undefined,
+    options: { requireInnerRunSuccess?: boolean } = {},
   ): Promise<NodeExecutionResult> {
     const timeoutMs = what.startsWith("workflow") ? this.workflowTimeoutMs : this.checkTimeoutMs;
     const res = await run(this.bin, args, timeoutMs, this.cwd, env);
@@ -110,9 +117,9 @@ export class CliFlowNodeRunner implements FlowNodeRunner {
     // Failed runs still carry the classified envelope on stdout — parse it
     // either way so the classification survives (never a bare stderr slice
     // unless stdout genuinely isn't an envelope).
-    let flattened: z.infer<typeof toolResultSchema>;
+    let envelope: z.infer<typeof cliEnvelopeSchema>;
     try {
-      flattened = readApexResult(res.stdout, toolResultSchema);
+      envelope = cliEnvelopeSchema.parse(JSON.parse(res.stdout));
     } catch (err) {
       if (res.status === "failed") {
         return {
@@ -127,26 +134,41 @@ export class CliFlowNodeRunner implements FlowNodeRunner {
         message: `apex ${what} returned unparseable output: ${err instanceof Error ? err.message : String(err)}`,
       };
     }
-    if (flattened.status === "success") {
-      return { ok: true, detail: summarize(flattened) };
+    if (envelope.status !== "success") {
+      return {
+        ok: false,
+        errorType: envelope.error_type ?? (envelope.status === "blocked" ? "blocked" : "tool_failed"),
+        message:
+          envelope.error ??
+          envelope.message ??
+          `apex ${what} reported status ${JSON.stringify(envelope.status)}`,
+      };
     }
-    const lastError = typeof flattened.last_error === "string" ? flattened.last_error : null;
-    return {
-      ok: false,
-      errorType: flattened.error_type ?? (flattened.status === "blocked" ? "blocked" : "tool_failed"),
-      message:
-        flattened.error ??
-        lastError ??
-        flattened.message ??
-        `apex ${what} reported status ${JSON.stringify(flattened.status)}`,
-    };
+    const inner = envelope.result ?? {};
+    if (options.requireInnerRunSuccess) {
+      const innerStatus = typeof inner.status === "string" ? inner.status : null;
+      if (innerStatus !== null && innerStatus !== "success") {
+        const lastError = typeof inner.last_error === "string" ? inner.last_error : null;
+        return {
+          ok: false,
+          errorType: "workflow_failed",
+          message:
+            lastError ??
+            `apex ${what}: workflow run reported status ${JSON.stringify(innerStatus)}` +
+              (Array.isArray(inner.steps_failed) && inner.steps_failed.length > 0
+                ? ` (failed steps: ${(inner.steps_failed as string[]).join(", ")})`
+                : ""),
+        };
+      }
+    }
+    return { ok: true, detail: summarize(inner) };
   }
 }
 
-function summarize(flattened: Record<string, unknown>): Record<string, unknown> {
-  const detail: Record<string, unknown> = { status: flattened.status };
-  for (const key of ["instance_name", "workflow_name", "steps_completed", "steps_failed", "message"]) {
-    if (flattened[key] !== undefined) detail[key] = flattened[key];
+function summarize(inner: Record<string, unknown>): Record<string, unknown> {
+  const detail: Record<string, unknown> = {};
+  for (const key of ["status", "instance_name", "workflow_name", "steps_completed", "steps_failed", "message"]) {
+    if (inner[key] !== undefined) detail[key] = inner[key];
   }
   return detail;
 }

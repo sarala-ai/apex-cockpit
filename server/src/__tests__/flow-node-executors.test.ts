@@ -52,7 +52,7 @@ describe("CliFlowNodeRunner.runWorkflow", () => {
     });
 
     const result = await runner.runWorkflow({ workflow: "simple-test", params: {} });
-    expect(result).toMatchObject({ ok: false, errorType: "tool_failed" });
+    expect(result).toMatchObject({ ok: false, errorType: "workflow_failed" });
     if (!result.ok) expect(result.message).toContain("step test_step exploded");
   });
 
@@ -118,6 +118,26 @@ describe("CliFlowNodeRunner.runCheck", () => {
       "/launch",
       { APEX_EXECUTION_MODE: "apply" },
     );
+  });
+
+  it("a domain-specific result status (e.g. 'healthy') still passes when the envelope succeeds", async () => {
+    // Regression from the live acceptance run: generate_health_report returns
+    // result.status "healthy"; only the ENVELOPE status is authoritative.
+    mockRun.mockResolvedValue({
+      status: "ok",
+      stdout: JSON.stringify({
+        server: "health",
+        tool: "generate_health_report",
+        status: "success",
+        result: { status: "healthy", total_checks: 0 },
+      }),
+    });
+    const result = await runner.runCheck({
+      tool: "health generate_health_report",
+      args: [],
+      pass_criteria: "exit_code == 0",
+    });
+    expect(result.ok).toBe(true);
   });
 
   it("classifies a bare tool name as unresolvable without shelling anything", async () => {
