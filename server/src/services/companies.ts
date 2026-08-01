@@ -36,6 +36,7 @@ import {
 import {
   companySlugSchema,
   companyIssuePrefixSchema,
+  COMPANY_SLUG_PATTERN,
   type CompanySlugBreakGlassConsequences,
   type CompanyIssuePrefixBreakGlassConsequences,
 } from "@paperclipai/shared";
@@ -215,28 +216,56 @@ export function companyService(db: Db) {
       .leftJoin(companyLogos, eq(companyLogos.companyId, companies.id));
   }
 
-  // Derivation rule (fixes "APEX" deriving prefix "APE" / slug "ape"):
-  //   - Strip to letters only, uppercase.
-  //   - If the whole name is <= 4 letters, use it VERBATIM — a short name like
-  //     "APEX" or "ATOM" is already a good, readable prefix and truncating it
-  //     to 3 chars destroys information for no reason (that's the bug).
-  //   - Otherwise, keep the original first-3-letters convention unchanged
-  //     (e.g. "FinPilot" -> "FIN", "Bloom" -> "BLO") — those derivations are
-  //     already sensible and were never the complaint, so this stays a
-  //     surgical fix rather than a blanket re-derivation that would ripple
-  //     every existing company's expected prefix shape.
+  // Derivation rule (founder decision — prefixes must read as names, not
+  // truncations: APEX, BLOOM, FINP, never APE/BLO/FIN):
+  //   - Strip non-alphanumerics, uppercase.
+  //   - If the whole cleaned name is <= 5 characters, use it VERBATIM — a
+  //     short name like "APEX" or "BLOOM" is already a good, readable prefix
+  //     and truncating it destroys information for no reason.
+  //   - Otherwise take the first 4 characters (e.g. "FinPilot" -> "FINP",
+  //     "Prosperity" -> "PROS") — 4, not 3, so multi-word/longer names still
+  //     read as a recognizable fragment of the name rather than a clipped
+  //     abbreviation.
   // Uniqueness-retry (createCompanyWithUniquePrefix / suffixForAttempt) is
   // unaffected either way — it just appends "A"s to whatever base comes back.
+  // companyIssuePrefixSchema caps issue prefixes at 10 characters; a base of
+  // up to 5 chars plus the "A" suffixes suffixForAttempt appends stays within
+  // that budget for any realistic collision run (base 5 + 5 "A"s = 10). The
+  // db column itself is `text` (unbounded) so this is a validator-only bound,
+  // not a storage constraint.
   function deriveIssuePrefixBase(name: string) {
-    const normalized = name.toUpperCase().replace(/[^A-Z]/g, "");
+    const normalized = name.toUpperCase().replace(/[^A-Z0-9]/g, "");
     if (normalized.length === 0) return ISSUE_PREFIX_FALLBACK;
-    if (normalized.length <= 4) return normalized;
-    return normalized.slice(0, 3);
+    if (normalized.length <= 5) return normalized;
+    return normalized.slice(0, 4);
+  }
+
+  // Slug derivation (decoupled from the issue prefix — see
+  // createCompanyWithUniquePrefix for why coupling them was the bug that
+  // produced "ape"/"blo"/"fin" slugs): lowercase the NAME, strip
+  // non-alphanumerics. "FinPilot" -> "finpilot", "APEX" -> "apex".
+  //
+  // companySlugSchema requires a leading letter and 2-32 characters total, so
+  // a cleaned name can fail to stand on its own in two ways: it's empty or
+  // starts with a digit ("123 Corp" -> "123corp"), or it's a single character
+  // ("A" -> "a", below the 2-char floor). For those cases we prepend a fixed
+  // "co-" — this keeps the fallback a pure function of the NAME (never of the
+  // issue prefix), so slug and prefix uniqueness stay on independent axes.
+  function deriveSlugBase(name: string) {
+    const cleaned = name.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const candidate = cleaned.length > 0 ? cleaned : "company";
+    if (COMPANY_SLUG_PATTERN.test(candidate)) return candidate;
+    return `co-${candidate}`;
   }
 
   function suffixForAttempt(attempt: number) {
     if (attempt <= 1) return "";
     return "A".repeat(attempt - 1);
+  }
+
+  function slugSuffixForAttempt(attempt: number) {
+    if (attempt <= 1) return "";
+    return `-${attempt}`;
   }
 
   function isConstraintViolation(error: unknown, constraintName: string) {
@@ -424,35 +453,51 @@ export function companyService(db: Db) {
     };
   }
 
+  // Prefix and slug uniqueness are resolved on INDEPENDENT axes: each has its
+  // own retry counter, and a given insert attempt only bumps the counter for
+  // whichever constraint the database actually rejected. Postgres reports one
+  // violated unique constraint per failed INSERT, so isSlugConflict /
+  // isIssuePrefixConflict tell us unambiguously which axis collided —
+  // bumping the other axis too (or re-deriving it from the one that changed,
+  // as the old `slug = candidatePrefix.toLowerCase()` coupling did) is exactly
+  // the bug this replaces: a prefix collision must not perturb the slug, and
+  // a slug collision must not perturb the prefix.
   async function createCompanyWithUniquePrefix(data: typeof companies.$inferInsert) {
-    const base = deriveIssuePrefixBase(data.name);
+    const prefixBase = deriveIssuePrefixBase(data.name);
+    const slugBase = deriveSlugBase(data.name);
     const explicitSlug = data.slug !== undefined && data.slug !== null ? data.slug : null;
-    let suffix = 1;
-    while (suffix < 10000) {
-      const candidate = `${base}${suffixForAttempt(suffix)}`;
+    let prefixAttempt = 1;
+    let slugAttempt = 1;
+    while (prefixAttempt < 10000 && slugAttempt < 10000) {
+      const candidatePrefix = `${prefixBase}${suffixForAttempt(prefixAttempt)}`;
       // Slug is write-once and, absent an explicit value, is derived from the
-      // allocated issue prefix (same source of uniqueness) rather than left
-      // null — creation is the intended one-time set point.
-      const slugValue = explicitSlug ?? candidate.toLowerCase();
+      // company NAME (not the issue prefix — see deriveSlugBase). Creation is
+      // the intended one-time set point.
+      const candidateSlug = explicitSlug ?? `${slugBase}${slugSuffixForAttempt(slugAttempt)}`;
       try {
         const rows = await db
           .insert(companies)
-          .values({ ...data, issuePrefix: candidate, slug: slugValue })
+          .values({ ...data, issuePrefix: candidatePrefix, slug: candidateSlug })
           .returning();
         return rows[0];
       } catch (error) {
         if (isSlugConflict(error)) {
           if (explicitSlug) throw slugConflictError(explicitSlug);
-          // Derived slug collided independently of the issue prefix (rare) —
-          // retry with the next candidate, which derives a different slug too.
-          suffix += 1;
+          // Only the slug axis advances — the prefix candidate that just
+          // succeeded (or hasn't yet been tried) is reused verbatim.
+          slugAttempt += 1;
           continue;
         }
-        if (!isIssuePrefixConflict(error)) throw error;
+        if (isIssuePrefixConflict(error)) {
+          // Only the prefix axis advances — the slug candidate is reused
+          // verbatim on the next attempt.
+          prefixAttempt += 1;
+          continue;
+        }
+        throw error;
       }
-      suffix += 1;
     }
-    throw new Error("Unable to allocate unique issue prefix");
+    throw new Error("Unable to allocate unique issue prefix and slug");
   }
 
   return {
