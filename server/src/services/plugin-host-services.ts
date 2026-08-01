@@ -1335,11 +1335,15 @@ export function buildHostServices(
 
     companies: {
       async list(params) {
-        return applyWindow((await companies.list()) as Company[], params);
+        // Double-cast: the service row and the SDK Company type were already
+        // structurally divergent (pauseReason/pausedAt absent from the
+        // selection); added company columns pushed TS's overlap heuristic
+        // over the edge. Behavior unchanged.
+        return applyWindow((await companies.list()) as unknown as Company[], params);
       },
       async get(params) {
         await ensurePluginAvailableForCompany(params.companyId);
-        return (await companies.getById(params.companyId)) as Company;
+        return (await companies.getById(params.companyId)) as unknown as Company;
       },
     },
 

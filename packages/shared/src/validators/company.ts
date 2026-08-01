@@ -55,6 +55,17 @@ export const updateCompanySchema = createCompanySchema
     brandColor: brandColorSchema,
     logoAssetId: logoAssetIdSchema,
     attachmentMaxBytes: attachmentMaxBytesSchema.optional(),
+    // GitHub projection (per-company opt-in, off by default): mirror flow
+    // lifecycle onto GitHub issues in `githubProjectionRepo` ("owner/name").
+    // Enabling without a repo is rejected at the service layer for
+    // board-origin mirrors to have a creation target.
+    githubProjectionEnabled: z.boolean().optional(),
+    githubProjectionRepo: z
+      .string()
+      .trim()
+      .regex(/^[^/\s]+\/[^/\s]+$/, "Repo must be in owner/name format")
+      .nullable()
+      .optional(),
     // Write-once: the service only accepts this when the company's current slug
     // is NULL. Sending it once a slug is already set is rejected as a classified
     // conflict — see companyService.update.

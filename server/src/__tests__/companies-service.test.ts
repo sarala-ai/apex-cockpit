@@ -1093,4 +1093,43 @@ describeEmbeddedPostgres("companyService", () => {
       details: { agentsPaused: 1, runsCancelled: 1 },
     });
   });
+
+  it("github projection is off by default, requires a repo to enable, and round-trips", async () => {
+    const created = await companyService(db).create({ name: "Projection Co" });
+    expect(created.githubProjectionEnabled).toBe(false);
+    expect(created.githubProjectionRepo).toBeNull();
+
+    // Enabling without a repo (neither in the patch nor stored) is a
+    // classified 422 — the projection would have no creation target.
+    await expect(
+      companyService(db).update(
+        created.id,
+        { githubProjectionEnabled: true },
+        { actorType: "user", actorId: "test-user", agentId: null, runId: null },
+      ),
+    ).rejects.toMatchObject({ status: 422 });
+
+    const enabled = await companyService(db).update(
+      created.id,
+      { githubProjectionEnabled: true, githubProjectionRepo: "sarala-ai/apex" },
+      { actorType: "user", actorId: "test-user", agentId: null, runId: null },
+    );
+    expect(enabled?.githubProjectionEnabled).toBe(true);
+    expect(enabled?.githubProjectionRepo).toBe("sarala-ai/apex");
+
+    // Enabling later with the repo already stored is fine.
+    const disabled = await companyService(db).update(
+      created.id,
+      { githubProjectionEnabled: false },
+      { actorType: "user", actorId: "test-user", agentId: null, runId: null },
+    );
+    expect(disabled?.githubProjectionEnabled).toBe(false);
+    const reEnabled = await companyService(db).update(
+      created.id,
+      { githubProjectionEnabled: true },
+      { actorType: "user", actorId: "test-user", agentId: null, runId: null },
+    );
+    expect(reEnabled?.githubProjectionEnabled).toBe(true);
+    expect(reEnabled?.githubProjectionRepo).toBe("sarala-ai/apex");
+  });
 });
