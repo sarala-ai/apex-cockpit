@@ -73,26 +73,26 @@ describeEmbeddedPostgres("companyService", () => {
   it("retries generated issue prefixes when Drizzle wraps the unique constraint error", async () => {
     await db.insert(companies).values({
       name: "Aron Existing",
-      issuePrefix: "ARO",
+      issuePrefix: "ARON",
     });
 
     const created = await companyService(db).create({
       name: "Aron & Sharon",
     });
 
-    expect(created.issuePrefix).toBe("AROA");
+    expect(created.issuePrefix).toBe("ARONA");
 
     const rows = await db.select({ issuePrefix: companies.issuePrefix }).from(companies);
-    expect(rows.map((row) => row.issuePrefix).sort()).toEqual(["ARO", "AROA"]);
+    expect(rows.map((row) => row.issuePrefix).sort()).toEqual(["ARON", "ARONA"]);
   });
 
-  it("derives a slug from the allocated issue prefix when none is supplied at creation", async () => {
+  it("derives a slug from the company NAME (not the allocated issue prefix) when none is supplied at creation", async () => {
     const created = await companyService(db).create({
       name: "Aron & Sharon",
     });
 
-    expect(created.issuePrefix).toBe("ARO");
-    expect(created.slug).toBe("aro");
+    expect(created.issuePrefix).toBe("ARON");
+    expect(created.slug).toBe("aronsharon");
   });
 
   it("preserves a 3-letter company name verbatim as the issue prefix", async () => {
@@ -101,22 +101,18 @@ describeEmbeddedPostgres("companyService", () => {
     expect(created.slug).toBe("ink");
   });
 
-  it("preserves a 4-letter company name verbatim as the issue prefix (APEX -> APEX, not APE)", async () => {
-    const created = await companyService(db).create({ name: "APEX" });
-    expect(created.issuePrefix).toBe("APEX");
-    expect(created.slug).toBe("apex");
-  });
-
-  it("truncates a 5-letter company name to the first 3 letters, unchanged from prior behavior", async () => {
-    const created = await companyService(db).create({ name: "Bloom" });
-    expect(created.issuePrefix).toBe("BLO");
-    expect(created.slug).toBe("blo");
-  });
-
-  it("truncates a longer company name to the first 3 letters (FinPilot -> FIN)", async () => {
-    const created = await companyService(db).create({ name: "FinPilot" });
-    expect(created.issuePrefix).toBe("FIN");
-    expect(created.slug).toBe("fin");
+  // Founder decision (issue prefixes read as names, not truncations): whole
+  // cleaned name <= 5 chars is used verbatim; longer names take the first 4.
+  it.each([
+    ["APEX", "APEX", "apex"],
+    ["Bloom", "BLOOM", "bloom"],
+    ["FinPilot", "FINP", "finpilot"],
+    ["Prosperity", "PROS", "prosperity"],
+    ["Ab", "AB", "ab"],
+  ])("derives prefix and (decoupled) slug for %s -> prefix %s, slug %s", async (name, expectedPrefix, expectedSlug) => {
+    const created = await companyService(db).create({ name });
+    expect(created.issuePrefix).toBe(expectedPrefix);
+    expect(created.slug).toBe(expectedSlug);
   });
 
   it("retries a verbatim 4-letter prefix on collision the same way as any other base", async () => {
@@ -128,6 +124,43 @@ describeEmbeddedPostgres("companyService", () => {
 
     const rows = await db.select({ issuePrefix: companies.issuePrefix }).from(companies);
     expect(rows.map((row) => row.issuePrefix).sort()).toEqual(["APEX", "APEXA"]);
+  });
+
+  it("resolves a slug collision without perturbing the (already-unique) derived prefix", async () => {
+    // Existing company happens to have the slug "finpilot" already, under a
+    // completely different issue prefix — only the slug axis collides.
+    await db.insert(companies).values({ name: "Some Other Co", issuePrefix: "ZZZZ", slug: "finpilot" });
+
+    const created = await companyService(db).create({ name: "FinPilot" });
+
+    expect(created.issuePrefix).toBe("FINP");
+    expect(created.slug).toBe("finpilot-2");
+  });
+
+  it("resolves a prefix collision without perturbing the (already-unique) derived slug", async () => {
+    // Existing company happens to have the issue prefix "FINP" already, under
+    // a completely different slug — only the prefix axis collides.
+    await db.insert(companies).values({ name: "Some Other Co", issuePrefix: "FINP", slug: "something-else" });
+
+    const created = await companyService(db).create({ name: "FinPilot" });
+
+    expect(created.issuePrefix).toBe("FINPA");
+    expect(created.slug).toBe("finpilot");
+  });
+
+  it("falls back to a co-prefixed slug when the cleaned name can't stand alone (digit-leading)", async () => {
+    const created = await companyService(db).create({ name: "123 Inc" });
+    // "123 Inc" -> cleaned "123inc" starts with a digit, which
+    // companySlugSchema rejects (must start with a letter) — the fallback
+    // prepends "co-" so the slug is still derived purely from the name.
+    expect(created.slug).toBe("co-123inc");
+  });
+
+  it("falls back to a co-prefixed slug when the cleaned name is a single character", async () => {
+    const created = await companyService(db).create({ name: "A" });
+    // "A" -> cleaned "a" is only 1 character, below companySlugSchema's
+    // 2-character minimum.
+    expect(created.slug).toBe("co-a");
   });
 
   it("accepts an explicit slug at creation", async () => {
