@@ -2,14 +2,17 @@
  * GitHub projection module tests (mocked invoker, embedded Postgres for the
  * company-config/issue rows the projection reads and the mirror ref it
  * stores). The contract under test: per-company opt-in (silent no-op when
- * off), mirror creation at flow start only, origin-issue targeting for
- * ingested issues, lifecycle comments, close-owned-mirror-only, and
- * fire-and-forget failure isolation (an invoker throw NEVER propagates).
+ * off), mirror creation at flow start only via the mirror-repo cascade (see
+ * projection-repo-resolver.test.ts for the cascade's own unit tests — this
+ * file covers the module wiring it into), origin-issue targeting for
+ * ingested issues, lifecycle comments, close-owned-mirror-only, the mirror
+ * label, and fire-and-forget failure isolation (an invoker throw NEVER
+ * propagates).
  */
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRuns, issues, projectWorkspaces, projects } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -19,6 +22,7 @@ import {
   apexIssueMarker,
   extractPullRequestUrl,
   githubFlowProjection,
+  MIRROR_LABEL,
   noopFlowProjection,
 } from "../apex/flow/github-projection.js";
 
@@ -81,6 +85,8 @@ describeEmbeddedPostgres("githubFlowProjection", () => {
     await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
     await db.delete(companies);
   });
 
@@ -100,6 +106,30 @@ describeEmbeddedPostgres("githubFlowProjection", () => {
     return companyId;
   }
 
+  async function seedProjectWithWorkspace(
+    companyId: string,
+    options: { repoUrl?: string | null } = {},
+  ) {
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Widgets",
+      status: "in_progress",
+    });
+    const projectWorkspaceId = randomUUID();
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "git_remote",
+      isPrimary: true,
+      repoUrl: options.repoUrl ?? null,
+    });
+    return { projectId, projectWorkspaceId };
+  }
+
   async function seedIssue(
     companyId: string,
     options: {
@@ -107,6 +137,8 @@ describeEmbeddedPostgres("githubFlowProjection", () => {
       originId?: string | null;
       githubMirrorRef?: string | null;
       description?: string | null;
+      projectId?: string | null;
+      projectWorkspaceId?: string | null;
     } = {},
   ) {
     const issueId = randomUUID();
@@ -119,6 +151,8 @@ describeEmbeddedPostgres("githubFlowProjection", () => {
       originKind: options.originKind ?? "manual",
       originId: options.originId ?? null,
       githubMirrorRef: options.githubMirrorRef ?? null,
+      projectId: options.projectId ?? null,
+      projectWorkspaceId: options.projectWorkspaceId ?? null,
     });
     return issueId;
   }
@@ -145,7 +179,7 @@ describeEmbeddedPostgres("githubFlowProjection", () => {
     expect(await mirrorRef(issueId)).toBeNull();
   });
 
-  it("flow start creates the mirror issue for a board-origin ticket and stores the ref", async () => {
+  it("flow start creates the mirror issue via the company fallback repo (no project binding), stamped with the mirror label", async () => {
     const companyId = await seedCompany();
     const issueId = await seedIssue(companyId);
     const { invoker, calls } = fakeInvoker();
@@ -156,6 +190,7 @@ describeEmbeddedPostgres("githubFlowProjection", () => {
     expect(calls[0]).toMatchObject({ server: "github_repo", tool: "create_issue" });
     expect(calls[0].params.repo).toBe("acme/mirror");
     expect(calls[0].params.title).toBe("APE-9: Fix the thing");
+    expect(calls[0].params.labels).toBe(MIRROR_LABEL);
     const body = String(calls[0].params.body);
     expect(body).toContain("The thing is broken.");
     expect(body).toContain(apexIssueMarker(issueId));
@@ -168,6 +203,77 @@ describeEmbeddedPostgres("githubFlowProjection", () => {
       params: { repo: "acme/mirror", number: 77 },
     });
     expect(String(calls[1].params.body)).toContain("Flow `work` started");
+  });
+
+  it("flow start prefers the ticket's project workspace repo over the company fallback", async () => {
+    const companyId = await seedCompany({ repo: "acme/company-fallback" });
+    const { projectId, projectWorkspaceId } = await seedProjectWithWorkspace(companyId, {
+      repoUrl: "https://github.com/acme/workspace-repo",
+    });
+    const issueId = await seedIssue(companyId, { projectId, projectWorkspaceId });
+    const { invoker, calls } = fakeInvoker();
+    const projection = githubFlowProjection(db, { invoker });
+
+    await projection.flowStarted({ issueId, flowName: "work" });
+
+    expect(calls[0]).toMatchObject({ server: "github_repo", tool: "create_issue" });
+    expect(calls[0].params.repo).toBe("acme/workspace-repo");
+    expect(await mirrorRef(issueId)).toBe("acme/workspace-repo#77");
+  });
+
+  it("flow start falls back to the project's PRIMARY workspace when the ticket has no explicit workspace binding", async () => {
+    const companyId = await seedCompany({ repo: null });
+    const { projectId } = await seedProjectWithWorkspace(companyId, {
+      repoUrl: "git@github.com:acme/primary-repo.git",
+    });
+    const issueId = await seedIssue(companyId, { projectId });
+    const { invoker, calls } = fakeInvoker();
+    const projection = githubFlowProjection(db, { invoker });
+
+    await projection.flowStarted({ issueId, flowName: "work" });
+
+    expect(calls[0].params.repo).toBe("acme/primary-repo");
+    expect(await mirrorRef(issueId)).toBe("acme/primary-repo#77");
+  });
+
+  it("falls through to the company fallback when the workspace's remote isn't GitHub", async () => {
+    const companyId = await seedCompany({ repo: "acme/company-fallback" });
+    const { projectId, projectWorkspaceId } = await seedProjectWithWorkspace(companyId, {
+      repoUrl: "https://gitlab.com/acme/not-github",
+    });
+    const issueId = await seedIssue(companyId, { projectId, projectWorkspaceId });
+    const { invoker, calls } = fakeInvoker();
+    const projection = githubFlowProjection(db, { invoker });
+
+    await projection.flowStarted({ issueId, flowName: "work" });
+
+    expect(calls[0].params.repo).toBe("acme/company-fallback");
+  });
+
+  it("continues without the label when the labeled create_issue fails", async () => {
+    const companyId = await seedCompany();
+    const issueId = await seedIssue(companyId);
+    const calls: { tool: string; params: Record<string, unknown> }[] = [];
+    let attempt = 0;
+    const invoker: ApexInvoker = {
+      async invoke(server, tool, params) {
+        calls.push({ tool, params });
+        if (tool === "create_issue") {
+          attempt += 1;
+          if (attempt === 1) throw new Error("labels field rejected");
+          return { status: "success", number: 77, url: "https://github.com/acme/mirror/issues/77" } as never;
+        }
+        return { status: "success" } as never;
+      },
+    };
+    const projection = githubFlowProjection(db, { invoker });
+
+    await expect(projection.flowStarted({ issueId, flowName: "work" })).resolves.toBeUndefined();
+
+    expect(calls.filter((c) => c.tool === "create_issue")).toHaveLength(2);
+    expect(calls[0].params.labels).toBe(MIRROR_LABEL);
+    expect(calls[1].params.labels).toBeUndefined();
+    expect(await mirrorRef(issueId)).toBe("acme/mirror#77");
   });
 
   it("a github-origin issue targets its own origin issue — no duplicate mirror is created", async () => {
@@ -186,7 +292,7 @@ describeEmbeddedPostgres("githubFlowProjection", () => {
     expect(await mirrorRef(issueId)).toBeNull();
   });
 
-  it("enabled-but-no-repo drops the mirror creation without throwing", async () => {
+  it("cascade unresolved (no project binding, no company fallback) drops the mirror creation without throwing", async () => {
     const companyId = await seedCompany({ repo: null });
     const issueId = await seedIssue(companyId);
     const { invoker, calls } = fakeInvoker();

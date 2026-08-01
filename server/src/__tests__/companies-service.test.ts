@@ -1094,20 +1094,22 @@ describeEmbeddedPostgres("companyService", () => {
     });
   });
 
-  it("github projection is off by default, requires a repo to enable, and round-trips", async () => {
+  it("github projection is off by default, can be enabled with no fallback repo, and round-trips", async () => {
     const created = await companyService(db).create({ name: "Projection Co" });
     expect(created.githubProjectionEnabled).toBe(false);
     expect(created.githubProjectionRepo).toBeNull();
 
-    // Enabling without a repo (neither in the patch nor stored) is a
-    // classified 422 — the projection would have no creation target.
-    await expect(
-      companyService(db).update(
-        created.id,
-        { githubProjectionEnabled: true },
-        { actorType: "user", actorId: "test-user", agentId: null, runId: null },
-      ),
-    ).rejects.toMatchObject({ status: 422 });
+    // Enabling with no fallback repo (neither in the patch nor stored) is now
+    // legitimate: mirror targeting is primarily the per-ticket project
+    // workspace cascade, and the company repo is only a fallback for tickets
+    // with no repo-bearing project binding.
+    const enabledNoRepo = await companyService(db).update(
+      created.id,
+      { githubProjectionEnabled: true },
+      { actorType: "user", actorId: "test-user", agentId: null, runId: null },
+    );
+    expect(enabledNoRepo?.githubProjectionEnabled).toBe(true);
+    expect(enabledNoRepo?.githubProjectionRepo).toBeNull();
 
     const enabled = await companyService(db).update(
       created.id,

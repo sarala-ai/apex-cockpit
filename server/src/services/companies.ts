@@ -429,20 +429,15 @@ export function companyService(db: Db) {
           }
         }
 
-        // GitHub projection needs a creation target for board-origin mirror
-        // issues — enabling without a repo (in this patch or already stored)
-        // would make the projection silently skip everything.
-        if (companyPatch.githubProjectionEnabled === true) {
-          const projectionRepo =
-            companyPatch.githubProjectionRepo !== undefined
-              ? companyPatch.githubProjectionRepo
-              : existing.githubProjectionRepo;
-          if (!projectionRepo) {
-            throw unprocessable(
-              "githubProjectionRepo (owner/name) is required to enable GitHub projection",
-            );
-          }
-        }
+        // NOTE: enabling projection with no githubProjectionRepo is legitimate
+        // — mirror targeting is primarily an ordered cascade off each
+        // ticket's project workspace repo (see
+        // server/src/apex/flow/projection-repo-resolver.ts); the company repo
+        // is only a fallback for tickets with no repo-bearing project
+        // binding. So there is no enable-requires-repo gate here anymore.
+        // `githubProjectionRepo`'s owner/name shape is still validated at the
+        // zod layer (packages/shared/src/validators/company.ts) whenever a
+        // value IS supplied.
 
         const willReactivate = existing.status !== "active" && companyPatch.status === "active";
         const willArchive = existing.status !== "archived" && companyPatch.status === "archived";
