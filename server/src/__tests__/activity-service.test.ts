@@ -148,6 +148,8 @@ describeEmbeddedPostgres("activity service", () => {
       agentId,
       invocationSource: "assignment",
       status: "succeeded",
+      permissionMode: "governed",
+      permissionProfile: "read-repos",
       contextSnapshot: { issueId },
       usageJson: {
         inputTokens: 11,
@@ -180,6 +182,10 @@ describeEmbeddedPostgres("activity service", () => {
       runId,
       agentId,
       invocationSource: "assignment",
+      // The ticket's run ledger renders "by <agent>" alongside the authority
+      // that run actually held, so the payload has to carry the stamp.
+      permissionMode: "governed",
+      permissionProfile: "read-repos",
     });
     expect(runs[0]?.usageJson).toEqual({
       inputTokens: 11,

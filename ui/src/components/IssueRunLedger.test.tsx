@@ -537,6 +537,27 @@ describe("IssueRunLedger", () => {
     expect(chip?.textContent).toContain("Ada Lovelace");
   });
 
+  it("names the enforced permission profile a governed run held", () => {
+    // "by <agent>" alone tells a reader who, never under what authority.
+    renderLedger({
+      runs: [createRun({ runId: "run-gov-1", permissionMode: "governed", permissionProfile: "read-repos" })],
+    });
+
+    const chip = container.querySelector('[data-testid="run-permission-profile"]');
+    expect(chip?.textContent).toContain("governed");
+    expect(chip?.textContent).toContain("read-repos");
+  });
+
+  it("shows no permission chip for a run the flow coordinator never commissioned", () => {
+    // Null is not "governed with an unknown profile" — claiming a stamp that
+    // was never written is worse than showing none.
+    renderLedger({
+      runs: [createRun({ runId: "run-gov-2", permissionMode: null, permissionProfile: null })],
+    });
+
+    expect(container.querySelector('[data-testid="run-permission-profile"]')).toBeNull();
+  });
+
   it("omits the on-behalf-of chip when the run has no responsible user", () => {
     renderLedger({
       runs: [createRun({ runId: "run-obo-2", responsibleUserId: null })],
