@@ -60,14 +60,22 @@ describe("WorkflowsBody", () => {
     expect(html).toContain("shadowed");
   });
 
-  it("renders an honest empty layer bucket when a layer has no workflows", () => {
-    const builtInOnly: WorkflowListResponse = {
+  it("renders only layers that are present (dynamic grouping), company layers included", () => {
+    // Dynamic grouping replaced the fixed 3-bucket render: absent layers no
+    // longer show empty shells, and company:<slug> layers (capability sync)
+    // get their own group between user and built-in.
+    const mixed: WorkflowListResponse = {
       status: "success",
-      workflows: [{ name: "deploy-cloudrun", path: "/builtin/deploy-cloudrun.yaml", source: "apex-core", layer: "built-in", lifecycle: "stable", shadowed_count: 0, shadows_other_layer: false }],
+      workflows: [
+        { name: "deploy-cloudrun", path: "/builtin/deploy-cloudrun.yaml", source: "apex-core", layer: "built-in", lifecycle: "stable", shadowed_count: 0, shadows_other_layer: false },
+        { name: "release-ops", path: "/home/u/.apex/company/acme/workflows/release-ops.yaml", source: "company:acme", layer: "company:acme", lifecycle: "stable", shadowed_count: 0, shadows_other_layer: false },
+      ],
     };
-    const html = render({ data: builtInOnly });
-    expect(html).toContain("No user workflows");
-    expect(html).toContain("No project workflows");
+    const html = render({ data: mixed });
+    expect(html).toContain("Company (acme)");
+    expect(html).toContain("Synced from the company capability store.");
+    expect(html).not.toContain("No user workflows");
+    expect(html).not.toContain("No project workflows");
   });
 });
 

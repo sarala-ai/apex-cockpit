@@ -23,17 +23,41 @@ import type {
   WorkflowSummary,
 } from "@paperclipai/shared";
 
-const LAYER_ORDER: WorkflowLayer[] = ["built-in", "user", "project"];
-const LAYER_LABEL: Record<WorkflowLayer, string> = {
+// Known layers get fixed positions and copy; anything else (company:<slug>
+// entries from the capability-sync resolver, literal path labels) is grouped
+// DYNAMICALLY between user and built-in — hardcoding the list silently
+// dropped new layers (caught by both capability-sync sessions).
+const KNOWN_LAYER_ORDER = ["repo", "project", "user"] as const;
+const LAYER_LABEL: Record<string, string> = {
   "built-in": "Built-in",
   user: "User",
   project: "Project",
+  repo: "Repo",
 };
-const LAYER_HINT: Record<WorkflowLayer, string> = {
+const LAYER_HINT: Record<string, string> = {
   "built-in": "Ships with apex-core.",
   user: "From ~/.apex/workflows — this machine's user overrides.",
   project: "From this project's .apex/workflows — closest to the code.",
+  repo: "From this repo's .apex/workflows — always wins.",
 };
+function layerLabel(layer: string): string {
+  if (LAYER_LABEL[layer]) return LAYER_LABEL[layer];
+  if (layer.startsWith("company:")) return `Company (${layer.slice("company:".length)})`;
+  return layer;
+}
+function layerHint(layer: string): string {
+  if (LAYER_HINT[layer]) return LAYER_HINT[layer];
+  if (layer.startsWith("company:")) return "Synced from the company capability store.";
+  return "Custom path entry.";
+}
+function orderedLayers(present: string[]): string[] {
+  const known = KNOWN_LAYER_ORDER.filter((l) => present.includes(l));
+  const company = present.filter((l) => l.startsWith("company:")).sort();
+  const rest = present
+    .filter((l) => !KNOWN_LAYER_ORDER.includes(l as (typeof KNOWN_LAYER_ORDER)[number]) && !l.startsWith("company:") && l !== "built-in")
+    .sort();
+  return [...known, ...company, ...rest, ...(present.includes("built-in") ? ["built-in"] : [])];
+}
 
 export function WorkflowsErrorState({ error }: { error: WorkflowError }) {
   return (
@@ -76,17 +100,17 @@ function ShadowBadges({ workflow }: { workflow: WorkflowSummary }) {
   );
 }
 
-function LayerGroup({ layer, workflows }: { layer: WorkflowLayer; workflows: WorkflowSummary[] }) {
+function LayerGroup({ layer, workflows }: { layer: string; workflows: WorkflowSummary[] }) {
   return (
     <Card>
       <CardHeader className="flex-row items-center gap-2 space-y-0">
         <Layers className="h-4 w-4 text-muted-foreground" />
-        <CardTitle className="text-base">{LAYER_LABEL[layer]}</CardTitle>
-        <span className="text-xs text-muted-foreground">{LAYER_HINT[layer]}</span>
+        <CardTitle className="text-base">{layerLabel(layer)}</CardTitle>
+        <span className="text-xs text-muted-foreground">{layerHint(layer)}</span>
       </CardHeader>
       <CardContent>
         {workflows.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No {LAYER_LABEL[layer].toLowerCase()} workflows.</p>
+          <p className="text-xs text-muted-foreground">No {layerLabel(layer).toLowerCase()} workflows.</p>
         ) : (
           <ul className="space-y-1.5">
             {workflows.map((w) => (
@@ -230,13 +254,13 @@ export function WorkflowsBody({
     );
   }
 
-  const byLayer = new Map<WorkflowLayer, WorkflowSummary[]>();
-  for (const layer of LAYER_ORDER) byLayer.set(layer, []);
+  const byLayer = new Map<string, WorkflowSummary[]>();
   for (const w of data.workflows) {
     const bucket = byLayer.get(w.layer);
     if (bucket) bucket.push(w);
     else byLayer.set(w.layer, [w]);
   }
+  const layers = orderedLayers([...byLayer.keys()]);
 
   return (
     <div className="space-y-4 p-4">
@@ -250,7 +274,7 @@ export function WorkflowsBody({
         </Card>
       ) : (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-          {LAYER_ORDER.map((layer) => (
+          {layers.map((layer) => (
             <LayerGroup key={layer} layer={layer} workflows={byLayer.get(layer) ?? []} />
           ))}
         </div>
