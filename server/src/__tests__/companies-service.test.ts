@@ -92,6 +92,41 @@ describeEmbeddedPostgres("companyService", () => {
     expect(created.slug).toBe("aro");
   });
 
+  it("preserves a 3-letter company name verbatim as the issue prefix", async () => {
+    const created = await companyService(db).create({ name: "Ink" });
+    expect(created.issuePrefix).toBe("INK");
+    expect(created.slug).toBe("ink");
+  });
+
+  it("preserves a 4-letter company name verbatim as the issue prefix (APEX -> APEX, not APE)", async () => {
+    const created = await companyService(db).create({ name: "APEX" });
+    expect(created.issuePrefix).toBe("APEX");
+    expect(created.slug).toBe("apex");
+  });
+
+  it("truncates a 5-letter company name to the first 3 letters, unchanged from prior behavior", async () => {
+    const created = await companyService(db).create({ name: "Bloom" });
+    expect(created.issuePrefix).toBe("BLO");
+    expect(created.slug).toBe("blo");
+  });
+
+  it("truncates a longer company name to the first 3 letters (FinPilot -> FIN)", async () => {
+    const created = await companyService(db).create({ name: "FinPilot" });
+    expect(created.issuePrefix).toBe("FIN");
+    expect(created.slug).toBe("fin");
+  });
+
+  it("retries a verbatim 4-letter prefix on collision the same way as any other base", async () => {
+    await db.insert(companies).values({ name: "Existing Apex", issuePrefix: "APEX" });
+
+    const created = await companyService(db).create({ name: "APEX" });
+
+    expect(created.issuePrefix).toBe("APEXA");
+
+    const rows = await db.select({ issuePrefix: companies.issuePrefix }).from(companies);
+    expect(rows.map((row) => row.issuePrefix).sort()).toEqual(["APEX", "APEXA"]);
+  });
+
   it("accepts an explicit slug at creation", async () => {
     const created = await companyService(db).create({
       name: "Aron & Sharon",

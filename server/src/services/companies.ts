@@ -210,9 +210,23 @@ export function companyService(db: Db) {
       .leftJoin(companyLogos, eq(companyLogos.companyId, companies.id));
   }
 
+  // Derivation rule (fixes "APEX" deriving prefix "APE" / slug "ape"):
+  //   - Strip to letters only, uppercase.
+  //   - If the whole name is <= 4 letters, use it VERBATIM — a short name like
+  //     "APEX" or "ATOM" is already a good, readable prefix and truncating it
+  //     to 3 chars destroys information for no reason (that's the bug).
+  //   - Otherwise, keep the original first-3-letters convention unchanged
+  //     (e.g. "FinPilot" -> "FIN", "Bloom" -> "BLO") — those derivations are
+  //     already sensible and were never the complaint, so this stays a
+  //     surgical fix rather than a blanket re-derivation that would ripple
+  //     every existing company's expected prefix shape.
+  // Uniqueness-retry (createCompanyWithUniquePrefix / suffixForAttempt) is
+  // unaffected either way — it just appends "A"s to whatever base comes back.
   function deriveIssuePrefixBase(name: string) {
     const normalized = name.toUpperCase().replace(/[^A-Z]/g, "");
-    return normalized.slice(0, 3) || ISSUE_PREFIX_FALLBACK;
+    if (normalized.length === 0) return ISSUE_PREFIX_FALLBACK;
+    if (normalized.length <= 4) return normalized;
+    return normalized.slice(0, 3);
   }
 
   function suffixForAttempt(attempt: number) {
