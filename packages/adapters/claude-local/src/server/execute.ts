@@ -419,6 +419,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
+  // Governed-run seam: a caller (flow run-policy) that sets
+  // dangerouslySkipPermissions=false can also pass an explicit --allowedTools
+  // grant via config.allowedTools — otherwise skip=false alone would fall
+  // back to interactive permission prompting, which nothing can answer in an
+  // unattended run. Absent for every existing config, so this is a no-op for
+  // all current callers (asString returns "" -> null below).
+  const allowedToolsOverride = asString(config.allowedTools, "").trim() || null;
   const configEnv = parseObject(config.env);
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
@@ -769,6 +776,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     args.push(...buildClaudeExecutionPermissionArgs({
       dangerouslySkipPermissions,
       targetIsRemote: executionTargetIsRemote,
+      allowedToolsOverride,
     }));
     if (chrome) args.push("--chrome");
     // For Bedrock: only pass --model when the ID is a Bedrock-native identifier
@@ -819,7 +827,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (!resumeSessionId) {
       commandNotes.push(`Using stable Claude prompt bundle ${promptBundle.bundleKey}.`);
     }
-    if (dangerouslySkipPermissions && executionTargetIsRemote) {
+    if (allowedToolsOverride) {
+      commandNotes.push(
+        `Using a governed --allowedTools grant (dangerouslySkipPermissions=${dangerouslySkipPermissions}): ${allowedToolsOverride}`,
+      );
+    } else if (dangerouslySkipPermissions && executionTargetIsRemote) {
       commandNotes.push(
         "Using a broad --allowedTools whitelist for remote execution so hosted targets do not inherit local Claude bypass permissions.",
       );

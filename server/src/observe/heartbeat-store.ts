@@ -61,6 +61,8 @@ interface RunRow {
   resultJson: Record<string, unknown> | null;
   contextSnapshot: Record<string, unknown> | null;
   agentName: string | null;
+  permissionMode: string | null;
+  permissionProfile: string | null;
 }
 
 function mapRun(r: RunRow): AgentRun {
@@ -88,6 +90,12 @@ function mapRun(r: RunRow): AgentRun {
           model: typeof usage.model === "string" ? usage.model : null,
         }
       : null,
+    // Null permission_mode means this run predates (or was never touched by)
+    // the flow coordinator's governed-permission stamping — i.e. every
+    // interactive run — so it reports the fork's actual pre-existing
+    // default rather than an ambiguous "unknown".
+    permissionMode: r.permissionMode === "governed" ? "governed" : "bypass",
+    permissionProfile: r.permissionProfile ?? null,
   };
 }
 
@@ -102,6 +110,8 @@ const RUN_COLUMNS = {
   resultJson: heartbeatRuns.resultJson,
   contextSnapshot: heartbeatRuns.contextSnapshot,
   agentName: agents.name,
+  permissionMode: heartbeatRuns.permissionMode,
+  permissionProfile: heartbeatRuns.permissionProfile,
 } as const;
 
 export class HeartbeatObserveStore implements ObserveStore {

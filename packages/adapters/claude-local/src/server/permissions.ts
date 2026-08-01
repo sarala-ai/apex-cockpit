@@ -11,7 +11,11 @@
 // either add it here or document the deliberate exclusion. Omitting a tool
 // silently disables it inside remote targets, which can look like the tool is
 // "broken" rather than intentionally gated.
-const SANDBOX_ALLOWED_TOOLS =
+// Exported (not just module-local) so the flow run-policy module
+// (server/src/apex/flow/run-policy.ts) can reuse the exact same grammar for
+// its "bounded" permission profile instead of hand-maintaining a second copy
+// that silently drifts from this one.
+export const SANDBOX_ALLOWED_TOOLS =
   "Task AskUserQuestion Bash CronCreate CronDelete CronList Edit " +
   "EnterPlanMode EnterWorktree ExitPlanMode ExitWorktree Glob Grep Monitor " +
   "NotebookEdit PushNotification Read RemoteTrigger ScheduleWakeup Skill " +
@@ -34,7 +38,21 @@ export function buildClaudeProbePermissionArgs(input: {
 export function buildClaudeExecutionPermissionArgs(input: {
   dangerouslySkipPermissions: boolean;
   targetIsRemote: boolean;
+  /**
+   * Explicit `--allowedTools` grant computed by a caller-owned policy (e.g.
+   * the flow run-policy for flow-commissioned runs). Takes precedence over
+   * the dangerouslySkipPermissions/targetIsRemote defaults below in either
+   * direction — it is how a caller asks for governed permissions (skip=false
+   * but specific tools pre-approved) that this function otherwise has no way
+   * to express, since skip=false alone means "no --allowedTools flag, fall
+   * back to Claude Code's normal interactive prompting" (unusable for an
+   * unattended run — nothing can answer the prompt).
+   */
+  allowedToolsOverride?: string | null;
 }): string[] {
+  if (input.allowedToolsOverride) {
+    return ["--allowedTools", input.allowedToolsOverride];
+  }
   if (!input.dangerouslySkipPermissions) return [];
   if (input.targetIsRemote) {
     return ["--allowedTools", SANDBOX_ALLOWED_TOOLS];

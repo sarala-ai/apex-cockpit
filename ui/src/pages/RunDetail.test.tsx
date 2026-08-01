@@ -68,6 +68,25 @@ describe("RunDetailBody", () => {
     expect(html).toContain("No evals recorded for this run.");
   });
 
+  it("shows an amber bypass chip when the run carries no permission stamp (interactive default)", () => {
+    const html = render({ data: { run: BASE_RUN, spans: [], toolCalls: [], evals: [] } });
+    expect(html).toContain("bypass");
+  });
+
+  it("shows a governed · <profile> chip for a flow-commissioned run", () => {
+    const html = render({
+      data: {
+        run: { ...BASE_RUN, permissionMode: "governed", permissionProfile: "bounded" },
+        spans: [],
+        toolCalls: [],
+        evals: [],
+      },
+    });
+    expect(html).toContain("governed");
+    expect(html).toContain("bounded");
+    expect(html).not.toContain(">bypass<");
+  });
+
   it("renders the span tree nested by parentSpanId, with an error span flagged", () => {
     const html = render({
       data: {

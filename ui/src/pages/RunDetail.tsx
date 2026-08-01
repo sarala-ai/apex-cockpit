@@ -150,6 +150,15 @@ export function RunDetailBody({
               {run.runId}
             </h1>
             <StatusBadge variant={runStatusVariant(run.status)}>{run.status}</StatusBadge>
+            {run.permissionMode === "governed" ? (
+              <StatusBadge variant="info" title="This run was commissioned by the flow coordinator with a governed permission profile — dangerously-skip-permissions off, a bounded --allowedTools grant instead.">
+                governed{run.permissionProfile ? ` · ${run.permissionProfile}` : ""}
+              </StatusBadge>
+            ) : (
+              <StatusBadge variant="warning" title="This run used the fork's default dangerously-skip-permissions bypass (interactive runs, or any run the flow coordinator didn't commission).">
+                bypass
+              </StatusBadge>
+            )}
             {run.agentName && <span className="text-sm text-muted-foreground">{run.agentName}</span>}
           </div>
           <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 text-xs text-muted-foreground">

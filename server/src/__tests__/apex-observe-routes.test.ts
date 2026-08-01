@@ -231,6 +231,27 @@ describe("GET /observe/run-detail/:runId", () => {
     expect(res.body.spans).toEqual([]);
     expect(res.body.evals).toEqual([]);
   });
+
+  it("reports permissionMode: bypass for a run the flow coordinator never stamped (every interactive run)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("nope", { status: 503 })));
+    const { db } = makeDb([RUN_WITH_USAGE], []);
+    const res = await request(appWith(db)).get("/observe/run-detail/r1");
+    expect(res.status).toBe(200);
+    expect(res.body.run.permissionMode).toBe("bypass");
+    expect(res.body.run.permissionProfile).toBeNull();
+  });
+
+  it("surfaces permissionMode: governed + the profile for a flow-commissioned run the coordinator stamped", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("nope", { status: 503 })));
+    const { db } = makeDb(
+      [{ ...RUN_WITH_USAGE, permissionMode: "governed", permissionProfile: "bounded" }],
+      [],
+    );
+    const res = await request(appWith(db)).get("/observe/run-detail/r1");
+    expect(res.status).toBe(200);
+    expect(res.body.run.permissionMode).toBe("governed");
+    expect(res.body.run.permissionProfile).toBe("bounded");
+  });
 });
 
 describe("GET /observe/gcp-resource", () => {
