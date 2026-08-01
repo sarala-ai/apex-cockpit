@@ -7,6 +7,14 @@ vi.mock("../observe/company-projects.js", () => ({
   companyGcpProjects: vi.fn(async () => ["proj-1"]),
 }));
 
+// resource-attribution-mapping (b5ffc436e) layers db-backed manual/auto_mapped
+// rows onto the core payload's attribution. No db rows are under test here —
+// only the passthrough of apex-core's own label/registry/exception
+// classification — so this returns an empty map rather than hitting `db`.
+vi.mock("../observe/resource-attribution-store.js", () => ({
+  getAttributionsForProject: vi.fn(async () => new Map()),
+}));
+
 function invokerReturning(result: unknown): ApexInvoker {
   return { invoke: vi.fn(async () => result) };
 }
@@ -37,9 +45,27 @@ describe("GcpInventoryStore.listResources — attribution passthrough", () => {
 
     const [inv] = await store.listResources("company-1");
 
-    expect(inv.attributionSummary).toEqual({ label: 1, registry: 0, exception: 1 });
+    // mergeAttributions (b5ffc436e) always returns the full summary shape
+    // (db-backed manual/auto_mapped/conflict counters alongside apex-core's
+    // own label/registry/exception counts), all zero here since no db rows
+    // are mocked in.
+    expect(inv.attributionSummary).toEqual({
+      label: 1,
+      registry: 0,
+      inherited: 0,
+      system: 0,
+      exception: 1,
+      mapped: 0,
+      manual: 0,
+      conflicts: 0,
+    });
     const resources = inv.resourcesByType["run.googleapis.com/Service"];
-    expect(resources[0].attribution).toEqual({ status: "label", workflow: "deploy--v1" });
+    expect(resources[0].attribution).toEqual({
+      status: "label",
+      workflow: "deploy--v1",
+      source: "label",
+      conflict: false,
+    });
     expect(resources[1].attribution).toEqual({ status: "exception" });
   });
 

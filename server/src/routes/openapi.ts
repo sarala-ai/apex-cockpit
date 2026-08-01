@@ -5535,6 +5535,132 @@ registerCurrentRoute({
   summary: "Run a pipeline case's APEX workflow and advance its stage",
 });
 
+registerCurrentRoute({
+  method: "post",
+  path: "/api/apex/github-ingest",
+  tags: ["apex"],
+  summary: "Ingest a GitHub issue into a fork issue, reflecting promotion/close back",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/observe/gcp-resource",
+  tags: ["apex"],
+  summary: "Get a single GCP resource's detail",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/observe/gcp-inventory",
+  tags: ["apex"],
+  summary: "List a company's bound GCP projects' full resource inventory",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/observe/gcp-services",
+  tags: ["apex"],
+  summary: "List a company's bound GCP projects' enabled services",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/observe/attribution/import",
+  tags: ["apex"],
+  summary: "Bulk-import apex-core's resource-mapper report as auto_mapped attribution rows",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/observe/attribution/manual",
+  tags: ["apex"],
+  summary: "Set a manual resource attribution override",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/observe/attribution/refresh",
+  tags: ["apex"],
+  summary: "Refresh a project's resource attribution mapping",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/observe/attribution/conflicts",
+  tags: ["apex"],
+  summary: "List resources whose live cloud label disagrees with their auto_mapped attribution",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/observe/gcp-resource-health",
+  tags: ["apex"],
+  summary: "Get a GCP resource's health/readiness detail",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/observe/gateway-metrics",
+  tags: ["apex"],
+  summary: "Get apex-gateway invocation metrics",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/observe/fleet",
+  tags: ["apex"],
+  summary: "Get the composite fleet observe surface",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/observe/runs",
+  tags: ["apex"],
+  summary: "List recent observed runs across sources",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/observe/health",
+  tags: ["apex"],
+  summary: "Get the observe surface's own health status",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/observe/run-detail/{runId}",
+  tags: ["apex"],
+  summary: "Get one observed run's detail",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/observe/evals",
+  tags: ["apex"],
+  summary: "List recent eval results",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/observe/regressions",
+  tags: ["apex"],
+  summary: "List detected eval regressions",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/approvals/{id}/pr-diff",
+  tags: ["apex"],
+  summary: "Get the live PR file diff for a flow_gate approval",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/slug-break-glass",
+  tags: ["apex"],
+  summary: "Force-reassign a company's slug, breaking any existing holder",
+});
+
 // ─── Spec builder ─────────────────────────────────────────────────────────────
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
