@@ -5668,6 +5668,13 @@ registerCurrentRoute({
   summary: "Force-reassign a company's slug, breaking any existing holder",
 });
 
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/issue-prefix-break-glass",
+  tags: ["apex"],
+  summary: "Change a company's issue prefix, rewriting existing issue identifiers",
+});
+
 // ─── Spec builder ─────────────────────────────────────────────────────────────
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
