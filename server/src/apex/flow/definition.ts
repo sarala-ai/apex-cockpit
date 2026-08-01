@@ -38,6 +38,15 @@ export const agentNodeConfigSchema = z.object({
     .partial()
     .nullish(),
   acceptance: z.string().min(1),
+  // Tolerant, not contractual: apex-core's flow_models.AgentNodeConfig
+  // (pydantic) does not carry a `permissions` field yet — this is read
+  // defensively (server/src/apex/flow/run-policy.ts derives a policy from
+  // whatever shape shows up, garbage-in tolerated) rather than trusted. Core
+  // follow-up: add `permissions: {profile: str}` to AgentNodeConfig so
+  // `apex flows show` actually emits this key once flow YAML authors declare
+  // it — until then this field is only ever populated by hand-testing raw
+  // JSON, never by the real CLI.
+  permissions: z.unknown().nullish(),
 });
 
 export const gateNodeConfigSchema = z.object({

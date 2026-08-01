@@ -16,8 +16,14 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { flowCoordinator, FLOW_GATE_APPROVAL_TYPE } from "../apex/flow/coordinator.js";
-import type { FlowDefinition, LoadedFlowDefinition } from "../apex/flow/definition.js";
+import {
+  applyFlowRunPermissionOverride,
+  clearFlowRunPermissionOverride,
+  flowCoordinator,
+  FLOW_GATE_APPROVAL_TYPE,
+  type FlowIssue,
+} from "../apex/flow/coordinator.js";
+import type { FlowDefinition, FlowNode, LoadedFlowDefinition } from "../apex/flow/definition.js";
 import type { FlowNodeRunner, NodeExecutionResult } from "../apex/flow/node-executors.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -1051,6 +1057,131 @@ describeEmbeddedPostgres("flow coordinator", () => {
       expect(resumed).toBe(0);
       expect(calls).toHaveLength(0);
       expect((await flowState(issueId)).flowStatus).toBe("running");
+    });
+  });
+
+  describe("governed permission override (flow run-policy injection seam)", () => {
+    async function overrides(issueId: string): Promise<Record<string, unknown> | null> {
+      const [row] = await db
+        .select({ assigneeAdapterOverrides: issues.assigneeAdapterOverrides })
+        .from(issues)
+        .where(eq(issues.id, issueId));
+      return (row?.assigneeAdapterOverrides as Record<string, unknown> | null) ?? null;
+    }
+
+    const boundedNode: FlowNode = {
+      id: "board_diff",
+      kind: "agent",
+      agent: {
+        prompt_template: "do the thing",
+        acceptance: "done",
+        permissions: { profile: "bounded" },
+      },
+      on_fail: "pause",
+    } as FlowNode;
+
+    it("stamps a governed dangerouslySkipPermissions=false + bounded allowedTools grant on the issue's adapter override", async () => {
+      const { issueId } = await seedIssue();
+      const result = await applyFlowRunPermissionOverride(db, { id: issueId } as FlowIssue, boundedNode);
+      expect(result?.profile).toBe("bounded");
+      const stamped = await overrides(issueId);
+      expect(stamped?.dangerouslySkipPermissions).toBe(false);
+      expect(typeof stamped?.allowedTools).toBe("string");
+      expect((stamped?.allowedTools as string).split(" ")).toContain("Read");
+    });
+
+    it("preserves a human-set model override already on the issue", async () => {
+      const { issueId } = await seedIssue();
+      await db
+        .update(issues)
+        .set({ assigneeAdapterOverrides: { model: "claude-opus-4-6" } })
+        .where(eq(issues.id, issueId));
+
+      await applyFlowRunPermissionOverride(db, { id: issueId } as FlowIssue, boundedNode);
+
+      const stamped = await overrides(issueId);
+      expect(stamped?.model).toBe("claude-opus-4-6");
+      expect(stamped?.dangerouslySkipPermissions).toBe(false);
+    });
+
+    it("leaves an issue this flow never touched completely unaffected (interactive runs untouched)", async () => {
+      const { companyId, issueId: touchedId } = await seedIssue();
+      // Second issue in the SAME company — proves the override is issue-scoped,
+      // not agent-record- or company-scoped: an untouched issue's interactive
+      // runs are unaffected by another issue's flow commissioning.
+      const untouchedId = randomUUID();
+      await db.insert(issues).values({
+        id: untouchedId,
+        companyId,
+        title: "untouched interactive issue",
+        identifier: `APE-${Math.floor(Math.random() * 100000)}`,
+      });
+
+      await applyFlowRunPermissionOverride(db, { id: touchedId } as FlowIssue, boundedNode);
+
+      expect(await overrides(touchedId)).not.toBeNull();
+      expect(await overrides(untouchedId)).toBeNull();
+    });
+
+    it("clearFlowRunPermissionOverride strips the governed keys but preserves anything else, at flow-terminal", async () => {
+      const { issueId } = await seedIssue();
+      await applyFlowRunPermissionOverride(db, { id: issueId } as FlowIssue, boundedNode);
+      await db
+        .update(issues)
+        .set({
+          assigneeAdapterOverrides: {
+            ...(await overrides(issueId)),
+            model: "claude-opus-4-6",
+          },
+        })
+        .where(eq(issues.id, issueId));
+
+      await clearFlowRunPermissionOverride(db, issueId);
+
+      const cleared = await overrides(issueId);
+      expect(cleared).toEqual({ model: "claude-opus-4-6" });
+    });
+
+    it("clears down to null when the governed keys were the only thing set", async () => {
+      const { issueId } = await seedIssue();
+      await applyFlowRunPermissionOverride(db, { id: issueId } as FlowIssue, boundedNode);
+
+      await clearFlowRunPermissionOverride(db, issueId);
+
+      expect(await overrides(issueId)).toBeNull();
+    });
+
+    it("a full agent-node flow run stamps permissionMode/permissionProfile on the commissioned heartbeat run", async () => {
+      const companyId = (await seedIssue()).companyId;
+      // Reuse the schema directly: insert an agent + issue + a pre-seeded
+      // heartbeat run standing in for what the real wakeup() would create,
+      // then drive the coordinator's default-path commission bookkeeping
+      // (permission override + run stamping) without invoking the real
+      // heartbeat service (out of scope for a coordinator unit test).
+      const agentId = await seedAgent(companyId);
+      const issueId = randomUUID();
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "stamped run",
+        identifier: `APE-${Math.floor(Math.random() * 100000)}`,
+        assigneeAgentId: agentId,
+      });
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "queued" });
+
+      const permission = await applyFlowRunPermissionOverride(db, { id: issueId } as FlowIssue, boundedNode);
+      await db
+        .update(heartbeatRuns)
+        .set({ permissionMode: "governed", permissionProfile: permission?.profile ?? null })
+        .where(eq(heartbeatRuns.id, runId));
+
+      const [row] = await db
+        .select({ permissionMode: heartbeatRuns.permissionMode, permissionProfile: heartbeatRuns.permissionProfile })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId));
+      expect(row.permissionMode).toBe("governed");
+      expect(row.permissionProfile).toBe("bounded");
     });
   });
 });

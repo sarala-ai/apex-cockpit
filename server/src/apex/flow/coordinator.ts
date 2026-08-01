@@ -61,6 +61,11 @@ import {
   type AgentPromptContext,
   type FlowTerminalRunStatus,
 } from "./agent-step.js";
+import {
+  applyGovernedAdapterConfigOverride,
+  clearGovernedAdapterConfigOverride,
+  derivePermissionPolicy,
+} from "./run-policy.js";
 
 export const FLOW_STATUSES = [
   "running",
@@ -78,7 +83,7 @@ const ACTIVE_FLOW_STATUSES: FlowStatus[] = ["running", "waiting_gate", "waiting_
 export const FLOW_GATE_APPROVAL_TYPE = "flow_gate";
 
 /** The flow-state slice of an issue row this module reads and writes. */
-type FlowIssue = {
+export type FlowIssue = {
   id: string;
   companyId: string;
   identifier: string | null;
@@ -133,6 +138,69 @@ export class FlowStateConflictError extends Error {
   }
 }
 
+/**
+ * Governed-permission injection point for flow-commissioned runs. Chosen
+ * seam: `issues.assigneeAdapterOverrides` (packages/db/src/schema/issues.ts)
+ * — an EXISTING per-issue adapter-config override column, already the last
+ * (highest-precedence) layer `mergeModelProfileAdapterConfig` folds into the
+ * effective run config in services/heartbeat.ts. This beats the two
+ * alternatives the task considered: a global agent-record mutation (would
+ * leak into every other issue that agent works, including interactive ones —
+ * exactly the blast radius we're trying to avoid) and a hypothetical
+ * per-wakeup config override (`WakeupOptions` has no such field; adding one
+ * would mean threading a new parameter through `services/heartbeat.ts`'s
+ * already enormous config-assembly path for something the fork already
+ * solved at the issue layer). Writing here is scoped to exactly the issue
+ * the flow is driving, is undone at flow-terminal (see
+ * `clearGovernedAdapterConfigOverride`'s call sites in `markFailed` and
+ * `advanceOrComplete`), and never touches the agent record itself — so a
+ * human interacting with that same agent on a different issue is completely
+ * unaffected. See run-policy.ts for why immediate post-wakeup restoration
+ * would be unsafe (it would race the async dispatch that actually reads it).
+ */
+export async function applyFlowRunPermissionOverride(
+  db: Db,
+  issue: FlowIssue,
+  node: FlowNode,
+): Promise<{ profile: string } | null> {
+  const policy = derivePermissionPolicy(node.agent?.permissions);
+  if (policy.notes.length > 0) {
+    logger.info(
+      { issueId: issue.id, flowNodeId: node.id, profile: policy.profile, notes: policy.notes },
+      "flow coordinator: permission policy derivation notes",
+    );
+  }
+  const current = await db
+    .select({ assigneeAdapterOverrides: issues.assigneeAdapterOverrides })
+    .from(issues)
+    .where(eq(issues.id, issue.id))
+    .then((rows) => rows[0]?.assigneeAdapterOverrides ?? null);
+  await db
+    .update(issues)
+    .set({
+      assigneeAdapterOverrides: applyGovernedAdapterConfigOverride(current, policy),
+      updatedAt: new Date(),
+    })
+    .where(eq(issues.id, issue.id));
+  return { profile: policy.profile };
+}
+
+/** Undo `applyFlowRunPermissionOverride` — see its doc for why this only
+ *  runs at flow-terminal, never between a flow's own sequential commissions
+ *  and never synchronously after `wakeup()` returns. */
+export async function clearFlowRunPermissionOverride(db: Db, issueId: string): Promise<void> {
+  const current = await db
+    .select({ assigneeAdapterOverrides: issues.assigneeAdapterOverrides })
+    .from(issues)
+    .where(eq(issues.id, issueId))
+    .then((rows) => rows[0]?.assigneeAdapterOverrides ?? null);
+  if (!current) return;
+  await db
+    .update(issues)
+    .set({ assigneeAdapterOverrides: clearGovernedAdapterConfigOverride(current), updatedAt: new Date() })
+    .where(eq(issues.id, issueId));
+}
+
 /** Default commission: the fork's native execution path, nothing else.
  *  The wakeup's `commentId` is the instruction channel — heartbeat dispatch
  *  loads that comment (wakeCommentContext) and renders it into the agent's
@@ -143,6 +211,7 @@ async function defaultCommissionAgentRun(
   node: FlowNode,
   commission: AgentRunCommission,
 ): Promise<{ runId: string } | null> {
+  const permission = await applyFlowRunPermissionOverride(db, issue, node);
   // Lazy import: heartbeat.ts is enormous and only needed on this path.
   const { heartbeatService } = await import("../../services/heartbeat.js");
   const run = await heartbeatService(db).wakeup(commission.agentId, {
@@ -159,7 +228,26 @@ async function defaultCommissionAgentRun(
       [FLOW_AGENT_CONTEXT_KEY]: true,
     },
   });
-  return run ? { runId: (run as { id: string }).id } : null;
+  if (!run) return null;
+  const runId = (run as { id: string }).id;
+  if (permission) {
+    // Visibility stamp (typed columns, see packages/db/src/schema/
+    // heartbeat_runs.ts permissionMode/permissionProfile) — best-effort:
+    // the run itself was already commissioned successfully, so a stamping
+    // failure here is logged, never surfaced as a commission failure.
+    try {
+      await db
+        .update(heartbeatRuns)
+        .set({ permissionMode: "governed", permissionProfile: permission.profile })
+        .where(eq(heartbeatRuns.id, runId));
+    } catch (err) {
+      logger.error(
+        { err, runId, issueId: issue.id },
+        "flow coordinator: failed to stamp permissionMode/permissionProfile on commissioned run",
+      );
+    }
+  }
+  return { runId };
 }
 
 export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> = {}) {
@@ -298,6 +386,7 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
       errorType: failure.errorType,
       error: failure.message,
     });
+    await clearFlowRunPermissionOverride(db, next.id);
     await surface(
       next,
       `Flow **${next.flowName}** failed at node \`${next.flowNodeId}\` — ` +
@@ -317,6 +406,7 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
       await transition(issue, { flowStatus: "done", flowRunId: null }, "flow.completed", {
         completedNodeId: flow.nodes[index]?.id ?? null,
       });
+      await clearFlowRunPermissionOverride(db, issue.id);
       return null;
     }
     return transition(issue, { flowNodeId: nextNode.id, flowRunId: null }, "flow.advanced", {
