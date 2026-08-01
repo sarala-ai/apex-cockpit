@@ -322,6 +322,81 @@ describe("IssueChatThread", () => {
     markdownBodyRenderMock.mockClear();
   });
 
+  it("collapses flow machine correspondence by default and expands it in place", () => {
+    const root = createRoot(container);
+    const at = (minute: number) => new Date(Date.UTC(2026, 7, 1, 7, minute, 0));
+    const instructionBody =
+      "Flow **design-change** agent step `board_diff` — bounded agent run commissioned.\n\n" +
+      "Instruction:\nAuthor the design-board change requested by ticket APE-5.\n\n" +
+      "Acceptance: pr_exists:sarala-ai/apex-design#design/APE-5";
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[
+              {
+                id: "human-1",
+                companyId: "c1",
+                issueId: "i1",
+                authorType: "user",
+                authorAgentId: null,
+                authorUserId: "user-board",
+                body: "Please record the loop on the board.",
+                presentation: null,
+                metadata: null,
+                createdAt: at(10),
+                updatedAt: at(10),
+              },
+              {
+                id: "flow-instruction",
+                companyId: "c1",
+                issueId: "i1",
+                authorType: "system",
+                authorAgentId: null,
+                authorUserId: null,
+                body: instructionBody,
+                presentation: null,
+                metadata: null,
+                createdAt: at(20),
+                updatedAt: at(20),
+              },
+            ]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    // Default: the machine trail is one collapsed row, the human comment reads first.
+    expect(container.textContent).toContain("Please record the loop on the board.");
+    expect(container.textContent).toContain("Flow activity (1)");
+    expect(container.textContent).not.toContain("pr_exists:sarala-ai/apex-design");
+    expect(container.textContent).not.toContain("bounded agent run commissioned");
+
+    const toggle = container.querySelector('[data-testid="flow-activity-toggle"]') as HTMLButtonElement;
+    expect(toggle).not.toBeNull();
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+
+    act(() => {
+      toggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // Expanding restores the audit trail verbatim — nothing was deleted.
+    const expanded = container.querySelector('[data-testid="flow-activity-toggle"]') as HTMLButtonElement;
+    expect(expanded.getAttribute("aria-expanded")).toBe("true");
+    expect(container.textContent).toContain("bounded agent run commissioned");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("drops the count heading and does not use an internal scrollbox", () => {
     const root = createRoot(container);
 

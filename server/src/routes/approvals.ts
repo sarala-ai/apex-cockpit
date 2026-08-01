@@ -1,6 +1,6 @@
 import { Router, type Request } from "express";
 import { eq } from "drizzle-orm";
-import { heartbeatRuns, type Db } from "@paperclipai/db";
+import { agents as agentsTable, heartbeatRuns, type Db } from "@paperclipai/db";
 import {
   addApprovalCommentSchema,
   createApprovalSchema,
@@ -25,34 +25,15 @@ import { redactEventPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { resolveGateApproval } from "../apex/pipeline/gate-bridge.js";
 import { flowCoordinator, FLOW_GATE_APPROVAL_TYPE } from "../apex/flow/coordinator.js";
-import { acceptancePullRequestTarget } from "../apex/flow/agent-step.js";
-import { ApexUnavailableError, ApexInvocationError, CliApexInvoker, type ApexInvoker } from "../apex/invoke.js";
+import { CliApexInvoker, type ApexInvoker } from "../apex/invoke.js";
+import {
+  assembleFlowGateBrief,
+  fetchPullRequestSummary,
+  findAcceptanceTarget,
+  type ProvenanceLookup,
+} from "../apex/flow/brief.js";
+import { loadFlowDefinition, type LoadedFlowDefinition } from "../apex/flow/definition.js";
 import type { PipelineActor } from "../services/pipelines.js";
-
-/** Zod contract for github_repo's get_pull_request tool result (apex-core,
- *  the changed-files extension) — see server/src/apex/invoke.ts module doc:
- *  this is the SAME schema the route's response is shaped from, so a CLI
- *  contract drift fails loudly here rather than silently in the UI. */
-const PullRequestFileSchema = z.object({
-  path: z.string(),
-  status: z.string(),
-  additions: z.number(),
-  deletions: z.number(),
-});
-const GetPullRequestResultSchema = z
-  .object({
-    status: z.string(),
-    url: z.string().optional(),
-    head_ref: z.string().optional(),
-    title: z.string().optional(),
-    additions: z.number().optional(),
-    deletions: z.number().optional(),
-    changed_files: z.number().nullable().optional(),
-    files: z.array(PullRequestFileSchema).optional(),
-    files_truncated: z.boolean().optional(),
-    error: z.string().optional(),
-  })
-  .passthrough();
 
 /** apex-tower (Task 2 §2b): a pipeline actor from the approving/rejecting board user. */
 function gateActor(req: Request): PipelineActor {
@@ -83,9 +64,50 @@ function isStatusOnlyCheapRecoveryContext(contextSnapshot: unknown) {
     context.resumeRequiresNormalModel === true;
 }
 
+/** Default provenance reader for the decision brief: the commissioned run's
+ *  permission stamp (heartbeat_runs.permissionMode/permissionProfile, written
+ *  by the flow coordinator) plus the agent's display name — so the brief can
+ *  say "Designer, bounded profile" instead of a bare UUID. Best-effort: any
+ *  failure leaves the ids in place and the brief still answers the decision. */
+function dbProvenanceLookup(db: Db): ProvenanceLookup {
+  return async ({ agentId, runId }) => {
+    const [agentRow, runRow] = await Promise.all([
+      agentId
+        ? db
+            .select({ name: agentsTable.name })
+            .from(agentsTable)
+            .where(eq(agentsTable.id, agentId))
+            .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
+      runId
+        ? db
+            .select({
+              permissionMode: heartbeatRuns.permissionMode,
+              permissionProfile: heartbeatRuns.permissionProfile,
+            })
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, runId))
+            .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
+    ]);
+    return {
+      agentName: agentRow?.name ?? null,
+      permissionProfile: runRow?.permissionProfile ?? null,
+      permissionMode: runRow?.permissionMode ?? null,
+    };
+  };
+}
+
 export function approvalRoutes(
   db: Db,
-  options: { pluginWorkerManager?: PluginWorkerManager; apexInvoker?: ApexInvoker } = {},
+  options: {
+    pluginWorkerManager?: PluginWorkerManager;
+    apexInvoker?: ApexInvoker;
+    /** Injected by tests so the brief's flow-derived "what happens next" can
+     *  be exercised without shelling out to the apex CLI. */
+    loadFlowDefinition?: (name: string) => Promise<LoadedFlowDefinition>;
+    provenanceLookup?: ProvenanceLookup;
+  } = {},
 ) {
   const router = Router();
   const svc = approvalService(db);
@@ -97,6 +119,8 @@ export function approvalRoutes(
   const secretsSvc = secretService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
   const apexInvoker: ApexInvoker = options.apexInvoker ?? new CliApexInvoker();
+  const flowDefinitionLoader = options.loadFlowDefinition ?? loadFlowDefinition;
+  const provenanceLookup: ProvenanceLookup = options.provenanceLookup ?? dbProvenanceLookup(db);
 
   async function requireApprovalAccess(req: Request, id: string) {
     const approval = await svc.getById(id);
@@ -572,73 +596,68 @@ export function approvalRoutes(
     // Walk the issue's activity log (newest first) for the most recent
     // agent-step acceptance that declared a pr_exists target.
     const activityRows = await activityService(db).forIssue(issueId);
-    let prTarget: { repo: string; head: string } | null = null;
-    let acceptanceEvaluation: string | null = null;
-    for (const row of activityRows) {
-      const details = (row.details ?? {}) as Record<string, unknown>;
-      const acceptance = typeof details.acceptance === "string" ? details.acceptance : null;
-      if (!acceptance) continue;
-      const target = acceptancePullRequestTarget(acceptance);
-      if (target) {
-        prTarget = target;
-        acceptanceEvaluation =
-          typeof details.acceptanceEvaluation === "string" ? details.acceptanceEvaluation : null;
-        break;
-      }
-    }
-    if (!prTarget) {
+    const target = findAcceptanceTarget(activityRows);
+    if (!target) {
       res.json({ available: false, reason: "no pr_exists acceptance found for this issue" });
       return;
     }
 
-    try {
-      const result = await apexInvoker.invoke(
-        "github_repo",
-        "get_pull_request",
-        { repo: prTarget.repo, head: prTarget.head },
-        GetPullRequestResultSchema,
-      );
-      if (result.status !== "success") {
-        res.json({
-          available: true,
-          degraded: true,
-          repo: prTarget.repo,
-          headBranch: prTarget.head,
-          error: result.error ?? `get-pull-request reported status '${result.status}'`,
-          acceptanceEvaluation,
-        });
-        return;
-      }
-      res.json({
-        available: true,
-        degraded: false,
-        repo: prTarget.repo,
-        headBranch: result.head_ref ?? prTarget.head,
-        url: result.url ?? "",
-        title: result.title ?? "",
-        totals: {
-          additions: result.additions ?? 0,
-          deletions: result.deletions ?? 0,
-          changedFiles: result.changed_files ?? result.files?.length ?? 0,
-        },
-        files: result.files ?? [],
-        files_truncated: result.files_truncated ?? false,
-        acceptanceEvaluation,
-      });
-    } catch (err) {
-      if (err instanceof ApexUnavailableError || err instanceof ApexInvocationError) {
-        res.json({
-          available: true,
-          degraded: true,
-          repo: prTarget.repo,
-          headBranch: prTarget.head,
-          error: err.message,
-          acceptanceEvaluation,
-        });
-        return;
-      }
-      throw err;
+    // Unchanged wire shape for existing consumers — the helper carries
+    // acceptanceEvaluation through on both the healthy and degraded branch.
+    res.json(await fetchPullRequestSummary(apexInvoker, target));
+  });
+
+  /**
+   * DECISION BRIEF for a flow_gate approval — the founder-facing answer to
+   * "what am I deciding, what was already verified, what should I look at,
+   * what happens if I approve or reject, and who did the work".
+   *
+   * Why a brief and not the log (founder critique): a flow-gated ticket today
+   * reads as agent slop — instruction comments, wake fences, status
+   * transitions and raw acceptance strings — and "I don't know what to
+   * interpret, where to start and where to end." Machine strings are still
+   * returned, but only under `verified.machine` / `machine`, never as a
+   * headline.
+   *
+   * "What happens next" is DERIVED: the flow definition is loaded through
+   * `apex flows show` and the node(s) AFTER this gate are described, so the
+   * sentence tracks the flow YAML instead of a hardcoded string.
+   *
+   * Failure-isolated exactly like the pr-diff route it shares helpers with:
+   * a missing apex CLI, a gh failure, an unloadable flow definition or a
+   * failed provenance lookup each degrade a section — never a 500.
+   */
+  router.get("/approvals/:id/brief", async (req, res) => {
+    const id = req.params.id as string;
+    const approval = await svc.getById(id);
+    if (!approval) {
+      res.status(404).json({ error: "Approval not found" });
+      return;
     }
+    assertCompanyAccess(req, approval.companyId);
+    if (!(await assertApprovalAccessAllowed(req, res, approval.companyId))) return;
+
+    if (approval.type !== FLOW_GATE_APPROVAL_TYPE) {
+      res.json({ available: false, reason: "not_a_flow_gate_approval" });
+      return;
+    }
+    const payload = approval.payload as Record<string, unknown>;
+    const issueId = typeof payload.issueId === "string" ? payload.issueId : null;
+    if (!issueId) {
+      res.json({ available: false, reason: "approval payload missing issueId" });
+      return;
+    }
+
+    const activityRows = await activityService(db).forIssue(issueId);
+    const brief = await assembleFlowGateBrief({
+      approvalId: approval.id,
+      payload,
+      activityRows,
+      apexInvoker,
+      loadFlowDefinition: flowDefinitionLoader,
+      provenanceLookup,
+    });
+    res.json(brief);
   });
 
   return router;

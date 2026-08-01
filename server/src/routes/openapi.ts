@@ -5655,6 +5655,13 @@ registerCurrentRoute({
 });
 
 registerCurrentRoute({
+  method: "get",
+  path: "/api/approvals/{id}/brief",
+  tags: ["apex"],
+  summary: "Get the decision brief for a flow_gate approval",
+});
+
+registerCurrentRoute({
   method: "post",
   path: "/api/companies/{companyId}/slug-break-glass",
   tags: ["apex"],
