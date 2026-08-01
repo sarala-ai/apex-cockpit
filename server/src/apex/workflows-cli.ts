@@ -64,7 +64,16 @@ export class WorkflowsCliClient {
     // degraded classification when stdout isn't that documented shape at all.
     let parsed: unknown;
     try {
-      parsed = JSON.parse(res.stdout);
+      // The apex CLI prints human startup noise BEFORE the JSON envelope
+      // (verified live: "✅ Loaded server definition ..." lines precede the
+      // object) — same reality CliApexInvoker handles by taking the LAST
+      // JSON-looking line. Parse that, not the whole stdout.
+      const lines = res.stdout.split("\n").filter((l) => l.trim().length > 0);
+      const lastJson = [...lines].reverse().find((l) => {
+        const t = l.trim();
+        return t.startsWith("{") && t.endsWith("}");
+      });
+      parsed = JSON.parse(lastJson ?? res.stdout);
     } catch {
       return {
         ok: false,
