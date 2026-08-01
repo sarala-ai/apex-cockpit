@@ -65,6 +65,14 @@ export const issues = pgTable(
     executionWorkspacePreference: text("execution_workspace_preference"),
     executionWorkspaceSettings: jsonb("execution_workspace_settings").$type<Record<string, unknown>>(),
     sourceTrust: jsonb("source_trust").$type<SourceTrustMetadata | null>(),
+    // Flow-coordinator state (work-loop typed flows). Typed columns by doctrine
+    // (never jsonb): the coordinator is the ONLY writer of these five columns.
+    flowName: text("flow_name"),
+    flowNodeId: text("flow_node_id"),
+    // 'running' | 'waiting_gate' | 'waiting_agent' | 'paused' | 'done' | 'failed'
+    flowStatus: text("flow_status"),
+    flowStartedAt: timestamp("flow_started_at", { withTimezone: true }),
+    flowAdvancedAt: timestamp("flow_advanced_at", { withTimezone: true }),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
@@ -92,6 +100,7 @@ export const issues = pgTable(
     projectWorkspaceIdx: index("issues_company_project_workspace_idx").on(table.companyId, table.projectWorkspaceId),
     executionWorkspaceIdx: index("issues_company_execution_workspace_idx").on(table.companyId, table.executionWorkspaceId),
     dueMonitorIdx: index("issues_company_monitor_due_idx").on(table.companyId, table.monitorNextCheckAt),
+    flowStatusIdx: index("issues_company_flow_status_idx").on(table.companyId, table.flowStatus),
     companyUpdatedIdx: index("issues_company_updated_idx").on(table.companyId, table.updatedAt),
     companyCreatedIdx: index("issues_company_created_idx").on(table.companyId, table.createdAt),
     companyPriorityIdx: index("issues_company_priority_idx").on(table.companyId, table.priority),
