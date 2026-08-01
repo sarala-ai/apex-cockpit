@@ -49,8 +49,18 @@ export class WorkflowsCliClient {
     private readonly cwd: string = process.env.APEX_LAUNCH_DIR ?? join(homedir(), ".apex-cockpit"),
   ) {}
 
-  private async invoke(args: string[]): Promise<{ ok: true; json: unknown } | { ok: false; error: WorkflowError }> {
-    const res = await run(this.bin, args, this.timeoutMs, this.cwd);
+  private async invoke(
+    args: string[],
+    companySlug?: string,
+  ): Promise<{ ok: true; json: unknown } | { ok: false; error: WorkflowError }> {
+    // Amendment (per-company env vars): the resolver's company-scoped path
+    // entries (APEX_<SLUG>_WORKFLOWS_PATH / APEX_<SLUG>_SKILLS_PATH) only
+    // expand for the company selected via APEX_COMPANY_SLUG on THIS
+    // invocation — core stays company-ignorant (pure env-name indirection).
+    // Omitted (companySlug undefined) reproduces today's behavior exactly:
+    // repo > user (~/.apex) > bundled, no company layers.
+    const env = companySlug ? { APEX_COMPANY_SLUG: companySlug } : undefined;
+    const res = await run(this.bin, args, this.timeoutMs, this.cwd, env);
 
     if (res.status === "missing") {
       return {
@@ -107,8 +117,8 @@ export class WorkflowsCliClient {
     return { ok: false, error: degradedCliError("Merge/install the apex-platform build that ships `apex workflows`.") };
   }
 
-  async list(): Promise<WorkflowsCliResult<WorkflowListSuccess>> {
-    const r = await this.invoke(["--output", "json", "workflows", "list"]);
+  async list(companySlug?: string): Promise<WorkflowsCliResult<WorkflowListSuccess>> {
+    const r = await this.invoke(["--output", "json", "workflows", "list"], companySlug);
     if (!r.ok) return { ok: false, error: r.error };
     const parsed = WorkflowListSuccessSchema.safeParse(r.json);
     if (!parsed.success) {
@@ -120,8 +130,8 @@ export class WorkflowsCliClient {
     return { ok: true, data: parsed.data };
   }
 
-  async show(name: string): Promise<WorkflowsCliResult<WorkflowDetailSuccess>> {
-    const r = await this.invoke(["--output", "json", "workflows", "show", name]);
+  async show(name: string, companySlug?: string): Promise<WorkflowsCliResult<WorkflowDetailSuccess>> {
+    const r = await this.invoke(["--output", "json", "workflows", "show", name], companySlug);
     if (!r.ok) return { ok: false, error: r.error };
     const parsed = WorkflowDetailSuccessSchema.safeParse(r.json);
     if (!parsed.success) {

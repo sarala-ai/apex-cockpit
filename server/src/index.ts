@@ -63,6 +63,7 @@ import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
 import { startAttributionRefreshScheduler } from "./observe/attribution-refresh.js";
 import { startGithubIssueIngestScheduler } from "./apex/pipeline/github-issue-ingest.js";
+import { startCapabilitySyncScheduler } from "./apex/capability-sync-job.js";
 import { resolveLocalActor, actorId } from "./identity/actor.js";
 import type {
   InstanceDatabaseBackupRunResult,
@@ -1121,6 +1122,17 @@ export async function startServer(): Promise<StartedServer> {
   const { startFlowCoordinatorSweep } = await import("./apex/flow/sweep.js");
   const stopFlowCoordinatorSweep = startFlowCoordinatorSweep(db as any);
 
+  // Recurring `apex capabilities sync` (spec: capability sync +
+  // PATH-canonical resolution, Session B / T4) — pulls configured
+  // capability_sources (workflows/skills) into ~/.apex/company/<alias>/ per
+  // the divergence rule, company-agnostic (syncs every configured source
+  // regardless of the cockpit's active company). First tick 5 minutes after
+  // boot, then every APEX_CAPABILITY_SYNC_HOURS (default 12h; 0 disables).
+  // Same setInterval scheduling shape as the schedulers above. The
+  // Workflows page's banner reads the in-memory snapshot this produces via
+  // GET /apex/capabilities/sync; POST triggers an on-demand refresh.
+  const stopCapabilitySyncScheduler = startCapabilitySyncScheduler();
+
   // Wait for external adapters to finish loading before accepting requests.
   // Without this, adapter type validation (assertKnownAdapterType) would
   // reject valid external adapter types during the startup loading window.
@@ -1210,6 +1222,7 @@ export async function startServer(): Promise<StartedServer> {
       stopAttributionRefreshScheduler();
       stopGithubIssueIngestScheduler();
       stopFlowCoordinatorSweep();
+      stopCapabilitySyncScheduler();
       await waitForHeartbeatSchedulerIdle();
 
       const telemetryClient = getTelemetryClient();

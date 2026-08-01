@@ -24,6 +24,7 @@ import { apexSetupStateRoutes } from "./routes/apex-setup-state.js";
 import { apexObserveRoutes } from "./routes/apex-observe.js";
 import { apexGatewayObserveRoutes } from "./routes/apex-gateway-observe.js";
 import { apexWorkflowsRoutes } from "./routes/apex-workflows.js";
+import { apexCapabilitiesRoutes } from "./routes/apex-capabilities.js";
 import { apexDesignRoutes } from "./routes/apex-design.js";
 import { apexPipelineRoutes } from "./routes/apex-pipeline.js";
 import { apexFlowRoutes } from "./routes/apex-flows.js";
@@ -250,6 +251,7 @@ export async function createApp(
   api.use(apexObserveRoutes(db));
   api.use(apexGatewayObserveRoutes());
   api.use(apexWorkflowsRoutes(db));
+  api.use(apexCapabilitiesRoutes());
   api.use(apexDesignRoutes(db));
   api.use(issueRoutes(db, opts.storageService, {
     feedbackExportService: opts.feedbackExportService,

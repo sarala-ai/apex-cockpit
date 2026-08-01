@@ -18,12 +18,18 @@ function fakeClient(
 }
 
 /** Chainable/thenable drizzle-shaped mock resolving `.where()` to canned rows,
- *  same idiom as apex-observe-routes.test.ts. */
-function makeDb(attributionRows: unknown[]) {
+ *  same idiom as apex-observe-routes.test.ts. `companyIssuePrefix` backs the
+ *  amendment's `resolveCompanySlug` lookup — routed by inspecting the
+ *  selected columns (`{issuePrefix: ...}` vs the attribution join's columns)
+ *  since both go through the same `select().from().where()` chain. */
+function makeDb(attributionRows: unknown[], companyIssuePrefix: string | null = null) {
   const db = {
-    select: () => ({
+    select: (cols?: Record<string, unknown>) => ({
       from: () => ({
-        where: () => Promise.resolve(attributionRows),
+        where: () =>
+          cols && "issuePrefix" in cols
+            ? Promise.resolve(companyIssuePrefix !== null ? [{ issuePrefix: companyIssuePrefix }] : [])
+            : Promise.resolve(attributionRows),
       }),
     }),
   } as unknown as Db;
@@ -92,6 +98,27 @@ describe("GET /apex/workflows", () => {
     expect(res.body.workflows).toHaveLength(2);
   });
 
+  it("amendment (per-company env vars): resolves ?companyId= to a slug (issuePrefix, lowercased) and threads it to the CLI client", async () => {
+    const client = fakeClient({ ok: true, data: LIST_SUCCESS });
+    const res = await request(appWith(makeDb([], "PAP"), client)).get("/apex/workflows?companyId=co-1");
+    expect(res.status).toBe(200);
+    expect(client.list).toHaveBeenCalledWith("pap");
+  });
+
+  it("amendment: omits the slug when companyId is absent — today's behavior exactly", async () => {
+    const client = fakeClient({ ok: true, data: LIST_SUCCESS });
+    const res = await request(appWith(makeDb([]), client)).get("/apex/workflows");
+    expect(res.status).toBe(200);
+    expect(client.list).toHaveBeenCalledWith(undefined);
+  });
+
+  it("amendment: an unresolvable companyId degrades to no slug rather than erroring", async () => {
+    const client = fakeClient({ ok: true, data: LIST_SUCCESS });
+    const res = await request(appWith(makeDb([], null), client)).get("/apex/workflows?companyId=ghost");
+    expect(res.status).toBe(200);
+    expect(client.list).toHaveBeenCalledWith(undefined);
+  });
+
   it("degrades to a classified cli_missing_command payload instead of crashing", async () => {
     const res = await request(appWith(makeDb([]), fakeClient({ ok: false, error: CLI_MISSING }))).get(
       "/apex/workflows",
@@ -129,6 +156,13 @@ describe("GET /apex/workflows/:name", () => {
     expect(res.status).toBe(200);
     expect(res.body.footprint.count).toBe(2);
     expect(res.body.footprint.resources).toEqual(rows);
+  });
+
+  it("amendment: threads the resolved companyId slug to client.show()", async () => {
+    const client = fakeClient({ ok: true, data: LIST_SUCCESS }, { ok: true, data: DETAIL_SUCCESS });
+    const res = await request(appWith(makeDb([], "PAP"), client)).get("/apex/workflows/deploy-cloudrun?companyId=co-1");
+    expect(res.status).toBe(200);
+    expect(client.show).toHaveBeenCalledWith("deploy-cloudrun", "pap");
   });
 
   it("passes through the CLI's own classified not_found error", async () => {

@@ -3,8 +3,8 @@
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { WorkflowListResponse } from "@paperclipai/shared";
-import { WorkflowsBody } from "./Workflows";
+import type { CapabilitySyncStatusResponse, WorkflowListResponse } from "@paperclipai/shared";
+import { CapabilitySyncBanner, WorkflowsBody } from "./Workflows";
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children: ReactNode; to: string } & React.ComponentProps<"a">) => (
@@ -68,5 +68,81 @@ describe("WorkflowsBody", () => {
     const html = render({ data: builtInOnly });
     expect(html).toContain("No user workflows");
     expect(html).toContain("No project workflows");
+  });
+});
+
+function renderBanner(props: Partial<Parameters<typeof CapabilitySyncBanner>[0]>) {
+  return renderToStaticMarkup(<CapabilitySyncBanner status={undefined} {...props} />);
+}
+
+const DIVERGED_STATUS: CapabilitySyncStatusResponse = {
+  ranAt: "2026-08-01T00:00:00.000Z",
+  summary: {
+    status: "success",
+    synced_at: "2026-08-01T00:00:00.000Z",
+    sources: ["acme"],
+    items: [{ alias: "acme", kind: "workflows", path: "~/.apex/company/acme/workflows/deploy.yaml", status: "diverged", digest: "abc" }],
+    diverged: [{ alias: "acme", kind: "workflows", path: "~/.apex/company/acme/workflows/deploy.yaml", status: "diverged", digest: "abc" }],
+    pending_skills: [{ alias: "acme", path: "~/.apex/company/acme/skills/lint", digest: "def", reason: "skills_auto not enabled" }],
+  },
+};
+
+const CLEAN_STATUS: CapabilitySyncStatusResponse = {
+  ranAt: "2026-08-01T00:00:00.000Z",
+  summary: {
+    status: "success",
+    synced_at: "2026-08-01T00:00:00.000Z",
+    sources: ["acme"],
+    items: [{ alias: "acme", kind: "workflows", path: "~/.apex/company/acme/workflows/deploy.yaml", status: "synced", digest: "abc" }],
+    diverged: [],
+    pending_skills: [],
+  },
+};
+
+const CLI_MISSING_STATUS: CapabilitySyncStatusResponse = {
+  ranAt: "2026-08-01T00:00:00.000Z",
+  summary: {
+    status: "error",
+    error_type: "cli_missing_command",
+    message: "requires apex-core with the capabilities CLI (unreleased)",
+    remediation: null,
+  },
+};
+
+const REAL_ERROR_STATUS: CapabilitySyncStatusResponse = {
+  ranAt: "2026-08-01T00:00:00.000Z",
+  summary: { status: "error", error_type: "clone_failed", message: "could not clone acme/store", remediation: null },
+};
+
+describe("CapabilitySyncBanner", () => {
+  it("renders nothing before the first sync since boot (no run yet, honest empty state)", () => {
+    expect(renderBanner({ status: undefined })).toBe("");
+    expect(renderBanner({ status: { ranAt: null, summary: null } })).toBe("");
+  });
+
+  it("renders nothing when the CLI doesn't have the command yet — no error spam", () => {
+    expect(renderBanner({ status: CLI_MISSING_STATUS })).toBe("");
+  });
+
+  it("renders nothing for a clean sync with nothing diverged or pending", () => {
+    expect(renderBanner({ status: CLEAN_STATUS })).toBe("");
+  });
+
+  it("renders a warning strip with diverged + pending-skills counts", () => {
+    const html = renderBanner({ status: DIVERGED_STATUS });
+    expect(html).toContain("1 diverged item");
+    expect(html).toContain("1 skill update");
+    expect(html).toContain("--accept-skills");
+  });
+
+  it("renders a genuine sync failure distinctly from the quiet cli_missing_command case", () => {
+    const html = renderBanner({ status: REAL_ERROR_STATUS });
+    expect(html).toContain("Capability sync failed");
+    expect(html).toContain("could not clone acme/store");
+  });
+
+  it("includes a refresh control when onRefresh is supplied", () => {
+    const html = renderBanner({ status: DIVERGED_STATUS, onRefresh: () => {} });
+    expect(html).toContain("Refresh");
   });
 });
