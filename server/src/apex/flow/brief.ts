@@ -27,6 +27,7 @@
 import { z } from "zod";
 import { ApexUnavailableError, ApexInvocationError, type ApexInvoker } from "../invoke.js";
 import { acceptancePullRequestTarget } from "./agent-step.js";
+import { enrichDesignFiles, type DesignArchiveFetcher } from "./design-artifact.js";
 import { FlowDefinitionError, type FlowDefinition, type FlowNode, type LoadedFlowDefinition } from "./definition.js";
 
 /** Zod contract for github_repo's get_pull_request tool result (apex-core,
@@ -47,6 +48,15 @@ const PullRequestFileSchema = z.object({
   binary: z.boolean().nullish(),
   /** This file's diff was cut (by core's budget, or by GitHub itself). */
   patch_truncated: z.boolean().nullish(),
+  /** Filled in by the brief (NOT by apex-core) for design documents it could
+   *  read: see ./design-artifact.ts. Absent means "nothing could be read",
+   *  which the design renderer states rather than papers over. */
+  design: z
+    .object({
+      preview: z.object({ label: z.string(), dataUri: z.string() }).nullish(),
+      boards: z.array(z.string()).nullish(),
+    })
+    .nullish(),
 });
 export const GetPullRequestResultSchema = z
   .object({
@@ -711,6 +721,10 @@ export async function assembleFlowGateBrief(input: {
   apexInvoker: ApexInvoker;
   loadFlowDefinition: (name: string) => Promise<LoadedFlowDefinition>;
   provenanceLookup?: ProvenanceLookup;
+  /** Injected so the design preview is testable without gh, and so a brief
+   *  assembled in a context with no GitHub access simply has no preview
+   *  rather than failing. */
+  fetchDesignArchive?: DesignArchiveFetcher;
 }): Promise<FlowGateBrief> {
   const { payload } = input;
   const issueId = str(payload.issueId);
@@ -728,6 +742,23 @@ export async function assembleFlowGateBrief(input: {
   const artifact: PrDiffSummary = target
     ? await fetchPullRequestSummary(input.apexInvoker, target)
     : { available: false, reason: "no pr_exists acceptance found for this issue" };
+
+  // A design artifact is the case the file list served worst — enrich it with
+  // what the committed .penpot itself can tell us (board names, and a board
+  // rendered offline to SVG). Failure-isolated: no preview is a fine brief.
+  if (
+    input.fetchDesignArchive &&
+    artifact.available === true &&
+    artifact.degraded === false &&
+    artifact.artifactKind === "design"
+  ) {
+    await enrichDesignFiles({
+      files: artifact.files,
+      repo: artifact.repo,
+      ref: artifact.headBranch,
+      fetchArchive: input.fetchDesignArchive,
+    });
+  }
 
   const verified = describeAcceptance(target?.acceptance ?? null, target?.acceptanceEvaluation ?? null);
 
