@@ -61,18 +61,18 @@ describe("BreadcrumbContext", () => {
 
   it("builds page titles with the selected company name before Apex", () => {
     expect(buildDocumentTitle([{ label: "Inbox" }], "Anachronist Wiki")).toBe(
-      "Inbox • Anachronist Wiki • Apex",
+      "Inbox • Anachronist Wiki • APEX",
     );
     expect(
       buildDocumentTitle(
         [{ label: "Issues", href: "/issues" }, { label: "PAP-3515" }],
         "Anachronist Wiki",
       ),
-    ).toBe("PAP-3515 • Issues • Anachronist Wiki • Apex");
+    ).toBe("PAP-3515 • Issues • Anachronist Wiki • APEX");
   });
 
   it("omits blank company names from page titles", () => {
-    expect(buildDocumentTitle([{ label: "Inbox" }], "  ")).toBe("Inbox • Apex");
-    expect(buildDocumentTitle([], null)).toBe("Apex");
+    expect(buildDocumentTitle([{ label: "Inbox" }], "  ")).toBe("Inbox • APEX");
+    expect(buildDocumentTitle([], null)).toBe("APEX");
   });
 });
