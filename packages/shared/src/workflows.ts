@@ -17,7 +17,12 @@
  */
 import { z } from "zod";
 
-export const WorkflowLayerSchema = z.enum(["built-in", "user", "project"]);
+// Layers are DYNAMIC since the CapabilityResolver: fixed names
+// ("repo"/"user"/"project"/"built-in") plus open forms ("company:<slug>",
+// literal path labels). An enum here silently rejected valid CLI output
+// (found live: company:acme failed typecheck) — open string, UI groups
+// dynamically.
+export const WorkflowLayerSchema = z.string();
 export type WorkflowLayer = z.infer<typeof WorkflowLayerSchema>;
 
 export const WorkflowSummarySchema = z.object({
