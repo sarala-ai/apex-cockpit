@@ -30,6 +30,12 @@ export const issues = pgTable(
     parentId: uuid("parent_id").references((): AnyPgColumn => issues.id),
     title: text("title").notNull(),
     description: text("description"),
+    // The machine-facing half of a ticket: ids, coordinates, payload shapes,
+    // exact CLI invocations — everything an agent needs and no human reading
+    // the ticket wants in their way. `description` stays the human body (the
+    // outcome wanted and the decision); this column carries the brief.
+    // Additive/nullable: existing tickets keep their body as their body.
+    agentBrief: text("agent_brief"),
     status: text("status").notNull().default("backlog"),
     workMode: text("work_mode").notNull().default("standard"),
     harnessKind: text("harness_kind"),
