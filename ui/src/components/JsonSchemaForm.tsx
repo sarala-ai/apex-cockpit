@@ -94,6 +94,36 @@ export interface JsonSchemaNode {
   [key: string]: unknown;
 }
 
+/**
+ * Context handed to a `fieldOverrides` callback for the field it chose to
+ * substitute — everything needed to render a drop-in replacement control
+ * without forking the form engine (the surrounding label/description/error
+ * chrome from `FieldWrapper` still applies; the override only replaces the
+ * control itself).
+ */
+export interface JsonSchemaFieldOverrideContext {
+  value: unknown;
+  onChange: (value: unknown) => void;
+  disabled: boolean;
+  error?: string;
+  label: string;
+  isRequired: boolean;
+}
+
+/**
+ * Called for every field (by JSON-pointer-style `path`, e.g. "/timeoutSeconds"
+ * or "/steps/2/input") before the built-in type-based renderer runs. Return a
+ * `ReactNode` to substitute the control for that field, or `undefined` to let
+ * `JsonSchemaForm` render its normal control. This is the one extension point
+ * the form engine offers — everything else (validation, defaults, advanced
+ * disclosure, array/object recursion) stays exactly as-is.
+ */
+export type JsonSchemaFieldOverride = (
+  path: string,
+  schema: JsonSchemaNode,
+  ctx: JsonSchemaFieldOverrideContext,
+) => React.ReactNode | undefined;
+
 export interface JsonSchemaFormProps {
   /** The JSON Schema to render. */
   schema: JsonSchemaNode;
@@ -107,6 +137,8 @@ export interface JsonSchemaFormProps {
   disabled?: boolean;
   /** Additional CSS class for the root container. */
   className?: string;
+  /** Optional per-field control substitution — see `JsonSchemaFieldOverride`. */
+  fieldOverrides?: JsonSchemaFieldOverride;
 }
 
 // ---------------------------------------------------------------------------
@@ -386,6 +418,7 @@ interface FormFieldProps {
   isRequired?: boolean;
   errors: Record<string, string>; // needed for recursion
   path: string; // needed for recursion error filtering
+  fieldOverrides?: JsonSchemaFieldOverride;
 }
 
 /**
@@ -868,6 +901,7 @@ const ArrayField = React.memo(({
   label,
   errors,
   path,
+  fieldOverrides,
 }: {
   propSchema: JsonSchemaNode;
   value: unknown;
@@ -877,6 +911,7 @@ const ArrayField = React.memo(({
   label: string;
   errors: Record<string, string>;
   path: string;
+  fieldOverrides?: JsonSchemaFieldOverride;
 }) => {
   const items = Array.isArray(value) ? value : [];
   const itemSchema = propSchema.items as JsonSchemaNode;
@@ -934,6 +969,7 @@ const ArrayField = React.memo(({
                 }}
                 disabled={disabled}
                 errors={errors}
+                fieldOverrides={fieldOverrides}
               />
             </div>
             <Button
@@ -983,6 +1019,7 @@ const ObjectField = React.memo(({
   label,
   errors,
   path,
+  fieldOverrides,
 }: {
   propSchema: JsonSchemaNode;
   value: unknown;
@@ -991,6 +1028,7 @@ const ObjectField = React.memo(({
   label: string;
   errors: Record<string, string>;
   path: string;
+  fieldOverrides?: JsonSchemaFieldOverride;
 }) => {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const handleObjectChange = (newVal: Record<string, unknown>) => {
@@ -1033,6 +1071,11 @@ const ObjectField = React.memo(({
                 .filter(([errPath]) => errPath.startsWith(`${path}/`))
                 .map(([errPath, err]) => [errPath.replace(path, ""), err]),
             )}
+            fieldOverrides={
+              fieldOverrides
+                ? (subPath, subSchema, ctx) => fieldOverrides(`${path}${subPath}`, subSchema, ctx)
+                : undefined
+            }
           />
         </div>
       )}
@@ -1055,9 +1098,32 @@ const FormField = React.memo(({
   isRequired,
   errors,
   path,
+  fieldOverrides,
 }: FormFieldProps) => {
   const type = resolveType(propSchema);
   const isReadOnly = disabled || propSchema.readOnly === true;
+
+  const override = fieldOverrides?.(path, propSchema, {
+    value,
+    onChange,
+    disabled: isReadOnly,
+    error,
+    label,
+    isRequired: !!isRequired,
+  });
+  if (override !== undefined) {
+    return (
+      <FieldWrapper
+        label={label}
+        description={propSchema.description}
+        required={isRequired}
+        error={error}
+        disabled={isReadOnly}
+      >
+        {override}
+      </FieldWrapper>
+    );
+  }
 
   switch (type) {
     case "boolean":
@@ -1134,6 +1200,7 @@ const FormField = React.memo(({
           label={label}
           errors={errors}
           path={path}
+          fieldOverrides={fieldOverrides}
         />
       );
 
@@ -1147,6 +1214,7 @@ const FormField = React.memo(({
           label={label}
           errors={errors}
           path={path}
+          fieldOverrides={fieldOverrides}
         />
       );
 
@@ -1186,6 +1254,7 @@ export function JsonSchemaForm({
   errors = {},
   disabled,
   className,
+  fieldOverrides,
 }: JsonSchemaFormProps) {
   const type = resolveType(schema);
 
@@ -1206,6 +1275,7 @@ export function JsonSchemaForm({
           onChange={handleRootScalarChange}
           disabled={disabled}
           errors={errors}
+          fieldOverrides={fieldOverrides}
         />
       </div>
     );
@@ -1315,6 +1385,7 @@ export function JsonSchemaForm({
         isRequired={isRequired}
         errors={errors}
         path={path}
+        fieldOverrides={fieldOverrides}
       />
     );
   };
