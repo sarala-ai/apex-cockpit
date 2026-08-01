@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -129,7 +129,17 @@ async function readGit(cwd: string, args: string[]) {
 }
 
 async function createGitRepo() {
-  const repoRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-branch-containment-repo-"));
+  // realpath here, not just mkdtemp's raw return: on macOS os.tmpdir() is
+  // under /var, a symlink to /private/var, and the code under test resolves
+  // worktree paths (git worktree add, then providerRef persistence) through
+  // their canonical form. Comparing the raw mkdtemp path against a
+  // canonicalized providerRef spuriously fails on /var vs /private/var —
+  // same class of symlink normalization other fixture helpers here already
+  // guard against (see codex-auth-reconciliation.test.ts, cursor-local-*
+  // tests) via fs.realpath.
+  const repoRoot = await realpath(
+    await mkdtemp(path.join(os.tmpdir(), "paperclip-branch-containment-repo-")),
+  );
   await runGit(repoRoot, ["init"]);
   await runGit(repoRoot, ["config", "user.email", "paperclip-test@example.com"]);
   await runGit(repoRoot, ["config", "user.name", "Paperclip Test"]);

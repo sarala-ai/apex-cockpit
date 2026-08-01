@@ -62,6 +62,14 @@ const explicitOpenApiCoverageExclusions = new Set([
   "pipelines.ts",
   // Case routes are experimental (enableCases flag) and not yet in the public OpenAPI document.
   "cases.ts",
+  // APEX Tower in-progress surfaces (capability sync scheduler, Design viewer,
+  // Flows, Gateway registry/observe, workflow-builder groundwork) — mounted
+  // under /api but not yet part of the public OpenAPI document.
+  "apex-capabilities.ts",
+  "apex-design.ts",
+  "apex-flows.ts",
+  "apex-gateway-observe.ts",
+  "apex-workflows.ts",
 ]);
 
 function createApp() {
