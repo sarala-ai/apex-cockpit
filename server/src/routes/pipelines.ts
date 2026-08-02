@@ -632,6 +632,10 @@ async function resolveCasePipelineId(db: Db, input: { companyId: string; caseId:
   return row.pipelineId;
 }
 
+function parseForceQuery(value: unknown) {
+  return value === true || value === "true" || value === "1" || value === "";
+}
+
 function activityActorForPipelineRoute(actor: PipelineActor) {
   if (actor.type === "agent") {
     return { actorType: "agent" as const, actorId: actor.agentId, agentId: actor.agentId, runId: actor.runId };
@@ -1184,6 +1188,38 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
       .where(and(eq(pipelines.id, pipelineId), eq(pipelines.companyId, companyId)))
       .returning();
     res.json(updated);
+  });
+
+  router.delete("/pipelines/:pipelineId", async (req, res) => {
+    const pipelineId = req.params.pipelineId as string;
+    const companyId = await assertPipelineAccess(db, req, pipelineId);
+    await assertPipelineWriteAccess(req, { access, companyId, pipelineId });
+    const actor = actorForMutation(req);
+    const result = await svc.deletePipeline({
+      companyId,
+      pipelineId,
+      force: parseForceQuery(req.query.force),
+      actor,
+    });
+    await logActivity(db, {
+      companyId,
+      ...activityActorForPipelineRoute(actor),
+      action: "pipeline.deleted",
+      entityType: "pipeline",
+      entityId: pipelineId,
+      details: {
+        name: result.pipeline.name,
+        deletedCaseCount: result.deletedCaseCount,
+        deletedStageCount: result.deletedStageCount,
+        forcedNonTerminalCaseCount: result.forcedNonTerminalCaseCount,
+      },
+    });
+    res.json({
+      deleted: true,
+      pipelineId,
+      deletedCaseCount: result.deletedCaseCount,
+      deletedStageCount: result.deletedStageCount,
+    });
   });
 
   router.post("/pipelines/:pipelineId/stages", validate(createStageSchema), async (req, res) => {
@@ -1922,6 +1958,39 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
     const actor = actorForMutation(req);
     const updated = await svc.patchCaseContent({ companyId, caseId, ...req.body, actor });
     res.json(updated);
+  });
+
+  router.delete("/cases/:caseId", async (req, res) => {
+    const caseId = req.params.caseId as string;
+    const companyId = await assertCaseAccess(db, req, caseId);
+    const owningCase = await db
+      .select({ pipelineId: pipelineCases.pipelineId })
+      .from(pipelineCases)
+      .where(and(eq(pipelineCases.id, caseId), eq(pipelineCases.companyId, companyId)))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!owningCase) throw notFound("Pipeline case not found");
+    await assertPipelineWriteAccess(req, { access, companyId, pipelineId: owningCase.pipelineId });
+    const actor = actorForMutation(req);
+    const result = await svc.deleteCase({
+      companyId,
+      caseId,
+      force: parseForceQuery(req.query.force),
+      actor,
+    });
+    await logActivity(db, {
+      companyId,
+      ...activityActorForPipelineRoute(actor),
+      action: "pipeline.case_deleted",
+      entityType: "pipeline_case",
+      entityId: caseId,
+      details: {
+        pipelineId: owningCase.pipelineId,
+        caseKey: result.case.caseKey,
+        deletedCaseCount: result.deletedCaseCount,
+      },
+    });
+    res.json({ deleted: true, caseId, deletedCaseCount: result.deletedCaseCount });
   });
 
   router.post("/cases/:caseId/claim", validate(claimCaseSchema), async (req, res) => {

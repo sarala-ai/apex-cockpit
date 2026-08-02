@@ -17,6 +17,7 @@ import {
   pipelineCaseEvents,
   pipelineCaseIssueLinks,
   pipelineCases,
+  pipelineDocuments,
   pipelineStages,
   pipelineTransitions,
   pipelines,
@@ -3868,6 +3869,161 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
           });
         }
         return { deleted: true };
+      });
+    },
+
+    async deletePipeline(input: {
+      companyId: string;
+      pipelineId: string;
+      force?: boolean;
+      actor?: PipelineActor;
+    }) {
+      return db.transaction(async (tx) => {
+        const pipeline = await getPipelineOrThrow(tx, input.companyId, input.pipelineId);
+        const cases = await tx
+          .select({
+            id: pipelineCases.id,
+            caseKey: pipelineCases.caseKey,
+            title: pipelineCases.title,
+            terminalKind: pipelineCases.terminalKind,
+            retiredAt: pipelineCases.retiredAt,
+          })
+          .from(pipelineCases)
+          .where(eq(pipelineCases.pipelineId, input.pipelineId));
+        const nonTerminal = cases.filter((row) => !isTerminalKind(row.terminalKind) && !row.retiredAt);
+        if (nonTerminal.length > 0 && !input.force) {
+          throw conflict(
+            `Pipeline "${pipeline.name}" still holds ${nonTerminal.length} non-terminal case${nonTerminal.length === 1 ? "" : "s"}. Re-send with ?force=true to delete the pipeline and its cases.`,
+            {
+              code: "pipeline_has_active_cases",
+              pipelineId: pipeline.id,
+              nonTerminalCaseCount: nonTerminal.length,
+              caseCount: cases.length,
+              sampleCaseKeys: nonTerminal.slice(0, 5).map((row) => row.caseKey),
+              remediation: "Close or cancel the remaining cases, or repeat the request with ?force=true.",
+            },
+          );
+        }
+
+        const stages = await tx
+          .select()
+          .from(pipelineStages)
+          .where(eq(pipelineStages.pipelineId, input.pipelineId));
+        const automationRoutineIds = [
+          ...new Set(
+            stages
+              .map((stage) => stageAutomationRoutineIdFromConfig(stageConfig(stage)))
+              .filter((routineId): routineId is string => Boolean(routineId)),
+          ),
+        ];
+
+        const caseIds = cases.map((row) => row.id);
+        const documentIds = [
+          ...(caseIds.length > 0
+            ? await tx
+                .select({ documentId: pipelineCaseDocuments.documentId })
+                .from(pipelineCaseDocuments)
+                .where(inArray(pipelineCaseDocuments.caseId, caseIds))
+            : []),
+          ...(await tx
+            .select({ documentId: pipelineDocuments.documentId })
+            .from(pipelineDocuments)
+            .where(eq(pipelineDocuments.pipelineId, input.pipelineId))),
+        ].map((row) => row.documentId);
+
+        // Cases are removed explicitly first: `pipeline_cases.stage_id` references
+        // `pipeline_stages` with NO ACTION, so leaving them to the pipeline cascade
+        // would race the stage cascade.
+        if (caseIds.length > 0) {
+          await tx.delete(pipelineCases).where(eq(pipelineCases.pipelineId, input.pipelineId));
+        }
+        await tx
+          .delete(pipelines)
+          .where(and(eq(pipelines.id, input.pipelineId), eq(pipelines.companyId, input.companyId)));
+        if (documentIds.length > 0) {
+          await tx.delete(documents).where(inArray(documents.id, documentIds));
+        }
+
+        for (const routineId of automationRoutineIds) {
+          await clearPipelineAutomationRoutineIfUnreferenced(tx, {
+            companyId: input.companyId,
+            pipelineId: input.pipelineId,
+            routineId,
+            actor: input.actor ?? { type: "system" },
+          });
+        }
+
+        return {
+          deleted: true as const,
+          pipeline,
+          deletedCaseCount: cases.length,
+          deletedStageCount: stages.length,
+          forcedNonTerminalCaseCount: nonTerminal.length,
+        };
+      });
+    },
+
+    async deleteCase(input: { companyId: string; caseId: string; force?: boolean; actor?: PipelineActor }) {
+      return db.transaction(async (tx) => {
+        const root = await getCaseOrThrow(tx, input.companyId, input.caseId);
+        const subtree = await tx.execute(sql<{
+          id: string;
+          case_key: string;
+          terminal_kind: string | null;
+          retired_at: Date | null;
+        }>`
+          with recursive subtree as (
+            select id, case_key, terminal_kind, retired_at
+            from pipeline_cases
+            where id = ${root.id} and company_id = ${input.companyId}
+            union all
+            select child.id, child.case_key, child.terminal_kind, child.retired_at
+            from pipeline_cases child
+            join subtree parent on child.parent_case_id = parent.id
+            where child.company_id = ${input.companyId}
+          )
+          select id, case_key, terminal_kind, retired_at from subtree
+        `);
+        const rows = Array.from(subtree) as {
+          id: string;
+          case_key: string;
+          terminal_kind: string | null;
+          retired_at: Date | null;
+        }[];
+        const nonTerminal = rows.filter((row) => !isTerminalKind(row.terminal_kind) && !row.retired_at);
+        if (nonTerminal.length > 0 && !input.force) {
+          throw conflict(
+            `Case ${root.caseKey} and its children include ${nonTerminal.length} non-terminal case${nonTerminal.length === 1 ? "" : "s"}. Re-send with ?force=true to delete them.`,
+            {
+              code: "case_not_terminal",
+              caseId: root.id,
+              nonTerminalCaseCount: nonTerminal.length,
+              caseCount: rows.length,
+              sampleCaseKeys: nonTerminal.slice(0, 5).map((row) => row.case_key),
+              remediation: "Close or cancel the remaining cases, or repeat the request with ?force=true.",
+            },
+          );
+        }
+
+        const caseIds = rows.map((row) => row.id);
+        const documentIds = (
+          await tx
+            .select({ documentId: pipelineCaseDocuments.documentId })
+            .from(pipelineCaseDocuments)
+            .where(inArray(pipelineCaseDocuments.caseId, caseIds))
+        ).map((row) => row.documentId);
+
+        await tx.delete(pipelineCases).where(inArray(pipelineCases.id, caseIds));
+        if (documentIds.length > 0) {
+          await tx.delete(documents).where(inArray(documents.id, documentIds));
+        }
+        await adjustParentCounts(tx, {
+          parentCaseId: root.parentCaseId,
+          childDelta: -1,
+          terminalChildDelta: isTerminalKind(root.terminalKind) ? -1 : 0,
+        });
+
+        return { deleted: true as const, case: root, deletedCaseCount: caseIds.length };
       });
     },
 
