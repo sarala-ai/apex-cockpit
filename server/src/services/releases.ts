@@ -39,6 +39,22 @@ type ReleaseArtifactRow = typeof releaseArtifacts.$inferSelect;
  */
 const INITIATIVE_LEVEL = "initiative";
 
+/**
+ * Postgres reports the violated constraint on the error, but drizzle wraps the
+ * driver error and the name can sit several `cause` levels down — matching on
+ * the stringified message instead would silently stop working the day the query
+ * text changes.
+ */
+function hasConstraintName(error: unknown, constraintName: string): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const candidate = error as { constraint?: unknown; constraint_name?: unknown; cause?: unknown };
+  return (
+    candidate.constraint === constraintName
+    || candidate.constraint_name === constraintName
+    || hasConstraintName(candidate.cause, constraintName)
+  );
+}
+
 function readEnum<T extends string>(
   value: string,
   allowed: readonly T[],
@@ -237,7 +253,10 @@ export function releaseService(db: Db) {
       .from(releaseChanges)
       .innerJoin(issues, eq(issues.id, releaseChanges.issueId))
       .where(eq(releaseChanges.releaseId, release.id))
-      .orderBy(asc(releaseChanges.createdAt));
+      // identifier breaks the tie: a single attachChanges call writes every row
+      // with the same timestamp, and notes whose section order flips between
+      // reads are not a projection of anything.
+      .orderBy(asc(releaseChanges.createdAt), asc(issues.identifier), asc(issues.id));
 
     if (rows.length === 0) return [];
 
@@ -635,9 +654,7 @@ export function releaseService(db: Db) {
         .returning()
         .then((rows) => rows[0])
         .catch((error: unknown) => {
-          if (String((error as { constraint?: string })?.constraint ?? error).includes(
-            "releases_company_version_environment_uq",
-          )) {
+          if (hasConstraintName(error, "releases_company_version_environment_uq")) {
             throw conflict(
               `Release ${data.version} already exists for environment ${data.environment}`,
             );
@@ -726,9 +743,7 @@ export function releaseService(db: Db) {
         .returning()
         .then((rows) => rows[0])
         .catch((error: unknown) => {
-          if (String((error as { constraint?: string })?.constraint ?? error).includes(
-            "releases_company_version_environment_uq",
-          )) {
+          if (hasConstraintName(error, "releases_company_version_environment_uq")) {
             throw conflict(
               `Release ${version} already exists for environment ${data.environment}`,
             );
