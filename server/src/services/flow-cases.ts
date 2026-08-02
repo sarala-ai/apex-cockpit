@@ -59,7 +59,7 @@ function toState(row: {
   return {
     id: row.id,
     version: row.version,
-    // The shape check in 0164 makes step_key NOT NULL for flow-defined cases,
+    // The shape check in 0165 makes step_key NOT NULL for flow-defined cases,
     // so this coalesce can only fire on a row that violated it.
     stepKey: row.stepKey ?? "",
     terminalKind: row.terminalKind,
@@ -75,7 +75,7 @@ const FLOW_CASE_COLUMNS = {
 
 /** The flow case linked to an issue, or null for an issue whose flow predates
  *  the merge (or that has no flow at all). Callers must tolerate null: the
- *  backfill in 0165 covers today's rows, but a coordinator that hard-failed on
+ *  backfill in 0166 covers today's rows, but a coordinator that hard-failed on
  *  a missing case would turn a data gap into an outage. */
 export async function loadFlowCaseForIssue(db: FlowCaseDb, issueId: string): Promise<FlowCaseState | null> {
   const rows = await db

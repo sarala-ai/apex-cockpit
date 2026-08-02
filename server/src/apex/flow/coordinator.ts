@@ -128,7 +128,7 @@ export type FlowIssue = {
   flowAdvancedAt: Date | null;
   /** The authoritative runtime state, read at the same moment as the mirror
    *  columns above. Null only for a flow that predates the case merge and was
-   *  not covered by the 0165 backfill — the coordinator then falls back to the
+   *  not covered by the 0166 backfill — the coordinator then falls back to the
    *  mirror-only compare-and-set rather than refusing to run. */
   flowCase: FlowCaseState | null;
 };

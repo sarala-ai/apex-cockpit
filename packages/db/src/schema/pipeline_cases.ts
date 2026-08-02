@@ -48,7 +48,7 @@ export const pipelineCases = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-    // Nullable since 0164: a flow-defined case has no pipeline and no stage
+    // Nullable since 0165: a flow-defined case has no pipeline and no stage
     // row. The `pipeline_cases_definition_shape_check` constraint makes an
     // inconsistent combination impossible — see the migration for the full
     // reasoning.

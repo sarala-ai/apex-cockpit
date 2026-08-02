@@ -2,7 +2,7 @@
 --
 -- Five rows carry live flow state today (APE-1..5 on the APEX company) and no
 -- pipeline case exists at all, which is exactly why this is the moment to do
--- it: the merge in 0164 will never again be this cheap
+-- it: the merge in 0165 will never again be this cheap
 -- (docs/architecture/execution-substrate.md §6.1).
 --
 -- Idempotent by construction: an issue that already has a `work` link to a

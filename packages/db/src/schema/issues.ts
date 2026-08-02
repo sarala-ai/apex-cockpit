@@ -74,7 +74,7 @@ export const issues = pgTable(
     // ---------------------------------------------------------------------
     // DERIVED FROM THE CASE — a denormalised mirror, not the source of truth.
     //
-    // Since 0164 the authoritative runtime state of a flow-driven issue lives
+    // Since 0165 the authoritative runtime state of a flow-driven issue lives
     // on its case row in `pipeline_cases` (definition_kind='flow'), linked here
     // through `pipeline_case_issue_links` with role 'work': the case holds the
     // current step (`step_key`), the optimistic-concurrency `version` and the
