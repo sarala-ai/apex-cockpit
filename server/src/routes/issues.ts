@@ -341,6 +341,53 @@ function buildAttachmentContentPath(attachmentId: string): string {
   return `/api/attachments/${attachmentId}/content`;
 }
 
+// Tables that deliberately reference `issues` without ON DELETE CASCADE — ledger
+// rows that must outlive the issue, plus skill test runs (ON DELETE RESTRICT).
+// Everything else cascades, so a 23503 on issue delete means one of these.
+const ISSUE_DELETE_BLOCKER_LABELS: Record<string, string> = {
+  cost_events: "cost events",
+  finance_events: "finance events",
+  feedback_votes: "feedback votes",
+  company_skill_test_runs: "skill test runs",
+};
+
+function readPgErrorField(error: unknown, ...keys: string[]): string | null {
+  const record = error as Record<string, unknown> | null | undefined;
+  if (!record) return null;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return null;
+}
+
+function isPgForeignKeyViolation(error: unknown): boolean {
+  return (error as { code?: unknown } | null)?.code === "23503";
+}
+
+/**
+ * Never let a raw driver error out of DELETE /api/issues/:id. Residual foreign
+ * key violations become a classified 409 that names the rows still pointing at
+ * the issue instead of a bare 500.
+ */
+function classifyIssueDeleteError(error: unknown, issueId: string): never {
+  if (!isPgForeignKeyViolation(error)) throw error;
+  const table = readPgErrorField(error, "table_name", "table");
+  const constraintName = readPgErrorField(error, "constraint_name", "constraint");
+  const blockedBy = table ?? null;
+  const label = (blockedBy && ISSUE_DELETE_BLOCKER_LABELS[blockedBy]) ?? "related records";
+  throw conflict(
+    `Issue cannot be deleted because ${label} still reference it`,
+    {
+      code: "issue_delete_blocked",
+      issueId,
+      blockedBy,
+      constraint: constraintName,
+      remediation: `Remove or reassign the ${label} that reference this issue, then delete it again.`,
+    },
+  );
+}
+
 const GENERIC_ATTACHMENT_CONTENT_TYPES = new Set([
   "application/octet-stream",
   "binary/octet-stream",
@@ -8668,7 +8715,7 @@ export function issueRoutes(
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     const attachments = await svc.listAttachments(id);
 
-    const issue = await svc.remove(id);
+    const issue = await svc.remove(id).catch((err) => classifyIssueDeleteError(err, id));
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
