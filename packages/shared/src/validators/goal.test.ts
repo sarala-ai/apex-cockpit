@@ -3,6 +3,7 @@ import {
   GOAL_ASSUMPTION_STATUSES,
   GOAL_ASSUMPTION_TYPES,
   GOAL_CLOSURES,
+  GOAL_CRITERION_STATUSES,
   GOAL_LEVELS,
   GOAL_STATUSES,
 } from "../constants.js";
@@ -10,6 +11,9 @@ import {
   createGoalSchema,
   updateGoalSchema,
   goalAssumptionSchema,
+  goalValidationCriterionSchema,
+  goalProvenanceSchema,
+  reportCriterionSchema,
   initiativeFieldsRejectedFor,
 } from "./goal.js";
 
@@ -153,5 +157,187 @@ describe("initiativeFieldsRejectedFor", () => {
 
   it("ignores absent and null fields — clearing is not setting", () => {
     expect(initiativeFieldsRejectedFor("team", { title: "x", hypothesis: null })).toEqual([]);
+  });
+});
+
+// ── Validation criteria ────────────────────────────────────────────────────
+// The object that exists because ~40 pre-registered criteria were never read
+// back. Its entire value is in what it REFUSES to store.
+
+describe("goalValidationCriterionSchema", () => {
+  const criterion = (overrides: Record<string, unknown> = {}) => ({
+    id: "c1",
+    statement: "Agents reach for tools rather than freelancing",
+    measure: "tool calls / total assistant turns",
+    threshold: "≥80%",
+    window: "first four weeks after release",
+    ownerUserId: "srinivas",
+    reviewDate: "2026-09-01",
+    status: "pending",
+    ...overrides,
+  });
+
+  it("round-trips a well-formed criterion", () => {
+    const parsed = goalValidationCriterionSchema.parse(criterion());
+    expect(parsed.threshold).toBe("≥80%");
+    expect(parsed.reviewDate).toBe("2026-09-01");
+  });
+
+  it("accepts an agent as the named reader", () => {
+    const parsed = goalValidationCriterionSchema.parse(
+      criterion({ ownerUserId: null, ownerAgentId: "3f2504e0-4f89-11d3-9a0c-0305e82c3301" }),
+    );
+    expect(parsed.ownerAgentId).toBe("3f2504e0-4f89-11d3-9a0c-0305e82c3301");
+  });
+
+  it("REJECTS a criterion with no named reader", () => {
+    // "A criterion without a named reader and a date is not a criterion. It is
+    // a wish with a number in it." — initiative-discipline.md §3
+    const result = goalValidationCriterionSchema.safeParse(
+      criterion({ ownerUserId: null, ownerAgentId: null }),
+    );
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result.error?.issues)).toContain("named reader");
+  });
+
+  it("REJECTS a criterion with no reviewDate", () => {
+    const result = goalValidationCriterionSchema.safeParse(criterion({ reviewDate: null }));
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result.error?.issues)).toContain("reviewDate");
+  });
+
+  it("rejects a reviewDate that is not a date", () => {
+    const result = goalValidationCriterionSchema.safeParse(criterion({ reviewDate: "soonish" }));
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects an unknown status", () => {
+    expect(goalValidationCriterionSchema.safeParse(criterion({ status: "ok" })).success).toBe(false);
+  });
+
+  it("accepts every declared status", () => {
+    for (const status of GOAL_CRITERION_STATUSES) {
+      if (status === "never_registered") continue;
+      expect(goalValidationCriterionSchema.safeParse(criterion({ status })).success).toBe(true);
+    }
+  });
+
+  it("accepts a never_registered criterion with no reader and no date", () => {
+    const parsed = goalValidationCriterionSchema.parse({
+      id: "c1",
+      statement: "No validation criteria were registered for this initiative",
+      status: "never_registered",
+    });
+    expect(parsed.status).toBe("never_registered");
+  });
+
+  it("REFUSES to retro-fit a reader or a date onto never_registered", () => {
+    // Nobody registered one; recording one now would be fabrication, which is
+    // worse than no memory because nobody knows to doubt it.
+    const withOwner = goalValidationCriterionSchema.safeParse({
+      id: "c1",
+      statement: "No criteria were registered",
+      status: "never_registered",
+      ownerUserId: "srinivas",
+    });
+    expect(withOwner.success).toBe(false);
+    const withDate = goalValidationCriterionSchema.safeParse({
+      id: "c1",
+      statement: "No criteria were registered",
+      status: "never_registered",
+      reviewDate: "2026-09-01",
+    });
+    expect(withDate.success).toBe(false);
+  });
+
+  it("carries a verdict once one is reported", () => {
+    const parsed = goalValidationCriterionSchema.parse(
+      criterion({ status: "missed", reviewedAt: "2026-09-02T10:00:00Z", reviewNote: "61%" }),
+    );
+    expect(parsed.status).toBe("missed");
+    expect(parsed.reviewNote).toBe("61%");
+  });
+});
+
+describe("goalProvenanceSchema", () => {
+  it("round-trips confirmed with a source", () => {
+    const parsed = goalProvenanceSchema.parse({ kind: "confirmed", source: "design doc, May 2026" });
+    expect(parsed).toEqual({ kind: "confirmed", source: "design doc, May 2026" });
+  });
+
+  it("round-trips inferred without one", () => {
+    expect(goalProvenanceSchema.parse({ kind: "inferred" }).kind).toBe("inferred");
+  });
+
+  it("rejects an unlabelled provenance", () => {
+    expect(goalProvenanceSchema.safeParse({ source: "somewhere" }).success).toBe(false);
+    expect(goalProvenanceSchema.safeParse({ kind: "probably" }).success).toBe(false);
+  });
+});
+
+describe("criteria and provenance are initiative-only", () => {
+  const criterion = {
+    id: "c1",
+    statement: "x",
+    ownerUserId: "srinivas",
+    reviewDate: "2026-09-01",
+    status: "pending" as const,
+  };
+
+  it("createGoalSchema accepts them on an initiative", () => {
+    const parsed = createGoalSchema.parse({
+      title: "Every interface generated from MCP tools",
+      level: "initiative",
+      validationCriteria: [criterion],
+      provenance: { kind: "inferred", source: "47 commits, March–May" },
+    });
+    expect(parsed.validationCriteria).toHaveLength(1);
+    expect(parsed.provenance?.kind).toBe("inferred");
+  });
+
+  it.each(["company", "team", "agent", "task"])("createGoalSchema rejects them on a %s goal", (level) => {
+    const criteriaResult = createGoalSchema.safeParse({
+      title: "x",
+      level,
+      validationCriteria: [criterion],
+    });
+    expect(criteriaResult.success).toBe(false);
+    const provenanceResult = createGoalSchema.safeParse({
+      title: "x",
+      level,
+      provenance: { kind: "confirmed" },
+    });
+    expect(provenanceResult.success).toBe(false);
+  });
+
+  it("initiativeFieldsRejectedFor names them on a PATCH to a non-initiative", () => {
+    expect(
+      initiativeFieldsRejectedFor("task", {
+        validationCriteria: [criterion],
+        provenance: { kind: "confirmed" },
+      }),
+    ).toEqual(["validationCriteria", "provenance"]);
+  });
+
+  it("validation still runs inside the array on an initiative", () => {
+    const result = createGoalSchema.safeParse({
+      title: "x",
+      level: "initiative",
+      validationCriteria: [{ ...criterion, ownerUserId: null }],
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("reportCriterionSchema", () => {
+  it("accepts hit and missed", () => {
+    expect(reportCriterionSchema.parse({ status: "hit" }).status).toBe("hit");
+    expect(reportCriterionSchema.parse({ status: "missed", reviewNote: "61%" }).reviewNote).toBe("61%");
+  });
+
+  it("refuses to un-report a criterion back to pending", () => {
+    // A report is a one-way statement about what was seen.
+    expect(reportCriterionSchema.safeParse({ status: "pending" }).success).toBe(false);
+    expect(reportCriterionSchema.safeParse({ status: "never_registered" }).success).toBe(false);
   });
 });

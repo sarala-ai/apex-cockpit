@@ -56,6 +56,17 @@ export {
   type ExternalObjectResolverSnapshot,
 } from "./external-objects.js";
 export { goalService } from "./goals.js";
+export {
+  criterionMonitor,
+  criterionReviewPayload,
+  criterionSweepIntervalMs,
+  startCriterionReviewSweep,
+  CRITERION_REVIEW_APPROVAL_TYPE,
+  CRITERION_SWEEP_ENV_VAR,
+  type CriterionMonitor,
+  type CriterionMonitorDeps,
+  type CriterionSweepResult,
+} from "./criterion-monitor.js";
 export { releaseService, type ReleaseService } from "./releases.js";
 export { activityService, type ActivityFilters } from "./activity.js";
 export { workTimelineService, normalizeTimelineWindow } from "./work-timeline.js";

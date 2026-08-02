@@ -60,10 +60,51 @@ describe("goals initiative columns", () => {
     expect(sql).not.toMatch(/NOT NULL/i);
   });
 
-  it("registers the migration exactly once and after the previous head", () => {
+  it("registers the migration exactly once, directly after the previous head", () => {
+    // Asserted RELATIVE to 0160, not as the journal's last entry: pinning the
+    // tail made this test fail on every later migration (0162 already broke
+    // it), which teaches people to edit the assertion instead of reading it.
     const tags = journal.entries.map((entry) => entry.tag);
     expect(tags.filter((tag) => tag === "0161_goal_initiative")).toHaveLength(1);
-    expect(tags[tags.length - 1]).toBe("0161_goal_initiative");
-    expect(tags[tags.length - 2]).toBe("0160_agent_roster_kind");
+    expect(tags[tags.indexOf("0161_goal_initiative") - 1]).toBe("0160_agent_roster_kind");
+  });
+});
+
+describe("goals validation-criteria columns", () => {
+  it.each([
+    ["validation_criteria", "jsonb"],
+    ["provenance", "jsonb"],
+  ])("adds %s as a nullable %s column with no default", (name, sqlType) => {
+    const col = column(name);
+    expect(col, `${name} column missing`).toBeDefined();
+    expect(col?.getSQLType()).toBe(sqlType);
+    // A default here would declare that something was registered when nobody
+    // registered it — the fabrication the onboarding doctrine prevents.
+    expect(col?.notNull).toBe(false);
+    expect(col?.hasDefault).toBe(false);
+  });
+
+  it("adds criteria BESIDE stop_condition, never instead of it", () => {
+    // Prose stays as the summary; the criteria are the part that can carry a
+    // reader and a date and be marked hit or missed.
+    const names = columns().map((col) => col.name);
+    expect(names).toContain("stop_condition");
+    expect(names).toContain("validation_criteria");
+  });
+
+  it("ships as an additive migration registered in the journal", () => {
+    const entry = journal.entries.find(
+      (candidate) => candidate.tag === "0163_goal_validation_criteria",
+    );
+    expect(entry).toBeDefined();
+    expect(entry?.idx).toBe(163);
+
+    const sql = readFileSync(join(migrationsDir, "0163_goal_validation_criteria.sql"), "utf8");
+    for (const name of ["validation_criteria", "provenance"]) {
+      expect(sql).toContain(`ALTER TABLE "goals" ADD COLUMN IF NOT EXISTS "${name}"`);
+    }
+    expect(sql).not.toMatch(/DROP/i);
+    expect(sql).not.toMatch(/UPDATE\s+"?goals"?/i);
+    expect(sql).not.toMatch(/NOT NULL/i);
   });
 });

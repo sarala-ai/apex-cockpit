@@ -22,6 +22,33 @@ export type GoalAssumptionRecord = {
   evidence?: string | null;
 };
 
+/**
+ * One pre-registered validation criterion. Mirrors
+ * `goalValidationCriterionSchema` in @paperclipai/shared, which is what
+ * actually validates writes (owner and reviewDate required; both forbidden on
+ * `never_registered`).
+ */
+export type GoalValidationCriterionRecord = {
+  id: string;
+  statement: string;
+  measure?: string | null;
+  threshold?: string | null;
+  window?: string | null;
+  ownerUserId?: string | null;
+  ownerAgentId?: string | null;
+  reviewDate?: string | null;
+  status: "pending" | "hit" | "missed" | "never_registered";
+  reviewedAt?: string | null;
+  reviewNote?: string | null;
+  surfacedAt?: string | null;
+};
+
+/** How an initiative's record came to exist. Mirrors `goalProvenanceSchema`. */
+export type GoalProvenanceRecord = {
+  kind: "confirmed" | "inferred";
+  source?: string | null;
+};
+
 export const goals = pgTable(
   "goals",
   {
@@ -54,6 +81,16 @@ export const goals = pgTable(
     budget: text("budget"),
     stopCondition: text("stop_condition"),
     hypothesis: text("hypothesis"),
+    // The pre-registered bars, same jsonb reasoning as `assumptions`: read and
+    // written as a set, no criterion has identity or lifetime outside its
+    // initiative, and the one cross-initiative reader (the review sweep) has to
+    // open every initiative's list anyway. `stop_condition` above stays as the
+    // prose summary; these are the things that can actually be marked hit or
+    // missed by a named reader on a date.
+    validationCriteria: jsonb("validation_criteria").$type<GoalValidationCriterionRecord[]>(),
+    // Confirmed vs inferred, structured. It lived in description prose, where
+    // an agent citing the row later could not weight it.
+    provenance: jsonb("provenance").$type<GoalProvenanceRecord>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

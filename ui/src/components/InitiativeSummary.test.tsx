@@ -104,3 +104,110 @@ describe("InitiativeSummary", () => {
     expect(html).toBe("");
   });
 });
+
+describe("InitiativeSummary — validation criteria", () => {
+  const criterion = (overrides: Record<string, unknown> = {}) =>
+    ({
+      id: "c1",
+      statement: "Agents reach for tools rather than freelancing",
+      measure: "tool calls / total assistant turns",
+      threshold: "≥80%",
+      window: "first four weeks",
+      ownerUserId: "srinivas",
+      // Far future: pending but not yet due, unless a test says otherwise.
+      reviewDate: "2099-01-01",
+      status: "pending",
+      ...overrides,
+    }) as never;
+
+  it("renders a pending criterion with its threshold, reader and review date", () => {
+    const html = renderToStaticMarkup(
+      <InitiativeSummary goal={goal({ validationCriteria: [criterion()] })} />,
+    );
+    expect(html).toContain("Validation criteria (1)");
+    expect(html).toContain("Agents reach for tools rather than freelancing");
+    expect(html).toContain("≥80%");
+    expect(html).toContain("srinivas");
+    expect(html).toContain("1 Jan 2099");
+    expect(html).toContain("pending");
+    expect(html).not.toContain("Due for review");
+  });
+
+  it("makes an overdue criterion impossible to miss", () => {
+    // The unread criterion is the failure this whole object exists to prevent;
+    // a quiet grey row is how it goes unread again.
+    const html = renderToStaticMarkup(
+      <InitiativeSummary goal={goal({ validationCriteria: [criterion({ reviewDate: "2020-01-01" })] })} />,
+    );
+    expect(html).toContain("Due for review");
+    expect(html).toContain("text-destructive");
+    expect(html).toContain("bg-destructive/10");
+  });
+
+  it("flags a criterion due today, not only one already past", () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const html = renderToStaticMarkup(
+      <InitiativeSummary goal={goal({ validationCriteria: [criterion({ reviewDate: today })] })} />,
+    );
+    expect(html).toContain("Due for review");
+  });
+
+  it("renders a reported criterion with its verdict and note, and no overdue styling", () => {
+    const html = renderToStaticMarkup(
+      <InitiativeSummary
+        goal={goal({
+          validationCriteria: [
+            criterion({
+              reviewDate: "2020-01-01",
+              status: "hit",
+              reviewedAt: "2020-01-02T00:00:00Z",
+              reviewNote: "84% over 1,412 turns",
+            }),
+            criterion({ id: "c2", reviewDate: "2020-01-01", status: "missed", statement: "Second bar" }),
+          ],
+        })}
+      />,
+    );
+    expect(html).toContain("hit");
+    expect(html).toContain("missed");
+    expect(html).toContain("84% over 1,412 turns");
+    expect(html).not.toContain("Due for review");
+  });
+
+  it("renders never_registered as the honest record it is, never as overdue", () => {
+    const html = renderToStaticMarkup(
+      <InitiativeSummary
+        goal={goal({
+          validationCriteria: [
+            {
+              id: "c1",
+              statement: "No validation criteria were registered for this initiative",
+              status: "never_registered",
+            } as never,
+          ],
+        })}
+      />,
+    );
+    expect(html).toContain("never registered");
+    expect(html).toContain("no reader");
+    expect(html).not.toContain("Due for review");
+  });
+
+  it("renders provenance so an agent citing this later can weight it", () => {
+    const html = renderToStaticMarkup(
+      <InitiativeSummary
+        goal={goal({ provenance: { kind: "inferred", source: "47 commits, March to May" } })}
+      />,
+    );
+    expect(html).toContain("Provenance");
+    expect(html).toContain("inferred");
+    expect(html).toContain("47 commits, March to May");
+  });
+
+  it("renders NOTHING for an initiative with no criteria and nothing else written down", () => {
+    // Empty chrome reads as "we wrote this down and it was empty"; the truth is
+    // nobody wrote it down at all.
+    expect(renderToStaticMarkup(<InitiativeSummary goal={goal({ validationCriteria: [] })} />)).toBe("");
+    expect(renderToStaticMarkup(<InitiativeSummary goal={goal({ validationCriteria: null })} />)).toBe("");
+  });
+});

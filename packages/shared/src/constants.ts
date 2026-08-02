@@ -506,6 +506,41 @@ export type GoalAssumptionType = (typeof GOAL_ASSUMPTION_TYPES)[number];
 export const GOAL_ASSUMPTION_STATUSES = ["untested", "retired", "blocked"] as const;
 export type GoalAssumptionStatus = (typeof GOAL_ASSUMPTION_STATUSES)[number];
 
+/**
+ * Where a validation criterion stands.
+ *
+ * `never_registered` is the one that earns its place. APEX pre-registered ~40
+ * numbered success criteria across 21 specs and reported against none of them;
+ * an imported historical initiative must be able to say *that*, out loud, on
+ * the record. Without the value the only honest alternative is an empty list,
+ * which reads as "we did not need criteria" rather than "we wrote them and
+ * never looked". Absence is reported, never omitted
+ * (docs/architecture/initiative-discipline.md §4a).
+ */
+export const GOAL_CRITERION_STATUSES = [
+  "pending",
+  "hit",
+  "missed",
+  "never_registered",
+] as const;
+export type GoalCriterionStatus = (typeof GOAL_CRITERION_STATUSES)[number];
+
+/** Only these two transitions are a *report*; the other statuses are states. */
+export const GOAL_CRITERION_VERDICTS = ["hit", "missed"] as const;
+export type GoalCriterionVerdict = (typeof GOAL_CRITERION_VERDICTS)[number];
+
+/**
+ * How an initiative's record came to exist. `confirmed` = a person said so or
+ * it was read from something someone wrote down; `inferred` = reconstructed
+ * from commits, releases or resources. The shaping agent weights them
+ * differently — confirmed history is prior art it may rely on, inferred
+ * history is a hypothesis about the past it must raise as a question — so this
+ * has to be a field, not a sentence in the description that no reader can
+ * parse (product-engineering.md, "Provenance on the reconstruction itself").
+ */
+export const GOAL_PROVENANCE_KINDS = ["confirmed", "inferred"] as const;
+export type GoalProvenanceKind = (typeof GOAL_PROVENANCE_KINDS)[number];
+
 // "on_hold" is the state a real portfolio spends most of its time in: valid,
 // decided, not now. Without it a deprioritised project has to masquerade as
 // cancelled (a lie about the decision) or in_progress (a lie about the work).
@@ -664,6 +699,11 @@ export const APPROVAL_TYPES = [
   "request_board_approval",
   // apex-tower (Task 2 §2b): a ticket-lifecycle HITL gate (spec/plan/pr review).
   "pipeline_gate",
+  // NOTE: `criterion_review` is deliberately NOT here, for the same reason
+  // `flow_gate` is not: it is minted by the criterion-review sweep, never by a
+  // client. A caller able to create one could fabricate a review prompt — and
+  // then resolve it — against a criterion nobody looked at, which is precisely
+  // the failure the monitor exists to make impossible.
 ] as const;
 export type ApprovalType = (typeof APPROVAL_TYPES)[number];
 
