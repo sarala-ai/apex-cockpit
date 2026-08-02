@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { run } from "../apex/exec.js";
-import { CliFlowNodeRunner } from "../apex/flow/node-executors.js";
+import { CliFlowNodeRunner } from "../apex/steps/runner.js";
 import { ApexUnavailableError } from "../apex/invoke.js";
 
 vi.mock("../apex/exec.js", () => ({ run: vi.fn() }));

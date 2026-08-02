@@ -29,7 +29,7 @@
  */
 import { z } from "zod";
 import { ApexUnavailableError, ApexInvocationError, type ApexInvoker } from "../invoke.js";
-import { acceptancePullRequestTarget } from "./agent-step.js";
+import { acceptancePullRequestTarget } from "../steps/agent-step.js";
 import { enrichDesignFiles, type DesignArchiveFetcher } from "./design-artifact.js";
 import {
   FlowDefinitionError,

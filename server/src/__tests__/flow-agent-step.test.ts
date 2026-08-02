@@ -9,7 +9,7 @@ import {
   evaluateAcceptanceV1,
   renderAgentPrompt,
   renderWorkflowParams,
-} from "../apex/flow/agent-step.js";
+} from "../apex/steps/agent-step.js";
 
 const context = {
   identifier: "APE-42",
