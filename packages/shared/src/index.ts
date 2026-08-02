@@ -1775,3 +1775,38 @@ export {
   type CreateEnvironmentCustomImageTerminalSessionToken,
   type EnvironmentCustomImageTerminalSessionToken,
 } from "./validators/environment-custom-images.js";
+
+export {
+  RELEASE_STATUSES,
+  RELEASE_CLOSURES,
+  type ReleaseStatus,
+  type ReleaseClosure,
+} from "./constants.js";
+export type {
+  Release,
+  ReleaseArtifact,
+  ReleaseChange,
+  ReleaseChangePullRequest,
+  ReleaseDetail,
+  ConfoundInitiative,
+  ConfoundSet,
+  ReleaseNotesEntry,
+  ReleaseNotesSection,
+  ReleaseNotes,
+} from "./types/index.js";
+export {
+  createReleaseSchema,
+  updateReleaseSchema,
+  promoteReleaseSchema,
+  closeReleaseSchema,
+  attachReleaseChangesSchema,
+  addReleaseArtifactSchema,
+  confoundQuerySchema,
+  type CreateRelease,
+  type UpdateRelease,
+  type PromoteRelease,
+  type CloseRelease,
+  type AttachReleaseChanges,
+  type AddReleaseArtifact,
+  type ConfoundQuery,
+} from "./validators/index.js";

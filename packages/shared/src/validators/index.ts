@@ -696,3 +696,19 @@ export {
   type SetPluginState,
   type ListPluginState,
 } from "./plugin.js";
+export {
+  createReleaseSchema,
+  updateReleaseSchema,
+  promoteReleaseSchema,
+  closeReleaseSchema,
+  attachReleaseChangesSchema,
+  addReleaseArtifactSchema,
+  confoundQuerySchema,
+  type CreateRelease,
+  type UpdateRelease,
+  type PromoteRelease,
+  type CloseRelease,
+  type AttachReleaseChanges,
+  type AddReleaseArtifact,
+  type ConfoundQuery,
+} from "./release.js";

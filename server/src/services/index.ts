@@ -56,6 +56,7 @@ export {
   type ExternalObjectResolverSnapshot,
 } from "./external-objects.js";
 export { goalService } from "./goals.js";
+export { releaseService, type ReleaseService } from "./releases.js";
 export { activityService, type ActivityFilters } from "./activity.js";
 export { workTimelineService, normalizeTimelineWindow } from "./work-timeline.js";
 export type {
