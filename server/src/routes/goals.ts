@@ -159,8 +159,30 @@ export function goalRoutes(db: Db) {
         results.push(result);
       }
 
+      const summary = summarise(results, apply);
+      if (apply && (summary.created > 0 || summary.updated > 0)) {
+        // A bulk write leaves a trail. Twenty-six rows changed by one upload is
+        // exactly the kind of edit someone will need to reconstruct later.
+        const actor = getActorInfo(req);
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          action: "goal.csv_imported",
+          entityType: "company",
+          entityId: companyId,
+          details: {
+            created: summary.created,
+            updated: summary.updated,
+            unchanged: summary.unchanged,
+            errors: summary.errors,
+          },
+        });
+      }
+
       res.json({
-        ...summarise(results, apply),
+        ...summary,
         results,
         notes: [
           ...notes,

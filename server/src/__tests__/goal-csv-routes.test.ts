@@ -281,6 +281,16 @@ describe("POST goals/import.csv", () => {
     expect(res.body.updated).toBe(1);
   });
 
+  it("leaves an audit trail for a bulk write, and none for a dry run", async () => {
+    await post(`id,budget\n${INITIATIVE.id},12 weeks\n`);
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    await post(`id,budget\n${INITIATIVE.id},12 weeks\n`, "?apply=true");
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "goal.csv_imported" }),
+    );
+  });
+
   it("refuses a company the actor cannot see", async () => {
     const res = await request(await createApp(["company-2"], "session"))
       .post("/api/companies/company-1/goals/import.csv")
