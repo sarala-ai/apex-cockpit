@@ -232,7 +232,7 @@ function currentStageAutomation(stage: PipelineStage) {
   const onEnter = stage.config?.onEnter;
   if (!onEnter || typeof onEnter !== "object" || Array.isArray(onEnter)) return null;
   const config = onEnter as Record<string, unknown>;
-  return config.type === "run_routine" && typeof config.routineId === "string" && config.routineId.trim()
+  return config.type === "routine" && typeof config.routineId === "string" && config.routineId.trim()
     ? { routineId: config.routineId }
     : null;
 }

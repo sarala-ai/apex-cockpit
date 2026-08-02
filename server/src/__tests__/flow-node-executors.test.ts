@@ -1,18 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { run } from "../apex/exec.js";
-import { CliFlowNodeRunner } from "../apex/steps/runner.js";
+import { CliStepTargetRunner } from "../apex/steps/runner.js";
 import { ApexUnavailableError } from "../apex/invoke.js";
 
 vi.mock("../apex/exec.js", () => ({ run: vi.fn() }));
 const mockRun = vi.mocked(run);
 
-const runner = new CliFlowNodeRunner("apex", "/launch");
+const runner = new CliStepTargetRunner("apex", "/launch");
 
 function cliEnvelope(result: Record<string, unknown>, status = "success") {
   return JSON.stringify({ server: "workflow", tool: "run", tool_name: "run", status, result });
 }
 
-describe("CliFlowNodeRunner.runWorkflow", () => {
+describe("CliStepTargetRunner.runWorkflow", () => {
   beforeEach(() => mockRun.mockReset());
 
   it("shells `apex run workflow run --execution-mode apply` with JSON params", async () => {
@@ -90,7 +90,7 @@ describe("CliFlowNodeRunner.runWorkflow", () => {
   });
 });
 
-describe("CliFlowNodeRunner.runCheck", () => {
+describe("CliStepTargetRunner.runCommand", () => {
   beforeEach(() => mockRun.mockReset());
 
   it("shells the named server tool with APEX_EXECUTION_MODE=apply", async () => {
@@ -104,10 +104,9 @@ describe("CliFlowNodeRunner.runCheck", () => {
       }),
     });
 
-    const result = await runner.runCheck({
+    const result = await runner.runCommand({
       tool: "health generate_health_report",
       args: ["--foo", "bar"],
-      pass_criteria: "exit_code == 0",
     });
 
     expect(result.ok).toBe(true);
@@ -132,17 +131,16 @@ describe("CliFlowNodeRunner.runCheck", () => {
         result: { status: "healthy", total_checks: 0 },
       }),
     });
-    const result = await runner.runCheck({
+    const result = await runner.runCommand({
       tool: "health generate_health_report",
       args: [],
-      pass_criteria: "exit_code == 0",
     });
     expect(result.ok).toBe(true);
   });
 
   it("classifies a bare tool name as unresolvable without shelling anything", async () => {
-    const result = await runner.runCheck({ tool: "ci_status_check", args: [], pass_criteria: "x" });
-    expect(result).toMatchObject({ ok: false, errorType: "check_tool_unresolvable" });
+    const result = await runner.runCommand({ tool: "ci_status_check", args: [] });
+    expect(result).toMatchObject({ ok: false, errorType: "command_tool_unresolvable" });
     expect(mockRun).not.toHaveBeenCalled();
   });
 
@@ -159,10 +157,9 @@ describe("CliFlowNodeRunner.runCheck", () => {
         result: {},
       }),
     });
-    const result = await runner.runCheck({
+    const result = await runner.runCommand({
       tool: "health generate_health_report",
       args: [],
-      pass_criteria: "exit_code == 0",
     });
     expect(result).toMatchObject({ ok: false, errorType: "blocked" });
   });

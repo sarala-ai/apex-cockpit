@@ -446,7 +446,7 @@ describeEmbeddedPostgres("pipeline routes", () => {
       name: "Plan",
       kind: "working",
       position: 100,
-      config: { onEnter: { type: "run_routine", id: "build-content", routineId: routine!.id } },
+      config: { onEnter: { type: "routine", id: "build-content", routineId: routine!.id } },
     }).returning();
     const [targetPipeline] = await db.insert(pipelines).values({
       companyId: company.id,

@@ -35,7 +35,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { flowCoordinator } from "../apex/flow/coordinator.js";
 import type { FlowDefinition, LoadedFlowDefinition } from "../apex/flow/definition.js";
-import type { FlowNodeRunner, NodeExecutionResult } from "../apex/steps/runner.js";
+import type { StepTargetRunner, NodeExecutionResult } from "../apex/steps/runner.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe.sequential : describe.skip;
@@ -60,10 +60,10 @@ function loaderFor(...flows: FlowDefinition[]) {
   };
 }
 
-function scriptedRunner(results: Record<string, NodeExecutionResult>): FlowNodeRunner {
+function scriptedRunner(results: Record<string, NodeExecutionResult>): StepTargetRunner {
   return {
     runWorkflow: async (config) => results[config.workflow] ?? ok,
-    runCheck: async (config) => results[config.tool] ?? ok,
+    runCommand: async (config) => results[config.tool] ?? ok,
   };
 }
 

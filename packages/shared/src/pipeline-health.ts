@@ -130,7 +130,7 @@ function hasOnEnterRoutineAutomation(config: StageConfig): boolean {
   const onEnter = config.onEnter;
   if (!onEnter || typeof onEnter !== "object" || Array.isArray(onEnter)) return false;
   const record = onEnter as Record<string, unknown>;
-  return record.type === "run_routine" && typeof record.routineId === "string" && record.routineId.trim().length > 0;
+  return record.type === "routine" && typeof record.routineId === "string" && record.routineId.trim().length > 0;
 }
 
 function hasChildrenGateAutoAdvance(config: StageConfig): boolean {

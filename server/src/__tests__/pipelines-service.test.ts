@@ -1291,7 +1291,7 @@ describeEmbeddedPostgres("pipelineService", () => {
       actor: userActor,
       stages: [
         { key: "intake", name: "Intake", kind: "open" },
-        { key: "drafting", name: "Drafting", kind: "working", config: { onEnter: { type: "run_routine", routineId: routine.id } } },
+        { key: "drafting", name: "Drafting", kind: "working", config: { onEnter: { type: "routine", routineId: routine.id } } },
         { key: "done", name: "Done", kind: "done" },
         { key: "cancelled", name: "Cancelled", kind: "cancelled" },
       ],
@@ -1429,7 +1429,7 @@ describeEmbeddedPostgres("pipelineService", () => {
       actor: userActor,
     });
     expect((updatedStage.config as { onEnter?: unknown }).onEnter).toMatchObject({
-      type: "run_routine",
+      type: "routine",
       projectId,
       projectWorkspaceId,
       executionWorkspaceId,
@@ -1588,7 +1588,7 @@ describeEmbeddedPostgres("pipelineService", () => {
       actor: userActor,
       stages: [
         { key: "intake", name: "Intake", kind: "open" },
-        { key: "drafting", name: "Drafting", kind: "working", config: { onEnter: { type: "run_routine", routineId: otherRoutine.id } } },
+        { key: "drafting", name: "Drafting", kind: "working", config: { onEnter: { type: "routine", routineId: otherRoutine.id } } },
         { key: "done", name: "Done", kind: "done" },
         { key: "cancelled", name: "Cancelled", kind: "cancelled" },
       ],
@@ -1601,7 +1601,7 @@ describeEmbeddedPostgres("pipelineService", () => {
       actor: userActor,
       stages: [
         { key: "intake", name: "Intake", kind: "open" },
-        { key: "drafting", name: "Drafting", kind: "working", config: { onEnter: { type: "run_routine", routineId: routine.id } } },
+        { key: "drafting", name: "Drafting", kind: "working", config: { onEnter: { type: "routine", routineId: routine.id } } },
         { key: "done", name: "Done", kind: "done" },
         { key: "cancelled", name: "Cancelled", kind: "cancelled" },
       ],
@@ -1672,7 +1672,7 @@ describeEmbeddedPostgres("pipelineService", () => {
           config: {
             autoAdvanceOnChildrenTerminal: "review",
             onEnter: {
-              type: "run_routine",
+              type: "routine",
               id: "build-children",
               routineId: routine.id,
             },
@@ -1796,7 +1796,7 @@ describeEmbeddedPostgres("pipelineService", () => {
           kind: "working",
           config: {
             onEnter: {
-              type: "run_routine",
+              type: "routine",
               id: "build-descendants",
               routineId: routine.id,
             },

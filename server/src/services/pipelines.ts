@@ -3626,10 +3626,17 @@ export function pipelineService(
         caseId: execution.caseId,
         type: "automation_executed",
         actor,
+        // The tool's own payload is NESTED, never spread. Spreading it beside
+        // the event's `automationId` / `kind` meant any tool whose result
+        // happened to carry one of those names silently overwrote the event's
+        // own field — a corrupted audit record produced by the audited thing.
+        // Nesting also keeps the boundary `runner.ts` learned the hard way:
+        // the CLI envelope's status is authoritative, and a `result.status`
+        // inside `detail` is domain-specific and must never be read as one.
         payload: {
           automationId: execution.automationId,
           kind: "run",
-          ...outcome.detail,
+          result: outcome.detail,
         },
       });
       await clearStepHold(execution.companyId, execution.caseId, detail.stage, {

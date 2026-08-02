@@ -95,7 +95,7 @@ function stageAutomationFromConfig(stage: typeof pipelineStages.$inferSelect) {
   const onEnter = config.onEnter && typeof config.onEnter === "object" && !Array.isArray(config.onEnter)
     ? config.onEnter as Record<string, unknown>
     : null;
-  if (onEnter?.type !== "run_routine" || typeof onEnter.routineId !== "string" || !onEnter.routineId.trim()) {
+  if (onEnter?.type !== "routine" || typeof onEnter.routineId !== "string" || !onEnter.routineId.trim()) {
     return null;
   }
   return {

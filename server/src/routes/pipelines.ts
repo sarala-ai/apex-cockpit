@@ -239,7 +239,7 @@ function stageAutomationRoutineId(config: unknown) {
   const onEnter = (config as { onEnter?: unknown }).onEnter;
   if (!onEnter || typeof onEnter !== "object" || Array.isArray(onEnter)) return null;
   const record = onEnter as Record<string, unknown>;
-  return record.type === "run_routine" && typeof record.routineId === "string" ? record.routineId : null;
+  return record.type === "routine" && typeof record.routineId === "string" ? record.routineId : null;
 }
 
 function readAutomationContextValue(value: unknown): string | null {
@@ -2548,7 +2548,7 @@ function readStageAutomationId(stage: typeof pipelineStages.$inferSelect) {
   const onEnter = onEnterValue as Record<string, unknown>;
   const rawId = typeof onEnter.id === "string" ? onEnter.id.trim() : "";
   const routineId = typeof onEnter.routineId === "string" ? onEnter.routineId.trim() : "";
-  if (onEnter.type !== "run_routine" || routineId.length === 0) return null;
+  if (onEnter.type !== "routine" || routineId.length === 0) return null;
   return rawId.length > 0 ? rawId : `${stage.id}:on_enter`;
 }
 

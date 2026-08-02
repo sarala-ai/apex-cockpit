@@ -128,7 +128,43 @@ alter table "pipeline_automation_executions"
 comment on column "pipeline_automation_executions"."kind" is
   'Who executed this entry step: routine or agent (a model, costs tokens) or run (the machine, costs nothing).';
 
--- 4 · The events a parked step writes.
+-- 4 · Stage configs already authored say the old words. Rewrite them.
+--
+-- This is the half of a discriminator rename that is easy to forget and
+-- expensive to miss: `onEnter.type` is DATA, sitting in a jsonb column on rows
+-- somebody already created. Renaming it in TypeScript alone would leave every
+-- existing stage's entry step unreadable to the new accessors, which fail
+-- CLOSED and return null — so the automation would not error, it would simply
+-- stop happening, silently, on a live board.
+--
+--   run_routine  -> routine
+--   run_workflow -> run, with `workflow`/`params` folded into a `target`
+--
+-- 0169's `run_workflow` shipped days ago and is authored in tests rather than
+-- on the live instance, so in practice this rewrites little or nothing. It is
+-- written anyway because "in practice nothing" is a claim about today's data,
+-- and the constraint has to hold for whatever is actually there.
+update "pipeline_stages"
+set "config" = jsonb_set("config", '{onEnter,type}', '"routine"')
+where "config" -> 'onEnter' ->> 'type' = 'run_routine';
+
+update "pipeline_stages"
+set "config" = jsonb_set(
+      ("config" #- '{onEnter,workflow}') #- '{onEnter,params}',
+      '{onEnter}',
+      (("config" -> 'onEnter') - 'workflow' - 'params')
+        || jsonb_build_object(
+             'type', '"run"'::jsonb,
+             'target', jsonb_build_object(
+               'type', 'workflow',
+               'workflow', "config" -> 'onEnter' -> 'workflow',
+               'params', coalesce("config" -> 'onEnter' -> 'params', '{}'::jsonb)
+             )
+           )
+    )
+where "config" -> 'onEnter' ->> 'type' = 'run_workflow';
+
+-- 5 · The events a parked step writes.
 --
 -- `gate_opened` is the approval being created — the moment attention starts
 -- being spent, which is what "waiting 3 hours" on the brief is measured from.

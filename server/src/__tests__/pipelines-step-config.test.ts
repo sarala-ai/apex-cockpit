@@ -3,7 +3,7 @@
  * execution-substrate merge (docs/architecture/execution-substrate.md §6).
  *
  * What these tests are actually for:
- *  - a `run_workflow` entry step WRITES ITS EXIT STATUS BACK (the old
+ *  - a `run` entry step WRITES ITS EXIT STATUS BACK (the old
  *    zero-token escape hatch ran and then nothing read the result);
  *  - a stage `acceptance` block is evaluated by the SERVER and HOLDS the
  *    stage when it fails;
@@ -40,7 +40,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { pipelineService, type PipelineActor } from "../services/pipelines.ts";
-import type { FlowNodeRunner, NodeExecutionResult } from "../apex/steps/runner.ts";
+import type { StepTargetRunner, NodeExecutionResult } from "../apex/steps/runner.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -51,7 +51,7 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
-describeEmbeddedPostgres("pipeline stage step config — workflow entry and acceptance", () => {
+describeEmbeddedPostgres("pipeline stage step config — the run step and its acceptance contract", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
@@ -63,21 +63,21 @@ describeEmbeddedPostgres("pipeline stage step config — workflow entry and acce
    *  importantly, that nothing else ran. */
   function stubRunner(result: NodeExecutionResult) {
     const workflowCalls: Array<{ workflow: string; params: Record<string, unknown> }> = [];
-    const checkCalls: string[] = [];
-    const runner: FlowNodeRunner = {
+    const commandCalls: string[] = [];
+    const runner: StepTargetRunner = {
       runWorkflow: async (config) => {
         workflowCalls.push({ workflow: config.workflow, params: config.params });
         return result;
       },
-      runCheck: async (config) => {
-        checkCalls.push(config.tool);
+      runCommand: async (config) => {
+        commandCalls.push(config.tool);
         return result;
       },
     };
-    return { runner, workflowCalls, checkCalls };
+    return { runner, workflowCalls, commandCalls };
   }
 
-  function serviceWith(runner: FlowNodeRunner) {
+  function serviceWith(runner: StepTargetRunner) {
     return pipelineService(db, { heartbeat: noopHeartbeat, stepRunner: runner });
   }
 
@@ -207,9 +207,8 @@ describeEmbeddedPostgres("pipeline stage step config — workflow entry and acce
       patch: {
         config: {
           onEnter: {
-            type: "run_workflow",
-            workflow: "open-pr",
-            params: { head: "design/{{case_key}}" },
+            type: "run",
+            target: { type: "workflow", workflow: "open-pr", params: { head: "design/{{case_key}}" } },
             onSuccessToStageKey: "review",
           },
         },
@@ -239,10 +238,13 @@ describeEmbeddedPostgres("pipeline stage step config — workflow entry and acce
     expect(workflowCalls).toEqual([{ workflow: "open-pr", params: { head: "design/APE-7" } }]);
 
     const [ledger] = await db.select().from(pipelineAutomationExecutions);
-    expect(ledger).toMatchObject({ kind: "workflow", routineId: null, status: "succeeded" });
+    expect(ledger).toMatchObject({ kind: "run", routineId: null, status: "succeeded" });
     const executed = await eventsOfType(created.case.id, "automation_executed");
     expect(executed).toHaveLength(1);
-    expect(executed[0]!.payload).toMatchObject({ kind: "workflow", workflow: "open-pr" });
+    expect(executed[0]!.payload).toMatchObject({
+      kind: "run",
+      result: { target: "workflow", workflow: "open-pr" },
+    });
   });
 
   it("HOLDS the stage when a workflow entry step exits non-zero with no failure route", async () => {
@@ -254,7 +256,7 @@ describeEmbeddedPostgres("pipeline stage step config — workflow entry and acce
       companyId: company.id,
       pipelineId: pipeline.id,
       stageId: byKey.get("in_progress")!.id,
-      patch: { config: { onEnter: { type: "run_workflow", workflow: "open-pr" } } },
+      patch: { config: { onEnter: { type: "run", target: { type: "workflow", workflow: "open-pr" } } } },
     });
 
     const created = await svc.ingestCase({
@@ -275,7 +277,7 @@ describeEmbeddedPostgres("pipeline stage step config — workflow entry and acce
 
     const held = await eventsOfType(created.case.id, "step_held");
     expect(held).toHaveLength(1);
-    expect(held[0]!.payload).toMatchObject({ reason: "workflow_exit_failure", errorType: "workflow_failed" });
+    expect(held[0]!.payload).toMatchObject({ reason: "run_exit_failure", errorType: "workflow_failed" });
 
     // The hold is not decoration: the case cannot leave the stage.
     const current = await currentStageKey(created.case.id);
@@ -302,7 +304,11 @@ describeEmbeddedPostgres("pipeline stage step config — workflow entry and acce
       stageId: byKey.get("in_progress")!.id,
       patch: {
         config: {
-          onEnter: { type: "run_workflow", workflow: "open-pr", onFailureToStageKey: "cancelled" },
+          onEnter: {
+            type: "run",
+            target: { type: "workflow", workflow: "open-pr" },
+            onFailureToStageKey: "cancelled",
+          },
         },
       },
     });
@@ -335,7 +341,15 @@ describeEmbeddedPostgres("pipeline stage step config — workflow entry and acce
         companyId: company.id,
         pipelineId: pipeline.id,
         stageId: byKey.get("in_progress")!.id,
-        patch: { config: { onEnter: { type: "run_workflow", workflow: "open-pr", onSuccessToStageKey: "nope" } } },
+        patch: {
+        config: {
+          onEnter: {
+            type: "run",
+            target: { type: "workflow", workflow: "open-pr" },
+            onSuccessToStageKey: "nope",
+          },
+        },
+      },
       }),
     ).rejects.toMatchObject({ status: 422, details: { code: "validation" } });
 
@@ -344,7 +358,7 @@ describeEmbeddedPostgres("pipeline stage step config — workflow entry and acce
         companyId: company.id,
         pipelineId: pipeline.id,
         stageId: byKey.get("in_progress")!.id,
-        patch: { config: { onEnter: { type: "run_workflow" } } },
+        patch: { config: { onEnter: { type: "run" } } },
       }),
     ).rejects.toMatchObject({ status: 422, details: { code: "validation" } });
   });
@@ -420,7 +434,7 @@ describeEmbeddedPostgres("pipeline stage step config — workflow entry and acce
       stageId: byKey.get("in_progress")!.id,
       patch: {
         config: {
-          onEnter: { type: "run_workflow", workflow: "open-pr" },
+          onEnter: { type: "run", target: { type: "workflow", workflow: "open-pr" } },
           acceptance: { criteria: `file_exists:${present}` },
         },
       },

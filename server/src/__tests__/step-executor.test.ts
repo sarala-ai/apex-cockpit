@@ -6,12 +6,12 @@ import {
   type AgentStepPort,
   type GateStepPort,
 } from "../apex/steps/step-executor.ts";
-import type { FlowNodeRunner, NodeExecutionResult } from "../apex/steps/runner.ts";
+import type { StepTargetRunner, NodeExecutionResult } from "../apex/steps/runner.ts";
 
 function runnerStub(
-  overrides: Partial<FlowNodeRunner> = {},
+  overrides: Partial<StepTargetRunner> = {},
   calls: string[] = [],
-): FlowNodeRunner & { calls: string[] } {
+): StepTargetRunner & { calls: string[] } {
   const ok: NodeExecutionResult = { ok: true, detail: { status: "success" } };
   return {
     calls,
@@ -19,12 +19,12 @@ function runnerStub(
       calls.push(`workflow:${config.workflow}:${JSON.stringify(config.params)}`);
       return ok;
     },
-    runCheck: async (config) => {
-      calls.push(`check:${config.tool}`);
+    runCommand: async (config) => {
+      calls.push(`command:${config.tool}`);
       return ok;
     },
     ...overrides,
-  } as FlowNodeRunner & { calls: string[] };
+  } as StepTargetRunner & { calls: string[] };
 }
 
 /** A port that fails the test if any agent/gate door is opened. The zero-token
@@ -66,7 +66,7 @@ describe("renderTemplate", () => {
   });
 });
 
-describe("stepExecutor — workflow and check are zero-token", () => {
+describe("stepExecutor — a run step costs nothing, whichever target it has", () => {
   it("runs a workflow step through the runner alone, with no agent port in play", async () => {
     const runner = runnerStub();
     const outcome = await stepExecutor({
@@ -74,25 +74,30 @@ describe("stepExecutor — workflow and check are zero-token", () => {
       agent: forbiddenAgentPort(),
       render: (template) => renderTemplate(template, { identifier: "APE-7" }),
     }).execute({
-      kind: "workflow",
+      kind: "run",
       key: "publish",
-      config: { workflow: "open-pr", params: { head: "design/{{identifier}}", draft: true } },
+      config: {
+        target: { type: "workflow", workflow: "open-pr", params: { head: "design/{{identifier}}", draft: true } },
+      },
     });
 
-    expect(outcome).toEqual({ status: "succeeded", detail: { kind: "workflow", status: "success" } });
+    expect(outcome).toEqual({
+      status: "succeeded",
+      detail: { kind: "run", target: "workflow", workflow: "open-pr", status: "success" },
+    });
     expect(runner.calls).toEqual(['workflow:open-pr:{"head":"design/APE-7","draft":true}']);
   });
 
-  it("runs a check step through the runner alone", async () => {
+  it("runs a command target through the same runner, and still opens no agent door", async () => {
     const runner = runnerStub();
     const outcome = await stepExecutor({ runner, agent: forbiddenAgentPort() }).execute({
-      kind: "check",
+      kind: "run",
       key: "verify",
-      config: { tool: "health generate_health_report", args: [], pass_criteria: "no criticals" },
+      config: { target: { type: "command", tool: "health generate_health_report", args: [] } },
     });
 
     expect(outcome.status).toBe("succeeded");
-    expect(runner.calls).toEqual(["check:health generate_health_report"]);
+    expect(runner.calls).toEqual(["command:health generate_health_report"]);
   });
 
   it("classifies a failing deterministic step instead of routing it", async () => {
@@ -100,10 +105,10 @@ describe("stepExecutor — workflow and check are zero-token", () => {
       runWorkflow: async () => ({ ok: false, errorType: "workflow_failed", message: "step 2 failed" }),
     });
     const outcome = await stepExecutor({ runner }).execute({
-      kind: "workflow",
+      kind: "run",
       key: "publish",
       onFail: "jump:build",
-      config: { workflow: "open-pr" },
+      config: { target: { type: "workflow", workflow: "open-pr" } },
     });
 
     expect(outcome).toEqual({
