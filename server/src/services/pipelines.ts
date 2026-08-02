@@ -107,7 +107,15 @@ export type PipelineStageKind = "open" | "working" | "review" | "done" | "cancel
 type CanonicalPipelineStageKind = Exclude<PipelineStageKind, "open">;
 
 export type PipelineStageConfig = Record<string, unknown> & {
-  autonomy?: "manual" | "suggest" | "auto";
+  // `autonomy` was removed here (execution-substrate.md §2). It was dead
+  // config with a trap in it: `auto` was accepted on write and then
+  // UNCONDITIONALLY rejected on read, so declaring it made the stage
+  // permanently unreachable, and `suggest` was never enforced anywhere. What
+  // actually governs unattended movement is real and still here — the
+  // system-actor guard on `transitionClass: "auto"`, `requireApproval` /
+  // `approver`, and now a stage's acceptance contract. A per-stage autonomy
+  // DIAL can be reintroduced when something needs one; reintroducing it will
+  // be cheaper than leaving a field that lies.
   autoAdvanceOnChildrenTerminal?: string;
   approveToStageKey?: string;
   rejectToStageKey?: string;
@@ -3772,10 +3780,6 @@ export function pipelineService(
       await assertLatestReviewApprovalStillCurrent(tx, current, fromStage, toStage, {
         allowWorkflowVersionDrift: input.transitionClass === "auto" && input.reason === "children_terminal",
       });
-    }
-    const toConfig = stageConfig(toStage);
-    if (toConfig.autonomy === "auto") {
-      throw unprocessable("Pipeline auto autonomy is not enabled", { code: "autonomy_not_enabled" });
     }
     let forcedTransition = false;
     if (pipeline.enforceTransitions && fromStage.id !== toStage.id) {
