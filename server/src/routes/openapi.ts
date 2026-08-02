@@ -5994,6 +5994,14 @@ registerCurrentRoute({
   summary: "Change a company's issue prefix, rewriting existing issue identifiers",
 });
 
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/data-erasure",
+  tags: ["apex"],
+  summary:
+    "Owner-only destructive erasure of company, project or initiative data. Dry run by default; writing requires `confirm` equal to the company's slug",
+});
+
 // ─── Spec builder ─────────────────────────────────────────────────────────────
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
