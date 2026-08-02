@@ -7,6 +7,7 @@ import {
   requestApprovalRevisionSchema,
   resolveApprovalSchema,
   resubmitApprovalSchema,
+  PROPOSAL_APPROVAL_TYPE,
 } from "@paperclipai/shared";
 import { z } from "zod";
 import { validate } from "../middleware/validate.js";
@@ -19,6 +20,7 @@ import {
   heartbeatService,
   issueApprovalService,
   logActivity,
+  proposalService,
   secretService,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -316,6 +318,29 @@ export function approvalRoutes(
       });
     }
 
+    // PROPOSAL gate hook: approval is what MATERIALISES the proposed records.
+    // Nothing existed on the board until this line ran — that is the whole
+    // contract of a proposal, and it is why corrections are safe to make
+    // roughly and fast while it is still in review.
+    if (applied && approval.type === PROPOSAL_APPROVAL_TYPE) {
+      const materialized = await proposalService(db).onApprovalDecision(approval.id, "approve");
+      await logActivity(db, {
+        companyId: approval.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "proposal.materialized",
+        entityType: "proposal",
+        entityId: materialized?.id ?? approval.id,
+        details: {
+          approvalId: approval.id,
+          created: materialized?.materialization?.created.length ?? 0,
+          updated: materialized?.materialization?.updated.length ?? 0,
+          skipped: materialized?.materialization?.skipped.length ?? 0,
+          errors: materialized?.materialization?.errors ?? [],
+        },
+      });
+    }
+
     // Flow coordinator gate hook: an approved flow_gate advances the issue's
     // typed flow past the gate node and resumes deterministic advancement in
     // the background (a subsequent workflow node can run for minutes — never
@@ -467,6 +492,12 @@ export function approvalRoutes(
       });
     }
 
+    // A rejected proposal materialises nothing and keeps its records as the
+    // evidence of what was proposed and turned down.
+    if (applied && approval.type === PROPOSAL_APPROVAL_TYPE) {
+      await proposalService(db).onApprovalDecision(approval.id, "reject");
+    }
+
     // Flow coordinator gate hook: a rejected flow_gate STOPS the flow (paused).
     // Rejection means the work should not proceed at all; sending it back for
     // another round is the separate `request_changes` decision, which rides
@@ -536,6 +567,13 @@ export function approvalRoutes(
         details: { type: approval.type },
       });
 
+      // Request-changes on a proposal: the records go back to the proposing
+      // agent WITH the reasons attached — which is the existing approval
+      // routing (decision note + requester wakeup), reused rather than rebuilt.
+      if (approval.type === PROPOSAL_APPROVAL_TYPE) {
+        await proposalService(db).onApprovalDecision(approval.id, "request_changes");
+      }
+
       // Route the decision into the flow: the work goes back to the gate's
       // change-request target and the flow resumes in the background (the
       // re-commissioned agent step can take minutes — never block the
@@ -587,6 +625,14 @@ export function approvalRoutes(
         : req.body.payload
       : undefined;
     const approval = await svc.resubmit(id, normalizedPayload);
+    // The proposing agent has answered the change request; the proposal is back
+    // in front of the reviewer, not silently re-approved.
+    if (approval.type === PROPOSAL_APPROVAL_TYPE) {
+      const proposal = await proposalService(db).getByApprovalId(approval.id);
+      if (proposal && proposal.status === "changes_requested") {
+        await proposalService(db).update(proposal.id, { status: "in_review" });
+      }
+    }
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: approval.companyId,

@@ -1142,6 +1142,13 @@
       "when": 1786000005000,
       "tag": "0164_issue_child_cascades",
       "breakpoints": true
+    },
+    {
+      "idx": 165,
+      "version": "7",
+      "when": 1786000006000,
+      "tag": "0165_proposals",
+      "breakpoints": true
     }
   ]
 }

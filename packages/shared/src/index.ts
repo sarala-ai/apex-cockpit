@@ -5,6 +5,7 @@ export * from "./workflows.js";
 export * from "./capability-sync.js";
 export * from "./initiative-status.js";
 export * from "./goal-criteria.js";
+export * from "./proposals.js";
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
   getAgentOrgChainHealth,
