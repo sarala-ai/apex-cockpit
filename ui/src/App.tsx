@@ -3,7 +3,6 @@ import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/i18n";
 import { Layout } from "./components/Layout";
 import { ConferenceRoomChatGate } from "./components/ConferenceRoomChatGate";
-import { PipelinesExperimentalGate } from "./components/PipelinesExperimentalGate";
 import { CasesExperimentalGate } from "./components/CasesExperimentalGate";
 import { Cases } from "./pages/Cases";
 import { CaseDetail } from "./pages/CaseDetail";
@@ -179,38 +178,19 @@ function boardRoutes() {
         path="cases/:caseIdentifier"
         element={<CasesExperimentalGate><CaseDetail /></CasesExperimentalGate>}
       />
-      <Route
-        path="review-queue"
-        element={<PipelinesExperimentalGate><ReviewQueue /></PipelinesExperimentalGate>}
-      />
-      <Route
-        path="learnings"
-        element={<PipelinesExperimentalGate><Learnings /></PipelinesExperimentalGate>}
-      />
-      <Route
-        path="pipelines"
-        element={<PipelinesExperimentalGate><Pipelines /></PipelinesExperimentalGate>}
-      />
-      <Route
-        path="pipelines/:pipelineId"
-        element={<PipelinesExperimentalGate><Pipelines /></PipelinesExperimentalGate>}
-      />
-      <Route
-        path="pipelines/:pipelineId/add"
-        element={<PipelinesExperimentalGate><Pipelines /></PipelinesExperimentalGate>}
-      />
-      <Route
-        path="pipelines/:pipelineId/settings"
-        element={<PipelinesExperimentalGate><PipelineSettings /></PipelinesExperimentalGate>}
-      />
-      <Route
-        path="pipelines/:pipelineId/items/:caseId"
-        element={<PipelinesExperimentalGate><PipelineItemDetail /></PipelinesExperimentalGate>}
-      />
-      <Route
-        path="pipelines/:pipelineId/cases/:caseId"
-        element={<PipelinesExperimentalGate><PipelineItemLegacyRedirect /></PipelinesExperimentalGate>}
-      />
+      {/* Pipelines is the substrate every ticket moves through and the only
+          place the four step kinds execute — these routes are no longer
+          gated behind an experimental flag (was Paperclip's incubating
+          `enablePipelines`, a label for something upstream was trying out;
+          it never described APEX). */}
+      <Route path="review-queue" element={<ReviewQueue />} />
+      <Route path="learnings" element={<Learnings />} />
+      <Route path="pipelines" element={<Pipelines />} />
+      <Route path="pipelines/:pipelineId" element={<Pipelines />} />
+      <Route path="pipelines/:pipelineId/add" element={<Pipelines />} />
+      <Route path="pipelines/:pipelineId/settings" element={<PipelineSettings />} />
+      <Route path="pipelines/:pipelineId/items/:caseId" element={<PipelineItemDetail />} />
+      <Route path="pipelines/:pipelineId/cases/:caseId" element={<PipelineItemLegacyRedirect />} />
       <Route path="routines/:routineId" element={<RoutineDetail />} />
       <Route path="routines/:routineId/:section" element={<RoutineDetail />} />
       <Route path="execution-workspaces/:workspaceId" element={<ExecutionWorkspaceDetail />} />

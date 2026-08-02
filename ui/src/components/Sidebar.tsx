@@ -80,7 +80,6 @@ export function Sidebar() {
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
   const liveRunCount = liveRuns?.length ?? 0;
   const showWorkspacesLink = experimentalSettings?.enableIsolatedWorkspaces === true;
-  const showPipelines = experimentalSettings?.enablePipelines === true;
   const goalsLinkPending = experimentalSettings === undefined;
   const showGoalsLink = experimentalSettings?.enableGoalsSidebarLink === true;
   const showCases = experimentalSettings?.enableCases === true;
@@ -210,9 +209,11 @@ export function Sidebar() {
             <SidebarNavItem to="/cases" label="Cases" icon={Layers} textBadge="beta" />
           ) : null}
           <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
-          {showPipelines ? (
-            <SidebarNavItem to="/pipelines" label="Pipelines" icon={GitBranch} />
-          ) : null}
+          {/* Pipelines is the substrate every ticket moves through — no
+              longer gated behind an experimental flag (was Paperclip's
+              incubating `enablePipelines`, retired since it described
+              something upstream, never APEX). */}
+          <SidebarNavItem to="/pipelines" label="Pipelines" icon={GitBranch} />
           <SidebarNavItem to="/timeline" label="Timeline" icon={GanttChartSquare} />
           <SidebarNavItem to="/artifacts" label="Artifacts" icon={Package} />
           {showWorkspacesLink ? (

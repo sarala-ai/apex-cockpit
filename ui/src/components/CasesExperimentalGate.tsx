@@ -6,7 +6,10 @@ import { queryKeys } from "@/lib/queryKeys";
 
 /**
  * Route guard for the experimental Cases feature (PAP-12947). Redirects to the
- * dashboard when `enableCases` is off, mirroring {@link PipelinesExperimentalGate}.
+ * dashboard when `enableCases` is off. Cases is a genuinely separate,
+ * still-experimental surface (case management) — unlike the former
+ * `enablePipelines` gate this one was left in place; see App.tsx for what it
+ * gates and why.
  */
 export function CasesExperimentalGate({ children }: { children: ReactNode }) {
   const { data: experimentalSettings, isFetched } = useQuery({

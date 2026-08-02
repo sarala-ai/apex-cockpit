@@ -2427,7 +2427,7 @@ function stageAutomationId(stage: typeof pipelineStages.$inferSelect) {
     ? stage.config as PipelineStageConfig
     : null;
   const onEnter = config?.onEnter;
-  if (!onEnter || onEnter.type !== "run_routine" || !onEnter.routineId) return null;
+  if (!onEnter || onEnter.type !== "routine" || !onEnter.routineId) return null;
   return typeof onEnter.id === "string" ? onEnter.id : `${stage.id}:on_enter`;
 }
 

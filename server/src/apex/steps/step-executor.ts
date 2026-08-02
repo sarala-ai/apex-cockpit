@@ -1,22 +1,33 @@
 /**
- * The step executor — one place where a step of each of the four kinds is
- * EXECUTED (docs/architecture/execution-substrate.md §6 step 2).
+ * The step executor — one place where a step of each of the THREE kinds is
+ * EXECUTED (docs/architecture/process-definition.md §2a).
  *
- * | Kind       | What it does                                        | Cost      |
- * |------------|-----------------------------------------------------|-----------|
- * | `workflow` | runs a deterministic, previewed APEX operation       | zero tokens |
- * | `check`    | evaluates a machine-checkable contract               | zero tokens |
- * | `agent`    | one bounded agent step under a permission profile    | tokens    |
- * | `gate`     | a human decision                                      | attention |
+ * | Kind    | Who executes it                                  | Cost      |
+ * |---------|--------------------------------------------------|-----------|
+ * | `run`   | the machine, deterministically                   | nothing   |
+ * | `agent` | a model, bounded by a permission profile         | tokens    |
+ * | `gate`  | a person                                         | attention |
  *
- * **The keystone constraint.** `workflow` and `check` are executed here by
- * `runner.ts` shelling the apex CLI, and `acceptance` is evaluated here by
- * `agent-step.ts`'s `evaluateAcceptanceV1` (fs.stat, or a read-path CLI call
- * for `pr_exists`). No path in this module reaches a language model, an
- * adapter, a heartbeat run or a routine for those two kinds — the `agent`
- * PORT is the only door to a model, and W/C/acceptance never open it. The
- * moment a deterministic step needs a model to attest that it succeeded, the
- * platform's central claim is gone.
+ * The kinds are distinguished by WHO EXECUTES, which is the only axis that
+ * changes cost, accountability and blast radius. An earlier draft had four,
+ * splitting `workflow` from `check` — but read their configs side by side and
+ * they are one step with two spellings of *what to run*. A check is a run
+ * whose failure HOLDS rather than ROUTES, and that is `on_fail` configuration,
+ * not identity. Carrying both taught authors to ask "is this a workflow or a
+ * check?", a question with no principled answer.
+ *
+ * A `run` step's TARGET is pluggable (`workflow` | `command`) — see
+ * runner.ts. That is the extension point, and it is why no kind is called
+ * `workflow` any more: a workflow is what a step TARGETS, not what it IS.
+ *
+ * **The keystone constraint.** A `run` is executed here by `runner.ts` shelling
+ * the apex CLI, and `acceptance` is evaluated here by `agent-step.ts`'s
+ * `evaluateAcceptanceV1` (fs.stat, or a read-path CLI call for `pr_exists`).
+ * No path in this module reaches a language model, an adapter, a heartbeat run
+ * or a routine for a `run` or for acceptance — the `agent` PORT is the only
+ * door to a model, and neither of those ever opens it. The moment a
+ * deterministic step needs a model to attest that it succeeded, the platform's
+ * central claim is gone.
  *
  * **This is a move, not a rewrite.** The bodies below are the flow
  * coordinator's `runLoop` switch, `executeAgentNode` and `executeGateNode`,
@@ -35,7 +46,7 @@
  *     failure; moving the pointer is the host's single-writer business.
  *   - advancement and completion. Same reason.
  */
-import type { FlowNodeRunner } from "./runner.js";
+import type { StepTargetRunner } from "./runner.js";
 import {
   buildAgentInstructionComment,
   evaluateAcceptanceV1,
@@ -43,10 +54,11 @@ import {
   type ChangeRequestRound,
 } from "./agent-step.js";
 
-export const STEP_KINDS = ["workflow", "check", "agent", "gate"] as const;
+export const STEP_KINDS = ["run", "agent", "gate"] as const;
 export type StepKind = (typeof STEP_KINDS)[number];
 
-/** Same grammar apex-core validates for a flow node's `on_fail`. */
+/** The routing grammar. Unchanged by the three-kind collapse on purpose: a
+ *  step's failure route is orthogonal to who executed it. */
 export const STEP_ON_FAIL_RE = /^(pause|skip|jump:[A-Za-z0-9_-]+)$/;
 
 export type OnFailRoute =
@@ -71,8 +83,14 @@ export function parseOnFail(raw: string | null | undefined): OnFailRoute {
 /** A classified step failure — the shape every kind fails with. */
 export type StepFailure = { errorType: string; message: string };
 
-export type WorkflowStepConfig = { workflow: string; params?: Record<string, unknown> };
-export type CheckStepConfig = { tool: string; args?: string[]; pass_criteria: string };
+/** What a `run` step runs. The union IS the extension point: a third target
+ *  type is one case here and one method on `StepTargetRunner`, never a fourth
+ *  step kind. */
+export type RunTarget =
+  | { type: "workflow"; workflow: string; params?: Record<string, unknown> }
+  | { type: "command"; tool: string; args?: string[] };
+
+export type RunStepConfig = { target: RunTarget };
 export type AgentStepConfig = {
   prompt_template: string;
   acceptance: string;
@@ -89,8 +107,7 @@ export type GateStepConfig = {
  *  id or a stage key: docs/architecture/execution-substrate.md §6.1 — the same
  *  kind of thing). */
 export type StepSpec =
-  | { kind: "workflow"; key: string; onFail?: string | null; config: WorkflowStepConfig }
-  | { kind: "check"; key: string; onFail?: string | null; config: CheckStepConfig }
+  | { kind: "run"; key: string; onFail?: string | null; config: RunStepConfig }
   | {
       kind: "agent";
       key: string;
@@ -170,8 +187,8 @@ export interface GateStepPort {
 }
 
 export interface StepExecutorPorts {
-  /** W and C. Zero tokens by construction — see runner.ts. */
-  runner: FlowNodeRunner;
+  /** The `run` kind's hands. Zero tokens by construction — see runner.ts. */
+  runner: StepTargetRunner;
   /** Template interpolation in the host's own vocabulary. Identity by default. */
   render?: (template: string) => string;
   /** Server-evaluated acceptance. Injectable so tests never shell the CLI. */
@@ -208,32 +225,28 @@ export function stepExecutor(ports: StepExecutorPorts) {
   const evaluateAcceptance = ports.evaluateAcceptance ?? ((acceptance: string) => evaluateAcceptanceV1(acceptance));
   const isFatal = ports.isFatal ?? (() => false);
 
-  /** W — a deterministic, previewed APEX operation. ZERO TOKENS. */
-  async function executeWorkflow(spec: Extract<StepSpec, { kind: "workflow" }>): Promise<StepOutcome> {
-    const result = await ports.runner.runWorkflow({
-      workflow: spec.config.workflow,
-      params: renderParams(spec.config.params ?? {}, render),
-    });
-    return result.ok
-      ? { status: "succeeded", detail: { kind: "workflow", ...result.detail } }
-      : { status: "failed", failure: { errorType: result.errorType, message: result.message } };
-  }
-
-  /** C — a machine-checkable contract. ZERO TOKENS. Holds on failure by
-   *  routing through the step's `on_fail` (default `pause`). */
-  async function executeCheck(spec: Extract<StepSpec, { kind: "check" }>): Promise<StepOutcome> {
-    const result = await ports.runner.runCheck({
-      tool: spec.config.tool,
-      args: spec.config.args ?? [],
-      pass_criteria: spec.config.pass_criteria,
-    });
+  /** RUN — the machine executes it, deterministically, and it costs NOTHING.
+   *  What it runs is the target's business; how a failure routes is the host's
+   *  (`on_fail`, default `pause`, which is what "hold the step" means). */
+  async function executeRun(spec: Extract<StepSpec, { kind: "run" }>): Promise<StepOutcome> {
+    const target = spec.config.target;
+    const result =
+      target.type === "workflow"
+        ? await ports.runner.runWorkflow({
+            workflow: target.workflow,
+            params: renderParams(target.params ?? {}, render),
+          })
+        : await ports.runner.runCommand({
+            tool: target.tool,
+            args: (target.args ?? []).map((arg) => render(arg)),
+          });
     return result.ok
       ? {
           status: "succeeded",
           detail: {
-            kind: "check",
-            passCriteria: spec.config.pass_criteria,
-            passCriteriaEvaluation: "v1: CLI exit/status success only",
+            kind: "run",
+            target: target.type,
+            ...(target.type === "workflow" ? { workflow: target.workflow } : { tool: target.tool }),
             ...result.detail,
           },
         }
@@ -372,10 +385,8 @@ export function stepExecutor(ports: StepExecutorPorts) {
     /** Execute one step. Never routes on failure — that is the host's. */
     async execute(spec: StepSpec): Promise<StepOutcome> {
       switch (spec.kind) {
-        case "workflow":
-          return executeWorkflow(spec);
-        case "check":
-          return executeCheck(spec);
+        case "run":
+          return executeRun(spec);
         case "agent":
           return executeAgent(spec);
         case "gate":

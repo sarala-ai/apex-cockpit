@@ -56,7 +56,6 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableEnvironments: false,
     enableIsolatedWorkspaces: false,
     enableStreamlinedLeftNavigation: true,
-    enablePipelines: false,
     enableCases: false,
     enableConferenceRoomChat: false,
     enableIssuePlanDecompositions: false,
