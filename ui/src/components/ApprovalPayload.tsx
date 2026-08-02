@@ -137,6 +137,30 @@ export function CeoStrategyPayload({ payload }: { payload: Record<string, unknow
   );
 }
 
+/**
+ * A pre-registered validation criterion has reached its review date. The item
+ * has to carry the question itself — the statement and the bar — because an
+ * inbox row that only links elsewhere is how forty criteria went unread.
+ */
+export function CriterionReviewPayload({ payload }: { payload: Record<string, unknown> }) {
+  const goalId = typeof payload.goalId === "string" ? payload.goalId : null;
+  return (
+    <div className="mt-3 space-y-1.5 text-sm">
+      <PayloadField label="Criterion" value={payload.statement} />
+      <PayloadField label="Threshold" value={payload.threshold} />
+      <PayloadField label="Measure" value={payload.measure} />
+      <PayloadField label="Window" value={payload.window} />
+      <PayloadField label="Review date" value={payload.reviewDate} />
+      <PayloadField label="Initiative" value={payload.goalTitle} />
+      {goalId && (
+        <a className="text-xs underline text-muted-foreground" href={`/goals/${goalId}`}>
+          Open the initiative to record hit or missed
+        </a>
+      )}
+    </div>
+  );
+}
+
 export function BudgetOverridePayload({ payload }: { payload: Record<string, unknown> }) {
   const budgetAmount = typeof payload.budgetAmount === "number" ? payload.budgetAmount : null;
   const observedAmount = typeof payload.observedAmount === "number" ? payload.observedAmount : null;
@@ -529,6 +553,9 @@ export function ApprovalPayloadRenderer({
 }) {
   if (type === "hire_agent") return <HireAgentPayload payload={payload} />;
   if (type === "budget_override_required") return <BudgetOverridePayload payload={payload} />;
+  // Minted by the criterion-review sweep, never by a client — so, like
+  // "flow_gate" below, it is compared as a string and absent from APPROVAL_TYPES.
+  if (type === "criterion_review") return <CriterionReviewPayload payload={payload} />;
   if (type === "request_board_approval") {
     return <BoardApprovalPayload payload={payload} hideTitle={hidePrimaryTitle} />;
   }

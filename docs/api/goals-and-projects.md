@@ -63,6 +63,8 @@ any other goal is a 400.
 | `budget` | Free text — time or money (`"two weeks"`, `"40k"`). |
 | `stopCondition` | What would make us stop, written before work begins. |
 | `assumptions` | `[{ id, statement, type, status, evidence? }]` — `type` is `technical` / `regulatory` / `commercial` / `operational`, `status` is `untested` / `retired` / `blocked`. |
+| `validationCriteria` | The pre-registered bars, each with a named reader and a date. See below. |
+| `provenance` | `{ kind: "confirmed" \| "inferred", source? }` — how this record came to exist. |
 | `closure` | How it ended: `validated` / `stopped` / `revised` / `expired`. |
 | `closureReason` | The evidence behind the closure. |
 
@@ -88,6 +90,53 @@ decomposed) · `active` (anything completed or in progress) · `on_hold`
 `PATCH` refuses a `status` on an initiative — status is a consequence of the
 projects, `closure` is the human decision. Non-initiative goals return
 `derivedStatus: null`.
+
+### Validation criteria
+
+`stopCondition` is prose: it cannot carry a reader or a date, and it cannot be
+marked hit or missed. `validationCriteria` is the part that can.
+
+| Field | Meaning |
+|---|---|
+| `id`, `statement` | What must be true. |
+| `measure` | What is observed. Free text — there is no metric DSL. |
+| `threshold` | The bar (`"≥80%"`). Free text; the comparison is a human judgement. |
+| `window` | When it is measured, for a reader. Free text. |
+| `ownerUserId` / `ownerAgentId` | **The named reader. At least one is required.** |
+| `reviewDate` | ISO date. **Required.** |
+| `status` | `pending` / `hit` / `missed` / `never_registered`. |
+| `reviewedAt`, `reviewNote` | Filled when someone reports against it. |
+| `surfacedAt` | Stamped by the review sweep; makes surfacing idempotent. |
+
+A criterion with no owner, or no `reviewDate`, is rejected at write time. That
+rejection is the point: *"a criterion without a named reader and a date is not
+a criterion. It is a wish with a number in it."*
+
+`never_registered` is the honest import — an initiative reconstructed from
+history saying, on the record, that criteria were never written. There
+`ownerUserId`, `ownerAgentId` and `reviewDate` are **forbidden**, not merely
+optional: supplying them would retro-fit a decision nobody made.
+
+**The monitor.** A sweep (`APEX_CRITERION_REVIEW_HOURS`, default 1h, `0`
+disables) finds `pending` criteria whose `reviewDate` has arrived and surfaces
+each one **once** — a board approval of type `criterion_review` for a user
+owner, an agent wakeup for an agent owner — logging `goal.criterion_surfaced`.
+
+### Report against a criterion
+
+```
+POST /api/goals/{id}/criteria/{criterionId}/report
+{
+  "status": "hit",
+  "reviewNote": "84% over 1,412 turns in apex-eval"
+}
+```
+
+Only `hit` and `missed` are accepted — a report is a one-way statement about
+what was seen, and a criterion cannot be returned to `pending`. It stamps
+`reviewedAt`, closes the inbox item the sweep raised, and logs
+`goal.criterion_reported`. Reporting against a `never_registered` criterion is
+a 400: nothing was registered to measure.
 
 ## Projects
 

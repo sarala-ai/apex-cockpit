@@ -438,3 +438,44 @@ describe("FlowGatePayload decision brief (via ApprovalPayloadRenderer type='flow
     expect(container.textContent).toContain("Preparing the decision brief");
   });
 });
+
+describe("ApprovalPayloadRenderer — criterion_review", () => {
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+  });
+
+  afterEach(() => {
+    container.remove();
+  });
+
+  it("carries the question, not just a pointer to it", () => {
+    // An inbox row that only links elsewhere is how forty pre-registered
+    // criteria went unread.
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <ApprovalPayloadRenderer
+          type="criterion_review"
+          payload={{
+            goalId: "goal-1",
+            goalTitle: "Every interface generated from MCP tools",
+            criterionId: "c1",
+            statement: "Agents reach for tools rather than freelancing",
+            threshold: "\u226580%",
+            reviewDate: "2026-08-01",
+          }}
+        />,
+      );
+    });
+
+    const html = container.innerHTML;
+    expect(html).toContain("Agents reach for tools rather than freelancing");
+    expect(html).toContain("\u226580%");
+    expect(html).toContain("/goals/goal-1");
+    expect(html).toContain("record hit or missed");
+    act(() => root.unmount());
+  });
+});

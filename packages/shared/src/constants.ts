@@ -699,12 +699,11 @@ export const APPROVAL_TYPES = [
   "request_board_approval",
   // apex-tower (Task 2 §2b): a ticket-lifecycle HITL gate (spec/plan/pr review).
   "pipeline_gate",
-  // A pre-registered validation criterion has reached its review date and its
-  // named reader must look. The approval is the *prompt*, not the verdict
-  // store: the verdict is recorded on the criterion itself via the report API,
-  // which then resolves this row. Approvals are what the board counts as a
-  // pending item (sidebar-badges), so this is how a criterion reaches a human.
-  "criterion_review",
+  // NOTE: `criterion_review` is deliberately NOT here, for the same reason
+  // `flow_gate` is not: it is minted by the criterion-review sweep, never by a
+  // client. A caller able to create one could fabricate a review prompt — and
+  // then resolve it — against a criterion nobody looked at, which is precisely
+  // the failure the monitor exists to make impossible.
 ] as const;
 export type ApprovalType = (typeof APPROVAL_TYPES)[number];
 

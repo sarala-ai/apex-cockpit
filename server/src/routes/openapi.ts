@@ -50,6 +50,7 @@ import {
   // Goal
   createGoalSchema,
   updateGoalSchema,
+  reportCriterionSchema,
   createReleaseSchema,
   updateReleaseSchema,
   promoteReleaseSchema,
@@ -2353,6 +2354,20 @@ registry.registerPath({
     body: jsonBody(updateGoalSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+// The read-back. An initiative's validation criteria are pre-registered with a
+// named reader and a date; this is how a verdict gets recorded against one.
+registry.registerPath({
+  method: "post",
+  path: "/api/goals/{id}/criteria/{criterionId}/report",
+  tags: ["goals"],
+  summary: "Report a verdict against a pre-registered validation criterion",
+  request: {
+    params: z.object({ id: z.string(), criterionId: z.string() }),
+    body: jsonBody(reportCriterionSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
 });
 
 registry.registerPath({
