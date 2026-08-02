@@ -1,6 +1,10 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
-import { createGoalSchema, updateGoalSchema } from "@paperclipai/shared";
+import {
+  createGoalSchema,
+  updateGoalSchema,
+  initiativeFieldsRejectedFor,
+} from "@paperclipai/shared";
 import { trackGoalCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { goalService, logActivity } from "../services/index.js";
@@ -59,6 +63,19 @@ export function goalRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+
+    // The create schema can check this itself; a PATCH cannot, because the
+    // level may not be in the payload. Resolve the level the goal will have
+    // after this patch and reject initiative-only fields on anything else.
+    const nextLevel = (req.body.level as string | undefined) ?? existing.level;
+    const rejected = initiativeFieldsRejectedFor(nextLevel, req.body);
+    if (rejected.length > 0) {
+      res.status(400).json({
+        error: `${rejected.join(", ")} ${rejected.length === 1 ? "is" : "are"} only valid on a goal with level "initiative"`,
+      });
+      return;
+    }
+
     const goal = await svc.update(id, req.body);
     if (!goal) {
       res.status(404).json({ error: "Goal not found" });
