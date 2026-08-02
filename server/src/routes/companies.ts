@@ -7,6 +7,7 @@ import { agents as agentsTable } from "@paperclipai/db";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
   companyArtifactsQuerySchema,
+  companyDataErasureSchema,
   companyIssuePrefixSchema,
   companySlugSchema,
   companyPortabilityExportSchema,
@@ -28,6 +29,7 @@ import {
   agentService,
   budgetService,
   companyArtifactsService,
+  companyDataErasureService,
   companyPortabilityService,
   companyService,
   feedbackService,
@@ -35,7 +37,13 @@ import {
   workTimelineService,
 } from "../services/index.js";
 import type { StorageService } from "../storage/types.js";
-import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
+import {
+  assertBoard,
+  assertCompanyAccess,
+  assertCompanyOwner,
+  assertInstanceAdmin,
+  getActorInfo,
+} from "./authz.js";
 import { COMPANY_IMPORT_ROUTE_PATH } from "./company-import-paths.js";
 
 export function companyRoutes(db: Db, storage?: StorageService) {
@@ -47,6 +55,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   const budgets = budgetService(db);
   const artifacts = companyArtifactsService(db, storage);
   const feedback = feedbackService(db);
+  const dataErasure = companyDataErasureService(db);
   const importJobs = new Map<string, ImportJobRecord>();
   const importJobTerminalRetentionMs = 5 * 60 * 1000;
 
@@ -619,6 +628,35 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       consequences: result.consequences,
       activityId: result.activityId ?? null,
     });
+  });
+
+  // DESTRUCTIVE DATA ERASURE — one endpoint, three scopes.
+  //
+  // Three scopes rather than three routes so the safety envelope is written
+  // ONCE and cannot drift apart between them: owner gate, dry run by default,
+  // slug confirmation, one audit record, one transaction. Three near-identical
+  // routes would each be a place for one of those five to go missing.
+  //
+  //   - no `confirm`            → 200 preview, per-table counts, writes nothing
+  //   - `confirm` = the slug    → executes in one transaction
+  //   - blocked by children     → 200 with `blocked` set, writes nothing
+  //
+  // Distinct from `DELETE /:companyId` below, which removes the company itself.
+  // This leaves the company, its members and its settings standing and empties
+  // the board underneath them.
+  router.post("/:companyId/data-erasure", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyOwner(req, companyId);
+
+    const body = companyDataErasureSchema.parse(req.body ?? {});
+    const actor = getActorInfo(req);
+    const report = await dataErasure.erase(companyId, body, {
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+    });
+    res.status(200).json(report);
   });
 
   router.delete("/:companyId", async (req, res) => {
