@@ -23,6 +23,7 @@ import {
   Activity,
   Network,
   Workflow,
+  Rocket,
 } from "lucide-react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -258,6 +259,9 @@ export function Sidebar() {
         </SidebarSection>
 
         <SidebarSection label="Operations">
+          {/* Releases sits before Observe: a release is the measurement
+              boundary the Observe surface's numbers get read against. */}
+          <SidebarNavItem to="/releases" label="Releases" icon={Rocket} />
           <SidebarNavItem to="/observe" label="Observe" icon={Activity} />
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
           <SidebarNavItem to="/activity" label="Activity" icon={History} />

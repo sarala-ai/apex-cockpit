@@ -37,6 +37,8 @@ import { Approvals } from "./pages/Approvals";
 import { ApprovalDetail } from "./pages/ApprovalDetail";
 import { Costs } from "./pages/Costs";
 import { Observe } from "./pages/Observe";
+import { Releases } from "./pages/Releases";
+import { ReleaseDetail } from "./pages/ReleaseDetail";
 import { RunDetail } from "./pages/RunDetail";
 import { Gateway } from "./pages/Gateway";
 import { Workflows } from "./pages/Workflows";
@@ -93,6 +95,8 @@ function boardRoutes() {
       <Route index element={<Navigate to="dashboard" replace />} />
       <Route path="dashboard" element={<Dashboard />} />
       <Route path="dashboard/live" element={<DashboardLive />} />
+      <Route path="releases" element={<Releases />} />
+      <Route path="releases/:releaseId" element={<ReleaseDetail />} />
       <Route path="observe" element={<Observe />} />
       <Route path="observe/runs/:runId" element={<RunDetail />} />
       <Route path="gateway" element={<Gateway />} />
@@ -478,6 +482,8 @@ export function App() {
           <Route path="learnings" element={<UnprefixedBoardRedirect />} />
           <Route path="cases" element={<UnprefixedBoardRedirect />} />
           <Route path="cases/:caseIdentifier" element={<UnprefixedBoardRedirect />} />
+          <Route path="releases" element={<UnprefixedBoardRedirect />} />
+          <Route path="releases/:releaseId" element={<UnprefixedBoardRedirect />} />
           <Route path="observe" element={<UnprefixedBoardRedirect />} />
           <Route path="observe/runs/:runId" element={<UnprefixedBoardRedirect />} />
           <Route path="gateway" element={<UnprefixedBoardRedirect />} />

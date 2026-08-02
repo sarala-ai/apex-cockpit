@@ -126,6 +126,7 @@ import { PriorityIcon } from "@/components/PriorityIcon";
 import { agentStatusDot, agentStatusDotDefault } from "@/lib/status-colors";
 import { EntityRow } from "@/components/EntityRow";
 import { EmptyState } from "@/components/EmptyState";
+import { ConfoundWarning } from "@/components/ConfoundWarning";
 import { MetricCard } from "@/components/MetricCard";
 import { FilterBar, type FilterValue } from "@/components/FilterBar";
 import { InlineEditor } from "@/components/InlineEditor";
@@ -1368,6 +1369,48 @@ export function DesignGuide() {
             onAction={() => {}}
           />
         </div>
+      </Section>
+
+      {/* ============================================================ */}
+      {/*  CONFOUND WARNING                                             */}
+      {/* ============================================================ */}
+      <Section title="Confound Warning">
+        <SubSection title="Unclean window">
+          <ConfoundWarning
+            confounds={{
+              windowStart: "2026-08-01T00:00:00.000Z",
+              windowEnd: "2026-08-08T00:00:00.000Z",
+              subjectInitiativeId: "initiative-1",
+              clean: false,
+              initiatives: [],
+              confoundingInitiatives: [
+                {
+                  initiativeId: "initiative-2",
+                  initiativeTitle: "Onboarding rewrite",
+                  changeCount: 2,
+                  releaseIds: ["release-7"],
+                },
+              ],
+              overlappingReleases: [],
+              warning:
+                "This measurement window also carried Onboarding rewrite in release R7 (prod); this evidence is not clean.",
+            }}
+          />
+        </SubSection>
+        <SubSection title="Clean window">
+          <ConfoundWarning
+            confounds={{
+              windowStart: "2026-08-01T00:00:00.000Z",
+              windowEnd: "2026-08-08T00:00:00.000Z",
+              subjectInitiativeId: "initiative-1",
+              clean: true,
+              initiatives: [],
+              confoundingInitiatives: [],
+              overlappingReleases: [],
+              warning: null,
+            }}
+          />
+        </SubSection>
       </Section>
 
       {/* ============================================================ */}
