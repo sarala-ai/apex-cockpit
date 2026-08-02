@@ -50,6 +50,12 @@ import {
   // Goal
   createGoalSchema,
   updateGoalSchema,
+  createReleaseSchema,
+  updateReleaseSchema,
+  promoteReleaseSchema,
+  closeReleaseSchema,
+  attachReleaseChangesSchema,
+  addReleaseArtifactSchema,
   // Secret
   createSecretSchema,
   updateSecretSchema,
@@ -741,6 +747,10 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/environments",
   "POST /api/environments/{environmentId}/custom-image-setup-sessions",
   "POST /api/companies/{companyId}/goals",
+  "POST /api/companies/{companyId}/releases",
+  "POST /api/releases/{id}/promote",
+  "POST /api/releases/{id}/changes",
+  "POST /api/releases/{id}/artifacts",
   "POST /api/companies/{companyId}/labels",
   "POST /api/issues/{id}/documents/{key}/annotations",
   "POST /api/issues/{id}/documents/{key}/annotations/{threadId}/comments",
@@ -2352,6 +2362,137 @@ registry.registerPath({
   summary: "Delete a goal",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+// ─── Releases ────────────────────────────────────────────────────────────────
+//
+// A release is scoped to a product (the level the schema calls a company) and
+// aggregates across the intent tree, which is why the collection hangs off the
+// company and the individual release does not.
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/releases",
+  tags: ["releases"],
+  summary: "List releases for a product",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/releases/confounds",
+  tags: ["releases"],
+  summary: "Compute the confound set for a measurement window",
+  description:
+    "Given a window and optionally the initiative being measured, returns every OTHER initiative "
+    + "that had changes in releases overlapping that window. Evidence gathered over a window with "
+    + "confounds is not attributable to one initiative, and the answer says so explicitly.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      windowStart: z.string(),
+      windowEnd: z.string(),
+      initiativeId: z.string().optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/releases/{id}",
+  tags: ["releases"],
+  summary: "Get a release with its changes, artifacts and confound set",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/releases/{id}/notes",
+  tags: ["releases"],
+  summary: "Get generated release notes",
+  description:
+    "Notes are a projection of the provenance record (ticket to pull request to tag), never "
+    + "hand-authored, and they state any confound rather than leaving it to be discovered.",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/releases",
+  tags: ["releases"],
+  summary: "Create a release",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(createReleaseSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/releases/{id}",
+  tags: ["releases"],
+  summary: "Update a release",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(updateReleaseSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/releases/{id}/promote",
+  tags: ["releases"],
+  summary: "Promote a release into another environment",
+  description:
+    "Creates a NEW release carrying the same changes and artifacts, linked back to its source, "
+    + "because each environment needs its own observation window.",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(promoteReleaseSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/releases/{id}/close",
+  tags: ["releases"],
+  summary: "Close a release as stable, rolled back, superseded or partially reverted",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(closeReleaseSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/releases/{id}/changes",
+  tags: ["releases"],
+  summary: "Attach tickets to a release",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(attachReleaseChangesSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/releases/{id}/artifacts",
+  tags: ["releases"],
+  summary: "Record a repository tag as release evidence",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(addReleaseArtifactSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
 });
 
 // ─── Secrets ─────────────────────────────────────────────────────────────────

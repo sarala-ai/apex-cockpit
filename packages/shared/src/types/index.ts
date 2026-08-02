@@ -664,3 +664,15 @@ export type {
   PluginDatabaseNamespaceMode,
   PluginDatabaseNamespaceStatus,
 } from "./plugin.js";
+export type {
+  Release,
+  ReleaseArtifact,
+  ReleaseChange,
+  ReleaseChangePullRequest,
+  ReleaseDetail,
+  ConfoundInitiative,
+  ConfoundSet,
+  ReleaseNotesEntry,
+  ReleaseNotesSection,
+  ReleaseNotes,
+} from "./release.js";

@@ -511,6 +511,23 @@ export type GoalAssumptionStatus = (typeof GOAL_ASSUMPTION_STATUSES)[number];
 // cancelled (a lie about the decision) or in_progress (a lie about the work).
 // "backlog" already carries not-started — it is the create default and reads
 // correctly — so no separate not_started value is added.
+// Where a release sits in its lifecycle. Separate from RELEASE_CLOSURES for the
+// same reason goals keep `status` and `closure` apart: "observing" is a
+// position, "rolled_back" is a verdict, and one column cannot carry both.
+export const RELEASE_STATUSES = ["planned", "building", "released", "observing"] as const;
+export type ReleaseStatus = (typeof RELEASE_STATUSES)[number];
+
+// How a release ended. `partially_reverted` is not a hedge — it is the honest
+// answer when one initiative's change in a shared release was pulled and the
+// rest stayed, and it is exactly the case that makes measurement unclean.
+export const RELEASE_CLOSURES = [
+  "stable",
+  "rolled_back",
+  "superseded",
+  "partially_reverted",
+] as const;
+export type ReleaseClosure = (typeof RELEASE_CLOSURES)[number];
+
 export const PROJECT_STATUSES = [
   "backlog",
   "planned",
