@@ -16,6 +16,11 @@ const mockGoalService = vi.hoisted(() => ({
   create: vi.fn(),
   update: vi.fn(),
   remove: vi.fn(),
+  // Initiative status is derived from projects at read time; this route test
+  // only cares about telemetry, so the decoration is a pass-through.
+  withDerivedStatus: vi.fn(async (rows: any[]) =>
+    rows.map((row) => ({ ...row, derivedStatus: null })),
+  ),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
