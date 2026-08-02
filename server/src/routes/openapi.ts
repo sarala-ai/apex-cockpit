@@ -48,9 +48,15 @@ import {
   rotateRoutineTriggerSecretSchema,
   runRoutineSchema,
   // Goal
+  GOAL_LEVELS,
   createGoalSchema,
   updateGoalSchema,
   reportCriterionSchema,
+  // Proposal
+  createProposalSchema,
+  updateProposalSchema,
+  correctProposalRecordSchema,
+  submitProposalSchema,
   createReleaseSchema,
   updateReleaseSchema,
   promoteReleaseSchema,
@@ -2377,6 +2383,144 @@ registry.registerPath({
   summary: "Delete a goal",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+// ─── Goals: the CSV sheet ────────────────────────────────────────────────────
+//
+// Export is a reading tool: 26 initiatives on one screen, scanned side by side.
+// It is NOT the review path — that is a proposal's grid, below, which shows
+// provenance per row and gates corrections. Import is the secondary bulk-edit
+// return leg, dry-run by default.
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/goals/export.csv",
+  tags: ["goals"],
+  summary: "Export goals as CSV for offline scanning",
+  description:
+    "One row per goal, projects summarised, UTF-8 with a BOM so Excel opens it correctly, ordered by created_at so two exports diff cleanly. Read-only columns say so in their header.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      level: z.enum(GOAL_LEVELS).optional().describe("Restrict to one goal level, e.g. initiative"),
+    }),
+  },
+  responses: {
+    200: { description: "CSV document", content: { "text/csv": { schema: z.string() } } },
+    400: r.badRequest,
+    401: r.unauthorized,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/goals/import.csv",
+  tags: ["goals"],
+  summary: "Import corrected goal rows from CSV (dry-run by default)",
+  description:
+    'Send the sheet as text/csv. A row with an id updates; a row without one creates. A BLANK CELL LEAVES THE STORED VALUE UNCHANGED — to clear a field, put "--" in it. derived_status and the projects column are computed and are reported as notices, never applied. Row errors carry their file line number and never abort the batch. Dry-run unless ?apply=true.',
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      apply: z.enum(["true", "false"]).optional().describe("true writes; anything else is a dry run"),
+    }),
+    body: { content: { "text/csv": { schema: z.string() } }, required: true },
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+// ─── Proposals ───────────────────────────────────────────────────────────────
+//
+// The reviewable artifact for STRUCTURED OBJECTS. Design files and code diffs
+// already render at a gate; a set of proposed records did not, which is why
+// reviewing a reconstructed initiative tree had no home in the product. A
+// proposal carries typed records of one `kind` with per-record provenance,
+// takes corrections in place, goes to ONE gate, and materialises only on
+// approval.
+
+registry.registerPath({
+  method: "get",
+  path: "/api/proposal-kinds",
+  tags: ["proposals"],
+  summary: "List registered proposal kinds and their review columns",
+  description:
+    "The review grid renders from this, so adding a kind requires no change to the review surface.",
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/proposals",
+  tags: ["proposals"],
+  summary: "List proposals in a company",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/proposals",
+  tags: ["proposals"],
+  summary: "Create a proposal carrying typed records",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(createProposalSchema),
+  },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/proposals/{id}",
+  tags: ["proposals"],
+  summary: "Get a proposal with its records",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/proposals/{id}/export.csv",
+  tags: ["proposals"],
+  summary: "Export a proposal's records as CSV for offline scanning",
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: { description: "CSV document", content: { "text/csv": { schema: z.string() } } },
+    401: r.unauthorized,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/proposals/{id}",
+  tags: ["proposals"],
+  summary: "Update a proposal's title, summary or record set",
+  request: { params: z.object({ id: z.string() }), body: jsonBody(updateProposalSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/proposals/{id}/records/{ref}",
+  tags: ["proposals"],
+  summary: "Correct one proposed record in place",
+  description:
+    "`fields` merges, so fixing one cell never requires resending the rest. Corrections live on the proposal; no live object is touched until the gate approves.",
+  request: {
+    params: z.object({ id: z.string(), ref: z.string() }),
+    body: jsonBody(correctProposalRecordSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/proposals/{id}/submit",
+  tags: ["proposals"],
+  summary: "Send the whole proposal to a single approval gate",
+  request: { params: z.object({ id: z.string() }), body: jsonBody(submitProposalSchema) },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
 });
 
 // ─── Releases ────────────────────────────────────────────────────────────────

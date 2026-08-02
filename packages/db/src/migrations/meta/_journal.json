@@ -1135,6 +1135,13 @@
       "when": 1786000004000,
       "tag": "0163_goal_validation_criteria",
       "breakpoints": true
+    },
+    {
+      "idx": 164,
+      "version": "7",
+      "when": 1786000005000,
+      "tag": "0164_proposals",
+      "breakpoints": true
     }
   ]
 }

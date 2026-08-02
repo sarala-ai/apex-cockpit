@@ -5,32 +5,41 @@ import { deriveInitiativeStatus, type InitiativeDerivedStatus } from "@paperclip
 
 type GoalReader = Pick<Db, "select">;
 
+/** One project as it hangs off a goal. Name is carried for the CSV export. */
+export type GoalProjectSummary = { id: string; name: string; status: string; createdAt: Date };
+
 /**
- * Project statuses per goal, across BOTH ways a project can point at a goal:
+ * Projects per goal, across BOTH ways a project can point at a goal:
  * the legacy `projects.goal_id` column and the `project_goals` join table. A
  * derived status that only saw one of them would under-report, which is worse
  * than not deriving at all.
+ *
+ * Ordered by `created_at` so the CSV export renders the same string twice for
+ * an unchanged initiative — a round-trip that reported spurious changes would
+ * defeat the point of the export.
  */
-async function projectStatusesByGoal(
+export async function projectSummariesByGoal(
   db: GoalReader,
   goalIds: readonly string[],
-): Promise<Map<string, string[]>> {
-  const byGoal = new Map<string, string[]>();
+): Promise<Map<string, GoalProjectSummary[]>> {
+  const byGoal = new Map<string, GoalProjectSummary[]>();
   if (goalIds.length === 0) return byGoal;
 
   const ids = [...goalIds];
+  const columns = {
+    projectId: projects.id,
+    name: projects.name,
+    status: projects.status,
+    createdAt: projects.createdAt,
+  };
 
   const [direct, joined] = await Promise.all([
     db
-      .select({ goalId: projects.goalId, projectId: projects.id, status: projects.status })
+      .select({ goalId: projects.goalId, ...columns })
       .from(projects)
       .where(inArray(projects.goalId, ids)),
     db
-      .select({
-        goalId: projectGoals.goalId,
-        projectId: projects.id,
-        status: projects.status,
-      })
+      .select({ goalId: projectGoals.goalId, ...columns })
       .from(projectGoals)
       .innerJoin(projects, eq(projects.id, projectGoals.projectId))
       .where(inArray(projectGoals.goalId, ids)),
@@ -44,10 +53,30 @@ async function projectStatusesByGoal(
     if (seen.has(key)) continue;
     seen.add(key);
     const list = byGoal.get(row.goalId) ?? [];
-    list.push(row.status);
+    list.push({
+      id: row.projectId,
+      name: row.name,
+      status: row.status,
+      createdAt: row.createdAt ?? new Date(0),
+    });
     byGoal.set(row.goalId, list);
   }
+  for (const list of byGoal.values()) {
+    list.sort(
+      (a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id),
+    );
+  }
   return byGoal;
+}
+
+async function projectStatusesByGoal(
+  db: GoalReader,
+  goalIds: readonly string[],
+): Promise<Map<string, string[]>> {
+  const summaries = await projectSummariesByGoal(db, goalIds);
+  return new Map(
+    [...summaries].map(([goalId, list]) => [goalId, list.map((project) => project.status)]),
+  );
 }
 
 type GoalRow = { id: string; level: string };
@@ -120,6 +149,9 @@ export function goalService(db: Db) {
         .then((rows) => rows[0] ?? null),
 
     getDefaultCompanyGoal: (companyId: string) => getDefaultCompanyGoal(db, companyId),
+
+    /** Projects hanging off each goal, both link shapes, created_at order. */
+    projectSummariesByGoal: (goalIds: readonly string[]) => projectSummariesByGoal(db, goalIds),
 
     /** Rows in, rows out with `derivedStatus` filled in for initiatives. */
     withDerivedStatus: <T extends { id: string; level: string }>(rows: readonly T[]) =>

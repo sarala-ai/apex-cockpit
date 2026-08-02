@@ -57,6 +57,14 @@ export {
 } from "./external-objects.js";
 export { goalService } from "./goals.js";
 export {
+  proposalService,
+  registerProposalMaterializer,
+  getProposalMaterializer,
+  initiativesMaterializer,
+  type ProposalMaterializer,
+  type MaterializationResult,
+} from "./proposals.js";
+export {
   criterionMonitor,
   criterionReviewPayload,
   criterionSweepIntervalMs,
