@@ -46,6 +46,7 @@ import {
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { CliFlowNodeRunner, type FlowNodeRunner } from "../apex/steps/runner.js";
 import { renderTemplate, stepExecutor } from "../apex/steps/step-executor.js";
+import { isMachineEvaluableAcceptance } from "../apex/steps/agent-step.js";
 import { routineService } from "./routines.js";
 import { secretService } from "./secrets.js";
 import type { IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
@@ -1195,6 +1196,35 @@ function stageWorkflowEntry(stage: typeof pipelineStages.$inferSelect) {
     onSuccessToStageKey: readOptionalTrimmedString(onEnter.onSuccessToStageKey),
     onFailureToStageKey: readOptionalTrimmedString(onEnter.onFailureToStageKey),
   };
+}
+
+/**
+ * A stage may only declare acceptance the server can actually evaluate.
+ *
+ * The v1 grammar answers anything it does not recognise with a PASS marked
+ * "unverified". That is defensible for a flow agent step, where the prose is a
+ * note beside a run that already succeeded. It is not defensible for a stage
+ * contract whose whole job is to hold the stage: prose would let work out
+ * while reporting green, and a check that always passes is worse than no check,
+ * because it is believed.
+ *
+ * So it is refused at authoring time, naming the grammar, while a person is
+ * looking at the config. `disabled: true` remains the way to say "no contract
+ * here" — an explicit waiver rather than one disguised as a passing check.
+ */
+function assertStageAcceptanceIsCheckable(config?: PipelineStageConfig | null) {
+  const acceptance = config?.acceptance;
+  if (!acceptance || typeof acceptance !== "object" || Array.isArray(acceptance)) return;
+  if (acceptance.disabled === true) return;
+  const criteria = typeof acceptance.criteria === "string" ? acceptance.criteria.trim() : "";
+  if (!criteria) return;
+  if (isMachineEvaluableAcceptance(criteria)) return;
+  throw unprocessable(
+    `Stage acceptance criteria must be server-checkable: use "file_exists:<path>" or ` +
+      `"pr_exists:<repo>#<head>", or set acceptance.disabled to declare none. ` +
+      `Free text cannot hold a stage — it would report a pass without checking anything.`,
+    { code: "validation", criteria },
+  );
 }
 
 /** The stage's acceptance contract, or null when it declares none (or has
@@ -2481,6 +2511,7 @@ export function pipelineService(
   }
 
   async function validateStageAutomationConfig(companyId: string, config?: PipelineStageConfig | null) {
+    assertStageAcceptanceIsCheckable(config);
     const onEnter = config?.onEnter;
     if (!onEnter) return;
     if (onEnter.type === "run_workflow") {

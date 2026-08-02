@@ -148,6 +148,53 @@ describeEmbeddedPostgres("pipeline stage step config — workflow entry and acce
     return row!;
   }
 
+  /*
+   * The v1 grammar answers anything it does not recognise with a PASS marked
+   * "unverified". Harmless as a note beside a flow agent run; not harmless as a
+   * stage contract, where it would let work out while reporting green. These
+   * pin the refusal at authoring time, which is the only moment a person is
+   * looking at the config.
+   */
+  it("refuses stage acceptance criteria the server cannot actually check", async () => {
+    const { runner } = stubRunner({ ok: true, detail: { status: "success" } });
+    const svc = serviceWith(runner);
+    const { company, pipeline, byKey } = await seedPipeline(svc);
+
+    await expect(
+      svc.updateStage({
+        companyId: company.id,
+        pipelineId: pipeline.id,
+        stageId: byKey.get("in_progress")!.id,
+        patch: { config: { acceptance: { criteria: "the deployment looks healthy" } } },
+        actor: userActor,
+      }),
+    ).rejects.toThrow(/server-checkable/);
+  });
+
+  it("accepts both grammar forms, and an explicitly disabled contract", async () => {
+    const { runner } = stubRunner({ ok: true, detail: { status: "success" } });
+    const svc = serviceWith(runner);
+    const { company, pipeline, byKey } = await seedPipeline(svc);
+    const stageId = byKey.get("in_progress")!.id;
+
+    for (const acceptance of [
+      { criteria: "file_exists: build/report.json" },
+      { criteria: "pr_exists: sarala-ai/apex-cockpit#feature-branch" },
+      // An explicit waiver stays available — saying "no contract here" out loud
+      // is the honest alternative to prose that pretends to be one.
+      { criteria: "reviewed by a person", disabled: true },
+    ]) {
+      const updated = await svc.updateStage({
+        companyId: company.id,
+        pipelineId: pipeline.id,
+        stageId,
+        patch: { config: { acceptance } },
+        actor: userActor,
+      });
+      expect(updated).toBeTruthy();
+    }
+  });
+
   it("runs a workflow entry step and moves the case on a zero exit", async () => {
     const { runner, workflowCalls } = stubRunner({ ok: true, detail: { status: "success" } });
     const svc = serviceWith(runner);

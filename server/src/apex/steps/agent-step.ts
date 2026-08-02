@@ -185,6 +185,26 @@ export function acceptancePullRequestTarget(
   return { repo: match[1], head: match[2] };
 }
 
+/**
+ * Can the server actually CHECK this criteria, or would it only record it?
+ *
+ * `evaluateAcceptanceV1` answers "everything else" with `ok: true` and an
+ * "unverified" note. On a flow AGENT step that is honest — the agent ran, and
+ * the prose is a note for whoever reads the run. On a STAGE acceptance
+ * contract it is not: that contract exists to HOLD the stage, so prose would
+ * report green having checked nothing, which is a false assurance and worse
+ * than declaring no acceptance at all.
+ *
+ * Callers that gate on acceptance use this to refuse un-checkable criteria at
+ * AUTHORING time, where a person can fix it, rather than passing silently at
+ * runtime, where nobody is looking.
+ */
+export function isMachineEvaluableAcceptance(criteria: string): boolean {
+  const trimmed = criteria.trim();
+  if (!trimmed) return false;
+  return FILE_EXISTS_RE.test(trimmed) || PR_EXISTS_RE.test(trimmed);
+}
+
 /** v1 acceptance evaluation — see module doc for exactly what is checked. */
 export async function evaluateAcceptanceV1(
   acceptance: string,
