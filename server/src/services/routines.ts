@@ -2333,6 +2333,90 @@ export function routineService(
       };
     },
 
+    remove: async (routineId: string) => {
+      const routine = await getRoutineById(routineId);
+      if (!routine) throw notFound("Routine not found");
+
+      const managedBy = await getManagedRoutineBinding(routine);
+      if (managedBy) {
+        throw conflict(
+          `Routine "${routine.title}" is managed by the ${managedBy.pluginKey} plugin and cannot be deleted directly`,
+          {
+            code: "routine_plugin_managed",
+            routineId: routine.id,
+            pluginKey: managedBy.pluginKey,
+            remediation: "Uninstall or reconfigure the owning plugin instead.",
+          },
+        );
+      }
+
+      const triggers = await db
+        .select({ id: routineTriggers.id, secretId: routineTriggers.secretId })
+        .from(routineTriggers)
+        .where(eq(routineTriggers.routineId, routine.id));
+
+      const result = await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        await tx.execute(sql`select id from ${routines} where ${routines.id} = ${routine.id} for update`);
+        const documentIds = (
+          await txDb
+            .select({ documentId: routineDocuments.documentId })
+            .from(routineDocuments)
+            .where(eq(routineDocuments.routineId, routine.id))
+        ).map((row) => row.documentId);
+        const revisionCount = (
+          await txDb
+            .select({ id: routineRevisions.id })
+            .from(routineRevisions)
+            .where(eq(routineRevisions.routineId, routine.id))
+        ).length;
+        const runCount = (
+          await txDb
+            .select({ id: routineRuns.id })
+            .from(routineRuns)
+            .where(eq(routineRuns.routineId, routine.id))
+        ).length;
+
+        // company_secret_bindings keys off (targetType, targetId) with no foreign
+        // key, so the routine's env bindings have to be released explicitly.
+        await secretsSvc.syncEnvBindingsForTarget(
+          routine.companyId,
+          { targetType: "routine", targetId: routine.id },
+          {},
+          { db: tx },
+        );
+
+        // Cascades: routine_revisions, routine_triggers, routine_runs,
+        // routine_documents, document_annotation_threads/comments and
+        // pipeline_automation_executions all declare ON DELETE CASCADE.
+        await txDb.delete(routines).where(eq(routines.id, routine.id));
+        if (documentIds.length > 0) {
+          await txDb.delete(documents).where(inArray(documents.id, documentIds));
+        }
+        return { revisionCount, runCount };
+      });
+
+      for (const trigger of triggers) {
+        if (!trigger.secretId) continue;
+        try {
+          await secretsSvc.remove(trigger.secretId);
+        } catch (err) {
+          logger.warn(
+            { err, routineId: routine.id, triggerId: trigger.id, secretId: trigger.secretId },
+            "failed to remove routine trigger webhook secret after routine deletion",
+          );
+        }
+      }
+
+      return {
+        deleted: true,
+        routine,
+        deletedRevisionCount: result.revisionCount,
+        deletedTriggerCount: triggers.length,
+        deletedRunCount: result.runCount,
+      };
+    },
+
     listRevisions: async (routineId: string): Promise<RoutineRevision[]> => {
       const routine = await getRoutineById(routineId);
       if (!routine) throw notFound("Routine not found");
