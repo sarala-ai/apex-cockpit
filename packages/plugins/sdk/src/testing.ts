@@ -2138,6 +2138,14 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           status: input.status ?? "planned",
           parentId: input.parentId ?? null,
           ownerAgentId: input.ownerAgentId ?? null,
+          // Initiative-only fields: the plugin goals API does not accept them,
+          // so the fake mirrors a plain goal — null, never a guessed default.
+          closure: null,
+          closureReason: null,
+          assumptions: null,
+          budget: null,
+          stopCondition: null,
+          hypothesis: null,
           createdAt: now,
           updatedAt: now,
         };

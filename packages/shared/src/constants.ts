@@ -470,20 +470,72 @@ export type IssueExecutionMonitorClearReason = (typeof ISSUE_EXECUTION_MONITOR_C
 export const ISSUE_EXECUTION_DECISION_OUTCOMES = ["approved", "changes_requested"] as const;
 export type IssueExecutionDecisionOutcome = (typeof ISSUE_EXECUTION_DECISION_OUTCOMES)[number];
 
-export const GOAL_LEVELS = ["company", "team", "agent", "task"] as const;
+// "initiative" sits directly under "company": in the product-engineering noun
+// chain (idea → initiative → project → task) it is the object that carries a
+// budget, a stop condition and — sometimes — a hypothesis. The other levels are
+// org-scope goals and keep exactly the meaning they had.
+export const GOAL_LEVELS = ["company", "initiative", "team", "agent", "task"] as const;
 export type GoalLevel = (typeof GOAL_LEVELS)[number];
 
 export const GOAL_STATUSES = ["planned", "active", "achieved", "cancelled"] as const;
 export type GoalStatus = (typeof GOAL_STATUSES)[number];
 
+/**
+ * How an initiative ended. Deliberately NOT folded into `GOAL_STATUSES`:
+ * "achieved"/"cancelled" already carry a meaning for company/team/agent/task
+ * goals, and the four initiative closures are a different kind of statement —
+ * a verdict about what was learned, not a state the object sits in. Keeping
+ * them apart means the status picker at every other level stays honest, and a
+ * closed initiative can still say which lifecycle state it closed *from*.
+ *
+ * Only meaningful when `level === "initiative"`; null everywhere else.
+ */
+export const GOAL_CLOSURES = ["validated", "stopped", "revised", "expired"] as const;
+export type GoalClosure = (typeof GOAL_CLOSURES)[number];
+
+/** Which discipline an initiative assumption belongs to. */
+export const GOAL_ASSUMPTION_TYPES = [
+  "technical",
+  "regulatory",
+  "commercial",
+  "operational",
+] as const;
+export type GoalAssumptionType = (typeof GOAL_ASSUMPTION_TYPES)[number];
+
+/** Where an assumption stands: untested, retired (answered), or blocked. */
+export const GOAL_ASSUMPTION_STATUSES = ["untested", "retired", "blocked"] as const;
+export type GoalAssumptionStatus = (typeof GOAL_ASSUMPTION_STATUSES)[number];
+
+// "on_hold" is the state a real portfolio spends most of its time in: valid,
+// decided, not now. Without it a deprioritised project has to masquerade as
+// cancelled (a lie about the decision) or in_progress (a lie about the work).
+// "backlog" already carries not-started — it is the create default and reads
+// correctly — so no separate not_started value is added.
 export const PROJECT_STATUSES = [
   "backlog",
   "planned",
   "in_progress",
+  "on_hold",
   "completed",
   "cancelled",
 ] as const;
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
+
+/**
+ * An initiative's status is READ FROM ITS PROJECTS, never stored. "Active — one
+ * of four projects delivered, three on hold" is the honest reading, and a
+ * stored label drifts the moment a project moves. Contrast `GOAL_CLOSURES`,
+ * which a person sets deliberately: closure is a decision, status is a
+ * consequence.
+ */
+export const INITIATIVE_DERIVED_STATUSES = [
+  "planned",
+  "active",
+  "on_hold",
+  "delivered",
+  "cancelled",
+] as const;
+export type InitiativeDerivedStatus = (typeof INITIATIVE_DERIVED_STATUSES)[number];
 
 export const ENVIRONMENT_DRIVERS = ["local", "ssh", "sandbox", "plugin"] as const;
 export type EnvironmentDriver = (typeof ENVIRONMENT_DRIVERS)[number];
