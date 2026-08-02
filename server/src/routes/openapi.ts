@@ -2238,6 +2238,17 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "delete",
+  path: "/api/routines/{id}",
+  tags: ["routines"],
+  summary: "Delete a routine",
+  description:
+    "Deletes a routine and cascades to its revisions, triggers, runs and description document. Plugin-managed routines are rejected with 409.",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
   method: "get",
   path: "/api/routines/{id}/runs",
   tags: ["routines"],
