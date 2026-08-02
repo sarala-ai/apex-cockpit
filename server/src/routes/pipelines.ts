@@ -1971,7 +1971,11 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (!owningCase) throw notFound("Pipeline case not found");
-    await assertPipelineWriteAccess(req, { access, companyId, pipelineId: owningCase.pipelineId });
+    await assertPipelineWriteAccess(req, {
+      access,
+      companyId,
+      pipelineId: pipelineIdOfCase({ id: caseId, pipelineId: owningCase.pipelineId }),
+    });
     const actor = actorForMutation(req);
     const result = await svc.deleteCase({
       companyId,

@@ -653,7 +653,7 @@ function conflictDetailsForCase(row: typeof pipelineCases.$inferSelect, stage?: 
  * `stage_id` and `step_key` move together, always.
  *
  * `step_key` is the authoritative current-step pointer shared with
- * flow-defined cases (0165) — a stage key and a flow node id are the same kind
+ * flow-defined cases (0167) — a stage key and a flow node id are the same kind
  * of thing. `stage_id` stays as the denormalised convenience every pipeline
  * query already joins on. Writing them through one helper is what keeps
  * "authoritative" from being a comment rather than a fact; the only other

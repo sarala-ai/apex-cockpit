@@ -1,7 +1,7 @@
 /**
  * Turning a database invariant into a TypeScript fact.
  *
- * Since 0165 a case row's `pipeline_id` and `stage_id` are nullable, because a
+ * Since 0167 a case row's `pipeline_id` and `stage_id` are nullable, because a
  * flow-defined case has neither. The check constraint
  * `pipeline_cases_definition_shape_check` guarantees the converse just as
  * strongly: a case with `definition_kind = 'pipeline'` ALWAYS carries both.
