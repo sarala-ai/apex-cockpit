@@ -55,7 +55,6 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   const budgets = budgetService(db);
   const artifacts = companyArtifactsService(db, storage);
   const feedback = feedbackService(db);
-  const dataErasure = companyDataErasureService(db);
   const importJobs = new Map<string, ImportJobRecord>();
   const importJobTerminalRetentionMs = 5 * 60 * 1000;
 
@@ -650,7 +649,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
 
     const body = companyDataErasureSchema.parse(req.body ?? {});
     const actor = getActorInfo(req);
-    const report = await dataErasure.erase(companyId, body, {
+    const report = await companyDataErasureService(db).erase(companyId, body, {
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
