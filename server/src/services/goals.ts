@@ -1,7 +1,12 @@
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { goals, projects, projectGoals } from "@paperclipai/db";
-import { deriveInitiativeStatus, type InitiativeDerivedStatus } from "@paperclipai/shared";
+import {
+  deriveInitiativeStatus,
+  summarizeInitiativeProjects,
+  type InitiativeDerivedStatus,
+  type InitiativeProjectCounts,
+} from "@paperclipai/shared";
 
 type GoalReader = Pick<Db, "select">;
 
@@ -79,24 +84,47 @@ async function projectStatusesByGoal(
   );
 }
 
-type GoalRow = { id: string; level: string };
+type GoalRow = { id: string; level: string; hold?: unknown };
 
 /**
- * Attach `derivedStatus` to every initiative in the set. Non-initiative goals
- * get null: the concept does not apply to them and inventing a value would
- * make company/team/agent/task goals look like something they are not.
+ * Attach `derivedStatus` and `projectCounts` to every initiative in the set.
+ * Non-initiative goals get null for both: the concepts do not apply to them and
+ * inventing values would make company/team/agent/task goals look like something
+ * they are not.
+ *
+ * The stored `hold` marker is passed into the derivation, where it OVERRIDES
+ * the reading. It is the one part of an initiative's status that is decided
+ * rather than computed, and the row is the only place that decision exists.
+ *
+ * `projectCounts` travels beside the status because the status alone can imply
+ * completeness it does not have: `delivered` says nothing about the two
+ * projects that were cancelled to get there, or the three that were built and
+ * never exercised. The counts are what stop the board overstating.
  */
 export async function withDerivedStatus<T extends GoalRow>(
   db: GoalReader,
   rows: readonly T[],
-): Promise<Array<T & { derivedStatus: InitiativeDerivedStatus | null }>> {
+): Promise<
+  Array<
+    T & {
+      derivedStatus: InitiativeDerivedStatus | null;
+      projectCounts: InitiativeProjectCounts | null;
+    }
+  >
+> {
   const initiativeIds = rows.filter((row) => row.level === "initiative").map((row) => row.id);
   const byGoal = await projectStatusesByGoal(db, initiativeIds);
-  return rows.map((row) => ({
-    ...row,
-    derivedStatus:
-      row.level === "initiative" ? deriveInitiativeStatus(byGoal.get(row.id) ?? []) : null,
-  }));
+  return rows.map((row) => {
+    if (row.level !== "initiative") {
+      return { ...row, derivedStatus: null, projectCounts: null };
+    }
+    const statuses = byGoal.get(row.id) ?? [];
+    return {
+      ...row,
+      derivedStatus: deriveInitiativeStatus(statuses, { held: Boolean(row.hold) }),
+      projectCounts: summarizeInitiativeProjects(statuses),
+    };
+  });
 }
 
 export async function getDefaultCompanyGoal(db: GoalReader, companyId: string) {
@@ -153,9 +181,10 @@ export function goalService(db: Db) {
     /** Projects hanging off each goal, both link shapes, created_at order. */
     projectSummariesByGoal: (goalIds: readonly string[]) => projectSummariesByGoal(db, goalIds),
 
-    /** Rows in, rows out with `derivedStatus` filled in for initiatives. */
-    withDerivedStatus: <T extends { id: string; level: string }>(rows: readonly T[]) =>
-      withDerivedStatus(db, rows),
+    /** Rows in, rows out with the derived reading filled in for initiatives. */
+    withDerivedStatus: <T extends { id: string; level: string; hold?: unknown }>(
+      rows: readonly T[],
+    ) => withDerivedStatus(db, rows),
 
     create: (companyId: string, data: Omit<typeof goals.$inferInsert, "companyId">) =>
       db

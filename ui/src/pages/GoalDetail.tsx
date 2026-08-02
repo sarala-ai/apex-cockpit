@@ -118,6 +118,28 @@ export function GoalDetail() {
     return p.goalId === goalId;
   });
 
+  // A fold link is only worth anything if the reader can follow it, so the
+  // destination is resolved to a name here, where the projects and goals are
+  // already loaded. Unresolvable ids are left out rather than rendered as a
+  // uuid — the summary says so in words when a destination is missing.
+  const foldDestinations = Object.fromEntries(
+    linkedProjects.flatMap((project) => {
+      if (project.foldedIntoProjectId) {
+        const target = (allProjects ?? []).find((p) => p.id === project.foldedIntoProjectId);
+        return target
+          ? [[project.id, { label: target.name, href: projectUrl(target) }] as const]
+          : [];
+      }
+      if (project.foldedIntoGoalId) {
+        const target = (allGoals ?? []).find((g) => g.id === project.foldedIntoGoalId);
+        return target
+          ? [[project.id, { label: target.title, href: `/goals/${target.id}` }] as const]
+          : [];
+      }
+      return [];
+    }),
+  );
+
   useEffect(() => {
     setBreadcrumbs([
       { label: "Goals", href: "/goals" },
@@ -179,7 +201,11 @@ export function GoalDetail() {
         />
       </div>
 
-      <InitiativeSummary goal={goal} />
+      <InitiativeSummary
+        goal={goal}
+        projects={linkedProjects}
+        foldDestinations={foldDestinations}
+      />
 
       <Tabs defaultValue="children">
         <TabsList>

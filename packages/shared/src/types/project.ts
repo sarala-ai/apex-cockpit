@@ -91,6 +91,12 @@ export interface Project {
   color: string | null;
   icon: string | null;
   env: AgentEnvConfig | null;
+  /**
+   * Where this project's work went when it folded. At most one is set, and
+   * only on a project with status "folded".
+   */
+  foldedIntoProjectId?: string | null;
+  foldedIntoGoalId?: string | null;
   pauseReason: PauseReason | null;
   pausedAt: Date | null;
   executionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;

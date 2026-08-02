@@ -13,6 +13,7 @@ import { goalDisplayStatus } from "../lib/goal-status";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 interface GoalPropertiesProps {
   goal: Goal;
@@ -66,6 +67,85 @@ function PickerButton({
             {label(opt)}
           </Button>
         ))}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/**
+ * Put an initiative on hold, or release it.
+ *
+ * This is the one part of an initiative's status a person sets by hand, and it
+ * is deliberately not in the status picker — there is no status picker for an
+ * initiative, because that reading comes from its projects. A hold is the other
+ * kind of statement: *we decided to pause this*, which no arrangement of
+ * projects can express. The reason is required for the same reason every
+ * closure keeps its evidence; a hold with no reason is indistinguishable from
+ * neglect six weeks later.
+ */
+function HoldControl({
+  goal,
+  onUpdate,
+}: {
+  goal: Goal;
+  onUpdate?: (data: Record<string, unknown>) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
+
+  if (goal.hold) {
+    return (
+      <>
+        <StatusBadge status="on_hold" />
+        <span className="text-xs text-muted-foreground min-w-0 truncate">
+          {goal.hold.reason}
+        </span>
+        {onUpdate && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-xs"
+            onClick={() => onUpdate({ hold: null })}
+          >
+            Release
+          </Button>
+        )}
+      </>
+    );
+  }
+
+  if (!onUpdate) return <span className="text-sm text-muted-foreground">Not held</span>;
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button className="text-sm text-muted-foreground cursor-pointer hover:opacity-80 transition-opacity">
+          Not held
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-72 p-2 space-y-2" align="end">
+        <p className="text-xs text-muted-foreground">
+          A hold overrides the reading from this initiative's projects, so it needs a
+          reason.
+        </p>
+        <Input
+          value={reason}
+          onChange={(event) => setReason(event.target.value)}
+          placeholder="Why this is valid, but not now"
+          className="text-xs"
+        />
+        <Button
+          size="sm"
+          className="w-full text-xs"
+          disabled={reason.trim().length === 0}
+          onClick={() => {
+            onUpdate({ hold: { reason: reason.trim(), since: new Date().toISOString() } });
+            setReason("");
+            setOpen(false);
+          }}
+        >
+          Put on hold
+        </Button>
       </PopoverContent>
     </Popover>
   );
@@ -132,6 +212,14 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
             <span className="text-sm capitalize">{goal.level}</span>
           )}
         </PropertyRow>
+
+        {/* A hold is initiative-only and, unlike the status above, ASSERTED:
+            the derivation cannot see a decision to pause. */}
+        {goal.level === "initiative" && (
+          <PropertyRow label="Hold">
+            <HoldControl goal={goal} onUpdate={onUpdate} />
+          </PropertyRow>
+        )}
 
         {/* Closure is an initiative-only verdict — it would be meaningless on a
             company, team, agent or task goal, so the row is not offered there. */}

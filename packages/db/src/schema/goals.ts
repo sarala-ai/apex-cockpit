@@ -43,6 +43,31 @@ export type GoalValidationCriterionRecord = {
   surfacedAt?: string | null;
 };
 
+/**
+ * One hypothesis under test. Mirrors `goalHypothesisSchema` in
+ * @paperclipai/shared, which is what actually validates writes (any verdict
+ * other than `untested` requires evidence and a testedAt date).
+ */
+export type GoalHypothesisRecord = {
+  id: string;
+  statement: string;
+  verdict: "untested" | "supported" | "falsified" | "inconclusive";
+  evidence?: string | null;
+  testedAt?: string | null;
+};
+
+/**
+ * A decided pause. Mirrors `goalHoldSchema`; presence is the assertion, so the
+ * reason cannot go missing.
+ */
+export type GoalHoldRecord = {
+  reason: string;
+  since: string;
+  byUserId?: string | null;
+  byAgentId?: string | null;
+  reviewDate?: string | null;
+};
+
 /** How an initiative's record came to exist. Mirrors `goalProvenanceSchema`. */
 export type GoalProvenanceRecord = {
   kind: "confirmed" | "inferred";
@@ -80,7 +105,25 @@ export const goals = pgTable(
     // modelling here would buy nothing a reader does not already understand.
     budget: text("budget"),
     stopCondition: text("stop_condition"),
+    // The original one-field hypothesis. KEPT, and not migrated: three of the
+    // ten populated fields hold two or three questions in one string with
+    // their verdicts written as prose, so any automatic split would invent
+    // sentence boundaries and any default verdict would erase a recorded
+    // answer. It stays readable until a person restates each question into
+    // `hypotheses` below.
     hypothesis: text("hypothesis"),
+    // The answerable form: a list, exactly like `assumptions` and
+    // `validation_criteria`, read and written whole, no member outliving its
+    // initiative, shape enforced by Zod on every write. A verdict of
+    // supported/falsified/inconclusive is queryable here; in the text column
+    // above it was a sentence nothing could read back.
+    hypotheses: jsonb("hypotheses").$type<GoalHypothesisRecord[]>(),
+    // A decided pause, which overrides the derived status. Derived state stays
+    // computed; a decision stays decided — the same split `closure` already
+    // makes for how an initiative ended. One nullable object rather than a
+    // reason column and a date column, so a hold without a reason cannot be
+    // represented at all.
+    hold: jsonb("hold").$type<GoalHoldRecord>(),
     // The pre-registered bars, same jsonb reasoning as `assumptions`: read and
     // written as a set, no criterion has identity or lifetime outside its
     // initiative, and the one cross-initiative reader (the review sweep) has to

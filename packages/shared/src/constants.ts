@@ -530,6 +530,26 @@ export const GOAL_CRITERION_VERDICTS = ["hit", "missed"] as const;
 export type GoalCriterionVerdict = (typeof GOAL_CRITERION_VERDICTS)[number];
 
 /**
+ * Where a hypothesis stands. The three answers come straight from the model
+ * doc's hypothesis lifecycle (stated → testing → answered, closing as
+ * supported · falsified · inconclusive); `untested` is the state before any of
+ * them.
+ *
+ * This is a vocabulary and not prose because the fourteen hypotheses APEX
+ * carried were folded into ten free-text fields, three of which held two or
+ * three questions in one string with their verdicts written as sentences.
+ * "Falsified" buried mid-paragraph is not a queryable answer, and a falsified
+ * hypothesis is supposed to be a permanent one.
+ */
+export const GOAL_HYPOTHESIS_VERDICTS = [
+  "untested",
+  "supported",
+  "falsified",
+  "inconclusive",
+] as const;
+export type GoalHypothesisVerdict = (typeof GOAL_HYPOTHESIS_VERDICTS)[number];
+
+/**
  * How an initiative's record came to exist. `confirmed` = a person said so or
  * it was read from something someone wrote down; `inferred` = reconstructed
  * from commits, releases or resources. The shaping agent weights them
@@ -563,15 +583,47 @@ export const RELEASE_CLOSURES = [
 ] as const;
 export type ReleaseClosure = (typeof RELEASE_CLOSURES)[number];
 
+// "built" is delivered-but-never-exercised: the code exists, nothing has run
+// through it against a real case. Four of APEX's own projects (apex-eval, the
+// Observe pillar, the GCP observability provider, the observability skill pack)
+// sat in `in_progress` for months because the only alternative — `completed` —
+// would have claimed something nobody had checked. Delivered is not validated
+// (docs/architecture/initiative-discipline.md §4) is the sentence the whole
+// discipline turns on, and until now the project row could not say it.
+// `completed` therefore means built AND exercised; `built` means built only.
+//
+// "folded" is the third project closure the model doc has always listed
+// (product-engineering.md: "delivered · cancelled · folded into another
+// project") and the schema never had. "Skill packs as the moat" folded into
+// another initiative and had to be recorded as `cancelled` with prose — which
+// says the work was abandoned when in fact it continues somewhere named. The
+// `folded_into_project_id` / `folded_into_goal_id` columns carry the name.
 export const PROJECT_STATUSES = [
   "backlog",
   "planned",
   "in_progress",
   "on_hold",
+  "built",
   "completed",
+  "folded",
   "cancelled",
 ] as const;
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
+
+/**
+ * Project statuses that mean the building is done. `built` is here and
+ * `completed` is here; the difference between them is exercise, not delivery,
+ * and it is reported as a count rather than by withholding delivery.
+ */
+export const PROJECT_DELIVERED_STATUSES = ["built", "completed"] as const;
+
+/**
+ * Terminal statuses that take a project out of the live set: nothing more will
+ * be built under this project, here. They are NOT interchangeable — `cancelled`
+ * abandons a stated outcome, `folded` moves it somewhere named — which is why
+ * the derived reading treats them differently and the board counts them apart.
+ */
+export const PROJECT_CLOSED_OUT_STATUSES = ["cancelled", "folded"] as const;
 
 /**
  * An initiative's status is READ FROM ITS PROJECTS, never stored. "Active — one
@@ -580,10 +632,23 @@ export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
  * which a person sets deliberately: closure is a decision, status is a
  * consequence.
  */
+/**
+ * `partial` is the value that stops the board overstating. APEX's MCP-first
+ * initiative had two failed projects recorded as `cancelled` and one that
+ * shipped; because cancelled projects drop out of the live set, the derivation
+ * read `delivered` for an initiative whose own sentence — every interface
+ * generated from MCP tools — was falsified. `partial` says: everything still
+ * standing was built, and something was abandoned along the way. The counts
+ * beside it say how much.
+ *
+ * `on_hold` can now also be ASSERTED rather than derived, via the `hold`
+ * marker on the goal — see `deriveInitiativeStatus`.
+ */
 export const INITIATIVE_DERIVED_STATUSES = [
   "planned",
   "active",
   "on_hold",
+  "partial",
   "delivered",
   "cancelled",
 ] as const;

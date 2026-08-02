@@ -86,6 +86,23 @@ export const statusBadge: Record<string, string> = {
   on_hold: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
   // Derived initiative status "delivered" (the projects are done).
   delivered: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
+  // Derived initiative status "partial": everything still standing was built,
+  // and something was cancelled to get there. Blue, not green — the reader has
+  // to see at a glance that this is not the same claim as delivered.
+  partial: "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300",
+  // Project "built": the code exists, nothing has run through it. Deliberately
+  // NOT the green that `completed` gets — built-not-exercised looking like
+  // done is the overstatement the whole discipline exists to prevent.
+  built: "bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300",
+  // Project "folded": the work continues under a named link. Neutral, because
+  // a fold is neither a delivery nor a failure.
+  folded: "bg-muted text-muted-foreground",
+  // Hypothesis verdicts. "falsified" is not red: a falsified hypothesis is a
+  // permanent answer and the cheapest thing this platform can buy. The one to
+  // look twice at is `inconclusive` — the round that answered nothing.
+  supported: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
+  falsified: "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300",
+  inconclusive: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
 
   // Initiative closures (goals with level "initiative"). Only "validated" is
   // green: the model treats stopped and expired as honest, useful endings, not

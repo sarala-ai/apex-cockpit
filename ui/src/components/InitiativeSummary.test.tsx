@@ -211,3 +211,181 @@ describe("InitiativeSummary — validation criteria", () => {
     expect(renderToStaticMarkup(<InitiativeSummary goal={goal({ validationCriteria: null })} />)).toBe("");
   });
 });
+
+/** Just enough of a Project for the summary — it reads status, id and name. */
+function project(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "project-1",
+    name: "MCP server layer",
+    status: "completed",
+    ...overrides,
+  } as never;
+}
+
+describe("InitiativeSummary — the hold", () => {
+  it("shows the hold, its reason, and that it overrides the projects", () => {
+    const html = renderToStaticMarkup(
+      <InitiativeSummary
+        goal={goal({
+          hold: {
+            reason: "waiting on a local model worth running",
+            since: "2026-07-02",
+            byUserId: "srinivas",
+            reviewDate: "2026-10-01",
+          },
+        })}
+      />,
+    );
+    expect(html).toContain("Held");
+    expect(html).toContain("overrides");
+    expect(html).toContain("waiting on a local model worth running");
+    expect(html).toContain("2 Jul 2026");
+    expect(html).toContain("srinivas");
+    expect(html).toContain("1 Oct 2026");
+  });
+
+  it("renders nothing when no hold was asserted", () => {
+    expect(renderToStaticMarkup(<InitiativeSummary goal={goal()} />)).toBe("");
+    expect(renderToStaticMarkup(<InitiativeSummary goal={goal({ hold: null })} />)).toBe("");
+  });
+});
+
+describe("InitiativeSummary — hypotheses", () => {
+  it("renders each hypothesis with its verdict, evidence and date", () => {
+    const html = renderToStaticMarkup(
+      <InitiativeSummary
+        goal={goal({
+          hypotheses: [
+            {
+              id: "h1",
+              statement: "An MCP-only interface is enough",
+              verdict: "falsified",
+              evidence: "two of three projects cancelled",
+              testedAt: "2026-05-30",
+            },
+            {
+              id: "h2",
+              statement: "Local models are cheap enough",
+              verdict: "untested",
+            },
+          ],
+        } as never)}
+      />,
+    );
+    expect(html).toContain("Hypotheses (2)");
+    expect(html).toContain("An MCP-only interface is enough");
+    expect(html).toContain("falsified");
+    expect(html).toContain("two of three projects cancelled");
+    expect(html).toContain("30 May 2026");
+    expect(html).toContain("untested");
+  });
+
+  it("keeps the original prose readable, and labels it as the original", () => {
+    // It is not migratable: three of the ten populated fields hold two or three
+    // questions in one string with their verdicts written as prose.
+    const html = renderToStaticMarkup(
+      <InitiativeSummary
+        goal={goal({
+          hypothesis: "MCP-only is enough; and local models are cheap enough",
+          hypotheses: [{ id: "h1", statement: "An MCP-only interface is enough", verdict: "untested" }],
+        } as never)}
+      />,
+    );
+    expect(html).toContain("Hypothesis (as originally written)");
+    expect(html).toContain("MCP-only is enough; and local models are cheap enough");
+  });
+
+  it("still says plain Hypothesis when there is only the prose", () => {
+    const html = renderToStaticMarkup(
+      <InitiativeSummary goal={goal({ hypothesis: "Households act on alerts" })} />,
+    );
+    expect(html).toContain("Hypothesis</h3>");
+    expect(html).not.toContain("as originally written");
+  });
+
+  it("renders nothing for an initiative with an empty hypothesis list", () => {
+    expect(renderToStaticMarkup(<InitiativeSummary goal={goal({ hypotheses: [] } as never)} />)).toBe("");
+  });
+});
+
+describe("InitiativeSummary — the project reading", () => {
+  it("shows the cancelled count, so delivered cannot imply completeness it lacks", () => {
+    // The MCP-first case: one project shipped, two failed. The board must not
+    // be able to report completeness for a sentence that was falsified.
+    const html = renderToStaticMarkup(
+      <InitiativeSummary
+        goal={goal({
+          derivedStatus: "partial",
+          projectCounts: {
+            total: 3,
+            live: 1,
+            completed: 1,
+            built: 0,
+            inProgress: 0,
+            onHold: 0,
+            notStarted: 0,
+            cancelled: 2,
+            folded: 0,
+          },
+        } as never)}
+      />,
+    );
+    expect(html).toContain("Projects (3)");
+    expect(html).toContain("2 cancelled");
+    expect(html).toContain("1 completed");
+  });
+
+  it("shows built-not-exercised distinctly from completed", () => {
+    const html = renderToStaticMarkup(
+      <InitiativeSummary
+        goal={goal()}
+        projects={[
+          project({ id: "p1", status: "built", name: "apex-eval" }),
+          project({ id: "p2", status: "built", name: "Observe pillar" }),
+          project({ id: "p3", status: "completed", name: "Provenance" }),
+        ]}
+      />,
+    );
+    expect(html).toContain("2 built, not exercised");
+    expect(html).toContain("1 completed");
+  });
+
+  it("names where each folded project went, and links it", () => {
+    const html = renderToStaticMarkup(
+      <InitiativeSummary
+        goal={goal()}
+        projects={[project({ id: "p1", status: "folded", name: "Skill packs as the moat" })]}
+        foldDestinations={{
+          p1: { label: "Agents and infrastructure are one surface", href: "/goals/goal-9" },
+        }}
+      />,
+    );
+    expect(html).toContain("1 folded");
+    expect(html).toContain("Skill packs as the moat folded into");
+    expect(html).toContain("Agents and infrastructure are one surface");
+    expect(html).toContain("/goals/goal-9");
+  });
+
+  it("says so in words when a fold has no destination recorded", () => {
+    const html = renderToStaticMarkup(
+      <InitiativeSummary
+        goal={goal()}
+        projects={[project({ id: "p1", status: "folded", name: "Skill packs as the moat" })]}
+      />,
+    );
+    expect(html).toContain("an unrecorded destination");
+  });
+
+  it("renders no project block when there is nothing the status does not already say", () => {
+    // Five healthy projects need no commentary; a count repeated under a
+    // heading is the empty chrome this component refuses to draw.
+    expect(
+      renderToStaticMarkup(
+        <InitiativeSummary
+          goal={goal()}
+          projects={[project({ status: "completed" }), project({ id: "p2", status: "in_progress" })]}
+        />,
+      ),
+    ).toBe("");
+  });
+});

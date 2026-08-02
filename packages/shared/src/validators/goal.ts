@@ -5,6 +5,7 @@ import {
   GOAL_CLOSURES,
   GOAL_CRITERION_STATUSES,
   GOAL_CRITERION_VERDICTS,
+  GOAL_HYPOTHESIS_VERDICTS,
   GOAL_LEVELS,
   GOAL_PROVENANCE_KINDS,
   GOAL_STATUSES,
@@ -129,6 +130,94 @@ export const goalValidationCriterionSchema = z
 export type GoalValidationCriterion = z.infer<typeof goalValidationCriterionSchema>;
 
 /**
+ * One hypothesis the initiative is testing.
+ *
+ * A list, for the same reason `assumptions` and `validationCriteria` are lists
+ * and by the same storage choice (jsonb array on the goal, shape enforced by
+ * this schema on every write): APEX carried fourteen hypotheses across ten
+ * free-text fields, three of which held two or three questions in a single
+ * string. One string cannot be answered — a verdict written mid-paragraph is
+ * not queryable, and "a falsified hypothesis is a permanent answer"
+ * (product-engineering.md) only holds if something can read it back.
+ *
+ * A VERDICT MAY NOT EXCEED ITS EVIDENCE. Any answer other than `untested`
+ * requires `evidence` and `testedAt` — the same rule the closure report lives
+ * by, applied at the point where the answer is recorded rather than at the
+ * point where it is summarised. Symmetrically, an `untested` hypothesis may
+ * not carry a test date: that would be a retro-fit, the failure the criterion
+ * schema's `never_registered` branch already guards against.
+ */
+export const goalHypothesisSchema = z
+  .object({
+    id: z.string().min(1),
+    /** The question, stated so that an answer could falsify it. */
+    statement: z.string().min(1),
+    verdict: z.enum(GOAL_HYPOTHESIS_VERDICTS),
+    /** What answered it. Free text — a person reads it and decides. */
+    evidence: z.string().optional().nullable(),
+    /** When it was answered. */
+    testedAt: isoDateString.optional().nullable(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.verdict === "untested") {
+      if (value.testedAt) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["testedAt"],
+          message: "an untested hypothesis has no test date — record the verdict first",
+        });
+      }
+      return;
+    }
+    if (!value.evidence) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["evidence"],
+        message: `a verdict of "${value.verdict}" needs the evidence that produced it`,
+      });
+    }
+    if (!value.testedAt) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["testedAt"],
+        message: `a verdict of "${value.verdict}" needs a testedAt date`,
+      });
+    }
+  });
+
+export type GoalHypothesis = z.infer<typeof goalHypothesisSchema>;
+
+/**
+ * A deliberate pause on an initiative: valid, decided, not now.
+ *
+ * ONE NULLABLE OBJECT, NOT A PAIR OF COLUMNS. The presence of this marker *is*
+ * the assertion, so "held with no reason" and "a reason with no hold" are both
+ * unrepresentable — where `hold_reason` and `held_at` as separate columns would
+ * make each of them a routine data state. Every closure keeps its evidence
+ * (product-engineering.md); so does every hold, and this is the cheapest way to
+ * make that structural rather than aspirational.
+ *
+ * It overrides the derived status. That is the point: a hold is a decision, the
+ * derivation is a consequence, and the existing `status` / `closure` split
+ * already draws that line for how an initiative *ended*. This draws it for how
+ * an initiative *paused*.
+ */
+export const goalHoldSchema = z.object({
+  /** Why. Required — a hold without a reason is indistinguishable from neglect. */
+  reason: z.string().min(1),
+  /** When the decision was taken. */
+  since: isoDateString,
+  /** Who decided: a person… */
+  byUserId: z.string().min(1).optional().nullable(),
+  /** …or an agent. */
+  byAgentId: z.string().uuid().optional().nullable(),
+  /** When to look at this again, if a date was named. */
+  reviewDate: isoDateString.optional().nullable(),
+});
+
+export type GoalHold = z.infer<typeof goalHoldSchema>;
+
+/**
  * How this initiative's record came to exist. Structured rather than a
  * sentence in the description, because an agent citing the row six months
  * later has to be able to weight it — inferred history is a question about the
@@ -158,6 +247,8 @@ export const GOAL_INITIATIVE_FIELDS = [
   "budget",
   "stopCondition",
   "hypothesis",
+  "hypotheses",
+  "hold",
   "validationCriteria",
   "provenance",
 ] as const;
@@ -176,7 +267,21 @@ export const goalBaseSchema = z.object({
   assumptions: z.array(goalAssumptionSchema).optional().nullable(),
   budget: z.string().optional().nullable(),
   stopCondition: z.string().optional().nullable(),
+  /**
+   * The original single-field hypothesis, KEPT AND STILL READABLE. Its content
+   * is not machine-migratable into `hypotheses` below: three of the ten
+   * populated fields hold two or three questions in one string, and their
+   * verdicts are written as prose. Splitting them in SQL would invent sentence
+   * boundaries, and defaulting every migrated row to `untested` would erase
+   * answers that were actually recorded — both are fabrications, which the
+   * nothing-backfilled rule on every other initiative column exists to
+   * prevent. So it stays, unmodified, until a person restates each one.
+   */
   hypothesis: z.string().optional().nullable(),
+  /** Initiative-only. The structured, answerable form — see `goalHypothesisSchema`. */
+  hypotheses: z.array(goalHypothesisSchema).optional().nullable(),
+  /** Initiative-only. A decided pause; overrides the derived status. */
+  hold: goalHoldSchema.optional().nullable(),
   // Named `validationCriteria`, not `criteria`: tasks and tickets in this
   // codebase already carry *acceptance* criteria, and a bare `criteria` beside
   // them would read as the same thing. These are the pre-registered bars an

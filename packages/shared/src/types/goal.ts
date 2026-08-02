@@ -4,8 +4,11 @@ import type {
   GoalStatus,
   InitiativeDerivedStatus,
 } from "../constants.js";
+import type { InitiativeProjectCounts } from "../initiative-status.js";
 import type {
   GoalAssumption,
+  GoalHold,
+  GoalHypothesis,
   GoalProvenance,
   GoalValidationCriterion,
 } from "../validators/goal.js";
@@ -33,6 +36,13 @@ export interface Goal {
    * decision. Absent when the caller did not compute it.
    */
   derivedStatus?: InitiativeDerivedStatus | null;
+  /**
+   * Initiative-only, computed alongside `derivedStatus`. The status alone can
+   * imply completeness it does not have — `delivered` says nothing about the
+   * projects cancelled to get there, or the ones built and never exercised —
+   * so the counts travel with it.
+   */
+  projectCounts?: InitiativeProjectCounts | null;
   /** Initiative-only. Null on every other level, and on an open initiative. */
   closure?: GoalClosure | null;
   /** The evidence that goes with the closure — every closure keeps its reason. */
@@ -43,8 +53,24 @@ export interface Goal {
   budget?: string | null;
   /** Initiative-only. What would make us stop, written before work begins. */
   stopCondition?: string | null;
-  /** Initiative-only, and genuinely optional: most initiatives carry no question. */
+  /**
+   * Initiative-only, and genuinely optional: most initiatives carry no
+   * question. The original single-field form, kept readable and deliberately
+   * not migrated — see `hypotheses`.
+   */
   hypothesis?: string | null;
+  /**
+   * Initiative-only. The structured form: each question separately answerable,
+   * with a verdict a query can find. Null (or empty) when nothing was written
+   * down.
+   */
+  hypotheses?: GoalHypothesis[] | null;
+  /**
+   * Initiative-only. A decided pause with its reason. Present means held, and
+   * a held initiative reads `on_hold` whatever its projects say: the
+   * derivation is a consequence, this is a decision.
+   */
+  hold?: GoalHold | null;
   /**
    * Initiative-only. The pre-registered bars this initiative is judged
    * against, each with a named reader and a date. Null (or empty) when nothing
