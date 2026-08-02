@@ -351,18 +351,25 @@ const ISSUE_DELETE_BLOCKER_LABELS: Record<string, string> = {
   company_skill_test_runs: "skill test runs",
 };
 
-function readPgErrorField(error: unknown, ...keys: string[]): string | null {
-  const record = error as Record<string, unknown> | null | undefined;
-  if (!record) return null;
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === "string" && value.length > 0) return value;
+// Drizzle wraps driver failures in a query error, so the postgres.js error with
+// the SQLSTATE and table name sits on the cause chain rather than the top level.
+function findPgError(error: unknown): Record<string, unknown> | null {
+  let current: unknown = error;
+  for (let depth = 0; current && depth < 8; depth += 1) {
+    const record = current as Record<string, unknown>;
+    if (typeof record.code === "string") return record;
+    current = record.cause;
   }
   return null;
 }
 
-function isPgForeignKeyViolation(error: unknown): boolean {
-  return (error as { code?: unknown } | null)?.code === "23503";
+function readPgErrorField(pgError: Record<string, unknown> | null, ...keys: string[]): string | null {
+  if (!pgError) return null;
+  for (const key of keys) {
+    const value = pgError[key];
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return null;
 }
 
 /**
@@ -371,9 +378,10 @@ function isPgForeignKeyViolation(error: unknown): boolean {
  * the issue instead of a bare 500.
  */
 function classifyIssueDeleteError(error: unknown, issueId: string): never {
-  if (!isPgForeignKeyViolation(error)) throw error;
-  const table = readPgErrorField(error, "table_name", "table");
-  const constraintName = readPgErrorField(error, "constraint_name", "constraint");
+  const pgError = findPgError(error);
+  if (pgError?.code !== "23503") throw error;
+  const table = readPgErrorField(pgError, "table_name", "table");
+  const constraintName = readPgErrorField(pgError, "constraint_name", "constraint");
   const blockedBy = table ?? null;
   const label = (blockedBy && ISSUE_DELETE_BLOCKER_LABELS[blockedBy]) ?? "related records";
   throw conflict(
