@@ -32,7 +32,7 @@ import {
 import { flowCoordinator } from "../apex/flow/coordinator.js";
 import { noopFlowProjection } from "../apex/flow/github-projection.js";
 import type { FlowDefinition, LoadedFlowDefinition } from "../apex/flow/definition.js";
-import type { FlowNodeRunner } from "../apex/flow/node-executors.js";
+import type { FlowNodeRunner } from "../apex/steps/runner.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe.sequential : describe.skip;

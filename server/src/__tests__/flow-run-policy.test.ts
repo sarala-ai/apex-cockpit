@@ -5,7 +5,7 @@ import {
   clearGovernedAdapterConfigOverride,
   derivePermissionPolicy,
   READ_ONLY_BROAD_ALLOWED_TOOLS,
-} from "../apex/flow/run-policy.js";
+} from "../apex/steps/run-policy.js";
 
 describe("derivePermissionPolicy", () => {
   it("defaults to the bounded profile when no permissions are declared", () => {

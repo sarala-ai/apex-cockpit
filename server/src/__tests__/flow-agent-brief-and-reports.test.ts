@@ -12,7 +12,7 @@ import {
   AGENT_STEP_REPORT_INSTRUCTION,
   buildAgentInstructionComment,
   renderAgentPrompt,
-} from "../apex/flow/agent-step.js";
+} from "../apex/steps/agent-step.js";
 import { buildPaperclipTaskMarkdown } from "../services/heartbeat.js";
 
 const HUMAN_BODY = "Record the first governed design-change loop on the Flows & gates board.";

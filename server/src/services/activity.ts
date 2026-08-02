@@ -390,7 +390,7 @@ export function activityService(db: Db) {
           invocationSource: heartbeatRuns.invocationSource,
           responsibleUserId: heartbeatRuns.responsibleUserId,
           // The authority the run actually held. Written by the flow
-          // coordinator (server/src/apex/flow/run-policy.ts) and null for
+          // coordinator (server/src/apex/steps/run-policy.ts) and null for
           // every run it did not commission — the ticket's run ledger reads
           // it so "by <agent>" also says under what.
           permissionMode: heartbeatRuns.permissionMode,

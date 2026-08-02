@@ -26,7 +26,7 @@
  * Interruption is by exception, not by schedule: gates and failures surface
  * (approval / issue comment + activity); clean advancement is silent.
  *
- * Honest v1 boundaries (see also node-executors.ts and agent-step.ts):
+ * Honest v1 boundaries (see also ../steps/runner.ts and ../steps/agent-step.ts):
  * - agent nodes drive a REAL bounded agent run through the fork's native
  *   execution machinery (heartbeat.ts) — never a parallel executor. The
  *   coordinator posts the node's rendered prompt + acceptance as a system
@@ -68,24 +68,29 @@ import {
   type FlowNode,
   type LoadedFlowDefinition,
 } from "./definition.js";
-import { CliFlowNodeRunner, type FlowNodeRunner } from "./node-executors.js";
+import { CliFlowNodeRunner, type FlowNodeRunner } from "../steps/runner.js";
+import {
+  parseOnFail,
+  stepExecutor,
+  type AgentStepPort,
+  type GateStepPort,
+  type StepSpec,
+} from "../steps/step-executor.js";
 import {
   FLOW_AGENT_CONTEXT_KEY,
   FLOW_AGENT_WAKE_REASON,
   FLOW_TERMINAL_RUN_STATUSES,
-  buildAgentInstructionComment,
   evaluateAcceptanceV1,
   renderAgentPrompt,
-  renderWorkflowParams,
   type AgentPromptContext,
   type FlowTerminalRunStatus,
   type ChangeRequestRound,
-} from "./agent-step.js";
+} from "../steps/agent-step.js";
 import {
   applyGovernedAdapterConfigOverride,
   clearGovernedAdapterConfigOverride,
   derivePermissionPolicy,
-} from "./run-policy.js";
+} from "../steps/run-policy.js";
 import { githubFlowProjection, type FlowProjectionHooks } from "./github-projection.js";
 
 export const FLOW_STATUSES = [
@@ -322,6 +327,21 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
   const issuesSvc = issueService(db);
   const approvalsSvc = approvalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
+
+  /** The ONE step executor (../steps/step-executor.ts). The flow coordinator
+   *  is now a host for it: it supplies the effects and owns the pointer, the
+   *  executor owns what a step of each kind actually does. */
+  const executor = (
+    hostPorts: { agent?: AgentStepPort; gate?: GateStepPort; render?: (template: string) => string } = {},
+  ) =>
+    stepExecutor({
+      runner: deps.nodeRunner,
+      evaluateAcceptance: (acceptance) => deps.evaluateAcceptance(acceptance),
+      // A state conflict belongs to the single writer, not to the step: it
+      // must escape the executor's classification and abort the loop.
+      isFatal: (err) => err instanceof FlowStateConflictError,
+      ...hostPorts,
+    });
 
   const FLOW_COLUMNS = {
     id: issues.id,
@@ -619,8 +639,10 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
     );
     // skip/jump must land back in `running` — a failure can arrive while the
     // flow is parked at `waiting_agent` (agent-run completion), and only
-    // `running` flows advance.
-    if (node.on_fail === "skip") {
+    // `running` flows advance. Routing is parsed by the step executor so both
+    // hosts of the substrate read `on_fail` identically.
+    const route = parseOnFail(node.on_fail);
+    if (route.kind === "skip") {
       const advanced = await transition(issue, { flowStatus: "running" }, "flow.node_skipped", {
         nodeId: node.id,
         errorType: failure.errorType,
@@ -628,8 +650,8 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
       });
       return advanceOrComplete(advanced, flow, index);
     }
-    if (node.on_fail.startsWith("jump:")) {
-      const target = node.on_fail.slice("jump:".length);
+    if (route.kind === "jump") {
+      const target = route.target;
       if (nodeIndex(flow, target) < 0) {
         // Core validates jump targets, but the definition may have changed
         // since the flow started — classify, don't crash.
@@ -661,6 +683,32 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
     return null;
   }
 
+  /**
+   * W and C — the two deterministic kinds, run through the step executor and
+   * applied to the flow's state machine. ZERO TOKENS: the only thing reached
+   * from here is `deps.nodeRunner`, which shells the apex CLI. No agent is
+   * resolved, no run is commissioned, no model is consulted.
+   */
+  async function runDeterministicStep(
+    issue: FlowIssue,
+    flow: FlowDefinition,
+    index: number,
+    spec: Extract<StepSpec, { kind: "workflow" | "check" }>,
+  ): Promise<FlowIssue | null> {
+    const outcome = await executor({
+      // W-node params interpolate against the ticket before the step runs.
+      render: (template) => renderAgentPrompt(template, promptContext(issue, flow, spec.key, "")),
+    }).execute(spec);
+    if (outcome.status === "failed") {
+      return applyOnFail(issue, flow, index, outcome.failure);
+    }
+    const done = await transition(issue, {}, "flow.node_succeeded", {
+      nodeId: spec.key,
+      ...outcome.detail,
+    });
+    return advanceOrComplete(done, flow, index);
+  }
+
   async function executeGateNode(
     issue: FlowIssue,
     flow: FlowDefinition,
@@ -674,46 +722,66 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
         message: `gate node '${node.id}' carries no gate config`,
       });
     }
-    if (gate.mode === "notify") {
-      await surface(
-        issue,
-        `Flow **${flow.name}** passed notify gate \`${node.id}\`` +
-          (gate.prompt ? ` — ${gate.prompt}` : "") +
-          ` (auto-proceeding; reversible per work-loop doctrine).`,
-      );
-      const notified = await transition(issue, {}, "flow.gate_notified", {
-        nodeId: node.id,
-        prompt: gate.prompt ?? null,
-      });
-      return advanceOrComplete(notified, flow, index);
-    }
-    // approve mode: create the approval the founder decides, then park.
-    const approval = await approvalsSvc.create(issue.companyId, {
-      type: FLOW_GATE_APPROVAL_TYPE,
-      status: "pending",
-      payload: {
-        issueId: issue.id,
-        issueIdentifier: issue.identifier,
-        issueTitle: issue.title,
-        flowName: flow.name,
-        nodeId: node.id,
-        nodeIndex: index,
-        totalNodes: flow.nodes.length,
-        prompt: gate.prompt ?? null,
-        ticketType: flow.ticket_type,
+    // The gate's EXECUTION lives in the step executor; this wrapper supplies
+    // the flow's effects (surface + approval) and applies the outcome to the
+    // flow's own state machine.
+    const state = { issue };
+    const port: GateStepPort = {
+      notify: async ({ stepKey, prompt }) => {
+        await surface(
+          state.issue,
+          `Flow **${flow.name}** passed notify gate \`${stepKey}\`` +
+            (prompt ? ` — ${prompt}` : "") +
+            ` (auto-proceeding; reversible per work-loop doctrine).`,
+        );
+        state.issue = await transition(state.issue, {}, "flow.gate_notified", {
+          nodeId: stepKey,
+          prompt,
+        });
       },
+      openApproval: async ({ stepKey, prompt }) => {
+        const approval = await approvalsSvc.create(state.issue.companyId, {
+          type: FLOW_GATE_APPROVAL_TYPE,
+          status: "pending",
+          payload: {
+            issueId: state.issue.id,
+            issueIdentifier: state.issue.identifier,
+            issueTitle: state.issue.title,
+            flowName: flow.name,
+            nodeId: stepKey,
+            nodeIndex: index,
+            totalNodes: flow.nodes.length,
+            prompt,
+            ticketType: flow.ticket_type,
+          },
+        });
+        await issueApprovalsSvc.link(state.issue.id, approval.id);
+        return { approvalId: approval.id };
+      },
+    };
+    const outcome = await executor({ gate: port }).execute({
+      kind: "gate",
+      key: node.id,
+      onFail: node.on_fail,
+      config: { mode: gate.mode, prompt: gate.prompt ?? null, requires: gate.requires ?? null },
     });
-    await issueApprovalsSvc.link(issue.id, approval.id);
-    await transition(issue, { flowStatus: "waiting_gate" }, "flow.gate_opened", {
+    if (outcome.status === "failed") {
+      return applyOnFail(state.issue, flow, index, outcome.failure);
+    }
+    if (outcome.status === "succeeded") {
+      return advanceOrComplete(state.issue, flow, index);
+    }
+    const approvalId = outcome.detail.approvalId as string;
+    await transition(state.issue, { flowStatus: "waiting_gate" }, "flow.gate_opened", {
       nodeId: node.id,
-      approvalId: approval.id,
+      approvalId,
       prompt: gate.prompt ?? null,
     });
     void deps.projection.gateOpened({
-      issueId: issue.id,
+      issueId: state.issue.id,
       nodeId: node.id,
       prompt: gate.prompt ?? null,
-      approvalId: approval.id,
+      approvalId,
     });
     return null;
   }
@@ -913,110 +981,105 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
         message: `agent node '${node.id}' carries no agent config`,
       });
     }
-    const executor = await resolveExecutorAgent(issue);
-    if (!executor.ok) {
-      return applyOnFail(issue, flow, index, executor.failure);
-    }
-    const acceptance = renderedAcceptance(issue, flow, node.id, agent.acceptance);
-    const renderedPrompt = renderAgentPrompt(
-      agent.prompt_template,
-      promptContext(issue, flow, node.id, acceptance),
-    );
-    // Rework feedback rides the SAME channel the instruction already uses (the
-    // wake comment) rather than a second one: whatever the founder wrote at the
-    // gate is part of this step's brief now, not an out-of-band note the agent
-    // may or may not read. Empty on a first pass — the section only appears
-    // when this node was actually sent back.
-    const changeRequestRounds = await readChangeRequestRounds(issue.id, flow.name, node.id);
-    // Park first (single-writer CAS out of `running`): waiting_agent now means
-    // "run commissioned (or commissioning), awaiting completion".
-    const waiting = await transition(
-      issue,
-      { flowStatus: "waiting_agent", flowRunId: null },
-      "flow.agent_step_pending",
-      {
-        nodeId: node.id,
-        agentId: executor.agentId,
-        agentAutoAssigned: executor.assigned,
-        acceptance,
-        budget: agent.budget ?? null,
-        changeRequestRound: changeRequestRounds.length > 0 ? Math.max(...changeRequestRounds.map((r) => r.round)) : null,
+    // The agent step's EXECUTION lives in the step executor; this wrapper
+    // supplies the flow's effects (park, instruction comment, commission,
+    // linkage) and applies the outcome to the flow's own state machine. The
+    // ports are called in exactly the order the coordinator used to call its
+    // own equivalents — that ordering IS the behaviour.
+    const state = { issue };
+    const port: AgentStepPort = {
+      definitionName: () => flow.name,
+      resolveExecutorAgent: () => resolveExecutorAgent(state.issue),
+      renderAcceptance: (template) => renderedAcceptance(state.issue, flow, node.id, template),
+      renderPrompt: (template, acceptance) =>
+        renderAgentPrompt(template, promptContext(state.issue, flow, node.id, acceptance)),
+      // Rework feedback rides the SAME channel the instruction already uses
+      // (the wake comment) rather than a second one: whatever the founder
+      // wrote at the gate is part of this step's brief now, not an
+      // out-of-band note the agent may or may not read.
+      readChangeRequestRounds: (stepKey) => readChangeRequestRounds(state.issue.id, flow.name, stepKey),
+      // Park first (single-writer CAS out of `running`): waiting_agent means
+      // "run commissioned (or commissioning), awaiting completion".
+      park: async (input) => {
+        state.issue = await transition(
+          state.issue,
+          { flowStatus: "waiting_agent", flowRunId: null },
+          "flow.agent_step_pending",
+          {
+            nodeId: input.stepKey,
+            agentId: input.agentId,
+            agentAutoAssigned: input.agentAutoAssigned,
+            acceptance: input.acceptance,
+            budget: input.budget,
+            changeRequestRound: input.changeRequestRound,
+          },
+        );
       },
-    );
-    // The instruction comment is the run's wake comment — the channel the
-    // dispatch path renders into the agent's prompt. Its failure is fatal to
-    // the step (a run without its instruction is not this node's run).
-    let instructionCommentId: string;
-    try {
-      const comment = await issuesSvc.addComment(
-        waiting.id,
-        buildAgentInstructionComment({
-          flowName: flow.name,
-          nodeId: node.id,
-          renderedPrompt,
-          acceptance,
-          budget: agent.budget ?? null,
-          changeRequestRounds,
+      postInstruction: async (body) => {
+        const comment = await issuesSvc.addComment(state.issue.id, body, {});
+        return (comment as { id: string }).id;
+      },
+      commission: (input) =>
+        deps.commissionAgentRun(state.issue, node, {
+          agentId: input.agentId,
+          instructionCommentId: input.instructionCommentId,
+          renderedPrompt: input.renderedPrompt,
         }),
-        {},
-      );
-      instructionCommentId = (comment as { id: string }).id;
-    } catch (err) {
-      return applyOnFail(waiting, flow, index, {
-        errorType: "agent_instruction_comment_failed",
-        message: `could not post the agent step's instruction comment: ${err instanceof Error ? err.message : String(err)}`,
-      });
-    }
-    try {
-      const commissioned = await deps.commissionAgentRun(waiting, node, {
-        agentId: executor.agentId,
-        instructionCommentId,
-        renderedPrompt,
-      });
-      if (!commissioned) {
-        // Deferred/skipped wakeup. Deferral is the common real case: the issue
-        // already has an active run holding the execution lock, and heartbeat
-        // will PROMOTE the deferred wake (carrying our flow context) once it
-        // finishes — the completion hook accepts a null flowRunId, and the
-        // sweep re-links by context markers. A hard skip (heartbeat disabled,
-        // company inactive) leaves nothing to promote — the sweep classifies
-        // that as agent_run_not_commissioned after the staleness window.
-        // Either way: surfaced + classified, never silent, never a premature
-        // pause that strands the promoted run.
-        const deferred = await transition(waiting, {}, "flow.agent_run_deferred", {
-          nodeId: node.id,
-          agentId: executor.agentId,
-          instructionCommentId,
+      recordCommissioned: async (input) => {
+        state.issue = await transition(
+          state.issue,
+          { flowRunId: input.runId },
+          "flow.agent_run_commissioned",
+          {
+            nodeId: input.stepKey,
+            runId: input.runId,
+            agentId: input.agentId,
+            instructionCommentId: input.instructionCommentId,
+          },
+        );
+        void deps.projection.agentRunCommissioned({
+          issueId: state.issue.id,
+          nodeId: input.stepKey,
+          runId: input.runId,
+        });
+      },
+      // Deferred/skipped wakeup. Deferral is the common real case: the issue
+      // already has an active run holding the execution lock, and heartbeat
+      // will PROMOTE the deferred wake (carrying our flow context) once it
+      // finishes — the completion hook accepts a null flowRunId, and the
+      // sweep re-links by context markers. A hard skip (heartbeat disabled,
+      // company inactive) leaves nothing to promote — the sweep classifies
+      // that as agent_run_not_commissioned after the staleness window.
+      // Either way: surfaced + classified, never silent, never a premature
+      // pause that strands the promoted run.
+      recordDeferred: async (input) => {
+        state.issue = await transition(state.issue, {}, "flow.agent_run_deferred", {
+          nodeId: input.stepKey,
+          agentId: input.agentId,
+          instructionCommentId: input.instructionCommentId,
         });
         await surface(
-          deferred,
-          `Flow **${flow.name}** agent step \`${node.id}\`: the wakeup was deferred behind the agent's ` +
+          state.issue,
+          `Flow **${flow.name}** agent step \`${input.stepKey}\`: the wakeup was deferred behind the agent's ` +
             `current run (or declined). The step's instruction is queued; the flow stays at ` +
             `\`waiting_agent\` and advances when the promoted run completes (the sweep classifies a ` +
             `pause if no run ever materializes).`,
         );
-        return null;
-      }
-      await transition(waiting, { flowRunId: commissioned.runId }, "flow.agent_run_commissioned", {
-        nodeId: node.id,
-        runId: commissioned.runId,
-        agentId: executor.agentId,
-        instructionCommentId,
-      });
-      void deps.projection.agentRunCommissioned({
-        issueId: waiting.id,
-        nodeId: node.id,
-        runId: commissioned.runId,
-      });
-    } catch (err) {
-      if (err instanceof FlowStateConflictError) throw err;
-      return applyOnFail(waiting, flow, index, {
-        errorType:
-          err instanceof Error && "errorType" in err && typeof (err as { errorType?: unknown }).errorType === "string"
-            ? (err as { errorType: string }).errorType
-            : "agent_run_commission_failed",
-        message: `commissioning the bounded agent run failed: ${err instanceof Error ? err.message : String(err)}`,
-      });
+      },
+    };
+    const outcome = await executor({ agent: port }).execute({
+      kind: "agent",
+      key: node.id,
+      onFail: node.on_fail,
+      config: {
+        prompt_template: agent.prompt_template,
+        acceptance: agent.acceptance,
+        budget: (agent.budget ?? null) as Record<string, unknown> | null,
+      },
+      permissions: agent.permissions,
+    });
+    if (outcome.status === "failed") {
+      return applyOnFail(state.issue, flow, index, outcome.failure);
     }
     return null;
   }
@@ -1053,7 +1116,8 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
       return { advanced: false, reason: `agent_run_${input.runStatus}` };
     }
     const acceptanceString = renderedAcceptance(issue, flow, node.id, node.agent.acceptance);
-    const acceptance = await deps.evaluateAcceptance(acceptanceString);
+    // Server-evaluated, through the one executor — never the agent attesting.
+    const acceptance = await executor().evaluateAcceptance(acceptanceString);
     void deps.projection.acceptanceEvaluated({
       issueId: issue.id,
       nodeId: node.id,
@@ -1210,24 +1274,14 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
               break;
             }
             // W-node params are templates too: `head: design/{{identifier}}`
-            // resolves against the ticket before the workflow runs.
-            const result = await deps.nodeRunner.runWorkflow({
-              workflow: node.workflow.workflow,
-              params: renderWorkflowParams(
-                node.workflow.params ?? {},
-                promptContext(issue, flow, node.id, ""),
-              ),
+            // resolves against the ticket before the workflow runs. ZERO
+            // TOKENS — see step-executor.ts's keystone note.
+            issue = await runDeterministicStep(issue, flow, index, {
+              kind: "workflow",
+              key: node.id,
+              onFail: node.on_fail,
+              config: { workflow: node.workflow.workflow, params: node.workflow.params ?? {} },
             });
-            issue = result.ok
-              ? await (async () => {
-                  const done = await transition(issue as FlowIssue, {}, "flow.node_succeeded", {
-                    nodeId: node.id,
-                    kind: node.kind,
-                    ...result.detail,
-                  });
-                  return advanceOrComplete(done, flow, index);
-                })()
-              : await applyOnFail(issue, flow, index, result);
             break;
           }
           case "check": {
@@ -1238,23 +1292,17 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
               });
               break;
             }
-            const result = await deps.nodeRunner.runCheck({
-              tool: node.check.tool,
-              args: node.check.args ?? [],
-              pass_criteria: node.check.pass_criteria,
+            // ZERO TOKENS — see step-executor.ts's keystone note.
+            issue = await runDeterministicStep(issue, flow, index, {
+              kind: "check",
+              key: node.id,
+              onFail: node.on_fail,
+              config: {
+                tool: node.check.tool,
+                args: node.check.args ?? [],
+                pass_criteria: node.check.pass_criteria,
+              },
             });
-            issue = result.ok
-              ? await (async () => {
-                  const done = await transition(issue as FlowIssue, {}, "flow.node_succeeded", {
-                    nodeId: node.id,
-                    kind: node.kind,
-                    passCriteria: node.check?.pass_criteria,
-                    passCriteriaEvaluation: "v1: CLI exit/status success only",
-                    ...result.detail,
-                  });
-                  return advanceOrComplete(done, flow, index);
-                })()
-              : await applyOnFail(issue, flow, index, result);
             break;
           }
           case "gate":

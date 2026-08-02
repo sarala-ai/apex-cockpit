@@ -28,7 +28,7 @@ import {
 import { flowCoordinator, FLOW_CHANGES_REQUESTED_ACTION } from "../apex/flow/coordinator.js";
 import { noopFlowProjection, type FlowProjectionHooks } from "../apex/flow/github-projection.js";
 import { findChangeRequestTarget, type FlowDefinition, type LoadedFlowDefinition } from "../apex/flow/definition.js";
-import type { FlowNodeRunner, NodeExecutionResult } from "../apex/flow/node-executors.js";
+import type { FlowNodeRunner, NodeExecutionResult } from "../apex/steps/runner.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe.sequential : describe.skip;
