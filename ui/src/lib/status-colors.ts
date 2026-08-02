@@ -99,6 +99,20 @@ export const statusBadge: Record<string, string> = {
   untested: "bg-muted text-muted-foreground",
   retired: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
 
+  // Validation criterion statuses. "pending" already maps yellow below.
+  // "missed" is amber, not red: a criterion honestly reported as missed is the
+  // method working. The only genuinely bad state here is `never_registered` —
+  // a criterion nobody ever wrote a reader or a date for — so that is the one
+  // that reads as a problem.
+  hit: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
+  missed: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
+  never_registered: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
+
+  // Initiative provenance. Inferred history is a question about the past, not
+  // a fact — it must never look as settled as confirmed history.
+  confirmed: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
+  inferred: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
+
   // Goal statuses
   planned: "bg-muted text-muted-foreground",
   achieved: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",

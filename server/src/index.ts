@@ -62,6 +62,10 @@ import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
 import { startAttributionRefreshScheduler } from "./observe/attribution-refresh.js";
+import {
+  startCriterionReviewSweep,
+  type CriterionMonitorDeps,
+} from "./services/criterion-monitor.js";
 import { startGithubIssueIngestScheduler } from "./apex/pipeline/github-issue-ingest.js";
 import { startCapabilitySyncScheduler } from "./apex/capability-sync-job.js";
 import { resolveLocalActor, actorId } from "./identity/actor.js";
@@ -856,6 +860,11 @@ export async function startServer(): Promise<StartedServer> {
   }
 
   let drainHeartbeatRunsForShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<unknown>) | null = null;
+  // Handed to the criterion-review sweep below so an agent-owned criterion can
+  // be woken on its review date. Stays undefined when the heartbeat scheduler
+  // is off, in which case agent-owned criteria are left unsurfaced (and so
+  // surface on a later pass) rather than being silently dropped.
+  let heartbeatWakeup: CriterionMonitorDeps["wakeup"];
   let heartbeatSchedulerStopped = false;
   let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
   const heartbeatSchedulerInFlight = new Set<Promise<void>>();
@@ -877,6 +886,7 @@ export async function startServer(): Promise<StartedServer> {
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
     drainHeartbeatRunsForShutdown = heartbeat.drainRunningRunsForShutdown;
+    heartbeatWakeup = heartbeat.wakeup;
     const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
     const heartbeatSchedulingSuppression = await heartbeat.resolveSchedulingSuppression();
@@ -1122,6 +1132,15 @@ export async function startServer(): Promise<StartedServer> {
   const { startFlowCoordinatorSweep } = await import("./apex/flow/sweep.js");
   const stopFlowCoordinatorSweep = startFlowCoordinatorSweep(db as any);
 
+  // Criterion-review sweep (docs/architecture/initiative-discipline.md §3) —
+  // finds pre-registered validation criteria whose review date has arrived and
+  // puts them in front of the reader named when they were written. APEX wrote
+  // ~40 such criteria and reported against none; this is the thing that reads
+  // them back. Every APEX_CRITERION_REVIEW_HOURS (default 1h; 0 disables).
+  const stopCriterionReviewSweep = startCriterionReviewSweep(db as any, {
+    deps: { wakeup: heartbeatWakeup },
+  });
+
   // Recurring `apex capabilities sync` (spec: capability sync +
   // PATH-canonical resolution, Session B / T4) — pulls configured
   // capability_sources (workflows/skills) into ~/.apex/company/<alias>/ per
@@ -1222,6 +1241,7 @@ export async function startServer(): Promise<StartedServer> {
       stopAttributionRefreshScheduler();
       stopGithubIssueIngestScheduler();
       stopFlowCoordinatorSweep();
+      stopCriterionReviewSweep();
       stopCapabilitySyncScheduler();
       await waitForHeartbeatSchedulerIdle();
 

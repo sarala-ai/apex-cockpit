@@ -491,12 +491,18 @@ export {
   createGoalSchema,
   updateGoalSchema,
   goalAssumptionSchema,
+  goalValidationCriterionSchema,
+  goalProvenanceSchema,
+  reportCriterionSchema,
   goalBaseSchema,
   GOAL_INITIATIVE_FIELDS,
   initiativeFieldsRejectedFor,
   type CreateGoal,
   type UpdateGoal,
   type GoalAssumption,
+  type GoalValidationCriterion,
+  type GoalProvenance,
+  type ReportCriterion,
 } from "./goal.js";
 
 export {

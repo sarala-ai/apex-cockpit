@@ -4,7 +4,11 @@ import type {
   GoalStatus,
   InitiativeDerivedStatus,
 } from "../constants.js";
-import type { GoalAssumption } from "../validators/goal.js";
+import type {
+  GoalAssumption,
+  GoalProvenance,
+  GoalValidationCriterion,
+} from "../validators/goal.js";
 
 export interface Goal {
   id: string;
@@ -41,6 +45,16 @@ export interface Goal {
   stopCondition?: string | null;
   /** Initiative-only, and genuinely optional: most initiatives carry no question. */
   hypothesis?: string | null;
+  /**
+   * Initiative-only. The pre-registered bars this initiative is judged
+   * against, each with a named reader and a date. Null (or empty) when nothing
+   * was written down — which is a different statement from a single criterion
+   * with status `never_registered`, and both are honest records of different
+   * facts.
+   */
+  validationCriteria?: GoalValidationCriterion[] | null;
+  /** Initiative-only. How this record came to exist: confirmed, or inferred. */
+  provenance?: GoalProvenance | null;
   createdAt: Date;
   updatedAt: Date;
 }

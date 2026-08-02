@@ -4,6 +4,7 @@ export * from "./design.js";
 export * from "./workflows.js";
 export * from "./capability-sync.js";
 export * from "./initiative-status.js";
+export * from "./goal-criteria.js";
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
   getAgentOrgChainHealth,
@@ -200,6 +201,9 @@ export {
   GOAL_CLOSURES,
   GOAL_ASSUMPTION_TYPES,
   GOAL_ASSUMPTION_STATUSES,
+  GOAL_CRITERION_STATUSES,
+  GOAL_CRITERION_VERDICTS,
+  GOAL_PROVENANCE_KINDS,
   INITIATIVE_DERIVED_STATUSES,
   PROJECT_STATUSES,
   ENVIRONMENT_DRIVERS,
@@ -345,6 +349,9 @@ export {
   type GoalClosure,
   type GoalAssumptionType,
   type GoalAssumptionStatus,
+  type GoalCriterionStatus,
+  type GoalCriterionVerdict,
+  type GoalProvenanceKind,
   type InitiativeDerivedStatus,
   type ProjectStatus,
   type EnvironmentDriver,
@@ -1404,12 +1411,18 @@ export {
   createGoalSchema,
   updateGoalSchema,
   goalAssumptionSchema,
+  goalValidationCriterionSchema,
+  goalProvenanceSchema,
+  reportCriterionSchema,
   goalBaseSchema,
   GOAL_INITIATIVE_FIELDS,
   initiativeFieldsRejectedFor,
   type CreateGoal,
   type UpdateGoal,
   type GoalAssumption,
+  type GoalValidationCriterion,
+  type GoalProvenance,
+  type ReportCriterion,
   createApprovalSchema,
   upsertBudgetPolicySchema,
   resolveBudgetIncidentSchema,

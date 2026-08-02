@@ -1,0 +1,35 @@
+-- APEX pre-registered roughly forty numbered success criteria across its 21
+-- specs — including one genuinely good threshold (a >=80% tool-call ratio) —
+-- and not one was ever reported against. The discipline gap was never writing
+-- criteria; it was that nothing read them back. These two columns are the
+-- record half of the pair that fixes exactly that (the monitor is the other
+-- half). See docs/architecture/initiative-discipline.md §3.
+--
+-- `validation_criteria` supersedes nothing: `stop_condition` (0161) stays as
+-- the prose summary of what would make us stop. Prose cannot carry a reader or
+-- a date and cannot be marked hit or missed, which is precisely why it was
+-- never read back. Each criterion here carries a named owner and a review date,
+-- both REQUIRED by the Zod schema on every write — that rejection is the
+-- discipline — and a status of pending / hit / missed / never_registered.
+-- `never_registered` exists so an imported historical initiative can say, on
+-- the record, that criteria were never written: absence is reported, never
+-- omitted (§4a).
+--
+-- jsonb, matching `assumptions` from 0161 and for the same reasons: the set is
+-- read and written whole, nothing joins to a single criterion, no criterion
+-- outlives its initiative, and the only cross-initiative reader (the review
+-- sweep) must open every list anyway to decide. A child table would buy an
+-- index on review_date and cost a second lifecycle to keep consistent with the
+-- goal it describes. Shape is enforced by Zod on every write instead.
+--
+-- `provenance` is `{ kind: "confirmed" | "inferred", source? }`. Today that
+-- distinction lives in description prose, where an agent citing the row six
+-- months later cannot weight it — and weighting it is the whole point:
+-- confirmed history is prior art it may rely on, inferred history is a
+-- hypothesis about the past it must raise as a question.
+--
+-- ALL NULLABLE, NOTHING BACKFILLED. Writing a default here would declare that
+-- something was registered when nobody registered it — the fabrication the
+-- onboarding doctrine exists to prevent.
+ALTER TABLE "goals" ADD COLUMN IF NOT EXISTS "validation_criteria" jsonb;
+ALTER TABLE "goals" ADD COLUMN IF NOT EXISTS "provenance" jsonb;

@@ -4,10 +4,12 @@ import {
   createGoalSchema,
   updateGoalSchema,
   initiativeFieldsRejectedFor,
+  reportCriterionSchema,
+  type GoalValidationCriterion,
 } from "@paperclipai/shared";
 import { trackGoalCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
-import { goalService, logActivity } from "../services/index.js";
+import { criterionMonitor, goalService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { getTelemetryClient } from "../telemetry.js";
 
@@ -112,6 +114,99 @@ export function goalRoutes(db: Db) {
     const [decorated] = await svc.withDerivedStatus([goal]);
     res.json(decorated);
   });
+
+  /**
+   * Report against a pre-registered criterion. This is the loop closing — the
+   * one thing that never happened across ~40 criteria in 21 specs.
+   *
+   * It records a verdict, not an evaluation: `measure` and `threshold` are
+   * free text, so the reader looks and decides. `missed` is a first-class,
+   * unremarkable outcome; a monitor that only ever accepted good news would be
+   * the same failure in a new costume.
+   */
+  router.post(
+    "/goals/:id/criteria/:criterionId/report",
+    validate(reportCriterionSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const criterionId = req.params.criterionId as string;
+      const existing = await svc.getById(id);
+      if (!existing) {
+        res.status(404).json({ error: "Goal not found" });
+        return;
+      }
+      assertCompanyAccess(req, existing.companyId);
+
+      if (existing.level !== "initiative") {
+        res.status(400).json({
+          error: 'validation criteria are only valid on a goal with level "initiative"',
+        });
+        return;
+      }
+
+      const criteria = (existing.validationCriteria ?? []) as GoalValidationCriterion[];
+      const criterion = criteria.find((candidate) => candidate.id === criterionId);
+      if (!criterion) {
+        res.status(404).json({ error: "Criterion not found" });
+        return;
+      }
+      if (criterion.status === "never_registered") {
+        // There is nothing to report against. Allowing a verdict here would
+        // turn an honest "nobody wrote one" into a record that one existed.
+        res.status(400).json({
+          error:
+            'a criterion with status "never_registered" cannot be reported against — nothing was registered to measure',
+        });
+        return;
+      }
+
+      const reviewedAt = new Date().toISOString();
+      const reported: GoalValidationCriterion = {
+        ...criterion,
+        status: req.body.status,
+        reviewNote: req.body.reviewNote ?? null,
+        reviewedAt,
+      };
+      const goal = await svc.update(id, {
+        validationCriteria: criteria.map((candidate) =>
+          candidate.id === criterionId ? reported : candidate,
+        ),
+      });
+      if (!goal) {
+        res.status(404).json({ error: "Goal not found" });
+        return;
+      }
+
+      const actor = getActorInfo(req);
+      await criterionMonitor(db).closeReviewApprovals(
+        id,
+        criterionId,
+        actor.actorId,
+        `criterion reported ${req.body.status}${req.body.reviewNote ? `: ${req.body.reviewNote}` : ""}`,
+      );
+
+      await logActivity(db, {
+        companyId: goal.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        action: "goal.criterion_reported",
+        entityType: "goal",
+        entityId: goal.id,
+        details: {
+          criterionId,
+          statement: criterion.statement,
+          threshold: criterion.threshold ?? null,
+          status: req.body.status,
+          reviewNote: req.body.reviewNote ?? null,
+          reviewedAt,
+        },
+      });
+
+      const [decorated] = await svc.withDerivedStatus([goal]);
+      res.json(decorated);
+    },
+  );
 
   router.delete("/goals/:id", async (req, res) => {
     const id = req.params.id as string;
