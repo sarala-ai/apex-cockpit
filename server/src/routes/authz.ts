@@ -71,6 +71,38 @@ export function assertInstanceAdmin(req: Request) {
   throw forbidden("Instance admin access required");
 }
 
+/**
+ * The strongest company-scoped gate the product has: the caller must OWN or
+ * ADMINISTER this company, as a person.
+ *
+ * Two things it refuses that `assertCompanyAccess` allows, both deliberate:
+ *
+ *   - **Agents, always.** An agent key cannot pass this even for its own
+ *     company. Destructive, irreversible operations are a human decision, and
+ *     an agent able to empty the board it works on is precisely the failure
+ *     this gate exists to make impossible.
+ *   - **Operators and viewers.** `assertCompanyAccess` treats any non-viewer
+ *     membership as write access, which is right for editing an issue and
+ *     wrong for erasing the board.
+ *
+ * Instance admins and the local trusted board pass, matching every other
+ * break-glass route in the product.
+ */
+export function assertCompanyOwner(req: Request, companyId: string) {
+  assertCompanyAccess(req, companyId);
+  assertBoard(req);
+  if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
+    return;
+  }
+  const membership = (req.actor.memberships ?? []).find((item) => item.companyId === companyId);
+  if (!membership || membership.status !== "active") {
+    throw forbidden("Company owner or admin access required");
+  }
+  if (membership.membershipRole !== "owner" && membership.membershipRole !== "admin") {
+    throw forbidden("Company owner or admin access required");
+  }
+}
+
 export function assertCompanyAccess(req: Request, companyId: string) {
   assertAuthenticated(req);
   if (req.actor.type === "agent" && req.actor.companyId !== companyId) {
