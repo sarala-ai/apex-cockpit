@@ -71,8 +71,23 @@ export const issues = pgTable(
     executionWorkspacePreference: text("execution_workspace_preference"),
     executionWorkspaceSettings: jsonb("execution_workspace_settings").$type<Record<string, unknown>>(),
     sourceTrust: jsonb("source_trust").$type<SourceTrustMetadata | null>(),
-    // Flow-coordinator state (work-loop typed flows). Typed columns by doctrine
-    // (never jsonb): the coordinator is the ONLY writer of these six columns.
+    // ---------------------------------------------------------------------
+    // DERIVED FROM THE CASE — a denormalised mirror, not the source of truth.
+    //
+    // Since 0165 the authoritative runtime state of a flow-driven issue lives
+    // on its case row in `pipeline_cases` (definition_kind='flow'), linked here
+    // through `pipeline_case_issue_links` with role 'work': the case holds the
+    // current step (`step_key`), the optimistic-concurrency `version` and the
+    // terminal (`terminal_kind`/`terminal_at`). The flow coordinator writes the
+    // case FIRST, under a version compare-and-set, and only then mirrors into
+    // the columns below in the same transaction.
+    //
+    // They stay because many surfaces still read them directly — issue lists,
+    // IssueDetail, the observe plane, heartbeat's flow-context lookups. They
+    // are REMOVED by the step that retires the flow front-end
+    // (docs/architecture/execution-substrate.md §6 step 5); until then, treat
+    // every column below as read-only outside server/src/apex/flow/coordinator.ts.
+    // ---------------------------------------------------------------------
     flowName: text("flow_name"),
     flowNodeId: text("flow_node_id"),
     // 'running' | 'waiting_gate' | 'waiting_agent' | 'paused' | 'done' | 'failed'

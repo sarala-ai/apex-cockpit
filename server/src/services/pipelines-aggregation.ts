@@ -754,6 +754,11 @@ export async function loadPipelineConnections(
     .where(and(
       eq(pipelineCases.companyId, companyId),
       eq(parentCase.companyId, companyId),
+      // Connections are between PIPELINES, so both ends must have one. `ne`
+      // already discards nulls in SQL; the explicit predicates are what let the
+      // rows be read as non-null below.
+      isNotNull(pipelineCases.pipelineId),
+      isNotNull(parentCase.pipelineId),
       ne(pipelineCases.pipelineId, parentCase.pipelineId),
     ));
   const map = new Map<string, PipelineConnections>();
@@ -766,6 +771,7 @@ export async function loadPipelineConnections(
     return value;
   };
   for (const row of rows) {
+    if (!row.childPipelineId || !row.parentPipelineId) continue;
     entry(row.childPipelineId).upstreamPipelineIds.push(row.parentPipelineId);
     entry(row.parentPipelineId).downstreamPipelineIds.push(row.childPipelineId);
   }

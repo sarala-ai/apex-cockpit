@@ -33,13 +33,33 @@ export type PipelineCaseWorkspaceRef = {
   path?: string;
 };
 
+/** Which kind of process definition owns this case's steps.
+ *  `pipeline` — steps are rows in `pipeline_stages`, `definitionRef` is the
+ *  pipeline id and `stageId` is populated.
+ *  `flow` — steps are nodes in a typed flow YAML, `definitionRef` is the flow
+ *  name and `stageId`/`pipelineId` are null.
+ *  Both address the current step by `stepKey`: a stage key and a flow node id
+ *  are the same kind of thing (docs/architecture/execution-substrate.md §6.1). */
+export const CASE_DEFINITION_KINDS = ["pipeline", "flow"] as const;
+export type CaseDefinitionKind = (typeof CASE_DEFINITION_KINDS)[number];
+
 export const pipelineCases = pgTable(
   "pipeline_cases",
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-    pipelineId: uuid("pipeline_id").notNull().references(() => pipelines.id, { onDelete: "cascade" }),
-    stageId: uuid("stage_id").notNull().references(() => pipelineStages.id),
+    // Nullable since 0165: a flow-defined case has no pipeline and no stage
+    // row. The `pipeline_cases_definition_shape_check` constraint makes an
+    // inconsistent combination impossible — see the migration for the full
+    // reasoning.
+    pipelineId: uuid("pipeline_id").references(() => pipelines.id, { onDelete: "cascade" }),
+    stageId: uuid("stage_id").references(() => pipelineStages.id),
+    definitionKind: text("definition_kind").$type<CaseDefinitionKind>().notNull().default("pipeline"),
+    /** Pipeline id (as text) for pipeline-defined cases, flow name for flow-defined ones. */
+    definitionRef: text("definition_ref"),
+    /** The AUTHORITATIVE current-step pointer. For pipeline-defined cases
+     *  `stageId` is kept as a denormalised convenience and moves with it. */
+    stepKey: text("step_key"),
     caseKey: text("case_key").notNull(),
     title: text("title").notNull(),
     summary: text("summary"),
@@ -81,7 +101,29 @@ export const pipelineCases = pgTable(
     automationAttemptIdx: index("pipeline_cases_automation_attempt_idx").on(table.automationAttemptId),
     retiredIdx: index("pipeline_cases_retired_idx").on(table.companyId, table.retiredAt),
     leaseExpiresIdx: index("pipeline_cases_lease_expires_idx").on(table.leaseExpiresAt).where(sql`${table.leaseExpiresAt} is not null`),
+    flowCaseKeyUq: uniqueIndex("pipeline_cases_flow_case_key_uq")
+      .on(table.companyId, table.definitionRef, table.caseKey)
+      .where(sql`${table.definitionKind} = 'flow'`),
+    definitionIdx: index("pipeline_cases_definition_idx").on(table.companyId, table.definitionKind, table.definitionRef),
     terminalKindCheck: check("pipeline_cases_terminal_kind_check", sql`${table.terminalKind} is null or ${table.terminalKind} in ('done', 'cancelled')`),
+    definitionKindCheck: check(
+      "pipeline_cases_definition_kind_check",
+      sql`${table.definitionKind} in ('pipeline', 'flow')`,
+    ),
+    definitionShapeCheck: check(
+      "pipeline_cases_definition_shape_check",
+      sql`(
+        ${table.definitionKind} = 'pipeline'
+        and ${table.pipelineId} is not null
+        and ${table.stageId} is not null
+      ) or (
+        ${table.definitionKind} = 'flow'
+        and ${table.pipelineId} is null
+        and ${table.stageId} is null
+        and ${table.definitionRef} is not null
+        and ${table.stepKey} is not null
+      )`,
+    ),
     leaseOwnerTypeCheck: check("pipeline_cases_lease_owner_type_check", sql`${table.leaseOwnerType} is null or ${table.leaseOwnerType} in ('user', 'agent')`),
   }),
 );
