@@ -44,6 +44,8 @@ import {
   type RoutineRevisionSnapshotV1,
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
+import { CliFlowNodeRunner, type FlowNodeRunner } from "../apex/steps/runner.js";
+import { renderTemplate, stepExecutor } from "../apex/steps/step-executor.js";
 import { routineService } from "./routines.js";
 import { secretService } from "./secrets.js";
 import type { IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
@@ -156,15 +158,48 @@ export type PipelineStageConfig = Record<string, unknown> & {
     waitForPieces?: unknown;
     whenFinishedMoveTo?: unknown;
   };
+  /**
+   * What running this stage MEANS. Two members, one per shape of step
+   * (docs/architecture/execution-substrate.md §6 step 3):
+   *
+   * - `run_routine` — an AGENT step. Commissions a routine run. Costs tokens.
+   * - `run_workflow` — a WORKFLOW step. Runs a deterministic, previewed APEX
+   *   operation through the step executor at ZERO tokens, and WRITES ITS EXIT
+   *   STATUS BACK: `onSuccessToStageKey` / `onFailureToStageKey` move the case,
+   *   and a failure with no failure route HOLDS the stage (`step_held`). That
+   *   write-back is the whole point — the old zero-token escape hatch ran and
+   *   then nothing read the result, so the case never moved.
+   */
   onEnter?: {
-    type?: "run_routine";
-    routineId?: string;
+    type?: "run_routine" | "run_workflow";
     id?: string;
+    /** `run_routine` only. */
+    routineId?: string;
     projectId?: string | null;
     projectWorkspaceId?: string | null;
     executionWorkspaceId?: string | null;
     executionWorkspacePreference?: ExecutionWorkspaceMode | null;
     executionWorkspaceSettings?: IssueExecutionWorkspaceSettings | null;
+    /** `run_workflow` only — the APEX workflow name. */
+    workflow?: string;
+    /** `run_workflow` only — params, `{{case_key}}`-interpolated. */
+    params?: Record<string, unknown>;
+    /** Where a zero-exit lands the case. Absent = stay put. */
+    onSuccessToStageKey?: string;
+    /** Where a non-zero exit lands the case. Absent = HOLD the stage. */
+    onFailureToStageKey?: string;
+  };
+  /**
+   * The stage's acceptance contract — SERVER-EVALUATED, and it HOLDS the
+   * stage on failure. Evaluated against the v1 grammar shared with flow steps
+   * (`file_exists:<path>`, `pr_exists:<repo>#<head>`; anything else is
+   * recorded verbatim and treated as unverified). The keystone: a
+   * deterministic step must never need a language model to attest that it
+   * succeeded, so no agent is asked — the server looks.
+   */
+  acceptance?: {
+    criteria?: string;
+    disabled?: boolean;
   };
 };
 
@@ -1131,6 +1166,39 @@ function stageAutomation(stage: typeof pipelineStages.$inferSelect) {
   };
 }
 
+/**
+ * The stage's WORKFLOW entry step, or null — the deterministic sibling of
+ * `stageAutomation`. Zero tokens: the executor shells the apex CLI and no
+ * agent is involved anywhere on this path.
+ */
+function stageWorkflowEntry(stage: typeof pipelineStages.$inferSelect) {
+  const onEnter = stageConfig(stage).onEnter;
+  if (!onEnter || onEnter.type !== "run_workflow") return null;
+  const workflow = typeof onEnter.workflow === "string" ? onEnter.workflow.trim() : "";
+  if (!workflow) return null;
+  const params =
+    onEnter.params && typeof onEnter.params === "object" && !Array.isArray(onEnter.params)
+      ? (onEnter.params as Record<string, unknown>)
+      : {};
+  return {
+    id: onEnter.id ?? `${stage.id}:on_enter`,
+    workflow,
+    params,
+    onSuccessToStageKey: readOptionalTrimmedString(onEnter.onSuccessToStageKey),
+    onFailureToStageKey: readOptionalTrimmedString(onEnter.onFailureToStageKey),
+  };
+}
+
+/** The stage's acceptance contract, or null when it declares none (or has
+ *  disabled it). See `PipelineStageConfig.acceptance`. */
+function stageAcceptance(stage: typeof pipelineStages.$inferSelect) {
+  const acceptance = stageConfig(stage).acceptance;
+  if (!acceptance || typeof acceptance !== "object" || Array.isArray(acceptance)) return null;
+  if (acceptance.disabled === true) return null;
+  const criteria = typeof acceptance.criteria === "string" ? acceptance.criteria.trim() : "";
+  return criteria ? { criteria } : null;
+}
+
 function stageRef(stage: typeof pipelineStages.$inferSelect) {
   return { id: stage.id, key: stage.key, name: stage.name };
 }
@@ -1800,6 +1868,81 @@ async function listUnresolvedDriftEvents(db: PipelineDb, input: { companyId: str
     .orderBy(desc(pipelineCaseEvents.createdAt), desc(pipelineCaseEvents.id));
 }
 
+/** When the case last ENTERED this stage. Everything a hold or an acceptance
+ *  verdict says is scoped to the current visit: re-entering a stage is a clean
+ *  slate, so nobody has to remember to clear anything. */
+async function latestStageEntryAt(db: PipelineDb, caseId: string, stageId: string) {
+  const row = await db
+    .select({ createdAt: pipelineCaseEvents.createdAt })
+    .from(pipelineCaseEvents)
+    .where(and(
+      eq(pipelineCaseEvents.caseId, caseId),
+      inArray(pipelineCaseEvents.type, ["ingested", "transitioned", "automation_retry_dispatched"]),
+      eq(pipelineCaseEvents.toStageId, stageId),
+    ))
+    .orderBy(desc(pipelineCaseEvents.createdAt), desc(pipelineCaseEvents.id))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  return row?.createdAt ?? null;
+}
+
+/** The hold currently binding on this stage visit, or null. A `step_held`
+ *  with no later `step_hold_cleared` is a hold. */
+async function readActiveStepHold(
+  db: PipelineDb,
+  current: typeof pipelineCases.$inferSelect,
+  stage: typeof pipelineStages.$inferSelect,
+) {
+  const since = await latestStageEntryAt(db, current.id, stage.id);
+  const scope = (type: string) => and(
+    eq(pipelineCaseEvents.companyId, current.companyId),
+    eq(pipelineCaseEvents.caseId, current.id),
+    eq(pipelineCaseEvents.type, type),
+    sql`${pipelineCaseEvents.payload}->>'stageId' = ${stage.id}`,
+    since ? sql`${pipelineCaseEvents.createdAt} >= ${since.toISOString()}::timestamptz` : undefined,
+  );
+  const held = await db
+    .select()
+    .from(pipelineCaseEvents)
+    .where(scope("step_held"))
+    .orderBy(desc(pipelineCaseEvents.createdAt), desc(pipelineCaseEvents.id))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (!held) return null;
+  const cleared = await db
+    .select({ id: pipelineCaseEvents.id })
+    .from(pipelineCaseEvents)
+    .where(and(
+      scope("step_hold_cleared"),
+      sql`${pipelineCaseEvents.createdAt} > ${held.createdAt.toISOString()}::timestamptz`,
+    ))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  return cleared ? null : held;
+}
+
+/** The server's latest acceptance verdict for this stage visit, or null. */
+async function readAcceptanceVerdict(
+  db: PipelineDb,
+  current: typeof pipelineCases.$inferSelect,
+  stage: typeof pipelineStages.$inferSelect,
+) {
+  const since = await latestStageEntryAt(db, current.id, stage.id);
+  return db
+    .select()
+    .from(pipelineCaseEvents)
+    .where(and(
+      eq(pipelineCaseEvents.companyId, current.companyId),
+      eq(pipelineCaseEvents.caseId, current.id),
+      eq(pipelineCaseEvents.type, "acceptance_evaluated"),
+      sql`${pipelineCaseEvents.payload}->>'stageId' = ${stage.id}`,
+      since ? sql`${pipelineCaseEvents.createdAt} >= ${since.toISOString()}::timestamptz` : undefined,
+    ))
+    .orderBy(desc(pipelineCaseEvents.createdAt), desc(pipelineCaseEvents.id))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+}
+
 async function assertStageTransitionGates(
   db: PipelineDb,
   current: typeof pipelineCases.$inferSelect,
@@ -1807,6 +1950,64 @@ async function assertStageTransitionGates(
   options: { skipChildrenTerminalGate?: boolean } = {},
 ) {
   const config = normalizeStageConfig(fromStage.kind, stageConfig(fromStage));
+
+  // The ACCEPTANCE contract. Evidence-based, exactly the way a review
+  // approval is (`assertLatestReviewApprovalStillCurrent`): the verdict is the
+  // server's own, recorded as `acceptance_evaluated`, and it must be a PASS at
+  // the case's CURRENT version. Unevaluated is not a pass — a stage that
+  // declares acceptance holds until the server has actually looked.
+  const acceptance = stageAcceptance(fromStage);
+  if (acceptance) {
+    const verdict = await readAcceptanceVerdict(db, current, fromStage);
+    const payload = (verdict?.payload ?? {}) as Record<string, unknown>;
+    const ok = verdict !== null && payload.ok === true && payload.evaluatedCaseVersion === current.version;
+    if (!ok) {
+      throw conflict(
+        verdict && payload.ok !== true
+          ? `Pipeline stage acceptance is not satisfied: ${
+              typeof payload.message === "string" ? payload.message : String(payload.evaluation ?? acceptance.criteria)
+            }`
+          : "Pipeline stage acceptance has not been evaluated at the case's current version",
+        {
+          code: verdict && payload.ok !== true ? "acceptance_failed" : "acceptance_not_evaluated",
+          stageId: fromStage.id,
+          stageKey: fromStage.key,
+          criteria: acceptance.criteria,
+          evaluation: typeof payload.evaluation === "string" ? payload.evaluation : null,
+          evaluatedCaseVersion:
+            typeof payload.evaluatedCaseVersion === "number" ? payload.evaluatedCaseVersion : null,
+          currentVersion: current.version,
+        },
+      );
+    }
+  }
+
+  // The HOLD. A workflow entry step that exited non-zero with no failure
+  // route records `step_held` — and the case does not leave the stage until
+  // something clears it. This is what "holds on failure" means concretely; it
+  // is a fact on the event log, read here, not a status somebody has to
+  // remember to check. Checked AFTER acceptance so an acceptance failure
+  // (which also holds) reports itself with its own criteria and evaluation
+  // rather than as a generic hold.
+  const hold = await readActiveStepHold(db, current, fromStage);
+  if (hold) {
+    const payload = hold.payload as Record<string, unknown>;
+    throw conflict(
+      typeof payload.message === "string" && payload.message.trim()
+        ? `Pipeline stage is held: ${payload.message}`
+        : "Pipeline stage is held",
+      {
+        code: "stage_held",
+        holdEventId: hold.id,
+        stageId: fromStage.id,
+        stageKey: fromStage.key,
+        reason: typeof payload.reason === "string" ? payload.reason : null,
+        errorType: typeof payload.errorType === "string" ? payload.errorType : null,
+      },
+    );
+  }
+
+
   const gate = childrenGateConfig(config);
   if (gate.requireChildrenTerminal && options.skipChildrenTerminalGate !== true) {
     const expectedChildren = expectedChildrenFromFields(current.fields);
@@ -2173,16 +2374,21 @@ async function enqueueStageAutomationLedger(
     generation?: number;
   },
 ) {
+  // Either member of `onEnter` enqueues here — the ledger is the substrate's
+  // record of "a step ran on entry", not a routine-only concept. A workflow
+  // entry carries no routine (0169).
   const automation = stageAutomation(input.stage);
-  if (!automation) return null;
+  const workflowEntry = automation ? null : stageWorkflowEntry(input.stage);
+  if (!automation && !workflowEntry) return null;
   const [ledger] = await db
     .insert(pipelineAutomationExecutions)
     .values({
       companyId: input.companyId,
       caseId: input.caseId,
-      automationId: automation.id,
+      automationId: (automation ?? workflowEntry)!.id,
       triggeringEventId: input.eventId,
-      routineId: automation.routineId,
+      kind: automation ? "routine" : "workflow",
+      routineId: automation?.routineId ?? null,
       status: "failed",
       retryOfExecutionId: input.retryOfExecutionId ?? null,
       generation: input.generation ?? 1,
@@ -2237,8 +2443,17 @@ async function descendantCaseIds(db: PipelineDb, companyId: string, rootCaseIds:
   return Array.from(result).map((row) => String((row as { id: string }).id));
 }
 
-export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeupDeps } = {}) {
+export function pipelineService(
+  db: Db,
+  deps: {
+    heartbeat?: IssueAssignmentWakeupDeps;
+    /** The deterministic step runner (workflow + check). Injectable so tests
+     *  never shell the apex CLI; the default shells it and nothing else. */
+    stepRunner?: FlowNodeRunner;
+  } = {},
+) {
   const routinesSvc = routineService(db, { heartbeat: deps.heartbeat });
+  const workflowRunner = deps.stepRunner ?? new CliFlowNodeRunner();
   const outputsSvc = pipelineCaseOutputsService(db);
   const authorization = authorizationService(db);
   const secretsSvc = secretService(db);
@@ -2259,7 +2474,17 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
 
   async function validateStageAutomationConfig(companyId: string, config?: PipelineStageConfig | null) {
     const onEnter = config?.onEnter;
-    if (!onEnter || onEnter.type !== "run_routine" || !onEnter.routineId) return;
+    if (!onEnter) return;
+    if (onEnter.type === "run_workflow") {
+      if (typeof onEnter.workflow !== "string" || onEnter.workflow.trim().length === 0) {
+        throw unprocessable("Stage onEnter run_workflow requires a workflow name", { code: "validation" });
+      }
+      if (onEnter.routineId) {
+        throw unprocessable("Stage onEnter run_workflow must not carry a routineId", { code: "validation" });
+      }
+      return;
+    }
+    if (onEnter.type !== "run_routine" || !onEnter.routineId) return;
     await assertRoutineInCompany(companyId, onEnter.routineId);
   }
 
@@ -2920,13 +3145,278 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
   }
 
   async function validateStageTargets(companyId: string, pipelineId: string, kind: PipelineStageKind | string, config: PipelineStageConfig) {
-    if (kind !== "review") return;
+    const onEnter = config?.onEnter;
+    const needsStageKeys =
+      kind === "review" ||
+      (onEnter?.type === "run_workflow" && (onEnter.onSuccessToStageKey || onEnter.onFailureToStageKey));
+    if (!needsStageKeys) return;
     const rows = await db
       .select({ key: pipelineStages.key })
       .from(pipelineStages)
       .innerJoin(pipelines, eq(pipelineStages.pipelineId, pipelines.id))
       .where(and(eq(pipelineStages.pipelineId, pipelineId), eq(pipelines.companyId, companyId)));
-    assertReviewTargetsInSet(kind, config, new Set(rows.map((row) => row.key)));
+    const stageKeys = new Set(rows.map((row) => row.key));
+    assertReviewTargetsInSet(kind, config, stageKeys);
+    if (onEnter?.type === "run_workflow") {
+      for (const [label, key] of [
+        ["onSuccessToStageKey", onEnter.onSuccessToStageKey],
+        ["onFailureToStageKey", onEnter.onFailureToStageKey],
+      ] as const) {
+        if (key && !stageKeys.has(key)) {
+          throw unprocessable(`Stage onEnter ${label} references an unknown stage`, { code: "validation" });
+        }
+      }
+    }
+  }
+
+  /**
+   * Run a stage's WORKFLOW entry step and WRITE ITS EXIT STATUS BACK.
+   *
+   * This is the defect the substrate doc names: a zero-token entry step
+   * genuinely ran, and then nothing read the result, so the case never moved.
+   * Here the exit status is the thing that moves the case:
+   *
+   *   exit 0        → `automation_executed`, any hold on this stage visit is
+   *                   cleared, acceptance is re-evaluated (so a deterministic
+   *                   chain can clear its own gate), and if the entry declares
+   *                   `onSuccessToStageKey` the case TRANSITIONS there.
+   *   non-zero      → `automation_failed`, and either a transition to
+   *                   `onFailureToStageKey` or — with no failure route — a
+   *                   `step_held`, which stops the case leaving the stage
+   *                   (assertStageTransitionGates).
+   *
+   * ZERO TOKENS on every path: the only executor port supplied is the CLI
+   * runner. No agent is resolved, no routine is run, no model is consulted.
+   */
+  async function executeWorkflowEntryLedger(
+    execution: typeof pipelineAutomationExecutions.$inferSelect,
+    actor: PipelineActor,
+  ): Promise<PipelineAutomationExecutionResult> {
+    const detail = await getCaseWithStageOrThrow(db, execution.companyId, execution.caseId);
+    const entry = stageWorkflowEntry(detail.stage);
+    if (!entry || entry.id !== execution.automationId) {
+      const [failed] = await db
+        .update(pipelineAutomationExecutions)
+        .set({ status: "failed", error: "automation_not_configured", updatedAt: nowDate() })
+        .where(eq(pipelineAutomationExecutions.id, execution.id))
+        .returning();
+      await writeCaseEvent(db, {
+        companyId: execution.companyId,
+        caseId: execution.caseId,
+        type: "automation_failed",
+        actor,
+        payload: { automationId: execution.automationId, kind: "workflow", error: "automation_not_configured" },
+      });
+      return { status: "failed", execution: failed! };
+    }
+
+    const variables = buildPipelineCaseVariables(detail);
+    const outcome = await stepExecutor({
+      runner: workflowRunner,
+      render: (template) => renderTemplate(template, variables),
+    }).execute({
+      kind: "workflow",
+      key: detail.stage.key,
+      config: { workflow: entry.workflow, params: entry.params },
+    });
+
+    if (outcome.status === "succeeded") {
+      const [updated] = await db
+        .update(pipelineAutomationExecutions)
+        .set({ status: "succeeded", error: null, updatedAt: nowDate() })
+        .where(eq(pipelineAutomationExecutions.id, execution.id))
+        .returning();
+      await writeCaseEvent(db, {
+        companyId: execution.companyId,
+        caseId: execution.caseId,
+        type: "automation_executed",
+        actor,
+        payload: {
+          automationId: execution.automationId,
+          kind: "workflow",
+          workflow: entry.workflow,
+          ...outcome.detail,
+        },
+      });
+      await clearStepHold(execution.companyId, execution.caseId, detail.stage, {
+        reason: "workflow_exit_success",
+      });
+      await evaluateStageAcceptance({
+        companyId: execution.companyId,
+        caseId: execution.caseId,
+        actor,
+      });
+      if (entry.onSuccessToStageKey) {
+        await moveCaseAfterWorkflowExit(execution.companyId, execution.caseId, {
+          toStageKey: entry.onSuccessToStageKey,
+          reason: "workflow_exit_success",
+          actor,
+        });
+      }
+      return { status: "succeeded", execution: updated! };
+    }
+
+    const failure = outcome.status === "failed"
+      ? outcome.failure
+      : { errorType: "workflow_step_not_terminal", message: "workflow step did not reach a terminal outcome" };
+    const [failed] = await db
+      .update(pipelineAutomationExecutions)
+      .set({ status: "failed", error: failure.message, updatedAt: nowDate() })
+      .where(eq(pipelineAutomationExecutions.id, execution.id))
+      .returning();
+    await writeCaseEvent(db, {
+      companyId: execution.companyId,
+      caseId: execution.caseId,
+      type: "automation_failed",
+      actor,
+      payload: {
+        automationId: execution.automationId,
+        kind: "workflow",
+        workflow: entry.workflow,
+        errorType: failure.errorType,
+        error: failure.message,
+      },
+    });
+    if (entry.onFailureToStageKey) {
+      await moveCaseAfterWorkflowExit(execution.companyId, execution.caseId, {
+        toStageKey: entry.onFailureToStageKey,
+        reason: "workflow_exit_failure",
+        actor,
+      });
+    } else {
+      await writeStepHold(execution.companyId, execution.caseId, detail.stage, {
+        reason: "workflow_exit_failure",
+        errorType: failure.errorType,
+        message: failure.message,
+        stepKey: detail.stage.key,
+      });
+    }
+    return { status: "failed", execution: failed! };
+  }
+
+  /** The transition half of the write-back. Best-effort by design: a gate the
+   *  case does not satisfy (approval, blockers, an unmet acceptance contract)
+   *  must leave the case where it is with the failure recorded, never roll back
+   *  the ledger write that recorded the exit status. */
+  async function moveCaseAfterWorkflowExit(
+    companyId: string,
+    caseId: string,
+    input: { toStageKey: string; reason: string; actor: PipelineActor },
+  ) {
+    const detail = await getCaseWithStageOrThrow(db, companyId, caseId);
+    if (detail.stage.key === input.toStageKey) return;
+    const ledgers: Array<typeof pipelineAutomationExecutions.$inferSelect> = [];
+    try {
+      await db.transaction((tx) =>
+        transitionCaseInTransaction(tx, {
+          companyId,
+          caseId,
+          toStageKey: input.toStageKey,
+          expectedVersion: detail.case.version,
+          actor: { type: "system" },
+          transitionClass: "auto",
+          reason: input.reason,
+          automationLedgers: ledgers,
+        }),
+      );
+    } catch (error) {
+      if (!(error instanceof HttpError)) throw error;
+      await writeStepHold(companyId, caseId, detail.stage, {
+        reason: "workflow_exit_transition_blocked",
+        errorType: (error.details as { code?: string } | undefined)?.code ?? "transition_blocked",
+        message: error.message,
+        stepKey: detail.stage.key,
+      });
+      return;
+    }
+    await executeAutomationLedgers(ledgers, input.actor);
+  }
+
+  async function writeStepHold(
+    companyId: string,
+    caseId: string,
+    stage: typeof pipelineStages.$inferSelect,
+    input: { reason: string; errorType: string; message: string; stepKey: string },
+  ) {
+    await writeCaseEvent(db, {
+      companyId,
+      caseId,
+      type: "step_held",
+      actor: { type: "system" },
+      payload: { stageId: stage.id, stageKey: stage.key, ...input },
+    });
+  }
+
+  async function clearStepHold(
+    companyId: string,
+    caseId: string,
+    stage: typeof pipelineStages.$inferSelect,
+    input: { reason: string },
+  ) {
+    const detail = await getCaseOrThrow(db, companyId, caseId);
+    const hold = await readActiveStepHold(db, detail, stage);
+    if (!hold) return;
+    await writeCaseEvent(db, {
+      companyId,
+      caseId,
+      type: "step_hold_cleared",
+      actor: { type: "system" },
+      payload: { stageId: stage.id, stageKey: stage.key, holdEventId: hold.id, reason: input.reason },
+    });
+  }
+
+  /**
+   * Evaluate the CURRENT stage's acceptance contract — on the SERVER — and
+   * record the verdict.
+   *
+   * Deliberately outside any transaction: `pr_exists:` shells the apex CLI,
+   * and a minutes-long call must never run while a `for update` lock is held.
+   * The verdict is therefore evidence, stamped with the case version it was
+   * about, and `assertStageTransitionGates` enforces it inside the
+   * transaction — the same evidence-plus-version shape a review approval
+   * already uses, and the reason a stale pass cannot let changed work out.
+   */
+  async function evaluateStageAcceptance(input: {
+    companyId: string;
+    caseId: string;
+    actor: PipelineActor;
+  }) {
+    const detail = await getCaseWithStageOrThrow(db, input.companyId, input.caseId);
+    const acceptance = stageAcceptance(detail.stage);
+    if (!acceptance) return { status: "none" as const };
+    const criteria = renderTemplate(acceptance.criteria, buildPipelineCaseVariables(detail));
+    const verdict = await stepExecutor({ runner: workflowRunner }).evaluateAcceptance(criteria);
+    await writeCaseEvent(db, {
+      companyId: input.companyId,
+      caseId: input.caseId,
+      type: "acceptance_evaluated",
+      actor: input.actor,
+      payload: {
+        stageId: detail.stage.id,
+        stageKey: detail.stage.key,
+        criteria,
+        ok: verdict.ok,
+        evaluation: verdict.evaluation,
+        message: verdict.ok ? null : verdict.message,
+        evaluatedCaseVersion: detail.case.version,
+      },
+    });
+    if (verdict.ok) {
+      await clearStepHold(input.companyId, input.caseId, detail.stage, { reason: "acceptance_passed" });
+    } else {
+      await writeStepHold(input.companyId, input.caseId, detail.stage, {
+        reason: "acceptance_failed",
+        errorType: "acceptance_failed",
+        message: verdict.message,
+        stepKey: detail.stage.key,
+      });
+    }
+    return {
+      status: verdict.ok ? ("passed" as const) : ("held" as const),
+      criteria,
+      evaluation: verdict.evaluation,
+      caseVersion: detail.case.version,
+    };
   }
 
   async function executeAutomationLedger(
@@ -2942,6 +3432,12 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
     if (!execution) throw notFound("Pipeline automation execution not found");
     if (execution.status === "succeeded" && execution.executionIssueId) {
       return { status: "succeeded", execution };
+    }
+    // A workflow entry has no execution issue and no routine — it is the
+    // deterministic member of `onEnter` and runs through the step executor.
+    if (execution.kind === "workflow") {
+      if (execution.status === "succeeded") return { status: "succeeded", execution };
+      return executeWorkflowEntryLedger(execution, actor);
     }
 
     const detail = await getCaseWithStageOrThrow(db, execution.companyId, execution.caseId);
@@ -2962,8 +3458,28 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
       return { status: "failed", execution: failed! };
     }
 
+    // Nullable since 0169 (workflow entries carry no routine); the shape check
+    // makes this unreachable for a routine row, so it is a classified guard
+    // rather than a silent coalesce.
+    const routineId = execution.routineId;
+    if (!routineId) {
+      const [failed] = await db
+        .update(pipelineAutomationExecutions)
+        .set({ status: "failed", error: "automation_not_configured", updatedAt: nowDate() })
+        .where(eq(pipelineAutomationExecutions.id, execution.id))
+        .returning();
+      await writeCaseEvent(db, {
+        companyId: execution.companyId,
+        caseId: execution.caseId,
+        type: "automation_failed",
+        actor,
+        payload: { automationId: execution.automationId, error: "automation_not_configured" },
+      });
+      return { status: "failed", execution: failed! };
+    }
+
     try {
-      const routine = await assertRoutineInCompany(execution.companyId, execution.routineId);
+      const routine = await assertRoutineInCompany(execution.companyId, routineId);
       const outputSummaries = summarizePipelineCaseOutputsForContext(
         await outputsSvc.listCaseOutputs(execution.companyId, execution.caseId),
       );
@@ -2988,7 +3504,7 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
             config: breakdownConfig,
           })
         : null;
-      const run = await routinesSvc.runPipelineStageEntryRoutine(execution.routineId, {
+      const run = await routinesSvc.runPipelineStageEntryRoutine(routineId, {
         source: "api",
         assigneeAgentId: routine.assigneeAgentId,
         idempotencyKey: `pipeline:${execution.caseId}:${execution.automationId}:${execution.triggeringEventId}`,
@@ -4629,6 +5145,11 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
       force?: boolean;
       skipChildrenTerminalGate?: boolean;
     }) {
+      // Acceptance is evaluated HERE, before the transaction — see
+      // `evaluateStageAcceptance` for why it cannot run under the row lock.
+      // It does not throw: the verdict is evidence, and the gate inside the
+      // transaction is the one that holds the stage.
+      await evaluateStageAcceptance({ companyId: input.companyId, caseId: input.caseId, actor: input.actor });
       const automationLedgers: Array<typeof pipelineAutomationExecutions.$inferSelect> = [];
       const result = await db.transaction((tx) => transitionCaseInTransaction(tx, { ...input, automationLedgers }));
       const automationExecutions = await executeAutomationLedgers(automationLedgers, { type: "system" });
@@ -4943,6 +5464,17 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
       return validateStageAutomationConfig(companyId, config);
     },
 
+    /** Evaluate the case's current stage acceptance contract on the server and
+     *  record the verdict. Callable on its own so a hold can be re-tested
+     *  without attempting a transition. */
+    async evaluateStageAcceptance(input: { companyId: string; caseId: string; actor?: PipelineActor }) {
+      return evaluateStageAcceptance({
+        companyId: input.companyId,
+        caseId: input.caseId,
+        actor: input.actor ?? { type: "system" },
+      });
+    },
+
     async suggestTransition(input: {
       companyId: string;
       caseId: string;
@@ -5068,6 +5600,9 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
       leaseToken?: string | null;
       actor: PipelineActor;
     }) {
+      // Same preflight as `transitionCase`: a review stage may carry an
+      // acceptance contract, and approving does not exempt the work from it.
+      await evaluateStageAcceptance({ companyId: input.companyId, caseId: input.caseId, actor: input.actor });
       const automationLedgers: Array<typeof pipelineAutomationExecutions.$inferSelect> = [];
       const result = await db.transaction(async (tx) => {
         const detail = await getCaseWithStageOrThrow(tx, input.companyId, input.caseId);

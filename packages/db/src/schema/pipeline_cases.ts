@@ -40,6 +40,10 @@ export type PipelineCaseWorkspaceRef = {
  *  name and `stageId`/`pipelineId` are null.
  *  Both address the current step by `stepKey`: a stage key and a flow node id
  *  are the same kind of thing (docs/architecture/execution-substrate.md §6.1). */
+/** Which step kind an entry-automation row ran (0169). */
+export const PIPELINE_AUTOMATION_EXECUTION_KINDS = ["routine", "workflow"] as const;
+export type PipelineAutomationExecutionKind = (typeof PIPELINE_AUTOMATION_EXECUTION_KINDS)[number];
+
 export const CASE_DEFINITION_KINDS = ["pipeline", "flow"] as const;
 export type CaseDefinitionKind = (typeof CASE_DEFINITION_KINDS)[number];
 
@@ -231,7 +235,12 @@ export const pipelineAutomationExecutions = pgTable(
     caseId: uuid("case_id").notNull().references(() => pipelineCases.id, { onDelete: "cascade" }),
     automationId: text("automation_id").notNull(),
     triggeringEventId: uuid("triggering_event_id").notNull(),
-    routineId: uuid("routine_id").notNull().references(() => routines.id, { onDelete: "cascade" }),
+    /** Which step kind this entry ran (0169). `routine` = an agent step;
+     *  `workflow` = a deterministic APEX operation at zero tokens. */
+    kind: text("kind").$type<PipelineAutomationExecutionKind>().notNull().default("routine"),
+    /** Nullable since 0169: a workflow entry carries no routine. The shape
+     *  check below makes a half-populated row impossible either way. */
+    routineId: uuid("routine_id").references(() => routines.id, { onDelete: "cascade" }),
     status: text("status").notNull(),
     executionIssueId: uuid("execution_issue_id").references(() => issues.id, { onDelete: "set null" }),
     retryOfExecutionId: uuid("retry_of_execution_id"),
@@ -251,5 +260,11 @@ export const pipelineAutomationExecutions = pgTable(
     executionIssueIdx: index("pipeline_automation_executions_execution_issue_idx").on(table.executionIssueId),
     retryOfExecutionIdx: index("pipeline_automation_executions_retry_of_execution_idx").on(table.retryOfExecutionId),
     statusCheck: check("pipeline_automation_executions_status_check", sql`${table.status} in ('succeeded', 'failed')`),
+    kindCheck: check("pipeline_automation_executions_kind_check", sql`${table.kind} in ('routine', 'workflow')`),
+    shapeCheck: check(
+      "pipeline_automation_executions_shape_check",
+      sql`(${table.kind} = 'routine' and ${table.routineId} is not null)
+        or (${table.kind} = 'workflow' and ${table.routineId} is null)`,
+    ),
   }),
 );
