@@ -3,7 +3,7 @@
  * happens on the review surface; this is only the way in.
  */
 import { useEffect } from "react";
-import { Link } from "react-router-dom";
+import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import type { ProposalRecord } from "@paperclipai/shared";
 import { proposalsApi } from "../api/proposals";

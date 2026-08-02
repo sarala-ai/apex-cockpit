@@ -11,7 +11,7 @@
  * a kind.
  */
 import { useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ProposalColumn, ProposalRecord } from "@paperclipai/shared";
 import { proposalsApi } from "../api/proposals";
