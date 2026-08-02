@@ -3,6 +3,7 @@ export * from "./gateway.js";
 export * from "./design.js";
 export * from "./workflows.js";
 export * from "./capability-sync.js";
+export * from "./initiative-status.js";
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
   getAgentOrgChainHealth,
@@ -199,6 +200,7 @@ export {
   GOAL_CLOSURES,
   GOAL_ASSUMPTION_TYPES,
   GOAL_ASSUMPTION_STATUSES,
+  INITIATIVE_DERIVED_STATUSES,
   PROJECT_STATUSES,
   ENVIRONMENT_DRIVERS,
   ENVIRONMENT_STATUSES,
@@ -343,6 +345,7 @@ export {
   type GoalClosure,
   type GoalAssumptionType,
   type GoalAssumptionStatus,
+  type InitiativeDerivedStatus,
   type ProjectStatus,
   type EnvironmentDriver,
   type EnvironmentStatus,

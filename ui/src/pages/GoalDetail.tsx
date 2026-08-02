@@ -11,11 +11,13 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { GoalProperties } from "../components/GoalProperties";
 import { GoalHierarchyList } from "../components/GoalHierarchyList";
+import { InitiativeSummary } from "../components/InitiativeSummary";
 import { StatusBadge } from "../components/StatusBadge";
 import { InlineEditor } from "../components/InlineEditor";
 import { EntityRow } from "../components/EntityRow";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { cn, projectUrl } from "../lib/utils";
+import { goalDisplayStatus } from "../lib/goal-status";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Plus, SlidersHorizontal } from "lucide-react";
@@ -146,7 +148,8 @@ export function GoalDetail() {
           <span className="text-xs uppercase text-muted-foreground">
             {goal.level}
           </span>
-          <StatusBadge status={goal.status} />
+          <StatusBadge status={goalDisplayStatus(goal)} />
+          {goal.closure && <StatusBadge status={goal.closure} />}
           <div className="ml-auto">
             <GoalPropertiesToggleButton
               panelVisible={panelVisible}
@@ -175,6 +178,8 @@ export function GoalDetail() {
           }}
         />
       </div>
+
+      <InitiativeSummary goal={goal} />
 
       <Tabs defaultValue="children">
         <TabsList>

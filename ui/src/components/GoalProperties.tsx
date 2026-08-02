@@ -2,13 +2,14 @@ import { useState } from "react";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import type { Goal } from "@paperclipai/shared";
-import { GOAL_STATUSES, GOAL_LEVELS } from "@paperclipai/shared";
+import { GOAL_STATUSES, GOAL_LEVELS, GOAL_CLOSURES } from "@paperclipai/shared";
 import { agentsApi } from "../api/agents";
 import { goalsApi } from "../api/goals";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { StatusBadge } from "./StatusBadge";
 import { formatDate, cn, agentUrl } from "../lib/utils";
+import { goalDisplayStatus } from "../lib/goal-status";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
@@ -96,8 +97,16 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
   return (
     <div className="space-y-4">
       <div className="space-y-1">
+        {/* An initiative's status is read from its projects, so there is no
+            picker here — offering one would invite a hand-edit that contradicts
+            the board the moment a project moves. */}
         <PropertyRow label="Status">
-          {onUpdate ? (
+          {goal.level === "initiative" ? (
+            <>
+              <StatusBadge status={goalDisplayStatus(goal)} />
+              <span className="text-xs text-muted-foreground">from its projects</span>
+            </>
+          ) : onUpdate ? (
             <PickerButton
               current={goal.status}
               options={GOAL_STATUSES}
@@ -123,6 +132,30 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
             <span className="text-sm capitalize">{goal.level}</span>
           )}
         </PropertyRow>
+
+        {/* Closure is an initiative-only verdict — it would be meaningless on a
+            company, team, agent or task goal, so the row is not offered there. */}
+        {goal.level === "initiative" && (
+          <PropertyRow label="Closure">
+            {onUpdate ? (
+              <PickerButton
+                current={goal.closure ?? ""}
+                options={GOAL_CLOSURES}
+                onChange={(closure) => onUpdate({ closure })}
+              >
+                {goal.closure ? (
+                  <StatusBadge status={goal.closure} />
+                ) : (
+                  <span className="text-sm text-muted-foreground">Open</span>
+                )}
+              </PickerButton>
+            ) : goal.closure ? (
+              <StatusBadge status={goal.closure} />
+            ) : (
+              <span className="text-sm text-muted-foreground">Open</span>
+            )}
+          </PropertyRow>
+        )}
 
         <PropertyRow label="Owner">
           {ownerAgent ? (

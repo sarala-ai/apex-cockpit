@@ -506,14 +506,36 @@ export type GoalAssumptionType = (typeof GOAL_ASSUMPTION_TYPES)[number];
 export const GOAL_ASSUMPTION_STATUSES = ["untested", "retired", "blocked"] as const;
 export type GoalAssumptionStatus = (typeof GOAL_ASSUMPTION_STATUSES)[number];
 
+// "on_hold" is the state a real portfolio spends most of its time in: valid,
+// decided, not now. Without it a deprioritised project has to masquerade as
+// cancelled (a lie about the decision) or in_progress (a lie about the work).
+// "backlog" already carries not-started — it is the create default and reads
+// correctly — so no separate not_started value is added.
 export const PROJECT_STATUSES = [
   "backlog",
   "planned",
   "in_progress",
+  "on_hold",
   "completed",
   "cancelled",
 ] as const;
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
+
+/**
+ * An initiative's status is READ FROM ITS PROJECTS, never stored. "Active — one
+ * of four projects delivered, three on hold" is the honest reading, and a
+ * stored label drifts the moment a project moves. Contrast `GOAL_CLOSURES`,
+ * which a person sets deliberately: closure is a decision, status is a
+ * consequence.
+ */
+export const INITIATIVE_DERIVED_STATUSES = [
+  "planned",
+  "active",
+  "on_hold",
+  "delivered",
+  "cancelled",
+] as const;
+export type InitiativeDerivedStatus = (typeof INITIATIVE_DERIVED_STATUSES)[number];
 
 export const ENVIRONMENT_DRIVERS = ["local", "ssh", "sandbox", "plugin"] as const;
 export type EnvironmentDriver = (typeof ENVIRONMENT_DRIVERS)[number];

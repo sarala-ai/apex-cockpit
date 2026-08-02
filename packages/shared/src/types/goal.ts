@@ -1,4 +1,9 @@
-import type { GoalClosure, GoalLevel, GoalStatus } from "../constants.js";
+import type {
+  GoalClosure,
+  GoalLevel,
+  GoalStatus,
+  InitiativeDerivedStatus,
+} from "../constants.js";
 import type { GoalAssumption } from "../validators/goal.js";
 
 export interface Goal {
@@ -16,6 +21,14 @@ export interface Goal {
   // so goal values built by anything other than the server — plugin fakes,
   // fixtures, older clients — legitimately omit them. Readers must treat
   // absent and null identically.
+  /**
+   * Initiative-only, COMPUTED from the projects joined to this goal — never
+   * stored, never accepted on a write. The stored `status` column is inert on
+   * an initiative (the API refuses to hand-edit it) precisely so the two can
+   * never disagree. `derivedStatus` is a consequence; `closure` below is a
+   * decision. Absent when the caller did not compute it.
+   */
+  derivedStatus?: InitiativeDerivedStatus | null;
   /** Initiative-only. Null on every other level, and on an open initiative. */
   closure?: GoalClosure | null;
   /** The evidence that goes with the closure — every closure keeps its reason. */

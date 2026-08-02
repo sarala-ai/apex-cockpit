@@ -1,6 +1,7 @@
 import type { Goal } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { StatusBadge } from "./StatusBadge";
+import { goalDisplayStatus } from "../lib/goal-status";
 import { ChevronRight } from "lucide-react";
 import { cn } from "../lib/utils";
 import { useState } from "react";
@@ -47,7 +48,11 @@ function GoalHierarchyNode({ goal, children, allGoals, depth, goalLink, onSelect
       )}
       <span className="text-xs text-muted-foreground capitalize">{goal.level}</span>
       <span className="flex-1 truncate">{goal.title}</span>
-      <StatusBadge status={goal.status} />
+      {/* A closed initiative says how it ended right in the row — "achieved"
+          would not distinguish validated from stopped, which is the whole
+          point of the closure vocabulary. */}
+      {goal.closure && <StatusBadge status={goal.closure} />}
+      <StatusBadge status={goalDisplayStatus(goal)} />
     </>
   );
 

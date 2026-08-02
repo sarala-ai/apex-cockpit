@@ -80,6 +80,25 @@ export const statusBadge: Record<string, string> = {
   idle: `border ${brandChipBadge.gray}`,
   archived: "bg-muted text-muted-foreground",
 
+  // Project "on_hold" and the derived initiative status of the same name:
+  // valid, decided, not now. Amber like `paused`, never red — a hold is not a
+  // failure.
+  on_hold: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
+  // Derived initiative status "delivered" (the projects are done).
+  delivered: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
+
+  // Initiative closures (goals with level "initiative"). Only "validated" is
+  // green: the model treats stopped and expired as honest, useful endings, not
+  // failures, so they read neutral/amber rather than red.
+  validated: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
+  stopped: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
+  revised: "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300",
+  expired: "bg-muted text-muted-foreground",
+
+  // Initiative assumption statuses. "blocked" already maps red below.
+  untested: "bg-muted text-muted-foreground",
+  retired: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
+
   // Goal statuses
   planned: "bg-muted text-muted-foreground",
   achieved: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",

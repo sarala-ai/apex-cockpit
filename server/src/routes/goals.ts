@@ -19,7 +19,7 @@ export function goalRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const result = await svc.list(companyId);
-    res.json(result);
+    res.json(await svc.withDerivedStatus(result));
   });
 
   router.get("/goals/:id", async (req, res) => {
@@ -30,7 +30,8 @@ export function goalRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, goal.companyId);
-    res.json(goal);
+    const [decorated] = await svc.withDerivedStatus([goal]);
+    res.json(decorated);
   });
 
   router.post("/companies/:companyId/goals", validate(createGoalSchema), async (req, res) => {
@@ -52,7 +53,8 @@ export function goalRoutes(db: Db) {
     if (telemetryClient) {
       trackGoalCreated(telemetryClient, { goalLevel: goal.level });
     }
-    res.status(201).json(goal);
+    const [decorated] = await svc.withDerivedStatus([goal]);
+    res.status(201).json(decorated);
   });
 
   router.patch("/goals/:id", validate(updateGoalSchema), async (req, res) => {
@@ -68,6 +70,19 @@ export function goalRoutes(db: Db) {
     // level may not be in the payload. Resolve the level the goal will have
     // after this patch and reject initiative-only fields on anything else.
     const nextLevel = (req.body.level as string | undefined) ?? existing.level;
+
+    // An initiative's status is read from its projects. Accepting a hand-edited
+    // one would create a second, competing answer to the same question — the
+    // exact drift the derived reading exists to prevent. Closure stays
+    // editable: that one IS a human decision.
+    if (nextLevel === "initiative" && req.body.status !== undefined) {
+      res.status(400).json({
+        error:
+          "status is derived from an initiative's projects and cannot be set directly; set closure to record how the initiative ended",
+      });
+      return;
+    }
+
     const rejected = initiativeFieldsRejectedFor(nextLevel, req.body);
     if (rejected.length > 0) {
       res.status(400).json({
@@ -94,7 +109,8 @@ export function goalRoutes(db: Db) {
       details: req.body,
     });
 
-    res.json(goal);
+    const [decorated] = await svc.withDerivedStatus([goal]);
+    res.json(decorated);
   });
 
   router.delete("/goals/:id", async (req, res) => {
