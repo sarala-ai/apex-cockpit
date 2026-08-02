@@ -300,6 +300,7 @@ export {
 export {
   createProjectSchema,
   updateProjectSchema,
+  foldLinkIssues,
   createProjectWorkspaceSchema,
   updateProjectWorkspaceSchema,
   projectExecutionWorkspacePolicySchema,
@@ -492,6 +493,8 @@ export {
   updateGoalSchema,
   goalAssumptionSchema,
   goalValidationCriterionSchema,
+  goalHypothesisSchema,
+  goalHoldSchema,
   goalProvenanceSchema,
   reportCriterionSchema,
   goalBaseSchema,
@@ -501,6 +504,8 @@ export {
   type UpdateGoal,
   type GoalAssumption,
   type GoalValidationCriterion,
+  type GoalHypothesis,
+  type GoalHold,
   type GoalProvenance,
   type ReportCriterion,
 } from "./goal.js";

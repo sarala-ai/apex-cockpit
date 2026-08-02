@@ -1,7 +1,11 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { GOAL_CLOSURES, deriveInitiativeStatus } from "@paperclipai/shared";
+import {
+  GOAL_CLOSURES,
+  deriveInitiativeStatus,
+  summarizeInitiativeProjects,
+} from "@paperclipai/shared";
 
 const mockGoalService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -81,6 +85,8 @@ function echoRow(payload: Record<string, unknown>, overrides: Record<string, unk
     budget: null,
     stopCondition: null,
     hypothesis: null,
+    hypotheses: null,
+    hold: null,
     ...payload,
     ...overrides,
   };
@@ -112,7 +118,13 @@ describe("goal routes — the initiative object", () => {
         ...row,
         derivedStatus:
           row.level === "initiative"
-            ? deriveInitiativeStatus(projectStatusesByGoalId.get(row.id) ?? [])
+            ? deriveInitiativeStatus(projectStatusesByGoalId.get(row.id) ?? [], {
+                held: Boolean(row.hold),
+              })
+            : null,
+        projectCounts:
+          row.level === "initiative"
+            ? summarizeInitiativeProjects(projectStatusesByGoalId.get(row.id) ?? [])
             : null,
       })),
     );
@@ -291,6 +303,124 @@ describe("goal routes — the initiative object", () => {
     expect(res.body.closure).toBe("stopped");
     // The projects have not moved, so the derived reading has not either.
     expect(res.body.derivedStatus).toBe("active");
+  });
+
+  it("a hold overrides the derived reading, and says why", async () => {
+    // Two real initiatives read `active` because two of their projects had
+    // completed, when the honest reading was: valid, not now.
+    const hold = { reason: "waiting on a local model worth running", since: "2026-07-02" };
+    mockGoalService.getById.mockResolvedValue(echoRow({ level: "initiative" }));
+    projectStatusesByGoalId.set("goal-1", ["completed", "completed", "backlog"]);
+    const app = await createApp();
+
+    expect((await request(app).get("/api/goals/goal-1")).body.derivedStatus).toBe("active");
+
+    const res = await request(app).patch("/api/goals/goal-1").send({ hold });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.hold).toEqual(hold);
+    expect(res.body.derivedStatus).toBe("on_hold");
+    // The projects did not move, and the counts still say so.
+    expect(res.body.projectCounts.completed).toBe(2);
+  });
+
+  it("refuses a hold with no reason", async () => {
+    mockGoalService.getById.mockResolvedValue(echoRow({ level: "initiative" }));
+    const app = await createApp();
+    const res = await request(app)
+      .patch("/api/goals/goal-1")
+      .send({ hold: { since: "2026-07-02" } });
+    expect(res.status).toBe(400);
+    expect(mockGoalService.update).not.toHaveBeenCalled();
+  });
+
+  it("releases a hold with null, and the derivation takes over again", async () => {
+    mockGoalService.getById.mockResolvedValue(
+      echoRow({ level: "initiative", hold: { reason: "not now", since: "2026-07-02" } }),
+    );
+    projectStatusesByGoalId.set("goal-1", ["in_progress"]);
+    const app = await createApp();
+    const res = await request(app).patch("/api/goals/goal-1").send({ hold: null });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.derivedStatus).toBe("active");
+  });
+
+  it("refuses a hold on a goal that is not an initiative", async () => {
+    mockGoalService.getById.mockResolvedValue(echoRow({ level: "team" }));
+    const app = await createApp();
+    const res = await request(app)
+      .patch("/api/goals/goal-1")
+      .send({ hold: { reason: "not now", since: "2026-07-02" } });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("hold");
+  });
+
+  it("round-trips structured hypotheses, verdicts included", async () => {
+    const hypotheses = [
+      {
+        id: "h1",
+        statement: "An MCP-only interface is enough",
+        verdict: "falsified",
+        evidence: "two of three projects cancelled; nothing generated from tools",
+        testedAt: "2026-05-30",
+      },
+      { id: "h2", statement: "Local models are cheap enough", verdict: "untested" },
+    ];
+    projectStatusesByGoalId.set("goal-1", []);
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/goals")
+      .send({ title: "Every interface generated from MCP tools", level: "initiative", hypotheses });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.hypotheses).toHaveLength(2);
+    expect(res.body.hypotheses[0].verdict).toBe("falsified");
+  });
+
+  it("refuses a verdict that exceeds its evidence", async () => {
+    projectStatusesByGoalId.set("goal-1", []);
+    const app = await createApp();
+    const res = await request(app).post("/api/companies/company-1/goals").send({
+      title: "x",
+      level: "initiative",
+      hypotheses: [{ id: "h1", statement: "y", verdict: "supported" }],
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("MCP-first regression: cancelled projects keep the initiative off `delivered`", async () => {
+    // One project shipped, two failed and were cancelled. The old derivation
+    // dropped the cancelled ones and reported `delivered` for an initiative
+    // whose own sentence had been falsified; the importer had to work around it
+    // by closing it as `revised`.
+    mockGoalService.getById.mockResolvedValue(
+      echoRow({ level: "initiative", title: "Every interface generated from MCP tools" }),
+    );
+    projectStatusesByGoalId.set("goal-1", ["completed", "cancelled", "cancelled"]);
+    const app = await createApp();
+    const res = await request(app).get("/api/goals/goal-1");
+
+    expect(res.body.derivedStatus).toBe("partial");
+    expect(res.body.projectCounts.cancelled).toBe(2);
+    expect(res.body.projectCounts.total).toBe(3);
+  });
+
+  it("counts built-but-unexercised projects beside the status", async () => {
+    mockGoalService.getById.mockResolvedValue(echoRow({ level: "initiative" }));
+    projectStatusesByGoalId.set("goal-1", ["built", "built", "completed"]);
+    const app = await createApp();
+    const res = await request(app).get("/api/goals/goal-1");
+
+    expect(res.body.derivedStatus).toBe("delivered");
+    expect(res.body.projectCounts.built).toBe(2);
+    expect(res.body.projectCounts.completed).toBe(1);
+  });
+
+  it("gives non-initiative goals no project counts either", async () => {
+    mockGoalService.getById.mockResolvedValue(echoRow({ level: "team" }));
+    const app = await createApp();
+    expect((await request(app).get("/api/goals/goal-1")).body.projectCounts).toBeNull();
   });
 
   it("never accepts a derivedStatus from the client", async () => {

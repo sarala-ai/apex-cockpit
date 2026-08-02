@@ -560,6 +560,28 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
             <StatusBadge status={project.status} />
           )}
         </PropertyRow>
+        {/* Where a folded project's work went. Read-only: the fold is recorded
+            where the decision is taken, and a project that folded into nothing
+            recorded says so rather than showing a blank. */}
+        {project.status === "folded" && (
+          <PropertyRow label="Folded into">
+            {project.foldedIntoGoalId ? (
+              <Link to={`/goals/${project.foldedIntoGoalId}`} className="text-sm hover:underline">
+                {allGoals?.find((goal) => goal.id === project.foldedIntoGoalId)?.title ??
+                  project.foldedIntoGoalId.slice(0, 8)}
+              </Link>
+            ) : project.foldedIntoProjectId ? (
+              <Link
+                to={`/projects/${project.foldedIntoProjectId}`}
+                className="text-sm hover:underline"
+              >
+                {project.foldedIntoProjectId.slice(0, 8)}
+              </Link>
+            ) : (
+              <span className="text-sm text-muted-foreground">No destination recorded</span>
+            )}
+          </PropertyRow>
+        )}
         {project.leadAgentId && (
           <PropertyRow label="Lead">
             <span className="text-sm font-mono">{project.leadAgentId.slice(0, 8)}</span>

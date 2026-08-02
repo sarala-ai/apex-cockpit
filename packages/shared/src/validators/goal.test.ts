@@ -4,6 +4,7 @@ import {
   GOAL_ASSUMPTION_TYPES,
   GOAL_CLOSURES,
   GOAL_CRITERION_STATUSES,
+  GOAL_HYPOTHESIS_VERDICTS,
   GOAL_LEVELS,
   GOAL_STATUSES,
 } from "../constants.js";
@@ -12,6 +13,8 @@ import {
   updateGoalSchema,
   goalAssumptionSchema,
   goalValidationCriterionSchema,
+  goalHypothesisSchema,
+  goalHoldSchema,
   goalProvenanceSchema,
   reportCriterionSchema,
   initiativeFieldsRejectedFor,
@@ -339,5 +342,140 @@ describe("reportCriterionSchema", () => {
     // A report is a one-way statement about what was seen.
     expect(reportCriterionSchema.safeParse({ status: "pending" }).success).toBe(false);
     expect(reportCriterionSchema.safeParse({ status: "never_registered" }).success).toBe(false);
+  });
+});
+
+describe("goalHypothesisSchema", () => {
+  const hypothesis = {
+    id: "h1",
+    statement: "An MCP-only interface is enough for a household to act",
+    verdict: "untested" as const,
+  };
+
+  it("names the three answers the model defines, plus the state before them", () => {
+    expect([...GOAL_HYPOTHESIS_VERDICTS]).toEqual([
+      "untested",
+      "supported",
+      "falsified",
+      "inconclusive",
+    ]);
+  });
+
+  it("accepts a stated but unanswered hypothesis", () => {
+    const parsed = goalHypothesisSchema.parse(hypothesis);
+    expect(parsed.verdict).toBe("untested");
+    expect(parsed.evidence).toBeUndefined();
+  });
+
+  it("accepts an answered hypothesis with its evidence and date", () => {
+    const parsed = goalHypothesisSchema.parse({
+      ...hypothesis,
+      verdict: "falsified",
+      evidence: "two of three MCP projects cancelled; no household completed a flow",
+      testedAt: "2026-05-30",
+    });
+    expect(parsed.verdict).toBe("falsified");
+    expect(parsed.testedAt).toBe("2026-05-30");
+  });
+
+  it("refuses a verdict that exceeds its evidence", () => {
+    // The rule the closure report lives by, applied where the answer is
+    // recorded rather than where it is summarised.
+    for (const verdict of ["supported", "falsified", "inconclusive"] as const) {
+      expect(goalHypothesisSchema.safeParse({ ...hypothesis, verdict, testedAt: "2026-05-30" }).success).toBe(false);
+      expect(goalHypothesisSchema.safeParse({ ...hypothesis, verdict, evidence: "x" }).success).toBe(false);
+      expect(
+        goalHypothesisSchema.safeParse({ ...hypothesis, verdict, evidence: "x", testedAt: "2026-05-30" }).success,
+      ).toBe(true);
+    }
+  });
+
+  it("refuses a test date on an untested hypothesis — that is a retro-fit", () => {
+    expect(goalHypothesisSchema.safeParse({ ...hypothesis, testedAt: "2026-05-30" }).success).toBe(false);
+  });
+
+  it("refuses an unparseable testedAt", () => {
+    expect(
+      goalHypothesisSchema.safeParse({
+        ...hypothesis,
+        verdict: "supported",
+        evidence: "x",
+        testedAt: "sometime in spring",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("round-trips a list of hypotheses through the goal schema, and keeps the prose field", () => {
+    // Fourteen hypotheses were folded into ten free-text fields, three of them
+    // carrying two or three questions in one string. The prose column stays
+    // readable — it cannot be split without inventing sentence boundaries —
+    // while the list is what can actually be answered.
+    const hypotheses = [
+      hypothesis,
+      {
+        id: "h2",
+        statement: "Local models are cheap enough to run every agent turn",
+        verdict: "inconclusive" as const,
+        evidence: "one week of runs, no cost baseline to compare against",
+        testedAt: "2026-06-14T09:00:00.000Z",
+      },
+    ];
+    const parsed = createGoalSchema.parse({
+      title: "Every interface generated from MCP tools",
+      level: "initiative",
+      hypothesis: "MCP-only is enough; and local models are cheap enough",
+      hypotheses,
+    });
+    expect(parsed.hypotheses).toEqual(hypotheses);
+    expect(parsed.hypothesis).toBe("MCP-only is enough; and local models are cheap enough");
+    expect(updateGoalSchema.parse({ hypotheses }).hypotheses).toEqual(hypotheses);
+    expect(updateGoalSchema.parse({ hypotheses: null }).hypotheses).toBeNull();
+  });
+
+  it("is initiative-only, like every other field of its kind", () => {
+    expect(
+      createGoalSchema.safeParse({ title: "x", level: "task", hypotheses: [hypothesis] }).success,
+    ).toBe(false);
+    expect(initiativeFieldsRejectedFor("team", { hypotheses: [hypothesis] })).toEqual(["hypotheses"]);
+  });
+});
+
+describe("goalHoldSchema", () => {
+  const hold = { reason: "waiting on a local model worth running", since: "2026-07-02" };
+
+  it("accepts a hold with its reason and the date it was taken", () => {
+    const parsed = goalHoldSchema.parse(hold);
+    expect(parsed.reason).toBe("waiting on a local model worth running");
+    expect(parsed.since).toBe("2026-07-02");
+  });
+
+  it("refuses a hold with no reason — that is indistinguishable from neglect", () => {
+    expect(goalHoldSchema.safeParse({ since: "2026-07-02" }).success).toBe(false);
+    expect(goalHoldSchema.safeParse({ reason: "", since: "2026-07-02" }).success).toBe(false);
+  });
+
+  it("refuses a hold with no date", () => {
+    expect(goalHoldSchema.safeParse({ reason: "not now" }).success).toBe(false);
+    expect(goalHoldSchema.safeParse({ reason: "not now", since: "whenever" }).success).toBe(false);
+  });
+
+  it("carries who decided, and when to look again, when those are known", () => {
+    const parsed = goalHoldSchema.parse({
+      ...hold,
+      byUserId: "srinivas",
+      reviewDate: "2026-10-01",
+    });
+    expect(parsed.byUserId).toBe("srinivas");
+    expect(parsed.reviewDate).toBe("2026-10-01");
+  });
+
+  it("round-trips on an initiative, and can be released with null", () => {
+    expect(createGoalSchema.parse({ title: "Zero-token agents", level: "initiative", hold }).hold).toEqual(hold);
+    expect(updateGoalSchema.parse({ hold: null }).hold).toBeNull();
+  });
+
+  it("is initiative-only", () => {
+    expect(createGoalSchema.safeParse({ title: "x", level: "task", hold }).success).toBe(false);
+    expect(initiativeFieldsRejectedFor("company", { hold })).toEqual(["hold"]);
   });
 });
