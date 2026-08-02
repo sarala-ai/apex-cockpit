@@ -407,13 +407,14 @@ export function topologicalDeleteOrder(tables: ErasableTable[]): {
     }
   }
 
-  // Kahn's algorithm, "child first": a table is emittable once nothing it still
-  // points at is waiting behind it.
+  // Kahn's algorithm, "child first". A table is deletable once nothing that
+  // still REFERENCES it is waiting behind it — the rows pointing at it are what
+  // block the delete, not the rows it points at.
   const remaining = new Set(parents.keys());
   const order: ErasableTable[] = [];
   while (remaining.size > 0) {
     const ready = [...remaining]
-      .filter((name) => [...parents.get(name)!].every((parent) => !remaining.has(parent)))
+      .filter((name) => ![...remaining].some((other) => other !== name && parents.get(other)!.has(name)))
       .sort();
     if (ready.length === 0) {
       const cycle = [...remaining].sort();
