@@ -55,6 +55,7 @@ import {
 import { accessService } from "../services/access.js";
 import { authorizationService } from "../services/authorization.js";
 import { issueService } from "../services/issues.js";
+import { pipelineIdOfCase } from "../services/pipeline-case-shape.js";
 import { assertCompanyAccess } from "./authz.js";
 import {
   computePipelineHealth,
@@ -623,13 +624,13 @@ async function listPipelineCaseDocumentRevisions(db: Db, input: { companyId: str
 
 async function resolveCasePipelineId(db: Db, input: { companyId: string; caseId: string }) {
   const row = await db
-    .select({ pipelineId: pipelineCases.pipelineId })
+    .select({ id: pipelineCases.id, pipelineId: pipelineCases.pipelineId })
     .from(pipelineCases)
     .where(and(eq(pipelineCases.companyId, input.companyId), eq(pipelineCases.id, input.caseId)))
     .limit(1)
     .then((rows) => rows[0] ?? null);
   if (!row) throw notFound("Pipeline case not found");
-  return row.pipelineId;
+  return pipelineIdOfCase(row);
 }
 
 function activityActorForPipelineRoute(actor: PipelineActor) {
@@ -2311,7 +2312,7 @@ async function getCaseDetail(db: Db, companyId: string, caseId: string) {
     liveness,
     builtFromAutomation,
   ] = await Promise.all([
-    db.select().from(pipelineStages).where(eq(pipelineStages.pipelineId, row.case.pipelineId)).orderBy(asc(pipelineStages.position)),
+    db.select().from(pipelineStages).where(eq(pipelineStages.pipelineId, pipelineIdOfCase(row.case))).orderBy(asc(pipelineStages.position)),
     db.select().from(pipelineCaseIssueLinks).where(and(eq(pipelineCaseIssueLinks.companyId, companyId), eq(pipelineCaseIssueLinks.caseId, caseId))),
     db.select().from(pipelineCaseBlockers).where(and(eq(pipelineCaseBlockers.companyId, companyId), eq(pipelineCaseBlockers.caseId, caseId))),
     db.select().from(pipelineCaseBlockers).where(and(eq(pipelineCaseBlockers.companyId, companyId), eq(pipelineCaseBlockers.blockedByCaseId, caseId))),

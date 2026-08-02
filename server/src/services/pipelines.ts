@@ -50,6 +50,7 @@ import { logActivity } from "./activity-log.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import { authorizationService } from "./authorization.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
+import { pipelineIdOfCase } from "./pipeline-case-shape.js";
 import {
   formatPipelineCaseOutputContextMarkdown,
   pipelineCaseOutputsService,
@@ -645,6 +646,20 @@ function conflictDetailsForCase(row: typeof pipelineCases.$inferSelect, stage?: 
     version: row.version,
     stage: stage ? { id: stage.id, key: stage.key, kind: stage.kind } : { id: row.stageId },
   };
+}
+
+/**
+ * `stage_id` and `step_key` move together, always.
+ *
+ * `step_key` is the authoritative current-step pointer shared with
+ * flow-defined cases (0164) — a stage key and a flow node id are the same kind
+ * of thing. `stage_id` stays as the denormalised convenience every pipeline
+ * query already joins on. Writing them through one helper is what keeps
+ * "authoritative" from being a comment rather than a fact; the only other
+ * place that has to remember is `updateStage`, when a stage is RENAMED.
+ */
+function stagePointer(stage: { id: string; key: string }) {
+  return { stageId: stage.id, stepKey: stage.key };
 }
 
 function stageConfig(stage: typeof pipelineStages.$inferSelect): PipelineStageConfig {
@@ -2033,7 +2048,7 @@ async function notifyDependentWorkIssuesOfUpstreamContentChange(
   }
 
   const upstreamLink = buildCaseDeepLink({
-    pipelineId: input.upstreamCase.pipelineId,
+    pipelineId: pipelineIdOfCase(input.upstreamCase),
     caseId: input.upstreamCase.id,
   });
   const body = `Upstream case [${input.upstreamCase.caseKey}](${upstreamLink}) changed (v${input.previousVersion}→v${input.version}).`;
@@ -2514,7 +2529,7 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
     const availableTargetStages = await findUpstreamAutomatedStages(dbOrTx, {
       companyId: input.companyId,
       caseId: input.caseId,
-      pipelineId: detail.case.pipelineId,
+      pipelineId: pipelineIdOfCase(detail.case),
       currentStageId: detail.stage.id,
     });
     const requestedTargetStageId = input.targetStageId?.trim() || null;
@@ -3229,9 +3244,10 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
       throw conflict("Pipeline case version conflict", conflictDetailsForCase(current, fromStage));
     }
 
+    const currentPipelineId = pipelineIdOfCase(current);
     const toStage = input.toStageId
-      ? await getStageOrThrow(tx, current.pipelineId, input.toStageId)
-      : await getStageByKeyOrThrow(tx, current.pipelineId, input.toStageKey ?? "");
+      ? await getStageOrThrow(tx, currentPipelineId, input.toStageId)
+      : await getStageByKeyOrThrow(tx, currentPipelineId, input.toStageKey ?? "");
     assertStageEnabled(toStage, "transition");
     if (fromStage.id !== toStage.id) {
       assertActorCanApproveStageExit(fromStage, input.actor);
@@ -3251,7 +3267,7 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
         .from(pipelineTransitions)
         .where(
           and(
-            eq(pipelineTransitions.pipelineId, current.pipelineId),
+            eq(pipelineTransitions.pipelineId, currentPipelineId),
             eq(pipelineTransitions.fromStageId, fromStage.id),
             eq(pipelineTransitions.toStageId, toStage.id),
           ),
@@ -3272,7 +3288,7 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
     const [updated] = await tx
       .update(pipelineCases)
       .set({
-        stageId: toStage.id,
+        ...stagePointer(toStage),
         version: current.version + 1,
         terminalKind: enteringTerminal,
         terminalAt: enteringTerminal ? nowDate() : null,
@@ -3376,7 +3392,7 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
     if (visited.has(input.stage.id)) return;
     const rollup = await computeCaseRollup(tx, input.companyId, input.caseRow.id);
     if (!rollup.complete || (rollup.total === 0 && !gate.explicitZeroChildrenPass)) return;
-    const toStage = await getStageByKeyOrThrow(tx, input.caseRow.pipelineId, toStageKey);
+    const toStage = await getStageByKeyOrThrow(tx, pipelineIdOfCase(input.caseRow), toStageKey);
     if (toStage.id === input.stage.id) return;
     visited.add(input.stage.id);
     try {
@@ -3438,7 +3454,7 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
         continue;
       }
       try {
-        const toStage = await getStageByKeyOrThrow(tx, ancestor.case.pipelineId, toStageKey);
+        const toStage = await getStageByKeyOrThrow(tx, pipelineIdOfCase(ancestor.case), toStageKey);
         assertStageEnabled(toStage, "auto_advance");
         if (toStage.id === ancestor.stage.id) continue;
         await transitionCaseInTransaction(tx, {
@@ -3676,6 +3692,15 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
           .where(and(eq(pipelineStages.id, input.stageId), eq(pipelineStages.pipelineId, input.pipelineId)))
           .returning();
         if (!updated) throw notFound("Pipeline stage not found");
+        // A rename moves the pointer without moving the case. `step_key` is
+        // authoritative, so leaving it on the old key would strand every case
+        // sitting on this stage — the one place `stagePointer` cannot cover.
+        if (updated.key !== existing.key) {
+          await tx
+            .update(pipelineCases)
+            .set({ stepKey: updated.key, updatedAt: nowDate() })
+            .where(eq(pipelineCases.stageId, updated.id));
+        }
         if (nextRoutineId) {
           await stampPipelineAutomationRoutine(tx, {
             companyId: input.companyId,
@@ -3816,7 +3841,7 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
           const movedCases = await tx
             .update(pipelineCases)
             .set({
-              stageId: targetStage.id,
+              ...stagePointer(targetStage),
               version: sql`${pipelineCases.version} + 1`,
               terminalKind: terminalKindForStage(targetStage.kind),
               terminalAt: isTerminalKind(targetStage.kind) ? nowDate() : null,
@@ -3967,7 +3992,9 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
           .values({
             companyId: input.companyId,
             pipelineId: input.pipelineId,
-            stageId: stage.id,
+            ...stagePointer(stage),
+            definitionKind: "pipeline" as const,
+            definitionRef: input.pipelineId,
             caseKey,
             title: input.title,
             summary: input.summary ?? null,
@@ -4649,7 +4676,7 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
           const [updated] = await tx
             .update(pipelineCases)
             .set({
-              stageId: plan.targetStageRow.id,
+              ...stagePointer(plan.targetStageRow),
               terminalKind: enteringTerminal,
               terminalAt: isTerminalKind(enteringTerminal) ? now : null,
               pendingSuggestion: null,
@@ -4770,7 +4797,7 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
     }) {
       return db.transaction(async (tx) => {
         const { case: existing } = await getCaseWithStageOrThrow(tx, input.companyId, input.caseId);
-        await getStageByKeyOrThrow(tx, existing.pipelineId, input.toStageKey);
+        await getStageByKeyOrThrow(tx, pipelineIdOfCase(existing), input.toStageKey);
         const suggestion = {
           id: randomUUID(),
           toStageKey: input.toStageKey,
@@ -5092,7 +5119,7 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
           ? db
             .select()
             .from(pipelineStages)
-            .where(eq(pipelineStages.pipelineId, detail.case.pipelineId))
+            .where(eq(pipelineStages.pipelineId, pipelineIdOfCase(detail.case)))
           : Promise.resolve([]),
       ]);
       const routinesById = new Map(routineRows.map((routine) => [routine.id, routine]));

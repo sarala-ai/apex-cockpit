@@ -8,10 +8,20 @@
  * pointer.
  *
  * Single-writer discipline: this coordinator is the ONLY thing that writes
- * the issues.flow* columns. Every write is an optimistic compare-and-set
- * against the (flowStatus, flowNodeId) it last read — a lost race is a
- * classified conflict, never a silent overwrite. Every transition stamps
- * flowAdvancedAt and lands a classified activity-log entry.
+ * the flow's runtime state. Since the execution-substrate merge's first step
+ * that state lives on a CASE ROW (`pipeline_cases`, definition_kind='flow',
+ * linked to the issue through `pipeline_case_issue_links` with role `work`),
+ * and the issues.flow* columns are a denormalised mirror of it. Every
+ * transition writes the case first, under an optimistic version
+ * compare-and-set, and mirrors the columns in the SAME transaction — so the
+ * two can never diverge the way they did when APE-5 was closed `done` while
+ * its gate still read `waiting_gate`. A lost race is a classified `409
+ * version_conflict`, never a silent overwrite. The old
+ * (flowStatus, flowNodeId) compare-and-set is retained on the mirror as a
+ * second, cheaper guard; the version is the one that holds, because the pair
+ * is not monotonic and a flow that returns to a node it already visited
+ * returns the pair to a value a stale reader still matches (see
+ * services/flow-cases.ts on ABA).
  *
  * Interruption is by exception, not by schedule: gates and failures surface
  * (approval / issue comment + activity); clean advancement is silent.
@@ -37,10 +47,18 @@
 import { eq, and, lt, isNull, or, inArray, desc, sql as sqlExpr } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, heartbeatRuns, issues } from "@paperclipai/db";
-import { conflict, notFound, unprocessable } from "../../errors.js";
+import { HttpError, conflict, notFound, unprocessable } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { logActivity } from "../../services/activity-log.js";
 import { approvalService } from "../../services/approvals.js";
+import {
+  advanceFlowCase,
+  flowTerminalKind,
+  loadFlowCaseForIssue,
+  loadFlowCasesForIssues,
+  startFlowCase,
+  type FlowCaseState,
+} from "../../services/flow-cases.js";
 import { issueApprovalService } from "../../services/issue-approvals.js";
 import { issueService } from "../../services/issues.js";
 import {
@@ -108,6 +126,11 @@ export type FlowIssue = {
   flowRunId: string | null;
   flowStartedAt: Date | null;
   flowAdvancedAt: Date | null;
+  /** The authoritative runtime state, read at the same moment as the mirror
+   *  columns above. Null only for a flow that predates the case merge and was
+   *  not covered by the 0165 backfill — the coordinator then falls back to the
+   *  mirror-only compare-and-set rather than refusing to run. */
+  flowCase: FlowCaseState | null;
 };
 
 type NodeFailure = { errorType: string; message: string };
@@ -141,15 +164,33 @@ export type FlowCoordinatorDeps = {
   now: () => Date;
 };
 
-/** Raised when a compare-and-set on the flow columns matched no row — some
- *  other actor moved the state. Single-writer discipline makes this a bug
- *  worth surfacing loudly, not a case to paper over. */
-export class FlowStateConflictError extends Error {
-  constructor(issueId: string, expected: { flowStatus: string | null; flowNodeId: string | null }) {
+/** Raised when a compare-and-set on the flow's runtime state matched no row —
+ *  some other actor moved it. Single-writer discipline makes this a bug worth
+ *  surfacing loudly, not a case to paper over.
+ *
+ *  An HttpError so that a conflict reaching an HTTP boundary answers with the
+ *  SAME `409 version_conflict` contract pipelines already return
+ *  (services/pipelines.ts). One concurrency contract across the substrate, not
+ *  two: a client that already knows how to retry a pipeline case transition
+ *  needs no new vocabulary for a flow one. */
+export class FlowStateConflictError extends HttpError {
+  constructor(
+    issueId: string,
+    expected: { flowStatus: string | null; flowNodeId: string | null },
+    caseDetails?: Record<string, unknown>,
+  ) {
     super(
+      409,
       `flow state for issue ${issueId} changed underneath the coordinator ` +
         `(expected status=${expected.flowStatus} node=${expected.flowNodeId}) — ` +
         `single-writer discipline violated or a concurrent advance ran.`,
+      {
+        code: "version_conflict",
+        issueId,
+        expectedFlowStatus: expected.flowStatus,
+        expectedFlowNodeId: expected.flowNodeId,
+        ...(caseDetails ?? {}),
+      },
     );
     this.name = "FlowStateConflictError";
   }
@@ -309,12 +350,26 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
       .where(and(eq(issues.id, issueId), isNull(issues.flowExecutorAgentId)));
   }
 
+  /** Read the mirror columns and the authoritative case in one snapshot. Both
+   *  halves of a transition's compare-and-set come from here, so they are
+   *  always the same read. */
   async function getIssue(issueId: string): Promise<FlowIssue | null> {
     const rows = await db.select(FLOW_COLUMNS).from(issues).where(eq(issues.id, issueId));
-    return (rows[0] as FlowIssue | undefined) ?? null;
+    const row = rows[0];
+    if (!row) return null;
+    return { ...(row as Omit<FlowIssue, "flowCase">), flowCase: await loadFlowCaseForIssue(db, issueId) };
   }
 
-  /** Compare-and-set transition on the flow columns + classified activity log. */
+  /**
+   * Compare-and-set transition + classified activity log.
+   *
+   * Case first, mirror second, one transaction. The case's `version` is the
+   * guard that actually holds; the mirror's `(flowStatus, flowNodeId)`
+   * compare-and-set is kept because it costs nothing and catches the same
+   * races one step earlier. Both in a transaction because a bumped version
+   * beside an unmirrored column IS the divergence this whole change exists to
+   * remove.
+   */
   async function transition(
     issue: FlowIssue,
     patch: Partial<{
@@ -328,24 +383,47 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
     details: Record<string, unknown>,
   ): Promise<FlowIssue> {
     const stamp = deps.now();
-    const updated = await db
-      .update(issues)
-      .set({ ...patch, flowAdvancedAt: stamp, updatedAt: stamp })
-      .where(
-        and(
-          eq(issues.id, issue.id),
-          issue.flowStatus === null ? isNull(issues.flowStatus) : eq(issues.flowStatus, issue.flowStatus),
-          issue.flowNodeId === null ? isNull(issues.flowNodeId) : eq(issues.flowNodeId, issue.flowNodeId),
-        ),
-      )
-      .returning(FLOW_COLUMNS);
-    if (updated.length === 0) {
-      throw new FlowStateConflictError(issue.id, {
-        flowStatus: issue.flowStatus,
-        flowNodeId: issue.flowNodeId,
-      });
-    }
-    const next = updated[0] as FlowIssue;
+    const nextNodeId = patch.flowNodeId !== undefined ? patch.flowNodeId : issue.flowNodeId;
+    const nextStatus = patch.flowStatus !== undefined ? patch.flowStatus : issue.flowStatus;
+    const { row: next, flowCase } = await db.transaction(async (tx) => {
+      let flowCase = issue.flowCase;
+      if (flowCase) {
+        try {
+          flowCase = await advanceFlowCase(tx, flowCase, {
+            stepKey: nextNodeId ?? flowCase.stepKey,
+            terminalKind: flowTerminalKind(nextStatus),
+            at: stamp,
+          });
+        } catch (err) {
+          if (err instanceof HttpError && err.status === 409) {
+            throw new FlowStateConflictError(
+              issue.id,
+              { flowStatus: issue.flowStatus, flowNodeId: issue.flowNodeId },
+              (err.details ?? {}) as Record<string, unknown>,
+            );
+          }
+          throw err;
+        }
+      }
+      const updated = await tx
+        .update(issues)
+        .set({ ...patch, flowAdvancedAt: stamp, updatedAt: stamp })
+        .where(
+          and(
+            eq(issues.id, issue.id),
+            issue.flowStatus === null ? isNull(issues.flowStatus) : eq(issues.flowStatus, issue.flowStatus),
+            issue.flowNodeId === null ? isNull(issues.flowNodeId) : eq(issues.flowNodeId, issue.flowNodeId),
+          ),
+        )
+        .returning(FLOW_COLUMNS);
+      if (updated.length === 0) {
+        throw new FlowStateConflictError(issue.id, {
+          flowStatus: issue.flowStatus,
+          flowNodeId: issue.flowNodeId,
+        });
+      }
+      return { row: updated[0] as Omit<FlowIssue, "flowCase">, flowCase };
+    });
     logger.info(
       { issueId: issue.id, flowName: next.flowName, flowNodeId: next.flowNodeId, flowStatus: next.flowStatus, action },
       `flow coordinator: ${action}`,
@@ -362,10 +440,12 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
         flowNodeId: next.flowNodeId,
         flowStatus: next.flowStatus,
         flowAdvancedAt: stamp.toISOString(),
+        caseId: flowCase?.id ?? null,
+        caseVersion: flowCase?.version ?? null,
         ...details,
       },
     });
-    return next;
+    return { ...next, flowCase };
   }
 
   /** Surface an exception to the human: issue comment (system-authored) +
@@ -1228,30 +1308,47 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
       const { flow } = await deps.loadDefinition(input.flowName);
       const firstNode = flow.nodes[0] as FlowNode;
       const stamp = deps.now();
-      const started = await db
-        .update(issues)
-        .set({
+      // The case comes into existence here, in the same transaction as the
+      // mirror. A flow that started without one is precisely the state this
+      // step removes, so it is not an "ensure it later" concern.
+      const startedCase = await db.transaction(async (tx) => {
+        const started = await tx
+          .update(issues)
+          .set({
+            flowName: flow.name,
+            flowNodeId: firstNode.id,
+            flowStatus: "running",
+            flowRunId: null,
+            // A new flow resolves its executor afresh; never inherits the
+            // previous flow's binding.
+            flowExecutorAgentId: null,
+            flowStartedAt: stamp,
+            flowAdvancedAt: stamp,
+            updatedAt: stamp,
+          })
+          .where(
+            and(
+              eq(issues.id, issue.id),
+              or(isNull(issues.flowStatus), inArray(issues.flowStatus, ["done", "failed"])),
+            ),
+          )
+          .returning(FLOW_COLUMNS);
+        if (started.length === 0) {
+          throw conflict("Issue flow state changed concurrently — start aborted.");
+        }
+        return startFlowCase(tx, {
+          companyId: issue.companyId,
+          issueId: issue.id,
+          // The ticket identifier is the case key a human would use, and it is
+          // already unique per company. Falling back to the id keeps an issue
+          // created before identifiers (or mid-assignment) startable.
+          caseKey: issue.identifier ?? issue.id,
+          title: issue.title,
           flowName: flow.name,
-          flowNodeId: firstNode.id,
-          flowStatus: "running",
-          flowRunId: null,
-          // A new flow resolves its executor afresh; never inherits the
-          // previous flow's binding.
-          flowExecutorAgentId: null,
-          flowStartedAt: stamp,
-          flowAdvancedAt: stamp,
-          updatedAt: stamp,
-        })
-        .where(
-          and(
-            eq(issues.id, issue.id),
-            or(isNull(issues.flowStatus), inArray(issues.flowStatus, ["done", "failed"])),
-          ),
-        )
-        .returning(FLOW_COLUMNS);
-      if (started.length === 0) {
-        throw conflict("Issue flow state changed concurrently — start aborted.");
-      }
+          stepKey: firstNode.id,
+          at: stamp,
+        });
+      });
       await logActivity(db, {
         companyId: issue.companyId,
         actorType: "system",
@@ -1265,6 +1362,8 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
           nodeId: firstNode.id,
           nodeCount: flow.nodes.length,
           flowStartedAt: stamp.toISOString(),
+          caseId: startedCase.id,
+          caseVersion: startedCase.version,
         },
       });
       logger.info(
@@ -1279,6 +1378,8 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
         flowName: flow.name,
         flowNodeId: firstNode.id,
         flowStatus: "running" as FlowStatus,
+        caseId: startedCase.id,
+        caseVersion: startedCase.version,
         execution: runLoop(issue.id),
       };
     },
@@ -1493,11 +1594,18 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
      *  a workflow node interrupted mid-run runs again on resume). */
     sweep: async (staleMs: number) => {
       const cutoff = new Date(deps.now().getTime() - staleMs);
+      // Batch-hydrate the cases: a sweep can pick up many stale flows and must
+      // not turn that into one case query per row.
+      const hydrate = async (rows: Omit<FlowIssue, "flowCase">[]): Promise<FlowIssue[]> => {
+        const cases = await loadFlowCasesForIssues(db, rows.map((row) => row.id));
+        return rows.map((row) => ({ ...row, flowCase: cases.get(row.id) ?? null }));
+      };
       const stale = await db
         .select(FLOW_COLUMNS)
         .from(issues)
-        .where(and(eq(issues.flowStatus, "running"), lt(issues.flowAdvancedAt, cutoff)));
-      for (const row of stale as FlowIssue[]) {
+        .where(and(eq(issues.flowStatus, "running"), lt(issues.flowAdvancedAt, cutoff)))
+        .then(hydrate);
+      for (const row of stale) {
         logger.info(
           { issueId: row.id, flowName: row.flowName, flowNodeId: row.flowNodeId, staleSince: row.flowAdvancedAt },
           "flow coordinator: sweep resuming stale running flow",
@@ -1521,9 +1629,10 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
       const staleAgent = await db
         .select(FLOW_COLUMNS)
         .from(issues)
-        .where(and(eq(issues.flowStatus, "waiting_agent"), lt(issues.flowAdvancedAt, cutoff)));
+        .where(and(eq(issues.flowStatus, "waiting_agent"), lt(issues.flowAdvancedAt, cutoff)))
+        .then(hydrate);
       let agentRecovered = 0;
-      for (const row of staleAgent as FlowIssue[]) {
+      for (const row of staleAgent) {
         try {
           const outcome = await recoverWaitingAgent(row);
           if (outcome) agentRecovered += 1;

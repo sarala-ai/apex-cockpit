@@ -26,6 +26,7 @@ import {
 } from "@paperclipai/shared";
 import { notFound } from "../errors.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
+import { pipelineIdOfCase } from "./pipeline-case-shape.js";
 import { isLowTrustQuarantined, LOW_TRUST_QUARANTINED_BODY } from "./source-trust.js";
 
 const PREVIEW_TEXT_MAX_LENGTH = 500;
@@ -510,7 +511,7 @@ export function pipelineCaseOutputsService(db: Db) {
 
       return {
         caseId,
-        pipelineId: caseRow.pipelineId,
+        pipelineId: pipelineIdOfCase(caseRow),
         generatedAt: new Date().toISOString(),
         sources,
         items: items.sort(sortOutputs),
