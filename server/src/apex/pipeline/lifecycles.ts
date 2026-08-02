@@ -287,7 +287,10 @@ function buildStagesAndTransitions(nodes: LifecycleNode[]): {
 // now plays the flow coordinator's role, not by this seeder.
 // ---------------------------------------------------------------------------
 
-const CHORE_NODES: LifecycleNode[] = [
+// Retained as the record of what the chore lifecycle was, and as the input to
+// whoever expresses it as a single workflow. It is NOT seeded — see the note on
+// LIFECYCLE_DEFINITIONS for why a gateless, agentless chain is not a process.
+export const CHORE_NODES: LifecycleNode[] = [
   { id: "run", kind: "workflow", workflow: { workflow: "cloud_run_deploy", params: {} } },
   {
     id: "verify",
@@ -458,17 +461,41 @@ function lifecycle(input: {
   };
 }
 
+/**
+ * THREE processes are seeded, not four. `chore` is deliberately absent, and
+ * `CHORE_NODES` above is kept only as the record of what it was.
+ *
+ * The bar: a sequence with no gate and no agent step should not be a process.
+ * Cases, stages, leases, versions and sweeps exist to govern non-determinism
+ * and to hold work for a human. A chore lifecycle — two workflow invocations
+ * and a check — has neither, so the machinery buys nothing and costs a row,
+ * a board column and a concept.
+ *
+ * That bar was CHECKED against this codebase rather than assumed, because it
+ * would have been easy to be wrong about:
+ *
+ *  - BOARD PRESENCE. A ticket does not need a case to be visible. The issues
+ *    board (ui/src/pages/Issues.tsx -> GET /companies/:id/issues) renders from
+ *    `issues.status` with no join to `pipeline_cases` anywhere. What a chore
+ *    ticket loses is a CARD ON THE PIPELINES BOARD, which renders only from
+ *    case rows — not visibility, and not its status, assignee or audit trail.
+ *  - FAILURE SURFACING. Nothing is lost here because nothing was there: a
+ *    `step_held` / `automation_failed` event today produces no notification,
+ *    no inbox item and no sidebar badge. It is a row in `pipeline_case_events`
+ *    that a person only sees by opening that case's detail page. (That is a
+ *    real gap for the three processes that ARE seeded, and it is reported
+ *    rather than fixed here.)
+ *  - WHAT ELSE A CASE GIVES. Parent/child rollup, blockers and leases are the
+ *    load-bearing ones, and a leaf, single-shot, non-concurrent chore uses
+ *    none of them: rollup gates a parent on its children, blockers model
+ *    cross-case dependencies, leases arbitrate contention between actors.
+ *
+ * `chore` REMAINS A TICKET TYPE. Nothing here removes the word from the
+ * product — a chore ticket keeps its type, status, assignee, board presence
+ * and audit trail like any other. The only claim is that its lifecycle does
+ * not need stages.
+ */
 export const LIFECYCLE_DEFINITIONS: LifecycleDefinition[] = [
-  lifecycle({
-    key: "chore",
-    name: "Chore",
-    description: `Deterministic chore flow: run the deploy workflow, verify it with a
-      machine check, then land (release/publish). No human gates — CI green
-      is the completion signal.`,
-    version: "1.0",
-    ticketType: "chore",
-    nodes: CHORE_NODES,
-  }),
   lifecycle({
     key: "bug",
     name: "Bug",
