@@ -24,6 +24,7 @@ import type { Db } from "@paperclipai/db";
 import { badRequest } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { seedApexTowerPipeline } from "../apex/pipeline/seed.js";
+import { seedLifecyclePipelines } from "../apex/pipeline/lifecycles.js";
 import { openGateApprovalIfNeeded } from "../apex/pipeline/gate-bridge.js";
 import { IssueIngestionAdapter } from "../apex/pipeline/ingest-service.js";
 import { ExecDispatcher } from "../apex/pipeline/exec-dispatch.js";
@@ -71,7 +72,18 @@ export function apexPipelineRoutes(db: Db) {
       projectId: req.body.projectId ?? null,
       actor: pipelineActor(req),
     });
-    res.status(result.created ? 201 : 200).json(result);
+    // The typed lifecycles seed alongside it, as the SYSTEM actor rather than
+    // the requesting user. That is not a shortcut around the authorization
+    // check on `command` run targets — it is the case that check exists to
+    // distinguish. These definitions ship with the platform and are reviewed
+    // as code; what is refused is a person authoring a host command through
+    // the board (see `assertRunTargetAuthorized` in services/pipelines.ts).
+    const lifecycles = await seedLifecyclePipelines(db, {
+      companyId: req.body.companyId,
+      projectId: req.body.projectId ?? null,
+      actor: { type: "system" },
+    });
+    res.status(result.created ? 201 : 200).json({ ...result, lifecycles });
   });
 
   // (2c) Ingest a repo's open GitHub issues as pipeline cases.
