@@ -217,3 +217,62 @@ GET /api/projects/{projectId}/workspaces
 PATCH /api/projects/{projectId}/workspaces/{workspaceId}
 DELETE /api/projects/{projectId}/workspaces/{workspaceId}
 ```
+
+## Proposals — reviewing structured objects
+
+A design file renders at a gate. A code diff renders at a gate. A set of
+proposed records did not, which is why reviewing a reconstructed initiative
+tree had no home in the product.
+
+A **proposal** carries typed records of one `kind`, each with its own
+provenance (`confirmed` with a source, or `inferred`). Records are corrected
+**on the proposal** — no live object is touched — and the whole set goes to one
+approval gate. Approval materialises; rejection and request-changes write
+nothing.
+
+```
+GET   /api/proposal-kinds                          # kinds + their review columns
+POST  /api/companies/{companyId}/proposals
+GET   /api/proposals/{id}
+PATCH /api/proposals/{id}/records/{ref}            # correct one row in place
+POST  /api/proposals/{id}/submit                   # open the single gate
+GET   /api/proposals/{id}/export.csv               # read the set offline
+```
+
+A record with `targetId` UPDATES that object on approval; one without CREATES.
+This is what makes a proposal usable against a board that already has objects
+on it — a reconstruction is mostly corrections.
+
+`PATCH .../records/{ref}` merges `fields`, so correcting one cell never
+requires resending the rest of the row.
+
+The gate is an ordinary approval: `POST /api/approvals/{id}/approve` (which
+materialises), `.../request-revision` (which returns the set to the proposing
+agent with the reason attached), `.../reject`.
+
+Adding a kind is a registration — a materialiser in
+`server/src/services/proposals.ts` and a renderer in
+`ui/src/components/proposal-renderers/` — and touches neither the routes nor
+the review surface.
+
+## Goals as CSV
+
+For reading a lot of rows offline. **Not** the review path.
+
+```
+GET  /api/companies/{companyId}/goals/export.csv?level=initiative
+POST /api/companies/{companyId}/goals/import.csv[?apply=true]
+```
+
+Export is UTF-8 with a BOM (so Excel opens it correctly), ordered by
+`created_at` so two exports diff cleanly, with read-only columns marked in
+their header.
+
+Import is the secondary bulk-edit path, dry-run unless `?apply=true`:
+
+- a row **with** an `id` updates; a row **without** one creates
+- **a blank cell leaves the stored value unchanged**; to clear a field, put
+  `--` in it
+- `derived_status` and the `projects` column are computed — a cell that
+  disagrees is reported as a notice, never applied and never silently dropped
+- row errors carry their file line number and do not abort the batch
