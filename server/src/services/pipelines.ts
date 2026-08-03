@@ -44,12 +44,17 @@ import {
   type RoutineRevisionSnapshotV1,
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import { CliStepTargetRunner, type StepTargetRunner } from "../apex/steps/runner.js";
 import { renderTemplate, stepExecutor, type RunTarget } from "../apex/steps/step-executor.js";
 import type { ProcessDefinition, ProcessStep } from "../apex/steps/process-definition.js";
 import { isMachineEvaluableAcceptance } from "../apex/steps/agent-step.js";
 import { validateReviewPassIds } from "../apex/steps/review-passes.js";
-import { commissionBoundedAgentRun } from "../apex/steps/commission.js";
+import {
+  commissionBoundedAgentRun,
+  STEP_AGENT_CONTEXT_KEY,
+  STEP_TERMINAL_RUN_STATUSES,
+} from "../apex/steps/commission.js";
 import type { ChangeRequestRound } from "../apex/steps/agent-step.js";
 import { routineService } from "./routines.js";
 import { secretService } from "./secrets.js";
@@ -4014,6 +4019,256 @@ export function pipelineService(
     }));
   }
 
+  /**
+   * What happens when a commissioned agent run FINISHES.
+   *
+   * This is the other half of the agent step, and without it a case parks at
+   * `waiting_agent` forever. The keystone lives here: the run reaching
+   * `succeeded` is NOT the step succeeding. The SERVER then evaluates the
+   * stage's acceptance contract, and only that verdict advances the case. No
+   * agent is asked whether it succeeded — if it were, a model would be
+   * attesting to its own work and the platform's central claim would be gone.
+   *
+   * Idempotent by compare-and-set on `stepStatus`: a case that is no longer
+   * waiting on this run has already been dealt with (by an earlier sweep tick,
+   * or by a human moving it), and re-processing would double-advance it.
+   */
+  async function processAgentStepCompletion(
+    companyId: string,
+    caseId: string,
+    outcome: { runId: string; runStatus: string; error?: string | null },
+  ): Promise<boolean> {
+    const detail = await getCaseWithStageOrThrow(db, companyId, caseId);
+    if (detail.case.stepStatus !== "waiting_agent") return false;
+    const actor: PipelineActor = { type: "system" };
+
+    // Single-writer: only the update that still sees `waiting_agent` proceeds.
+    const [claimed] = await db
+      .update(pipelineCases)
+      .set({ stepStatus: null, stepRunId: null, updatedAt: nowDate() })
+      .where(and(eq(pipelineCases.id, caseId), eq(pipelineCases.stepStatus, "waiting_agent")))
+      .returning();
+    if (!claimed) return false;
+
+    await writeCaseEvent(db, {
+      companyId,
+      caseId,
+      type: "step_resumed",
+      actor,
+      payload: {
+        stageId: detail.stage.id,
+        stageKey: detail.stage.key,
+        runId: outcome.runId,
+        runStatus: outcome.runStatus,
+      },
+    });
+
+    const entry = stageAgentStep(detail.stage);
+    if (outcome.runStatus !== "succeeded") {
+      await recordAgentStepFailure(companyId, caseId, detail.stage, entry?.onFailureToStageKey ?? null, {
+        errorType: `agent_run_${outcome.runStatus}`,
+        message: outcome.error ?? `the commissioned run ended ${outcome.runStatus}`,
+      });
+      return true;
+    }
+
+    // The run succeeded. Now the SERVER looks.
+    const verdict = await evaluateStageAcceptance({ companyId, caseId, actor });
+    if (verdict.status === "held") {
+      // `evaluateStageAcceptance` has already written the hold and the
+      // verdict. Nothing further: the case stays where it is, visibly held,
+      // for a human or a re-run to resolve.
+      return true;
+    }
+    if (entry?.onSuccessToStageKey) {
+      await moveCaseAfterStepExit(companyId, caseId, {
+        toStageKey: entry.onSuccessToStageKey,
+        reason: "agent_step_accepted",
+        actor,
+      });
+    }
+    return true;
+  }
+
+  async function recordAgentStepFailure(
+    companyId: string,
+    caseId: string,
+    stage: typeof pipelineStages.$inferSelect,
+    onFailureToStageKey: string | null,
+    failure: { errorType: string; message: string },
+  ) {
+    await writeCaseEvent(db, {
+      companyId,
+      caseId,
+      type: "automation_failed",
+      actor: { type: "system" },
+      payload: { stageKey: stage.key, kind: "agent", errorType: failure.errorType, error: failure.message },
+    });
+    if (onFailureToStageKey) {
+      await moveCaseAfterStepExit(companyId, caseId, {
+        toStageKey: onFailureToStageKey,
+        reason: "agent_step_failure",
+        actor: { type: "system" },
+      });
+      return;
+    }
+    await writeStepHold(companyId, caseId, stage, {
+      reason: "agent_step_failure",
+      errorType: failure.errorType,
+      message: failure.message,
+      stepKey: stage.key,
+    });
+  }
+
+  /**
+   * Recover ONE case parked at `waiting_agent` past the staleness window.
+   *
+   * Carried across from the flow coordinator's `recoverWaitingAgent` with its
+   * classifications intact, because each branch is a real failure mode that
+   * was observed rather than imagined:
+   *
+   *  - NO RECORDED RUN. Either the commission crashed before linkage, or the
+   *    wakeup was DEFERRED and heartbeat later promoted it into a run carrying
+   *    this step's context markers. The promoted run is looked for before
+   *    giving up — treating a deferral as a failure would strand exactly the
+   *    runs that are about to work.
+   *  - A RETRY CHAIN. Heartbeat's process-loss retry makes a new run; the
+   *    chain is followed (bounded at 5, because a deeper one is itself
+   *    suspicious) and the case re-linked so completion matches.
+   *  - IN FLIGHT. Correct silence. A long agent step is not a stuck one.
+   *  - INTERRUPTED with no retry. Terminal-but-revivable that never revived.
+   *
+   * Every give-up path HOLDS the case with a classified reason. None of them
+   * silently advances it, and none of them silently leaves it parked.
+   */
+  async function recoverWaitingAgentCase(
+    caseRow: typeof pipelineCases.$inferSelect,
+  ): Promise<boolean> {
+    const companyId = caseRow.companyId;
+    const detail = await getCaseWithStageOrThrow(db, companyId, caseRow.id);
+    const entry = stageAgentStep(detail.stage);
+    const hold = async (failure: { errorType: string; message: string }) => {
+      await db
+        .update(pipelineCases)
+        .set({ stepStatus: null, stepRunId: null, updatedAt: nowDate() })
+        .where(and(eq(pipelineCases.id, caseRow.id), eq(pipelineCases.stepStatus, "waiting_agent")));
+      await recordAgentStepFailure(companyId, caseRow.id, detail.stage, entry?.onFailureToStageKey ?? null, failure);
+      return true;
+    };
+
+    let linkedRunId = caseRow.stepRunId;
+    if (!linkedRunId) {
+      const marker = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(and(
+          sql`${heartbeatRuns.contextSnapshot} ->> 'stepKey' = ${detail.stage.key}`,
+          sql`${heartbeatRuns.contextSnapshot} ->> '${sql.raw(STEP_AGENT_CONTEXT_KEY)}' = 'true'`,
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' is not null`,
+        ))
+        .orderBy(desc(heartbeatRuns.createdAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!marker) {
+        return hold({
+          errorType: "agent_run_not_commissioned",
+          message:
+            "the case parked at waiting_agent past the staleness window with no commissioned run recorded " +
+            "and no run carrying this step's context — the commission was interrupted or the wakeup was skipped",
+        });
+      }
+      linkedRunId = marker.id;
+    }
+
+    let runId = linkedRunId;
+    let run = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    for (let depth = 0; run && depth < 5; depth += 1) {
+      const retry = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.retryOfRunId, run.id))
+        .orderBy(desc(heartbeatRuns.createdAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!retry) break;
+      run = retry;
+      runId = retry.id;
+    }
+    if (!run) {
+      return hold({
+        errorType: "agent_run_lost",
+        message: `commissioned run ${runId} no longer exists — its completion can never be observed`,
+      });
+    }
+    if (["queued", "running", "scheduled_retry"].includes(run.status)) {
+      if (runId !== caseRow.stepRunId) {
+        await db
+          .update(pipelineCases)
+          .set({ stepRunId: runId, updatedAt: nowDate() })
+          .where(eq(pipelineCases.id, caseRow.id));
+        return true;
+      }
+      return false; // still in flight — correct silence
+    }
+    if (run.status === "interrupted") {
+      return hold({
+        errorType: "agent_run_interrupted",
+        message: `commissioned run ${runId} was interrupted and no retry followed`,
+      });
+    }
+    if ((STEP_TERMINAL_RUN_STATUSES as readonly string[]).includes(run.status)) {
+      return processAgentStepCompletion(companyId, caseRow.id, {
+        runId,
+        runStatus: run.status,
+        error: run.error ?? null,
+      });
+    }
+    return hold({
+      errorType: "agent_run_status_unknown",
+      message: `commissioned run ${runId} is in unrecognized status '${run.status}'`,
+    });
+  }
+
+  /**
+   * The sweep. Cases parked at `waiting_agent` whose row has not moved for a
+   * full tick.
+   *
+   * `waiting_gate` is deliberately NOT swept. A gate waiting on a person is
+   * not a stuck case, and "recovering" it would mean either deciding for them
+   * or holding work that is behaving exactly as designed. How long a gate has
+   * been waiting belongs on the decision brief, where a human can see it —
+   * not in a job that acts on it.
+   */
+  async function sweepWaitingAgentCases(staleMs: number) {
+    const cutoff = new Date(Date.now() - staleMs);
+    const stale = await db
+      .select()
+      .from(pipelineCases)
+      .where(and(
+        eq(pipelineCases.stepStatus, "waiting_agent"),
+        isNull(pipelineCases.retiredAt),
+        sql`${pipelineCases.updatedAt} < ${cutoff}`,
+      ))
+      .limit(200);
+    let recovered = 0;
+    for (const caseRow of stale) {
+      try {
+        if (await recoverWaitingAgentCase(caseRow)) recovered += 1;
+      } catch (err) {
+        // One bad case must not stop the sweep for every other case.
+        logger.error(
+          { err, caseId: caseRow.id, stepRunId: caseRow.stepRunId },
+          "pipeline sweep: agent-step recovery failed (classified: agent_sweep_failed)",
+        );
+      }
+    }
+    return { examined: stale.length, recovered };
+  }
+
   /** The transition half of the write-back. Best-effort by design: a gate the
    *  case does not satisfy (approval, blockers, an unmet acceptance contract)
    *  must leave the case where it is with the failure recorded, never roll back
@@ -6194,6 +6449,14 @@ export function pipelineService(
         actor: input.actor ?? { type: "system" },
       });
     },
+
+    /** Close the loop on a finished agent run. The run reaching `succeeded` is
+     *  not the step succeeding — the server evaluates acceptance, and only
+     *  that verdict advances the case. */
+    processAgentStepCompletion,
+
+    /** The recovery half of advancement. See `sweepWaitingAgentCases`. */
+    sweepWaitingAgentCases,
 
     async suggestTransition(input: {
       companyId: string;
