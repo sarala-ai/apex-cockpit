@@ -7,7 +7,8 @@ import { and, desc, eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, builtInManagedResources, companies, issueThreadInteractions, issues, routines, routineTriggers } from "@paperclipai/db";
 import { syncRoutineVariablesWithTemplate } from "@paperclipai/shared";
-import type { Agent, Approval, CompanySkill, PermissionKey, Routine, RoutineTrigger, RoutineVariable } from "@paperclipai/shared";
+import type { Agent, Approval, CompanySkill, EnvBinding, PermissionKey, Routine, RoutineTrigger, RoutineVariable } from "@paperclipai/shared";
+import { PERMISSION_PROFILES, type PermissionProfile } from "../apex/steps/run-policy.js";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { agentInstructionsService } from "./agent-instructions.js";
@@ -20,6 +21,7 @@ import {
 import { companySkillService } from "./company-skills.js";
 import { routineService } from "./routines.js";
 import { accessService } from "./access.js";
+import { APEX_AGENT_ROSTER } from "./apex-agent-roster.js";
 
 export type BuiltInAgentStatus = "not_provisioned" | "pending_approval" | "needs_setup" | "ready" | "paused";
 
@@ -37,6 +39,36 @@ export interface BuiltInAgentDefinition {
   defaultManager?: "single_root_agent" | null;
   allowedAdapterTypes?: string[];
   defaultBudgetMonthlyCents?: number;
+  /**
+   * The run-policy profile a step must declare when it commissions this agent
+   * (`server/src/apex/steps/run-policy.ts`). Recorded on the agent record's
+   * `permissions` so the blast radius is legible where the agent is, and read
+   * by the lifecycle seeder so a step and its agent cannot disagree about it.
+   *
+   * Optional because the three inherited fork definitions predate the idea and
+   * are never commissioned by a lifecycle step; every roster definition sets it.
+   */
+  defaultPermissionProfile?: PermissionProfile;
+  /**
+   * Environment this definition NEEDS, declared as secret REFERENCES.
+   *
+   * Never a value. `syncAgentAdapterEnvBindings` turns each entry into a
+   * binding/declaration when the agent record is written, so the operator
+   * supplies the secret once into the store and the run resolves it at
+   * dispatch. A definition living in git therefore has nothing to leak.
+   */
+  defaultAdapterEnv?: Record<string, EnvBinding>;
+  /**
+   * Provision this definition into every company at startup.
+   *
+   * Before the roster, the only auto-provisioned definitions were the ones
+   * carrying a `bundle` (i.e. `reflection-coach`), which made "has a bundle"
+   * accidentally mean "is part of the workforce". A lifecycle agent step needs
+   * its agent to EXIST before the first ticket reaches it, and none of the
+   * roster carries a bundle — so the intent is declared directly instead of
+   * inferred from an unrelated field.
+   */
+  autoProvision?: boolean;
   bundle?: BuiltInAgentBundleDefinition;
 }
 
@@ -173,6 +205,11 @@ const REFLECTION_COACH_SKILL = readFileSync(
 );
 
 const DEFINITIONS = validateBuiltInAgentDefinitions([
+  // The four agents this product's OWN lifecycles commission, cut by
+  // permission surface rather than job title. See ./apex-agent-roster.ts —
+  // the reasoning lives beside the definitions, not here.
+  ...APEX_AGENT_ROSTER,
+  // Inherited from the upstream fork. Not commissioned by any lifecycle step.
   {
     key: "briefs",
     displayName: "Briefs Agent",
@@ -422,6 +459,29 @@ export function validateBuiltInAgentDefinitions(definitions: BuiltInAgentDefinit
     ) {
       throw new Error(`Built-in agent ${definition.key} defaultBudgetMonthlyCents must be a non-negative integer`);
     }
+    if (
+      definition.defaultPermissionProfile !== undefined
+      && !(PERMISSION_PROFILES as readonly string[]).includes(definition.defaultPermissionProfile)
+    ) {
+      throw new Error(
+        `Built-in agent ${definition.key} defaultPermissionProfile must be one of ` +
+          `${PERMISSION_PROFILES.join(", ")} — run-policy degrades an unrecognized profile to the safest ` +
+          `default silently, so a typo here would quietly change an agent's blast radius.`,
+      );
+    }
+    // A definition in git must never carry a credential VALUE. `envBindingSchema`
+    // still accepts a bare string for backward compatibility with rows humans
+    // authored; a DEFINITION has no such history, so the loose form is refused
+    // here rather than relied on never being used.
+    for (const [envKey, binding] of Object.entries(definition.defaultAdapterEnv ?? {})) {
+      if (typeof binding === "string" || !isPlainRecord(binding) || binding.type === "plain") {
+        throw new Error(
+          `Built-in agent ${definition.key} defaultAdapterEnv.${envKey} must be a secret REFERENCE ` +
+            `({type:"secret_ref"} or {type:"user_secret_ref"}), never a literal value — an agent record is ` +
+            `read back by the API, mirrored into config revisions, and carried into portability exports.`,
+        );
+      }
+    }
     if (definition.bundle) {
       if (!definition.bundle.stockVersion.trim()) {
         throw new Error(`Built-in agent ${definition.key} bundle requires a stockVersion`);
@@ -540,6 +600,35 @@ function builtInMetadata(definition: BuiltInAgentDefinition, existing?: Record<s
   });
 }
 
+/**
+ * The definition's declared secret REFERENCES, merged under `adapterConfig.env`
+ * without disturbing anything an operator already put there.
+ *
+ * Operator-set keys win: a company that binds `PENPOT_PASSWORD` to its own
+ * company secret must not have that rewritten to the stock user-secret
+ * reference on every startup reconcile. The definition only fills in what is
+ * absent, which is what "default" means everywhere else in this file.
+ */
+function withDefaultAdapterEnv(
+  definition: BuiltInAgentDefinition,
+  adapterConfig: Record<string, unknown>,
+): Record<string, unknown> {
+  const defaults = definition.defaultAdapterEnv;
+  if (!defaults || Object.keys(defaults).length === 0) return adapterConfig;
+  const existingEnv = isPlainRecord(adapterConfig.env) ? adapterConfig.env : {};
+  return { ...adapterConfig, env: { ...defaults, ...existingEnv } };
+}
+
+/** The agent record's `permissions`, carrying the definition's declared run
+ *  profile so an agent's blast radius is legible where the agent is — not only
+ *  on the steps that happen to commission it. */
+function definitionPermissions(definition: BuiltInAgentDefinition): Record<string, unknown> {
+  return {
+    ...(definition.defaultPermissions ?? {}),
+    ...(definition.defaultPermissionProfile ? { profile: definition.defaultPermissionProfile } : {}),
+  };
+}
+
 function definitionPatch(definition: BuiltInAgentDefinition, input: BuiltInAgentProvisionInput = {}) {
   const adapterType = input.adapterType ?? defaultAdapterType(definition);
   assertAdapterAllowed(definition, adapterType);
@@ -550,8 +639,8 @@ function definitionPatch(definition: BuiltInAgentDefinition, input: BuiltInAgent
     icon: definition.defaultIcon ?? null,
     capabilities: definition.shortPurpose,
     adapterType,
-    adapterConfig: input.adapterConfig ?? {},
-    permissions: definition.defaultPermissions ?? {},
+    adapterConfig: withDefaultAdapterEnv(definition, input.adapterConfig ?? {}),
+    permissions: definitionPermissions(definition),
     budgetMonthlyCents: input.budgetMonthlyCents ?? definition.defaultBudgetMonthlyCents ?? 0,
   };
 }
@@ -639,7 +728,7 @@ export function builtInAgentService(db: Db) {
 
   async function defaultProvisionInput(companyId: string, definition: BuiltInAgentDefinition, input: BuiltInAgentProvisionInput) {
     if (input.adapterType || input.adapterConfig) return input;
-    if (!definition.bundle) return input;
+    if (!definition.bundle && !definition.autoProvision) return input;
     const rows = await db
       .select({
         adapterType: agents.adapterType,
@@ -1355,7 +1444,20 @@ export function builtInAgentService(db: Db) {
         const adapterType = resolvedInput.adapterType ?? existing.adapterType;
         assertAdapterAllowed(definition, adapterType);
         patch.adapterType = adapterType;
-        patch.adapterConfig = resolvedInput.adapterConfig ?? existing.adapterConfig;
+        patch.adapterConfig = withDefaultAdapterEnv(
+          definition,
+          (resolvedInput.adapterConfig ?? existing.adapterConfig) as Record<string, unknown>,
+        );
+      } else if (!existingPendingApproval && definition.defaultAdapterEnv) {
+        // The definition declares secret references and this reconcile touched
+        // no adapter fields — fill in only the references that are absent, so a
+        // company that has never opened the agent's setup screen still ends up
+        // with a DECLARED need (surfaced as "this secret is missing") rather
+        // than a run that fails obscurely inside a tool.
+        const merged = withDefaultAdapterEnv(definition, existing.adapterConfig as Record<string, unknown>);
+        if (JSON.stringify(merged) !== JSON.stringify(existing.adapterConfig)) {
+          patch.adapterConfig = merged;
+        }
       }
       if (!existingPendingApproval && resolvedInput.budgetMonthlyCents !== undefined) {
         patch.budgetMonthlyCents = resolvedInput.budgetMonthlyCents;
@@ -1392,7 +1494,7 @@ export function builtInAgentService(db: Db) {
       reportsTo,
       metadata: builtInMetadata(definition),
       runtimeConfig: {},
-      permissions: definition.defaultPermissions ?? {},
+      permissions: definitionPermissions(definition),
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
     }, { allowBuiltInAgentMetadata: true }) as Agent;
@@ -1465,7 +1567,7 @@ export function builtInAgentService(db: Db) {
       reportsTo,
       metadata: builtInMetadata(definition),
       runtimeConfig: {},
-      permissions: definition.defaultPermissions ?? {},
+      permissions: definitionPermissions(definition),
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
     }, { allowBuiltInAgentMetadata: true }) as Agent;
@@ -1517,6 +1619,10 @@ export function builtInAgentService(db: Db) {
       title: definition.defaultTitle ?? null,
       icon: definition.defaultIcon ?? null,
       capabilities: definition.shortPurpose,
+      // The declared run profile is a DEFAULT, so it is reconciled the same way
+      // name/role are: the definition owns it, and an operator's other
+      // permission keys on the record are preserved around it.
+      permissions: { ...(existing.permissions ?? {}), ...definitionPermissions(definition) },
       metadata: builtInMetadata(definition, existing.metadata),
     };
     const updated = await agentSvc.update(existing.id, patch, {
@@ -1600,11 +1706,22 @@ export function builtInAgentService(db: Db) {
     throw builtInAgentNotConfiguredError(current);
   }
 
+  /**
+   * Provision every definition that asks to exist in a company by default.
+   *
+   * Two kinds qualify, for one reason: something in the product will look for
+   * them and must not find nobody. A `bundle` definition owns instructions, a
+   * skill and a routine that have to be materialized somewhere; an
+   * `autoProvision` definition is named by a seeded lifecycle's agent step,
+   * which resolves its executor by roster key and holds the step if the agent
+   * is missing. (The name is kept for its callers; the filter is no longer
+   * "has a bundle".)
+   */
   async function autoProvisionBundledAgents(companyId: string) {
     const company = await ensureCompany(companyId);
     let autoEnsured = 0;
     let pendingApprovals = 0;
-    for (const definition of DEFINITIONS.filter((entry) => entry.bundle)) {
+    for (const definition of DEFINITIONS.filter((entry) => entry.bundle || entry.autoProvision)) {
       if (company.requireBoardApprovalForNewAgents) {
         const result = await provision(companyId, definition.key);
         if (result.approval) pendingApprovals += 1;

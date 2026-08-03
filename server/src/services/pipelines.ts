@@ -62,6 +62,7 @@ import { secretService } from "./secrets.js";
 import type { IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logActivity } from "./activity-log.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
+import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
 import { authorizationService } from "./authorization.js";
 import { accessService } from "./access.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
@@ -250,6 +251,20 @@ export type PipelineStageConfig = Record<string, unknown> & {
     /** `agent` only — a permission profile declaration, read defensively
      *  (see server/src/apex/steps/run-policy.ts). */
     permissions?: unknown;
+    /**
+     * `agent` only — WHICH agent executes this step, by built-in agent key
+     * (server/src/services/apex-agent-roster.ts).
+     *
+     * Optional so a stage an operator authored on the board keeps working
+     * exactly as before (executor resolved from the case, then the ticket).
+     * When it IS declared, it WINS over both — a process that names its
+     * executor has named a blast radius, and letting whoever the ticket
+     * happens to be assigned to override that would make the permission
+     * profile a suggestion. A declared key that resolves to no provisioned
+     * agent HOLDS the step rather than falling back: falling back is how a
+     * read-only step quietly runs with repo write.
+     */
+    agentKey?: string;
     /** `routine` only. */
     routineId?: string;
     projectId?: string | null;
@@ -1391,6 +1406,7 @@ function stageAgentStep(stage: typeof pipelineStages.$inferSelect) {
         ? (onEnter.budget as Record<string, unknown>)
         : null,
     permissions: onEnter.permissions,
+    agentKey: readOptionalTrimmedString(onEnter.agentKey),
     onSuccessToStageKey: readOptionalTrimmedString(onEnter.onSuccessToStageKey),
     onFailureToStageKey: readOptionalTrimmedString(onEnter.onFailureToStageKey),
   };
@@ -4197,23 +4213,70 @@ export function pipelineService(
   }
 
   /**
+   * The company's provisioned instance of a built-in agent DEFINITION, by key.
+   *
+   * The marker lives in `agents.metadata` (see `built-in-agent-metadata.ts`),
+   * so this is a filter rather than a query — the row count per company is
+   * small and this runs once per agent-step commission, not per request.
+   */
+  async function findBuiltInAgentByKey(companyId: string, key: string): Promise<string | null> {
+    const rows = await db
+      .select({ id: agents.id, metadata: agents.metadata, status: agents.status })
+      .from(agents)
+      .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated")));
+    const matches = rows.filter((row) => readBuiltInAgentMarker(row.metadata)?.key === key);
+    // More than one is a data problem the built-in service already refuses to
+    // create; picking one here would hide it. None is the ordinary "not
+    // provisioned yet" case and the caller says so in its own words.
+    if (matches.length !== 1) return null;
+    return matches[0]!.id;
+  }
+
+  /**
    * Who executes this agent step.
    *
-   * Order, and why: the case's own STICKY executor first, so a step sent back
-   * by a reviewer is redone by whoever did it and the rework rounds land on an
-   * agent that remembers the work. Then the conversation issue's assignee,
-   * which is the human-visible answer to "whose ticket is this". Then, only if
-   * the company has exactly ONE assignable agent, that agent — because with
-   * one candidate there is no choice being made silently.
+   * Order, and why:
    *
-   * Never a guess past that point. An unresolvable executor is a classified
-   * failure that holds the step, because picking an arbitrary agent to spend
-   * tokens under a permission profile is not a recoverable mistake.
+   * 1. The step's OWN declared `agentKey`, if it has one. A process that names
+   *    its executor has named a permission surface — the roster is cut by
+   *    blast radius, not by job title (server/src/services/apex-agent-roster.ts)
+   *    — and everything below this line would override it with whoever the
+   *    ticket happens to be assigned to. It is first for a second, sharper
+   *    reason: the sticky executor is per-CASE, not per-stage, so on the
+   *    feature lifecycle (Specifier drafts the spec, then the Implementer
+   *    executes its tasks) a sticky-first order would send the task step to
+   *    the agent that wrote the spec — an agent with no repo write, holding on
+   *    a step it cannot do, for reasons nobody reading the process could see.
+   * 2. The case's own STICKY executor, so a step sent back by a reviewer is
+   *    redone by whoever did it and the rework rounds land on an agent that
+   *    remembers the work. (For a step that declares an agent this is the same
+   *    agent either way; it is what carries an operator-authored stage.)
+   * 3. The conversation issue's assignee — the human-visible answer to "whose
+   *    ticket is this".
+   * 4. Only if the company has exactly ONE assignable agent, that agent —
+   *    because with one candidate there is no choice being made silently.
+   *
+   * Never a guess past that point, and never a fall-through from (1): a
+   * declared agent that is not provisioned HOLDS the step. Falling back would
+   * mean a step declared `read-only-broad` gets executed by an agent that can
+   * write the repo, which is not a recoverable mistake.
    */
   async function resolveStepExecutorAgent(
     detail: Awaited<ReturnType<typeof getCaseWithStageOrThrow>>,
     issue: typeof issues.$inferSelect,
   ): Promise<{ ok: true; agentId: string; autoAssigned: boolean } | { ok: false; message: string }> {
+    const declaredKey = stageAgentStep(detail.stage)?.agentKey ?? null;
+    if (declaredKey) {
+      const declared = await findBuiltInAgentByKey(detail.case.companyId, declaredKey);
+      if (declared) return { ok: true, agentId: declared, autoAssigned: true };
+      return {
+        ok: false,
+        message:
+          `agent_step_executor_unresolved: this step is assigned to the built-in agent '${declaredKey}', ` +
+          `which this company has not provisioned (or has provisioned more than once). Provision it rather ` +
+          `than letting another agent run the step — the step's permission profile belongs to that agent.`,
+      };
+    }
     const sticky = detail.case.stepExecutorAgentId;
     if (sticky) return { ok: true, agentId: sticky, autoAssigned: false };
     if (issue.assigneeAgentId) return { ok: true, agentId: issue.assigneeAgentId, autoAssigned: false };
