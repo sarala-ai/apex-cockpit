@@ -62,7 +62,7 @@ const HTTP_METHODS = new Set(["get", "put", "post", "delete", "options", "head",
 const explicitOpenApiCoverageExclusions = new Set([
   // Pipeline routes are experimental and not yet represented in the public OpenAPI document.
   "pipelines.ts",
-  // Case routes are experimental (enableCases flag) and not yet in the public OpenAPI document.
+  // Case routes are not yet in the public OpenAPI document.
   "cases.ts",
   // APEX Tower in-progress surfaces (capability sync scheduler, Design viewer,
   // Flows, Gateway registry/observe, workflow-builder groundwork) — mounted

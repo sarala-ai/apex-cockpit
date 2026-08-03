@@ -37,9 +37,8 @@ import {
 } from "../apex/steps/brief.js";
 import type { DesignArchiveFetcher } from "../apex/steps/design-artifact.js";
 import { fetchDesignArchive } from "../design/design-files.js";
-import { loadProcessDefinitionByKey } from "../services/pipelines.js";
+import { loadProcessDefinitionByKey, pipelineService, type PipelineActor } from "../services/pipelines.js";
 import type { ProcessDefinition } from "../apex/steps/process-definition.js";
-import type { PipelineActor } from "../services/pipelines.js";
 
 /** apex-tower (Task 2 §2b): a pipeline actor from the approving/rejecting board user. */
 function gateActor(req: Request): PipelineActor {
@@ -151,6 +150,32 @@ export function approvalRoutes(
     options.loadProcessDefinition ??
     ((companyId: string, name: string) => loadProcessDefinitionByKey(db, companyId, name));
   const provenanceLookup: ProvenanceLookup = options.provenanceLookup ?? dbProvenanceLookup(db);
+
+
+  /**
+   * Route a decided gate to whichever host owns it.
+   *
+   * A gate approval carrying a `caseId` belongs to a PIPELINE CASE; one
+   * carrying only the issue/flow keys belongs to the flow front-end. Both
+   * share the `flow_gate` type, so the dispatch is on the PAYLOAD — which
+   * keeps one approval type, one brief and one UI across both hosts while the
+   * front-end is still standing, instead of forking the surface a reviewer
+   * sees to match an internal migration.
+   *
+   * Returns true when the pipeline host handled it. Failures are surfaced, not
+   * swallowed: a decision that did not move the work is exactly the thing a
+   * reviewer must not be told succeeded.
+   */
+  async function routeGateDecisionToCase(
+    payload: Record<string, unknown>,
+    decision: "approve" | "reject" | "request_changes",
+    actor: PipelineActor,
+    reason: string | null,
+  ): Promise<boolean> {
+    if (typeof payload.caseId !== "string") return false;
+    const result = await pipelineService(db).decideStageGate({ payload, decision, reason, actor });
+    return result !== null;
+  }
 
   async function requireApprovalAccess(req: Request, id: string) {
     const approval = await svc.getById(id);
@@ -351,7 +376,15 @@ export function approvalRoutes(
     // the background (a subsequent workflow node can run for minutes — never
     // block the decision response on it).
     if (applied && approval.type === FLOW_GATE_APPROVAL_TYPE) {
-      const decision = await flowCoordinator(db).onGateDecision({
+      const handledByCase = await routeGateDecisionToCase(
+        approval.payload,
+        "approve",
+        { type: "user", userId: req.actor.userId ?? "board" },
+        null,
+      );
+      const decision = handledByCase
+        ? { resumed: false as const, execution: Promise.resolve() }
+        : await flowCoordinator(db).onGateDecision({
         approvalId: approval.id,
         payload: approval.payload,
         decision: "approve",
@@ -508,13 +541,21 @@ export function approvalRoutes(
     // another round is the separate `request_changes` decision, which rides
     // POST /approvals/:id/request-revision.
     if (applied && approval.type === FLOW_GATE_APPROVAL_TYPE) {
-      await flowCoordinator(db).onGateDecision({
-        approvalId: approval.id,
-        payload: approval.payload,
-        decision: "reject",
-        decidedByUserId: req.actor.userId ?? "board",
-        reason: req.body.decisionNote ?? null,
-      });
+      const handledByCase = await routeGateDecisionToCase(
+        approval.payload,
+        "reject",
+        { type: "user", userId: req.actor.userId ?? "board" },
+        req.body.decisionNote ?? null,
+      );
+      if (!handledByCase) {
+        await flowCoordinator(db).onGateDecision({
+          approvalId: approval.id,
+          payload: approval.payload,
+          decision: "reject",
+          decidedByUserId: req.actor.userId ?? "board",
+          reason: req.body.decisionNote ?? null,
+        });
+      }
     }
 
     if (applied) {
@@ -584,7 +625,15 @@ export function approvalRoutes(
       // re-commissioned agent step can take minutes — never block the
       // decision response on it).
       if (approval.type === FLOW_GATE_APPROVAL_TYPE) {
-        const decision = await flowCoordinator(db).onGateDecision({
+        const handledByCase = await routeGateDecisionToCase(
+          approval.payload,
+          "request_changes",
+          { type: "user", userId: decidedByUserId },
+          req.body.decisionNote ?? null,
+        );
+        const decision = handledByCase
+          ? { resumed: false as const, execution: Promise.resolve() }
+          : await flowCoordinator(db).onGateDecision({
           approvalId: approval.id,
           payload: approval.payload,
           decision: "request_changes",

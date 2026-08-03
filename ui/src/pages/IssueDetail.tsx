@@ -1765,8 +1765,6 @@ export function IssueDetail() {
     retry: false,
   });
   const keyboardShortcutsEnabled = instanceGeneralSettings?.keyboardShortcuts === true;
-  // Experimental Cases: linkify `PAP-C7` chips in this issue's comment bodies.
-  const casesChipsEnabled = instanceExperimentalSettings?.enableCases === true;
   const feedbackDataSharingPreference = instanceGeneralSettings?.feedbackDataSharingPreference ?? "prompt";
   const showPlanDecompositionsSection =
     instanceExperimentalSettings?.enableIssuePlanDecompositions === true;
@@ -4874,7 +4872,7 @@ export function IssueDetail() {
                 updateIssue.isPending && updateIssue.variables?.status === "todo"
               }
               externalReferences={externalObjectsState.isEnabled ? externalObjectsState.markdownReferences : undefined}
-              linkCaseReferences={casesChipsEnabled}
+              linkCaseReferences
             />
           ) : null}
         </TabsContent>

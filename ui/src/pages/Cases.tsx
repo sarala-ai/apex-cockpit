@@ -731,10 +731,6 @@ function CasesEmptyHero() {
           See the paperclip skill → <code className="font-mono">references/cases.md</code> for the API.
         </p>
       </div>
-      <p className="text-xs text-muted-foreground">
-        Feature is gated by the <code className="font-mono">enableCases</code> experimental flag
-        (Settings → Experimental).
-      </p>
     </div>
   );
 }

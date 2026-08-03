@@ -26,9 +26,8 @@ import {
   isUuidLike,
 } from "@paperclipai/shared";
 import { normalizeContentType } from "../attachment-types.js";
-import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { badRequest, conflict, notFound, unprocessable } from "../errors.js";
 import { validate } from "../middleware/validate.js";
-import { instanceSettingsService } from "../services/instance-settings.js";
 import { documentAnnotationService, logActivity } from "../services/index.js";
 import type { StorageService } from "../storage/types.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -112,13 +111,6 @@ function eventActorValues(actor: CaseActor) {
     actorAgentId: actor.agentId,
     runId: actor.runId && isUuidLike(actor.runId) ? actor.runId : null,
   };
-}
-
-async function assertCasesEnabled(db: Db) {
-  const experimental = await instanceSettingsService(db).getExperimental();
-  if (!experimental.enableCases) {
-    throw forbidden("Cases are disabled");
-  }
 }
 
 async function lockCaseUpsertKey(db: CaseRouteDb, input: { companyId: string; caseType: string; key: string | null | undefined }) {
@@ -214,12 +206,11 @@ async function assertCaseAccess(db: Db, req: Request, idOrIdentifier: string) {
 // The pipelines feature registers its own /cases/:caseId routes after this
 // router. On paths both features share, return null (caller falls through via
 // next()) when the id is not a new-Cases row so pipeline case requests still
-// reach their handler regardless of the enableCases flag.
+// reach their handler.
 async function resolveSharedPathCase(db: Db, req: Request, idOrIdentifier: string) {
   const companyIds = caseLookupCompanyIds(req);
   const row = await loadCaseByIdOrIdentifier(db, idOrIdentifier, companyIds);
   if (!row) return null;
-  await assertCasesEnabled(db);
   assertCompanyAccess(req, row.companyId);
   return row;
 }
@@ -641,7 +632,6 @@ export function caseRoutes(db: Db, storage: StorageService) {
   }
 
   router.post("/companies/:companyId/cases", validate(createCaseSchema), async (req, res) => {
-    await assertCasesEnabled(db);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const actor = getActorInfo(req);
@@ -718,7 +708,6 @@ export function caseRoutes(db: Db, storage: StorageService) {
   });
 
   router.get("/companies/:companyId/cases", async (req, res) => {
-    await assertCasesEnabled(db);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const parsed = listCasesQuerySchema.safeParse(req.query);
@@ -1225,7 +1214,6 @@ export function caseRoutes(db: Db, storage: StorageService) {
   });
 
   router.post("/cases/:id/links", validate(createIssueLinkSchema), async (req, res) => {
-    await assertCasesEnabled(db);
     const caseRow = await assertCaseAccess(db, req, req.params.id as string);
     const actor = getActorInfo(req);
     const body = req.body as z.infer<typeof createIssueLinkSchema>;
@@ -1270,7 +1258,6 @@ export function caseRoutes(db: Db, storage: StorageService) {
   });
 
   router.post("/cases/:id/attachments", async (req, res) => {
-    await assertCasesEnabled(db);
     const caseRow = await assertCaseAccess(db, req, req.params.id as string);
     const actor = getActorInfo(req);
     const [company] = await db
@@ -1419,7 +1406,6 @@ export function caseRoutes(db: Db, storage: StorageService) {
   });
 
   router.get("/issues/:issueId/cases", async (req, res) => {
-    await assertCasesEnabled(db);
     const issueIdOrIdentifier = (req.params.issueId as string).trim();
     const issue = await loadIssueByIdOrIdentifier(db, issueIdOrIdentifier, caseLookupCompanyIds(req));
     if (!issue) throw notFound("Issue not found");

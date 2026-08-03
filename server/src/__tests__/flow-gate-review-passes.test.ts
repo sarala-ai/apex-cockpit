@@ -12,7 +12,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { assembleFlowGateBrief, collectReviewPasses } from "../apex/flow/brief.js";
+import { assembleFlowGateBrief, collectReviewPasses } from "../apex/steps/brief.js";
 import type { FlowDefinition, ReviewPass } from "../apex/flow/definition.js";
 
 const CATALOG: Record<string, ReviewPass> = {
@@ -36,7 +36,7 @@ function flowWithGate(requires: string[] | undefined): FlowDefinition {
     version: "1.1",
     description: "d",
     ticket_type: "design-change",
-    nodes: [
+    steps: [
       {
         id: "design_gate",
         kind: "gate",
@@ -45,8 +45,8 @@ function flowWithGate(requires: string[] | undefined): FlowDefinition {
       },
       {
         id: "merge",
-        kind: "workflow",
-        workflow: { workflow: "design-pr-merge", params: {} },
+        kind: "run",
+        run: { target: { type: "workflow", workflow: "design-pr-merge", params: {} } },
         on_fail: "pause",
       },
     ],
@@ -100,11 +100,7 @@ describe("assembleFlowGateBrief carries the gate's passes", () => {
   it("surfaces the passes with their questions", async () => {
     const brief = await assembleFlowGateBrief({
       ...baseInput,
-      loadFlowDefinition: async () => ({
-        path: "/flows/design-change.yml",
-        flow: flowWithGate(["customer_hat"]),
-        reviewPasses: CATALOG,
-      }),
+      loadProcessDefinition: async () => flowWithGate(["customer_hat"]),
     });
     expect(brief.available).toBe(true);
     if (!brief.available) return;
@@ -117,17 +113,17 @@ describe("assembleFlowGateBrief carries the gate's passes", () => {
     ]);
   });
 
-  it("degrades to an empty list when the flow definition is unavailable", async () => {
+  it("degrades to an empty list when the process definition is unavailable", async () => {
     const brief = await assembleFlowGateBrief({
       ...baseInput,
-      loadFlowDefinition: async () => {
-        throw new Error("apex CLI exploded");
+      loadProcessDefinition: async () => {
+        throw new Error("the database is unreachable");
       },
     });
     expect(brief.available).toBe(true);
     if (!brief.available) return;
     expect(brief.reviewPasses).toEqual([]);
-    expect(brief.next.note).toContain("flow definition unavailable");
+    expect(brief.next.note).toContain("process definition unavailable");
   });
 });
 

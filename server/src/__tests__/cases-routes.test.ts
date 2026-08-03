@@ -35,7 +35,6 @@ import { errorHandler } from "../middleware/error-handler.js";
 import { actorMiddleware } from "../middleware/auth.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { buildCasePatchUpdateValues, caseRoutes } from "../routes/cases.js";
-import { instanceSettingsService } from "../services/instance-settings.js";
 import type { StorageService } from "../storage/types.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -146,10 +145,6 @@ describeEmbeddedPostgres("cases routes", () => {
     return instance;
   }
 
-  async function enableCases() {
-    await instanceSettingsService(db).updateExperimental({ enableCases: true });
-  }
-
   async function seedCompany(prefix = "CASE") {
     const [company] = await db.insert(companies).values({
       name: `${prefix} Co`,
@@ -178,31 +173,9 @@ describeEmbeddedPostgres("cases routes", () => {
     isInstanceAdmin: true,
   };
 
-  it("gates every case route when enableCases is off", async () => {
-    const company = await seedCompany("OFF");
-    const [caseRow] = await db.insert(cases).values({
-      companyId: company.id,
-      caseNumber: 1,
-      identifier: `${company.issuePrefix}-C1`,
-      caseType: "bug",
-      title: "Hidden case",
-    }).returning();
-    const http = request(app(boardActor));
-
-    await http.get(`/api/companies/${company.id}/cases`).expect(403);
-    await http.post(`/api/companies/${company.id}/cases`).send({ caseType: "bug", title: "Bug" }).expect(403);
-    await http.get(`/api/cases/${caseRow!.id}`).expect(403);
-    await http.patch(`/api/cases/${caseRow!.id}`).send({ status: "in_progress" }).expect(403);
-    await http.put(`/api/cases/${caseRow!.id}/documents/body`).send({ body: "Body" }).expect(403);
-    await http.get(`/api/cases/${caseRow!.id}/documents/body/annotations`).expect(403);
-    await http.post(`/api/cases/${caseRow!.id}/links`).send({ issueId: randomUUID(), role: "work" }).expect(403);
-    await http.post(`/api/cases/${caseRow!.id}/attachments`).attach("file", Buffer.from("x"), "x.txt").expect(403);
-    await http.get(`/api/cases/${caseRow!.id}/events`).expect(403);
-  });
-
   it("falls through shared /cases paths to later routers when the id is not a Cases row", async () => {
     // Pipelines mounts its own /cases/:caseId routes after caseRoutes in app.ts;
-    // pipeline case ids must reach that router regardless of the enableCases flag.
+    // pipeline case ids must reach that router regardless.
     const instance = express();
     instance.use(express.json());
     instance.use((req, _res, next) => {
@@ -221,7 +194,7 @@ describeEmbeddedPostgres("cases routes", () => {
     const http = request(instance);
 
     const foreignId = randomUUID();
-    // Flag off: non-Cases ids are not blocked by the Cases gate.
+    // Unknown ids are not Cases rows, so they fall through.
     await http.get(`/api/cases/${foreignId}`).expect(200, { handledBy: "pipelines" });
     // Body is not validated against Cases schemas before falling through.
     await http.patch(`/api/cases/${foreignId}`).send({ stageKey: "review" }).expect(200, { handledBy: "pipelines" });
@@ -229,8 +202,7 @@ describeEmbeddedPostgres("cases routes", () => {
     await http.get(`/api/cases/${foreignId}/documents/body/revisions`).expect(200, { handledBy: "pipelines" });
     await http.get(`/api/cases/${foreignId}/events`).expect(200, { handledBy: "pipelines" });
 
-    // Flag on: real Cases rows are still handled by the cases router, unknown ids still fall through.
-    await enableCases();
+    // Real Cases rows are still handled by the cases router, unknown ids still fall through.
     const company = await seedCompany("FALL");
     const [caseRow] = await db.insert(cases).values({
       companyId: company.id,
@@ -245,7 +217,6 @@ describeEmbeddedPostgres("cases routes", () => {
   });
 
   it("creates cases and upserts idempotently by type and key", async () => {
-    await enableCases();
     const company = await seedCompany("UPS");
     const http = request(app(boardActor));
 
@@ -277,7 +248,6 @@ describeEmbeddedPostgres("cases routes", () => {
   });
 
   it("converges concurrent keyed upserts to one case", async () => {
-    await enableCases();
     const company = await seedCompany("RCE");
     const http = request(app(boardActor));
 
@@ -309,7 +279,6 @@ describeEmbeddedPostgres("cases routes", () => {
   });
 
   it("upserts keyless cases by company and type", async () => {
-    await enableCases();
     const company = await seedCompany("NUL");
     const http = request(app(boardActor));
 
@@ -330,7 +299,6 @@ describeEmbeddedPostgres("cases routes", () => {
   });
 
   it("resolves cases by identifier", async () => {
-    await enableCases();
     const company = await seedCompany("REF");
     const http = request(app(boardActor));
 
@@ -345,7 +313,6 @@ describeEmbeddedPostgres("cases routes", () => {
   });
 
   it("auto-links run writes to their issue with a work link and event", async () => {
-    await enableCases();
     const company = await seedCompany("RUN");
     const agent = await seedAgent(company.id);
     const runId = randomUUID();
@@ -395,7 +362,6 @@ describeEmbeddedPostgres("cases routes", () => {
   });
 
   it("lets a run-scoped agent JWT complete the case happy path without manual linking", async () => {
-    await enableCases();
     const company = await seedCompany("JWT");
     const agent = await seedAgent(company.id);
     const runId = randomUUID();
@@ -484,7 +450,6 @@ describeEmbeddedPostgres("cases routes", () => {
   });
 
   it("rejects cross-company agent access across the cases route surface", async () => {
-    await enableCases();
     const ownCompany = await seedCompany("OWN");
     const otherCompany = await seedCompany("OTH");
     const agent = await seedAgent(ownCompany.id);
@@ -580,7 +545,6 @@ describeEmbeddedPostgres("cases routes", () => {
   });
 
   it("supports documents, manual issue links, attachment links, events, and list filters", async () => {
-    await enableCases();
     const company = await seedCompany("SUR");
     const [label] = await db.insert(labels).values({
       companyId: company.id,
@@ -663,7 +627,6 @@ describeEmbeddedPostgres("cases routes", () => {
   });
 
   it("enriches events and revisions with actor name and run→issue attribution", async () => {
-    await enableCases();
     const company = await seedCompany("ATT");
     const agent = await seedAgent(company.id);
     const runId = randomUUID();
@@ -722,7 +685,6 @@ describeEmbeddedPostgres("cases routes", () => {
   });
 
   it("locks, unlocks, deletes, and restores case documents through shared document controls", async () => {
-    await enableCases();
     const company = await seedCompany("DOC");
     const http = request(app(boardActor));
     const created = await http
@@ -772,7 +734,6 @@ describeEmbeddedPostgres("cases routes", () => {
   });
 
   it("creates, replies to, resolves, reopens, and remaps case document annotations", async () => {
-    await enableCases();
     const company = await seedCompany("ANN");
     const http = request(app(boardActor));
     const created = await http
@@ -853,7 +814,6 @@ describeEmbeddedPostgres("cases routes", () => {
   });
 
   it("lists children by parent, exposes parent in detail, and lists cases for an issue", async () => {
-    await enableCases();
     const company = await seedCompany("TREE");
     const boardHttp = request(app(boardActor));
     const parent = await boardHttp

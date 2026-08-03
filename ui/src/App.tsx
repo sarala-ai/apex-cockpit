@@ -3,7 +3,6 @@ import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/i18n";
 import { Layout } from "./components/Layout";
 import { ConferenceRoomChatGate } from "./components/ConferenceRoomChatGate";
-import { CasesExperimentalGate } from "./components/CasesExperimentalGate";
 import { Cases } from "./pages/Cases";
 import { CaseDetail } from "./pages/CaseDetail";
 import { OnboardingWizardVariant } from "./components/OnboardingWizardVariant";
@@ -170,14 +169,12 @@ function boardRoutes() {
         <Route path="tests/perf/long-thread" element={<IssueChatLongThreadPerf />} />
       ) : null}
       <Route path="routines" element={<Routines />} />
-      <Route
-        path="cases"
-        element={<CasesExperimentalGate><Cases /></CasesExperimentalGate>}
-      />
-      <Route
-        path="cases/:caseIdentifier"
-        element={<CasesExperimentalGate><CaseDetail /></CasesExperimentalGate>}
-      />
+      {/* A pipeline case is the runtime object every ticket lifecycle
+          executes as, so these routes are no longer gated behind an
+          experimental flag (was Paperclip's incubating opt-in, a label for
+          a surface still separate from the substrate; it isn't any more). */}
+      <Route path="cases" element={<Cases />} />
+      <Route path="cases/:caseIdentifier" element={<CaseDetail />} />
       {/* Pipelines is the substrate every ticket moves through and the only
           place the four step kinds execute — these routes are no longer
           gated behind an experimental flag (was Paperclip's incubating

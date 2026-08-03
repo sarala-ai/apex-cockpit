@@ -6836,6 +6836,57 @@ export function pipelineService(
       return result;
     },
 
+    /**
+     * A gate APPROVAL was decided — move the case.
+     *
+     * The other half of `openStageGateInTransaction`. Without it the gate is
+     * worse than no gate: a reviewer opens the approval, reads the brief,
+     * clicks approve, and nothing happens — the case sits in the review column
+     * while the approval reads decided. An approval that does not move the
+     * work it is about teaches people to stop trusting approvals.
+     *
+     * Reads the case's CURRENT version rather than taking one from the caller.
+     * The approvals surface has no lease and no version to offer; the decision
+     * was made about the artifact, and `reviewCase` re-checks the stage's
+     * acceptance contract before letting the case out, which is the guard that
+     * actually matters. A stale-version check here would only reject decisions
+     * a human already made correctly.
+     *
+     * Returns null for a payload that is not a pipeline gate, so the caller
+     * can fall through to whatever else handles it.
+     */
+    async decideStageGate(input: {
+      payload: Record<string, unknown>;
+      decision: PipelineReviewDecision;
+      reason?: string | null;
+      actor: PipelineActor;
+    }) {
+      const caseId = typeof input.payload.caseId === "string" ? input.payload.caseId : null;
+      if (!caseId) return null;
+      const caseRow = await db
+        .select({ id: pipelineCases.id, companyId: pipelineCases.companyId, version: pipelineCases.version })
+        .from(pipelineCases)
+        .where(eq(pipelineCases.id, caseId))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!caseRow) return null;
+      // The case is no longer waiting on a person the moment the person
+      // answered — cleared here rather than inside the transition so it is
+      // cleared even when the decision routes the case nowhere.
+      await db
+        .update(pipelineCases)
+        .set({ stepStatus: null, updatedAt: nowDate() })
+        .where(and(eq(pipelineCases.id, caseId), eq(pipelineCases.stepStatus, "waiting_gate")));
+      return this.reviewCase({
+        companyId: caseRow.companyId,
+        caseId,
+        decision: input.decision,
+        reason: input.reason ?? null,
+        expectedVersion: caseRow.version,
+        actor: input.actor,
+      });
+    },
+
     async reviewCase(input: {
       companyId: string;
       caseId: string;
