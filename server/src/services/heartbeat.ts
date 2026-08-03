@@ -1348,6 +1348,175 @@ function isConfigurationIncompleteFailedRun(
   return run?.errorCode === CONFIGURATION_INCOMPLETE_FAILURE_CODE;
 }
 
+/** Which dispatch precondition a `configuration_incomplete` run failed on, or
+ *  null when it failed on something else (a missing secret binding). */
+export function readDispatchPreconditionReason(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "resultJson"> | null | undefined,
+): string | null {
+  if (!run) return null;
+  // `mergeHeartbeatRunStopMetadata` spreads the failure's resultJson at the top
+  // level, so the block written by assertRunDispatchPreconditions survives here.
+  const reason = readNonEmptyString(
+    parseObject(parseObject(run.resultJson).configurationIncomplete).reason,
+  );
+  return reason === DISPATCH_PRECONDITION_NO_CODEBASE_REASON
+    || reason === DISPATCH_PRECONDITION_NO_PERMISSION_DECISION_REASON
+    ? reason
+    : null;
+}
+
+/**
+ * DISPATCH PRECONDITIONS — the fail-closed gate in front of every agent launch.
+ *
+ * An agent run that cannot succeed must not start. Two preconditions are
+ * checked here because both were, in practice, silently defaulted rather than
+ * refused:
+ *
+ *  1. NO CODEBASE. The repo binding lives on `project_workspaces` and is only
+ *     reachable THROUGH a project. A task with no project resolves to the agent
+ *     home fallback cwd — an empty directory — and the agent then guesses where
+ *     the code is (observed: recursive greps over `$HOME`). The existing
+ *     `assertGitSensitiveAdapterWorkspaceValid` does not catch this, because its
+ *     `workspaceExpectation` is derived FROM a project/workspace link: no
+ *     project means no expectation means every check is skipped. Absence of a
+ *     binding is exactly the condition that must be refused, not excused.
+ *
+ *  2. NO PERMISSION DECISION. `derivePermissionPolicy` is read by flow
+ *     commission and the pipeline agent port only; routine- and route-triggered
+ *     runs reach neither and inherit the adapter's
+ *     `dangerouslySkipPermissions: true` default. Carrying the grant on the
+ *     roster's `adapterConfig` makes the DEFAULT safe; it cannot make the unsafe
+ *     case impossible (an operator edit, a non-roster agent, or a path that
+ *     overrides `adapterConfig` all drop it silently). So the launch refuses a
+ *     config that expresses no decision at all.
+ *
+ * Both refusals are raised as `ConfigurationIncompleteFailure`, which is the
+ * platform's existing pre-dispatch blocker: the run finalizes as
+ * `configuration_incomplete`, `releaseIssueExecutionAndPromote` moves the issue
+ * to `blocked` with a source-scoped recovery action, and the recovery comment
+ * built below states the missing precondition on the ticket. That is
+ * deliberate — adding a third silent failure mode is the defect, not the fix.
+ */
+export const DISPATCH_PRECONDITION_NO_CODEBASE_REASON = "dispatch_precondition_no_codebase";
+export const DISPATCH_PRECONDITION_NO_PERMISSION_DECISION_REASON =
+  "dispatch_precondition_no_permission_decision";
+
+/**
+ * Adapters whose permission default is "skip everything". These are the only
+ * adapters where an ABSENT decision is materially different from a safe one;
+ * an adapter that defaults to prompting or sandboxing has nothing to inherit.
+ * Keep in sync with the adapters that read `config.dangerouslySkipPermissions`.
+ */
+const PERMISSION_DECISION_REQUIRED_ADAPTER_TYPES = new Set([
+  "claude_local",
+  "opencode_local",
+]);
+
+export type DispatchPreconditionDecision = {
+  /** The explicit permission decision the run will launch under. Returned, not
+   *  merely validated, so the launch path CONSUMES the guard: a caller that
+   *  deletes the guard loses the value it needs to build the adapter config. */
+  dangerouslySkipPermissions: boolean;
+};
+
+/**
+ * Refuse a dispatch that cannot succeed. Returns the validated permission
+ * decision for the launch path to apply.
+ */
+export function assertRunDispatchPreconditions(input: {
+  agent: { id: string; name: string; adapterType: string };
+  issue: { id: string; identifier: string | null; projectId: string | null } | null;
+  resolvedWorkspace: Pick<
+    ResolvedWorkspaceForRun,
+    "cwd" | "source" | "projectId" | "workspaceId" | "repoUrl"
+  >;
+  /** The effective adapter config the run would launch with. */
+  effectiveAdapterConfig: Record<string, unknown>;
+}): DispatchPreconditionDecision {
+  const agentLabel = readNonEmptyString(input.agent.name) ?? "This agent";
+  const issueLabel = input.issue ? input.issue.identifier ?? input.issue.id : null;
+
+  const fail = (reason: string, message: string, extra: Record<string, unknown>): never => {
+    throw new ConfigurationIncompleteFailure(message, {
+      configurationIncomplete: {
+        reason,
+        agentId: input.agent.id,
+        agentName: input.agent.name,
+        adapterType: input.agent.adapterType,
+        issueId: input.issue?.id ?? null,
+        issueIdentifier: input.issue?.identifier ?? null,
+        projectId: input.issue?.projectId ?? input.resolvedWorkspace.projectId ?? null,
+        ...extra,
+      },
+    });
+  };
+
+  // 1. No codebase. Scoped to issue-bound runs on adapters that exist to change
+  //    code: a run with no ticket has nowhere to report the refusal, and a
+  //    non-code adapter has no repo to miss.
+  if (input.issue && GIT_SENSITIVE_LOCAL_ADAPTER_TYPES.has(input.agent.adapterType)) {
+    const hasRepoBinding = Boolean(readNonEmptyString(input.resolvedWorkspace.repoUrl));
+    const hasProjectBinding = Boolean(
+      readNonEmptyString(input.issue.projectId) ??
+        readNonEmptyString(input.resolvedWorkspace.projectId),
+    );
+    // A project row alone is not a codebase. `resolveWorkspaceForRun` has two
+    // ways to report `project_primary` while handing back an empty directory:
+    // a project with no `project_workspaces` row at all (managed empty dir),
+    // and a project whose configured cwds were all unavailable (silent fallback
+    // to the agent's home dir, with the project's workspace id still attached).
+    // Both are checked, because both are the reported failure wearing a
+    // different source label.
+    const hasProjectWorkspaceRow = Boolean(readNonEmptyString(input.resolvedWorkspace.workspaceId));
+    const launchedFromAgentHome =
+      input.resolvedWorkspace.source === "agent_home" ||
+      sameResolvedPath(input.resolvedWorkspace.cwd, resolveDefaultAgentWorkspaceDir(input.agent.id));
+    if (
+      !hasRepoBinding &&
+      (!hasProjectBinding || !hasProjectWorkspaceRow || launchedFromAgentHome)
+    ) {
+      fail(
+        DISPATCH_PRECONDITION_NO_CODEBASE_REASON,
+        `${agentLabel} has no codebase: assign this task to a project with a repository, ` +
+          `or set a repo on the project. ` +
+          `Refusing to dispatch ${issueLabel} — no project or repository is bound to it, so ` +
+          `${agentLabel} would start in "${input.resolvedWorkspace.cwd}" with none of the code ` +
+          `it was asked to change.`,
+        {
+          missingPrecondition: "codebase",
+          resolvedWorkspaceSource: input.resolvedWorkspace.source,
+          resolvedWorkspaceCwd: input.resolvedWorkspace.cwd,
+          resolvedProjectWorkspaceId: input.resolvedWorkspace.workspaceId,
+          resolvedRepoUrl: input.resolvedWorkspace.repoUrl,
+        },
+      );
+    }
+  }
+
+  // 2. No permission decision.
+  const declaredSkip = input.effectiveAdapterConfig.dangerouslySkipPermissions;
+  if (typeof declaredSkip === "boolean") {
+    return { dangerouslySkipPermissions: declaredSkip };
+  }
+  if (!PERMISSION_DECISION_REQUIRED_ADAPTER_TYPES.has(input.agent.adapterType)) {
+    return { dangerouslySkipPermissions: false };
+  }
+  return fail(
+    DISPATCH_PRECONDITION_NO_PERMISSION_DECISION_REASON,
+    `${agentLabel} has no permission decision: its effective run config does not set ` +
+      `"dangerouslySkipPermissions", so ${input.agent.adapterType} would fall back to ` +
+      `skipping every permission check. ` +
+      `Refusing to dispatch${issueLabel ? ` ${issueLabel}` : ""} — set a permission profile on ` +
+      `${agentLabel} (or an explicit dangerouslySkipPermissions on the agent's adapter config) ` +
+      `before running it.`,
+    {
+      missingPrecondition: "permission_decision",
+      declaredDangerouslySkipPermissions:
+        declaredSkip === undefined ? null : (JSON.stringify(declaredSkip) ?? String(declaredSkip)),
+    },
+  );
+}
+
 async function hasGitMetadata(cwd: string | null | undefined) {
   const normalized = readNonEmptyString(cwd);
   if (!normalized) return false;
@@ -11129,6 +11298,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           { useProjectWorkspace: requestedExecutionWorkspaceMode !== "agent_default" },
         ),
     });
+    // Fail-closed dispatch gate. Placed HERE — after the workspace resolves and
+    // the effective adapter config is assembled, before any execution workspace
+    // is realized, any environment leased, and any adapter launched — because
+    // this is the one point every dispatch path passes through with both facts
+    // in hand. See assertRunDispatchPreconditions for why each is refused.
+    const dispatchPreconditions = assertRunDispatchPreconditions({
+      agent: { id: agent.id, name: agent.name, adapterType: agent.adapterType },
+      issue: issueRef
+        ? { id: issueRef.id, identifier: issueRef.identifier, projectId: issueRef.projectId }
+        : null,
+      resolvedWorkspace,
+      effectiveAdapterConfig: runtimeConfig,
+    });
+    // Apply the validated decision, so the guard is load-bearing rather than
+    // advisory: removing it removes the only definition of this value.
+    runtimeConfig = {
+      ...runtimeConfig,
+      dangerouslySkipPermissions: dispatchPreconditions.dangerouslySkipPermissions,
+    };
     const hostExecutionWorkspaceConfig = stripHostWorkspaceProvisionForLowTrustSandbox({
       config: mergedConfig,
       trustPreset,
@@ -12969,8 +13157,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   function buildConfigurationIncompleteRecoveryComment(input: {
-    latestRun: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode"> | null | undefined;
+    latestRun:
+      | Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode" | "resultJson">
+      | null
+      | undefined;
   }) {
+    // A dispatch-precondition refusal shares the configuration_incomplete
+    // failure code (and therefore its blocked-with-recovery routing), but it is
+    // NOT a missing secret. Say what actually stopped the run — a refusal
+    // nobody can act on is only marginally better than a hang.
+    const dispatchPreconditionReason = readDispatchPreconditionReason(input.latestRun);
+    if (dispatchPreconditionReason) {
+      const refusal = readNonEmptyString(input.latestRun?.error)?.trim() ?? null;
+      const missing =
+        dispatchPreconditionReason === DISPATCH_PRECONDITION_NO_CODEBASE_REASON
+          ? "no codebase was bound to it"
+          : "no explicit permission decision was in its run config";
+      return (
+        `Paperclip refused to dispatch this run before it started because ${missing}. ` +
+        `An agent run that cannot succeed must not start.${refusal ? `\n\n> ${refusal}` : ""}\n\n` +
+        "Moving it to `blocked` with a source-scoped recovery action so the missing precondition can be " +
+        "supplied before resuming."
+      );
+    }
     const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
     return (
       "Paperclip stopped before dispatching the adapter because required secret/env bindings are missing. " +
