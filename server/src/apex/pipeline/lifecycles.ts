@@ -101,6 +101,11 @@ import {
 } from "../../services/pipelines.js";
 import { isMachineEvaluableAcceptance } from "../steps/agent-step.js";
 import { validateReviewPassIds } from "../steps/review-passes.js";
+import {
+  APEX_AGENT_KEYS,
+  apexAgentPermissionProfile,
+  type ApexAgentKey,
+} from "../../services/apex-agent-roster.js";
 
 /** One YAML flow node, in the shape apex-core's flow YAML already used. */
 type LifecycleNode =
@@ -121,6 +126,24 @@ type LifecycleNode =
         prompt_template: string;
         budget: { max_turns: number; timeout_seconds: number } | null;
         acceptance: string;
+        /**
+         * WHO executes this step — a key from the built-in agent roster
+         * (server/src/services/apex-agent-roster.ts).
+         *
+         * Required, and that is the point of this field. Before it existed,
+         * every agent step below declared a task with an acceptance contract
+         * and named nobody, so `resolveStepExecutorAgent` fell through to "the
+         * company's single assignable agent" — a guess about who spends tokens
+         * under which permission profile, made silently, at commission time.
+         *
+         * The key selects a PERMISSION SURFACE, not a job title: the task is
+         * already fully carried by `prompt_template` + the stage's acceptance
+         * contract, and what a step cannot carry is what its executor is
+         * allowed to touch. Which is why one key appears twice below — the bug
+         * lifecycle's fix step and the feature lifecycle's task step are
+         * different work done with the same hands.
+         */
+        agent_key: ApexAgentKey;
       };
     }
   | {
@@ -235,6 +258,14 @@ function buildStagesAndTransitions(nodes: LifecycleNode[]): {
             type: "agent",
             promptTemplate: node.agent.prompt_template,
             budget: node.agent.budget,
+            // WHO executes, and therefore WHAT IT MAY TOUCH. The profile is
+            // READ FROM the roster entry rather than restated here, so a
+            // stage and the agent it names can never disagree about blast
+            // radius — there is one place the answer lives, and a step that
+            // names an agent that does not exist throws at seed time instead
+            // of resolving to nobody at commission time.
+            agentKey: node.agent.agent_key,
+            permissions: { profile: apexAgentPermissionProfile(node.agent.agent_key) },
             onSuccessToStageKey: next,
           } as unknown as PipelineStageConfig["onEnter"],
           acceptance: acceptanceFor(node.agent.acceptance),
@@ -316,6 +347,7 @@ const BUG_NODES: LifecycleNode[] = [
         "checkpoint after reproducing before attempting the fix.\n",
       budget: { max_turns: 30, timeout_seconds: 3600 },
       acceptance: "a failing test reproducing the bug now passes locally",
+      agent_key: APEX_AGENT_KEYS.implementer,
     },
   },
   {
@@ -356,6 +388,7 @@ const DESIGN_CHANGE_NODES: LifecycleNode[] = [
         "{{acceptance}}\n",
       budget: { max_turns: 25, timeout_seconds: 1800 },
       acceptance: "pr_exists:sarala-ai/apex-design#design/{{identifier}}",
+      agent_key: APEX_AGENT_KEYS.designEngineer,
     },
   },
   {
@@ -395,6 +428,7 @@ const FEATURE_NODES: LifecycleNode[] = [
         "Draft the spec: task breakdown plus each task's machine-checkable acceptance criteria.\n",
       budget: { max_turns: 25, timeout_seconds: 3600 },
       acceptance: "spec document exists with a task list and acceptance criteria per task",
+      agent_key: APEX_AGENT_KEYS.specifier,
     },
   },
   {
@@ -417,6 +451,9 @@ const FEATURE_NODES: LifecycleNode[] = [
         "sessions per the spec's dependency edges.\n",
       budget: { max_turns: 40, timeout_seconds: 7200 },
       acceptance: "each task in the approved spec has a corresponding diff",
+      // The SAME agent as the bug lifecycle's `repro_fix`. Different work,
+      // identical hands — see the `agent_key` doc on LifecycleNode.
+      agent_key: APEX_AGENT_KEYS.implementer,
     },
   },
   {

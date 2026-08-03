@@ -103,7 +103,18 @@ describeEmbeddedPostgres("built-in agents", () => {
   }
 
   it("validates the static registry and rejects invalid definitions", () => {
-    expect(listBuiltInAgentDefinitions().map((definition) => definition.key).sort()).toEqual(["briefs", "learning", "reflection-coach"]);
+    expect(listBuiltInAgentDefinitions().map((definition) => definition.key).sort()).toEqual([
+      // The APEX roster — the agents this product's own lifecycles commission,
+      // cut by permission surface (server/src/services/apex-agent-roster.ts).
+      "design-engineer",
+      "implementer",
+      "product-assistant",
+      "specifier",
+      // Inherited from the upstream fork.
+      "briefs",
+      "learning",
+      "reflection-coach",
+    ].sort());
     expect(() => validateBuiltInAgentDefinitions([
       {
         key: "briefs",
@@ -573,9 +584,14 @@ describeEmbeddedPostgres("built-in agents", () => {
 
     const result = await reconcileBuiltInAgentsOnStartup(db);
 
+    // Five auto-provisioned definitions: the Reflection Coach (which owns a
+    // bundle) plus the four APEX roster agents (which lifecycle agent steps
+    // name by key and must therefore exist before the first ticket reaches
+    // them). Each one is gated behind the SAME board approval — that is what
+    // this test is actually about, and the count moves with the roster.
     expect(result).toMatchObject({
-      autoEnsured: 1,
-      pendingApprovals: 1,
+      autoEnsured: 5,
+      pendingApprovals: 5,
     });
     const state = await builtInAgentService(db).get(companyId, "reflection-coach");
     expect(state).toMatchObject({
@@ -593,7 +609,13 @@ describeEmbeddedPostgres("built-in agents", () => {
     });
     expect(state.resources.map((resource) => resource.stockStatus)).toEqual(["missing", "missing", "missing"]);
 
-    const [approval] = await db.select().from(approvals).where(eq(approvals.companyId, companyId));
+    // Selected by key rather than by position: every auto-provisioned
+    // definition raises its own hire approval, so "the first row" is whichever
+    // one the database happened to return.
+    const companyApprovals = await db.select().from(approvals).where(eq(approvals.companyId, companyId));
+    const approval = companyApprovals.find(
+      (row) => (row.payload as { sourceBuiltInAgentKey?: string } | null)?.sourceBuiltInAgentKey === "reflection-coach",
+    );
     expect(approval).toMatchObject({
       type: "hire_agent",
       status: "pending",
@@ -609,7 +631,7 @@ describeEmbeddedPostgres("built-in agents", () => {
     });
 
     const pendingReconcile = await reconcileBuiltInAgentsOnStartup(db);
-    expect(pendingReconcile.pendingApprovals).toBe(1);
+    expect(pendingReconcile.pendingApprovals).toBe(5);
     const stillPending = await builtInAgentService(db).get(companyId, "reflection-coach");
     expect(stillPending).toMatchObject({
       status: "pending_approval",
@@ -644,8 +666,18 @@ describeEmbeddedPostgres("built-in agents", () => {
     await reconcileBuiltInAgentsOnStartup(db);
     const agentRows = await db.select().from(agents).where(eq(agents.companyId, companyId));
     expect(agentRows.filter((row) => readBuiltInAgentMarker(row.metadata)?.key === "reflection-coach")).toHaveLength(1);
+    // The property being asserted is NO DUPLICATE: a second startup reconcile
+    // must not raise a second hire approval for a definition that already has
+    // one. Counted per definition rather than in total, so it stays about that
+    // and does not become an assertion about how many built-ins exist.
     const approvalRows = await db.select().from(approvals).where(eq(approvals.companyId, companyId));
-    expect(approvalRows).toHaveLength(1);
+    const perDefinition = new Map<string, number>();
+    for (const row of approvalRows) {
+      const key = (row.payload as { sourceBuiltInAgentKey?: string } | null)?.sourceBuiltInAgentKey ?? "";
+      perDefinition.set(key, (perDefinition.get(key) ?? 0) + 1);
+    }
+    expect([...perDefinition.values()].filter((count) => count !== 1)).toEqual([]);
+    expect(perDefinition.get("reflection-coach")).toBe(1);
   });
 
   it("preserves Reflection Coach instruction drift on reconcile and restores it on reset", async () => {

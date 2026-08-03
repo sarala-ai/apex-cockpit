@@ -318,7 +318,7 @@ describeDb("company data erasure", () => {
 
   // ─── scope: company ────────────────────────────────────────────────────────
 
-  it("empties the board but leaves the company, its members and its labels", async () => {
+  it("empties the board but leaves the company, its members, its labels and its workforce", async () => {
     const seed = await seedCompany("wipe");
     const report = await service.erase(
       seed.company.id,
@@ -330,10 +330,14 @@ describeDb("company data erasure", () => {
     expect(await countFor(issues, seed.company.id)).toBe(0);
     expect(await countFor(goals, seed.company.id)).toBe(0);
     expect(await countFor(projects, seed.company.id)).toBe(0);
-    expect(await countFor(agents, seed.company.id)).toBe(0);
     expect(await countFor(proposals, seed.company.id)).toBe(0);
 
     // Preserved, deliberately.
+    // The AGENT is configuration — who works here, with what adapter, under
+    // what permissions and prompt. A reset that took it left the company with
+    // no workforce and no in-product way to recover one. Its runs, sessions
+    // and cost events are gone; the record is not.
+    expect(await countFor(agents, seed.company.id)).toBe(1);
     expect(await countFor(labels, seed.company.id)).toBe(1);
     expect(await countFor(companyMemberships, seed.company.id)).toBe(1);
     const company = await db.select().from(companies).where(eq(companies.id, seed.company.id));
