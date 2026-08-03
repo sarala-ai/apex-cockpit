@@ -123,6 +123,13 @@ export async function clearStepRunPermissionOverride(db: Db, issueId: string): P
 export async function commissionBoundedAgentRun(
   db: Db,
   commission: BoundedRunCommission,
+  /** The dispatch seam. Exists ONLY so a test can observe what is true at the
+   *  instant the run is dispatched — specifically, that the governed override
+   *  is already on the issue by then. Asserting that
+   *  `applyStepRunPermissionOverride` was *called* would prove nothing about
+   *  ordering, and ordering is the whole property: an override applied after
+   *  dispatch governs nothing. */
+  dispatch?: (agentId: string, request: Record<string, unknown>) => Promise<unknown>,
 ): Promise<{ runId: string } | null> {
   const permission = await applyStepRunPermissionOverride(db, {
     issueId: commission.issueId,
@@ -130,8 +137,13 @@ export async function commissionBoundedAgentRun(
     permissions: commission.permissions,
   });
   // Lazy import: heartbeat.ts is enormous and only needed on this path.
-  const { heartbeatService } = await import("../../services/heartbeat.js");
-  const run = await heartbeatService(db).wakeup(commission.agentId, {
+  const wake =
+    dispatch ??
+    (async (agentId: string, request: Record<string, unknown>) => {
+      const { heartbeatService } = await import("../../services/heartbeat.js");
+      return heartbeatService(db).wakeup(agentId, request as never);
+    });
+  const run = await wake(commission.agentId, {
     source: "automation",
     triggerDetail: "system",
     reason: STEP_AGENT_WAKE_REASON,
