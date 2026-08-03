@@ -145,6 +145,45 @@ describeEmbeddedPostgres("built-in agents", () => {
     ])).toThrow("Invalid built-in agent key");
   });
 
+  /**
+   * The brownfield reconstruction routine. These assertions are the parts a
+   * later edit could quietly undo while the routine still "worked": a routine
+   * that runs on a schedule spends money nobody asked for, and a routine whose
+   * body stops forbidding direct writes is an agent editing the board it is
+   * supposed to be describing.
+   */
+  it("ships the Product Assistant reconstruction routine paused, unscheduled and proposal-only", () => {
+    const definition = listBuiltInAgentDefinitions().find((entry) => entry.key === "product-assistant");
+    const routine = definition?.bundle?.routine;
+    expect(routine?.routineKey).toBe("reconstruct-initiatives");
+
+    // Spends nothing until someone asks for it — on BOTH switches.
+    expect(routine?.status).toBe("paused");
+    expect(routine?.triggers.every((trigger) => trigger.enabled)).toBe(false);
+
+    // Bounded: a reviewer's reading budget, not an agent's ambition.
+    expect(routine?.variables.map((variable) => variable.name).sort()).toEqual([
+      "lookbackDays",
+      "maxRecords",
+      "recordKind",
+      "repoPaths",
+    ]);
+    expect(routine?.concurrencyPolicy).toBe("coalesce_if_active");
+    expect(routine?.catchUpPolicy).toBe("skip_missed");
+
+    // No skill: the doctrine lives in one file so two files cannot drift.
+    expect(definition?.bundle?.skill).toBeUndefined();
+
+    const body = routine?.description ?? "";
+    expect(body).toContain("Reconstruct evidence. Propose structure. Never assert intent.");
+    expect(body).toContain("Proposal-only.");
+    expect(body).toContain("Never retro-fit a stop condition");
+    expect(body).toContain("Absence is reported, never filled in");
+    // Its only write path, named — and nothing that writes to the board direct.
+    expect(body).toContain("paperclipCreateProposal");
+    expect(body).toContain("paperclipSubmitProposal");
+  });
+
   it("lazily provisions one agent per company/key and updates the same row on setup", async () => {
     const companyId = await seedCompany();
     const svc = builtInAgentService(db);
@@ -508,7 +547,13 @@ describeEmbeddedPostgres("built-in agents", () => {
       "paperclipai/bundled/paperclip-operations/reflection-coach",
     );
 
-    const [routine] = await db.select().from(routines).where(eq(routines.companyId, companyId));
+    // Scoped by ORIGIN, not "the first routine in the company": more than one
+    // built-in now ships a bundled routine — the Product Assistant's
+    // reconstruction sweep auto-provisions into the same company.
+    const [routine] = await db
+      .select()
+      .from(routines)
+      .where(eq(routines.originId, "reflection-coach:recent-agent-reflection"));
     expect(routine).toMatchObject({
       title: "Review recent agent trajectories for coaching proposals",
       status: "paused",

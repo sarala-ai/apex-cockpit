@@ -40,13 +40,15 @@ function redactBuiltInAgentListState(state: BuiltInAgentState): BuiltInAgentStat
           entryFile: state.definition.bundle.instructions.entryFile,
           files: Object.keys(state.definition.bundle.instructions.files),
         },
-        skill: {
-          skillKey: state.definition.bundle.skill.skillKey,
-          displayName: state.definition.bundle.skill.displayName,
-          slug: state.definition.bundle.skill.slug,
-          canonicalKey: state.definition.bundle.skill.canonicalKey,
-          files: Object.keys(state.definition.bundle.skill.files),
-        },
+        skill: state.definition.bundle.skill
+          ? {
+            skillKey: state.definition.bundle.skill.skillKey,
+            displayName: state.definition.bundle.skill.displayName,
+            slug: state.definition.bundle.skill.slug,
+            canonicalKey: state.definition.bundle.skill.canonicalKey,
+            files: Object.keys(state.definition.bundle.skill.files),
+          }
+          : undefined,
         routine: {
           routineKey: state.definition.bundle.routine.routineKey,
           title: state.definition.bundle.routine.title,

@@ -5,6 +5,7 @@ import {
   clearGovernedAdapterConfigOverride,
   derivePermissionPolicy,
   READ_ONLY_BROAD_ALLOWED_TOOLS,
+  READ_REPOS_ALLOWED_TOOLS,
 } from "../apex/steps/run-policy.js";
 
 describe("derivePermissionPolicy", () => {
@@ -34,11 +35,40 @@ describe("derivePermissionPolicy", () => {
     expect(tools).toContain("Read");
   });
 
-  it("aliases read-repos to read-only-broad enforcement in v1, with a recorded note", () => {
+  /**
+   * read-repos is no longer an alias. It was one, on the untested assumption
+   * that --allowedTools gates by tool name only — which made "repo reader" a
+   * grant that could not read a repository's history. The CLI honours
+   * `Bash(git log:*)` scoping (measured; see run-policy's module doc), so the
+   * profile now grants read-only VCS verbs and no write verb of any kind.
+   */
+  it("derives read-repos as read-only tools plus scoped read-only VCS commands", () => {
     const policy = derivePermissionPolicy({ profile: "read-repos" });
     expect(policy.profile).toBe("read-repos");
-    expect(policy.nativeTools).toBe(READ_ONLY_BROAD_ALLOWED_TOOLS);
+    expect(policy.nativeTools).toBe(READ_REPOS_ALLOWED_TOOLS);
+    expect(policy.nativeTools).not.toBe(READ_ONLY_BROAD_ALLOWED_TOOLS);
     expect(policy.notes.some((n) => n.includes("read-repos"))).toBe(true);
+
+    // History is reachable...
+    expect(policy.nativeTools).toContain("Bash(git log:*)");
+    expect(policy.nativeTools).toContain("Bash(gh pr view:*)");
+    // ...and every read-only tool of the narrower profile is still present.
+    for (const tool of READ_ONLY_BROAD_ALLOWED_TOOLS.split(" ")) {
+      expect(policy.nativeTools.split(" ")).toContain(tool);
+    }
+    // Nothing that writes: no bare Bash, no Edit/Write, no write verb, and no
+    // `gh api` (a prefix matcher cannot tell a GET from a POST).
+    expect(policy.nativeTools.split(" ")).not.toContain("Bash");
+    for (const forbidden of ["Edit", "Write", "WebFetch", "WebSearch"]) {
+      expect(policy.nativeTools.split(" ")).not.toContain(forbidden);
+    }
+    for (const forbidden of [
+      "git push", "git commit", "git checkout", "git fetch", "git pull",
+      "git stash", "git branch", "git tag", "git config",
+      "gh api", "gh pr create", "gh pr merge", "gh issue create",
+    ]) {
+      expect(policy.nativeTools).not.toContain(forbidden);
+    }
   });
 
   it("falls back to bounded (the safest default) on an unrecognized profile, with a note", () => {

@@ -493,4 +493,128 @@ describe("paperclip MCP tools", () => {
 
     expect(response.content[0]?.text).toContain("must not contain '..'");
   });
+  // ── PROPOSALS ──────────────────────────────────────────────────────────────
+  // The rules the review model depends on are enforced HERE, at the agent's
+  // write path, not merely described in a routine. A tool that accepted a
+  // sourceless "confirmed" record would let a reconstruction enter the board's
+  // history as recorded fact, which is the one failure the whole surface exists
+  // to prevent.
+
+  it("creates a proposal against the default company and passes records through", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse({ id: "proposal-1" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipCreateProposal");
+    const response = await tool.execute({
+      kind: "initiatives",
+      title: "Reconstructed initiatives, 2025-2026",
+      summary: "Reconstructed 12 of ~20 bodies of work; the remainder is unattributed.",
+      records: [
+        {
+          ref: "r1",
+          provenance: { kind: "confirmed", source: "specs/022-state/spec.md" },
+          fields: { title: "State that survives the run" },
+        },
+        {
+          ref: "r2",
+          targetId: "55555555-5555-5555-5555-555555555555",
+          provenance: { kind: "inferred", source: "47 commits under server/payments, Mar-May 2026" },
+          fields: { title: "Payments reliability" },
+        },
+      ],
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/companies/11111111-1111-1111-1111-111111111111/proposals",
+    );
+    expect(init.method).toBe("POST");
+    const body = JSON.parse(String(init.body));
+    // Both shapes reach the server: an UPDATE carries targetId, a CREATE does not.
+    expect(body.records[0].targetId).toBeUndefined();
+    expect(body.records[1].targetId).toBe("55555555-5555-5555-5555-555555555555");
+    expect(response.content[0]?.text).toContain("proposal-1");
+  });
+
+  it("refuses a confirmed record with no source", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipCreateProposal");
+    const response = await tool.execute({
+      kind: "initiatives",
+      title: "Reconstruction",
+      records: [
+        { ref: "r1", provenance: { kind: "confirmed" }, fields: { title: "Payments reliability" } },
+      ],
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(response.content[0]?.text).toContain("requires a concrete source");
+  });
+
+  it("refuses an inferred record with a blank source", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipCreateProposal");
+    const response = await tool.execute({
+      kind: "initiatives",
+      title: "Reconstruction",
+      records: [
+        { ref: "r1", provenance: { kind: "inferred", source: "   " }, fields: { title: "Payments" } },
+      ],
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(response.content[0]?.text).toContain("inferred FROM");
+  });
+
+  it("strips the reviewer's own fields from an agent-authored record", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse({ id: "proposal-2" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipCreateProposal");
+    await tool.execute({
+      kind: "initiatives",
+      title: "Reconstruction",
+      records: [
+        {
+          ref: "r1",
+          provenance: { kind: "inferred", source: "12 commits, Apr 2026" },
+          fields: { title: "Payments reliability" },
+          // An agent pre-striking and pre-annotating a row would be writing the
+          // review as well as the proposal.
+          excluded: true,
+          note: "I already decided this one is wrong",
+          correctedByUserId: "someone",
+        },
+      ],
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const record = JSON.parse(String(init.body)).records[0];
+    expect(record.excluded).toBeUndefined();
+    expect(record.note).toBeUndefined();
+    expect(record.correctedByUserId).toBeUndefined();
+  });
+
+  it("submits a proposal to its single gate", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse({ approvalId: "approval-1" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipSubmitProposal");
+    await tool.execute({
+      proposalId: "66666666-6666-6666-6666-666666666666",
+      note: "12 records, 5 confirmed.",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/proposals/66666666-6666-6666-6666-666666666666/submit",
+    );
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({ note: "12 records, 5 confirmed." });
+  });
 });

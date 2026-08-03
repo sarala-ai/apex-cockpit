@@ -78,6 +78,15 @@ Write tools:
 - `paperclipUnlinkIssueApproval`
 - `paperclipApprovalDecision`
 - `paperclipAddApprovalComment`
+- `paperclipCreateProposal`
+- `paperclipSubmitProposal`
+
+A proposal is a set of typed records a person reviews as one grid and approves
+once; nothing reaches the board until they do. Every record carries provenance
+(`confirmed` with a concrete source, or `inferred` with what it was inferred
+from), and the source is required in both cases — a reconstruction presented
+without one reads as recorded fact. There is deliberately no tool to approve,
+correct or materialise a proposal: those are the reviewer's verbs.
 
 Escape hatch:
 

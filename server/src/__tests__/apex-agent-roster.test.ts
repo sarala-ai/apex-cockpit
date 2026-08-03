@@ -78,12 +78,47 @@ describe("the APEX agent roster", () => {
     for (const key of [APEX_AGENT_KEYS.specifier, APEX_AGENT_KEYS.productAssistant]) {
       const policy = derivePermissionPolicy({ profile: apexAgentPermissionProfile(key) });
       const tools = policy.nativeTools.split(/\s+/);
+      // Bare `Bash` is the assertion. The Product Assistant DOES hold Bash
+      // scoped to read-only VCS verbs (`Bash(git log:*)`, which is a different
+      // token); an unscoped grant is what would let it edit the history it
+      // reports on.
       for (const writeTool of ["Edit", "Write", "Bash", "NotebookEdit", "WebFetch"]) {
         expect(tools, `${key} must not be granted ${writeTool}`).not.toContain(writeTool);
       }
       expect(tools).toContain("Read");
       expect(policy.permissionMode).toBe("governed");
     }
+  });
+
+  /**
+   * The profile alone is a claim about FLOW-commissioned runs only —
+   * `derivePermissionPolicy` has exactly two callers and the routine scheduler
+   * is neither of them. The Product Assistant's headline job is a routine, so
+   * without a grant on its own record its reconstruction run would inherit the
+   * adapter's full bypass: an agent shipped as "reads history, writes
+   * proposals" that could rewrite the history it was reporting on.
+   */
+  it("carries the read-repos grant on the Product Assistant's own adapter config, so routine runs are governed too", () => {
+    const definition = APEX_AGENT_ROSTER.find((d) => d.key === APEX_AGENT_KEYS.productAssistant);
+    const config = definition?.defaultAdapterConfig ?? {};
+
+    expect(config.dangerouslySkipPermissions).toBe(false);
+    // Same constant the flow path derives, so the two cannot drift.
+    expect(config.allowedTools).toBe(
+      derivePermissionPolicy({ profile: "read-repos" }).nativeTools,
+    );
+    expect(String(config.allowedTools)).toContain("Bash(git log:*)");
+    expect(String(config.allowedTools).split(" ")).not.toContain("Bash");
+
+    // A definition in git never carries a credential VALUE — `gh` auth is a
+    // reference to a slot an operator fills, and a non-required one so an
+    // already-authenticated machine is not blocked.
+    expect(definition?.defaultAdapterConfig).not.toHaveProperty("env");
+    expect(definition?.defaultAdapterEnv?.GH_TOKEN).toEqual({
+      type: "user_secret_ref",
+      key: "GH_TOKEN",
+      required: false,
+    });
   });
 
   it("gives the Implementer the bounded workspace grant, including write and test execution", () => {
