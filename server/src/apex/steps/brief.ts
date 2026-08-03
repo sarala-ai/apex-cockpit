@@ -29,16 +29,14 @@
  */
 import { z } from "zod";
 import { ApexUnavailableError, ApexInvocationError, type ApexInvoker } from "../invoke.js";
-import { acceptancePullRequestTarget } from "../steps/agent-step.js";
+import { acceptancePullRequestTarget } from "./agent-step.js";
 import { enrichDesignFiles, type DesignArchiveFetcher } from "./design-artifact.js";
 import {
-  FlowDefinitionError,
   findChangeRequestTarget,
-  type FlowDefinition,
-  type FlowNode,
-  type LoadedFlowDefinition,
-  type ReviewPass,
-} from "./definition.js";
+  type ProcessDefinition,
+  type ProcessStep,
+} from "./process-definition.js";
+import { reviewPassCatalogFor, type ReviewPass } from "./review-passes.js";
 
 /** Zod contract for github_repo's get_pull_request tool result (apex-core,
  *  the changed-files extension) — the SAME schema both the pr-diff route and
@@ -403,17 +401,23 @@ const LIVE_CHANGE_RE = /deploy|release|publish|promote|rollout|roll-out|ship|app
 const MERGE_RE = /merge|land|commit|push|pr-merge/i;
 
 /** Reversibility of ONE post-gate node. */
-export function nodeReversibility(node: FlowNode): Reversibility {
-  if (node.kind === "workflow" && node.workflow) {
-    const name = node.workflow.workflow;
+export function nodeReversibility(node: ProcessStep): Reversibility {
+  if (node.kind === "run" && node.run) {
+    // Only a WORKFLOW target carries a name whose shape says anything. A
+    // command target is an arbitrary tool invocation, and guessing at
+    // reversibility from an arbitrary argv would be exactly the optimistic
+    // reading this function exists to refuse.
+    const target = node.run.target;
+    if (target.type !== "workflow") return "unknown";
+    const name = target.workflow;
     if (IRREVERSIBLE_RE.test(name)) return "irreversible";
     if (MERGE_RE.test(name)) return "reversible";
     if (LIVE_CHANGE_RE.test(name)) return "reversible_with_effort";
     return "unknown";
   }
-  // Checks read, they don't change the world. Another gate pauses again, and
-  // an agent step's own gate is where its consequence is decided.
-  if (node.kind === "check" || node.kind === "gate") return "reversible";
+  // Another gate pauses again, and an agent step's own gate is where its
+  // consequence is decided.
+  if (node.kind === "gate") return "reversible";
   if (node.kind === "agent") return "reversible_with_effort";
   return "unknown";
 }
@@ -444,18 +448,18 @@ export type NextSection = {
 /** Describe one post-gate node in plain language, naming the concrete thing
  *  it runs (the workflow / check tool / gate id) — this is the whole point of
  *  reading the flow definition instead of hardcoding a sentence. */
-function describeNode(node: FlowNode): string {
-  if (node.kind === "workflow" && node.workflow) {
-    return `workflow \`${node.workflow.workflow}\` runs`;
-  }
-  if (node.kind === "check" && node.check) {
-    return `the automatic check \`${node.check.tool}\` runs`;
+function describeNode(node: ProcessStep): string {
+  if (node.kind === "run" && node.run) {
+    const target = node.run.target;
+    return target.type === "workflow"
+      ? `workflow \`${target.workflow}\` runs`
+      : `the automatic check \`${target.tool}\` runs`;
   }
   if (node.kind === "agent") {
     return `a bounded agent step (\`${node.id}\`) is commissioned`;
   }
   if (node.kind === "gate") {
-    return `the flow pauses for another approval (\`${node.id}\`)`;
+    return `the process pauses for another approval (\`${node.id}\`)`;
   }
   return `step \`${node.id}\` runs`;
 }
@@ -478,19 +482,19 @@ const GENERIC_NEXT: NextSection = {
  * says so on the reject line instead of promising a rerun that never happens.
  */
 export function deriveRequestChangesStep(
-  flow: FlowDefinition,
+  definition: ProcessDefinition,
   gateNodeId: string,
 ): string | null {
-  const target = findChangeRequestTarget(flow, gateNodeId);
+  const target = findChangeRequestTarget(definition, gateNodeId);
   if (!target.found) return null;
-  const gateIndex = flow.nodes.findIndex((node) => node.id === gateNodeId);
-  const between = flow.nodes.slice(target.index + 1, gateIndex);
+  const gateIndex = definition.steps.findIndex((node) => node.id === gateNodeId);
+  const between = definition.steps.slice(target.index + 1, gateIndex);
   const betweenText =
     between.length > 0
       ? ` ${between.map((node) => `\`${node.id}\``).join(", ")} re-run${between.length === 1 ? "s" : ""} on the way back, then`
       : " Then";
   return (
-    `Request changes (a reason is required) → step \`${target.node.id}\` reruns with your reason ` +
+    `Request changes (a reason is required) → step \`${target.step.id}\` reruns with your reason ` +
     `delivered to it verbatim.${betweenText} this gate reopens on the new work for a fresh decision.`
   );
 }
@@ -503,7 +507,7 @@ export function deriveRequestChangesStep(
  * artifact when we know what the artifact is.
  */
 export function deriveNextSteps(
-  flow: FlowDefinition | null,
+  definition: ProcessDefinition | null,
   gateNodeId: string | null,
   artifact: { kind: "pull_request"; repo: string; headBranch: string } | null,
   note: string | null = null,
@@ -515,41 +519,41 @@ export function deriveNextSteps(
       ? `${artifactNoun} (${artifact.repo} · ${artifact.headBranch}) stays open for you to handle.`
       : `${artifactNoun} is left as it is for you to handle.`);
 
-  if (!flow || !gateNodeId) {
+  if (!definition || !gateNodeId) {
     return { ...GENERIC_NEXT, reject: pauseRejectText, note };
   }
-  const index = flow.nodes.findIndex((node) => node.id === gateNodeId);
+  const index = definition.steps.findIndex((node) => node.id === gateNodeId);
   if (index < 0) {
     return {
       ...GENERIC_NEXT,
       reject: pauseRejectText,
-      note: note ?? `gate '${gateNodeId}' is not present in flow '${flow.name}'`,
+      note: note ?? `gate '${gateNodeId}' is not present in process '${definition.name}'`,
     };
   }
   // Every decision's consequence is derived from the flow, not just approve:
   // the founder must know BEFORE clicking that requesting changes starts
   // another round (and where it goes), and that rejecting does not.
-  const requestChangesText = deriveRequestChangesStep(flow, gateNodeId);
+  const requestChangesText = deriveRequestChangesStep(definition, gateNodeId);
   const rejectText = requestChangesText
     ? pauseRejectText
     : `${pauseRejectText} No step precedes this gate that could redo the work, so requesting changes is not available here.`;
-  const remaining = flow.nodes.slice(index + 1);
+  const remaining = definition.steps.slice(index + 1);
   if (remaining.length === 0) {
     return {
-      approve: "Approve → this is the flow's last gate; the flow completes.",
+      approve: "Approve → this is the process's last gate; the process completes.",
       requestChanges: requestChangesText,
       reject: rejectText,
       derived: true,
       note,
     };
   }
-  const next = remaining[0] as FlowNode;
+  const next = remaining[0] as ProcessStep;
   const tail =
     remaining.length === 1
-      ? " and the flow completes."
-      : `, then ${remaining.length - 1} more step${remaining.length - 1 === 1 ? "" : "s"} before the flow completes.`;
+      ? " and the process completes."
+      : `, then ${remaining.length - 1} more step${remaining.length - 1 === 1 ? "" : "s"} before the process completes.`;
   const scope =
-    next.kind === "workflow" && next.workflow && artifact
+    next.kind === "run" && next.run?.target.type === "workflow" && artifact
       ? ` on ${artifact.repo} (${artifact.headBranch})`
       : "";
   return {
@@ -572,20 +576,20 @@ export function deriveNextSteps(
  * than inventing a second vocabulary.
  */
 export function deriveRisk(input: {
-  flow: FlowDefinition | null;
+  definition: ProcessDefinition | null;
   gateNodeId: string | null;
   verified: VerifiedSection;
   artifact: PrDiffSummary;
 }): RiskSection {
-  const { flow, gateNodeId, verified, artifact } = input;
+  const { definition, gateNodeId, verified, artifact } = input;
   const risks: string[] = [];
 
   let reversibility: Reversibility = "unknown";
   let derived = false;
-  const index = flow && gateNodeId ? flow.nodes.findIndex((n) => n.id === gateNodeId) : -1;
-  if (flow && index >= 0) {
+  const index = definition && gateNodeId ? definition.steps.findIndex((n) => n.id === gateNodeId) : -1;
+  if (definition && index >= 0) {
     derived = true;
-    const remaining = flow.nodes.slice(index + 1);
+    const remaining = definition.steps.slice(index + 1);
     if (remaining.length === 0) {
       // Nothing runs. Approving closes the flow and changes nothing further.
       reversibility = "reversible";
@@ -596,19 +600,19 @@ export function deriveRisk(input: {
         if (REVERSIBILITY_RANK[level] > REVERSIBILITY_RANK[reversibility]) {
           reversibility = level;
         }
-        if (level === "irreversible" && node.kind === "workflow" && node.workflow) {
+        if (level === "irreversible" && node.kind === "run" && node.run?.target.type === "workflow") {
           risks.push(
-            `Workflow \`${node.workflow.workflow}\` runs after this gate and destroys or replaces something — there is no undo step in this flow.`,
+            `Workflow \`${(node.run!.target as { workflow: string }).workflow}\` runs after this gate and destroys or replaces something — there is no undo step in this flow.`,
           );
         }
-        if (level === "reversible_with_effort" && node.kind === "workflow" && node.workflow) {
+        if (level === "reversible_with_effort" && node.kind === "run" && node.run?.target.type === "workflow") {
           risks.push(
-            `Workflow \`${node.workflow.workflow}\` runs after this gate, so the change goes live as soon as you approve.`,
+            `Workflow \`${(node.run!.target as { workflow: string }).workflow}\` runs after this gate, so the change goes live as soon as you approve.`,
           );
         }
-        if (level === "unknown" && node.kind === "workflow" && node.workflow) {
+        if (level === "unknown" && node.kind === "run" && node.run?.target.type === "workflow") {
           risks.push(
-            `Workflow \`${node.workflow.workflow}\` runs after this gate and its effect could not be classified — check what it does before approving.`,
+            `Workflow \`${(node.run!.target as { workflow: string }).workflow}\` runs after this gate and its effect could not be classified — check what it does before approving.`,
           );
         }
       }
@@ -666,12 +670,12 @@ export type ReviewPassItem = { id: string; label: string; question: string };
  * questions were checked and found empty.
  */
 export function collectReviewPasses(
-  flow: FlowDefinition | null,
+  definition: ProcessDefinition | null,
   gateNodeId: string | null,
   catalog: Record<string, ReviewPass>,
 ): ReviewPassItem[] {
-  if (!flow || !gateNodeId) return [];
-  const node = flow.nodes.find((n) => n.id === gateNodeId);
+  if (!definition || !gateNodeId) return [];
+  const node = definition.steps.find((n) => n.id === gateNodeId);
   const ids = node?.gate?.requires ?? [];
   const items: ReviewPassItem[] = [];
   for (const id of ids) {
@@ -810,7 +814,7 @@ export async function assembleFlowGateBrief(input: {
   payload: Record<string, unknown>;
   activityRows: ActivityRowLike[];
   apexInvoker: ApexInvoker;
-  loadFlowDefinition: (name: string) => Promise<LoadedFlowDefinition>;
+  loadProcessDefinition: (name: string) => Promise<ProcessDefinition | null>;
   provenanceLookup?: ProvenanceLookup;
   /** Injected so the design preview is testable without gh, and so a brief
    *  assembled in a context with no GitHub access simply has no preview
@@ -853,29 +857,44 @@ export async function assembleFlowGateBrief(input: {
 
   const verified = describeAcceptance(target?.acceptance ?? null, target?.acceptanceEvaluation ?? null);
 
-  // --- what happens next, derived from the flow definition ---------------
-  let flow: FlowDefinition | null = null;
+  // --- what happens next, derived from the process definition ------------
+  //
+  // The definition is now a DATABASE read (the pipeline and its stage rows,
+  // projected by `pipelineProcessDefinition`), not an `apex flows show` shell.
+  // The failure isolation stays exactly as it was: a definition that cannot be
+  // loaded degrades the brief to its generic "what happens next" text with the
+  // reason recorded, and never fails the approval screen. A reviewer with a
+  // partial brief can still decide; a reviewer with a 500 cannot.
+  let definition: ProcessDefinition | null = null;
   let reviewPassCatalog: Record<string, ReviewPass> = {};
   let flowNote: string | null = null;
   if (flowName) {
     try {
-      const loaded = await input.loadFlowDefinition(flowName);
-      flow = loaded.flow;
-      reviewPassCatalog = loaded.reviewPasses ?? {};
+      definition = await input.loadProcessDefinition(flowName);
+      if (!definition) flowNote = `process definition '${flowName}' was not found`;
+      else {
+        // The catalogue is embedded now rather than arriving over the wire, so
+        // the passes a gate asks for are resolved from the ids it declares.
+        const declared = new Set<string>();
+        for (const step of definition.steps) {
+          for (const id of step.gate?.requires ?? []) declared.add(id);
+        }
+        reviewPassCatalog = reviewPassCatalogFor([...declared]);
+      }
     } catch (err) {
       flowNote =
-        err instanceof FlowDefinitionError || err instanceof ApexUnavailableError
-          ? `flow definition unavailable (${err.message})`
-          : `flow definition unavailable (${err instanceof Error ? err.message : String(err)})`;
+        err instanceof ApexUnavailableError
+          ? `process definition unavailable (${err.message})`
+          : `process definition unavailable (${err instanceof Error ? err.message : String(err)})`;
     }
   } else {
-    flowNote = "approval payload carries no flow name";
+    flowNote = "approval payload carries no process name";
   }
   const artifactRef =
     target !== null
       ? { kind: "pull_request" as const, repo: target.prTarget.repo, headBranch: target.prTarget.head }
       : null;
-  const next = deriveNextSteps(flow, nodeId, artifactRef, flowNote);
+  const next = deriveNextSteps(definition, nodeId, artifactRef, flowNote);
 
   // --- provenance --------------------------------------------------------
   const provenance = readProvenanceFromActivity(input.activityRows);
@@ -894,21 +913,21 @@ export async function assembleFlowGateBrief(input: {
     }
   }
 
-  const kind = titleCaseTicketType(ticketType ?? flow?.ticket_type ?? null);
+  const kind = titleCaseTicketType(ticketType ?? definition?.ticket_type ?? null);
   return {
     available: true,
     decision: {
       headline: `Approve a ${kind}`,
       subject: issueTitle,
       detail: describeArtifactDetail(artifact),
-      flowPurpose: flow?.description?.trim() || null,
+      flowPurpose: definition?.description?.trim() || null,
       ticketIdentifier,
     },
     verified,
     artifact,
-    reviewPasses: collectReviewPasses(flow, nodeId, reviewPassCatalog),
+    reviewPasses: collectReviewPasses(definition, nodeId, reviewPassCatalog),
     next,
-    risk: deriveRisk({ flow, gateNodeId: nodeId, verified, artifact }),
+    risk: deriveRisk({ definition, gateNodeId: nodeId, verified, artifact }),
     provenance,
     waitingSince: provenance.gateOpenedAt ?? provenance.verifiedAt ?? provenance.commissionedAt,
     machine: {
@@ -916,7 +935,7 @@ export async function assembleFlowGateBrief(input: {
       issueId,
       flowName,
       nodeId,
-      ticketType: ticketType ?? flow?.ticket_type ?? null,
+      ticketType: ticketType ?? definition?.ticket_type ?? null,
     },
   };
 }

@@ -6,6 +6,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
+
+  approvals,
   assets,
   caseAttachments,
   caseDocuments,
@@ -107,6 +109,9 @@ describeEmbeddedPostgres("cases routes", () => {
     await db.delete(heartbeatRuns);
     await db.delete(projects);
     await db.delete(agents);
+    // A review stage now opens a gate APPROVAL on entry, and approvals
+    // reference the company — so they must go before it does.
+    await db.delete(approvals);
     await db.delete(companies);
     await db.delete(instanceSettings);
   });

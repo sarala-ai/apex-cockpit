@@ -15,6 +15,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
+
+  approvals,
   companies,
   createDb,
   executionWorkspaces,
@@ -105,6 +107,9 @@ describeEmbeddedPostgres("pipeline stage step config — the run step and its ac
     await db.delete(projectWorkspaces);
     await db.delete(projects);
     await db.delete(agents);
+    // A review stage now opens a gate APPROVAL on entry, and approvals
+    // reference the company — so they must go before it does.
+    await db.delete(approvals);
     await db.delete(companies);
     await db.delete(instanceSettings);
   });

@@ -34,10 +34,11 @@ import {
   fetchPullRequestSummary,
   findAcceptanceTarget,
   type ProvenanceLookup,
-} from "../apex/flow/brief.js";
-import type { DesignArchiveFetcher } from "../apex/flow/design-artifact.js";
+} from "../apex/steps/brief.js";
+import type { DesignArchiveFetcher } from "../apex/steps/design-artifact.js";
 import { fetchDesignArchive } from "../design/design-files.js";
-import { loadFlowDefinition, type LoadedFlowDefinition } from "../apex/flow/definition.js";
+import { loadProcessDefinitionByKey } from "../services/pipelines.js";
+import type { ProcessDefinition } from "../apex/steps/process-definition.js";
 import type { PipelineActor } from "../services/pipelines.js";
 
 /** apex-tower (Task 2 §2b): a pipeline actor from the approving/rejecting board user. */
@@ -125,9 +126,11 @@ export function approvalRoutes(
   options: {
     pluginWorkerManager?: PluginWorkerManager;
     apexInvoker?: ApexInvoker;
-    /** Injected by tests so the brief's flow-derived "what happens next" can
-     *  be exercised without shelling out to the apex CLI. */
-    loadFlowDefinition?: (name: string) => Promise<LoadedFlowDefinition>;
+    /** Injected by tests so the brief's definition-derived "what happens
+     *  next" can be exercised without seeding a whole pipeline. Production
+     *  reads the definition out of the database — the process definition is a
+     *  DB object now, not a git file behind a CLI. */
+    loadProcessDefinition?: (companyId: string, name: string) => Promise<ProcessDefinition | null>;
     provenanceLookup?: ProvenanceLookup;
     /** Injected by tests so the design preview can be exercised without gh.
      *  Defaults to the real `gh`-backed archive read. */
@@ -144,7 +147,9 @@ export function approvalRoutes(
   const secretsSvc = secretService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
   const apexInvoker: ApexInvoker = options.apexInvoker ?? new CliApexInvoker();
-  const flowDefinitionLoader = options.loadFlowDefinition ?? loadFlowDefinition;
+  const processDefinitionLoader =
+    options.loadProcessDefinition ??
+    ((companyId: string, name: string) => loadProcessDefinitionByKey(db, companyId, name));
   const provenanceLookup: ProvenanceLookup = options.provenanceLookup ?? dbProvenanceLookup(db);
 
   async function requireApprovalAccess(req: Request, id: string) {
@@ -780,7 +785,7 @@ export function approvalRoutes(
       payload,
       activityRows,
       apexInvoker,
-      loadFlowDefinition: flowDefinitionLoader,
+      loadProcessDefinition: (name: string) => processDefinitionLoader(approval.companyId, name),
       provenanceLookup,
       fetchDesignArchive: options.fetchDesignArchive ?? fetchDesignArchive,
     });

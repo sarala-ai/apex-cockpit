@@ -5,6 +5,7 @@ import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  approvals,
   documents,
   documentRevisions,
   heartbeatRuns,
@@ -108,6 +109,18 @@ const DEFAULT_STAGES = [
   { key: "done", name: "Done", kind: "done", position: 900 },
   { key: "cancelled", name: "Cancelled", kind: "cancelled", position: 1000 },
 ] as const;
+
+/**
+ * The approval type a stage gate opens.
+ *
+ * Deliberately the SAME string the flow coordinator used (`flow_gate`). The
+ * approvals route, its decision brief and the UI that renders it all key on
+ * this value, and there are pending approvals carrying it right now. Changing
+ * the word would mean migrating live rows and rewiring three surfaces to save
+ * a name that is about to stop appearing anywhere a person reads. The rename
+ * is real and it is a separate change.
+ */
+export const PIPELINE_GATE_APPROVAL_TYPE = "flow_gate";
 
 export type PipelineActor =
   | { type: "user"; userId: string }
@@ -1358,15 +1371,49 @@ function stageGate(stage: typeof pipelineStages.$inferSelect) {
 }
 
 /**
- * A stage projected into THE process step it declares — the one shape the step
- * executor and the decision brief both read
- * (server/src/apex/steps/process-definition.ts).
+ * A stage projected into THE process step it declares, or null when it
+ * declares none — the one shape the step executor and the decision brief both
+ * read (server/src/apex/steps/process-definition.ts).
  *
  * `on_fail` is DERIVED rather than stored, because a stage already says the
  * same thing in the vocabulary a board speaks: an entry step naming
  * `onFailureToStageKey` is a `jump`, and one that names none HOLDS the stage,
  * which is exactly `pause`. Storing both would be two ways to say one thing,
  * and they would drift.
+ *
+ * ── THE UNRESOLVED OVERLAP, recorded here because it is load-bearing ──
+ *
+ * There are TWO "kind" vocabularies in this codebase and this function is
+ * where they meet:
+ *
+ *   `pipeline_stages.kind`  — open | working | review | done | cancelled.
+ *                             What the board COLUMN means to a reader.
+ *   step kind (this file)   — run | agent | gate. WHO EXECUTES.
+ *
+ * They are not orthogonal, and pretending otherwise is how a product grows two
+ * dropdowns both labelled "type". Read the mapping this function actually
+ * performs and the overlap is plain: `gate` is read off `kind === "review"`;
+ * `run` and `agent` are read off a `working` stage's `onEnter`; `done` and
+ * `cancelled` execute nothing at all.
+ *
+ * The honest resolution is that step kind SUBSUMES the execution-bearing half:
+ * `review` IS a gate under another name, `working` + `onEnter` IS a run or an
+ * agent step, and what stage kind would keep is only its genuinely
+ * board-positional meaning — is this column terminal, and with which outcome.
+ * That leaves one question per field ("who does this step?" and "does work end
+ * here?") instead of two overlapping ones.
+ *
+ * It is NOT done here, and the reason is size rather than doubt: `review` is
+ * keyed on at ~18 server sites (`targetStageKeyForReviewDecision`,
+ * `assertReviewTargetsInSet`, the review-decision path) and ~70 in the UI, and
+ * collapsing it means a migration over existing stages plus a rewrite of the
+ * approval machinery. Half-applying that would leave exactly the two-vocabulary
+ * state it is meant to remove.
+ *
+ * What IS done here is refusing to make it worse: a stage that executes
+ * nothing projects as NO STEP rather than being invented into a gate, so the
+ * third vocabulary this projection could have become stays honest until the
+ * collapse is done properly.
  */
 function stageProcessStep(stage: typeof pipelineStages.$inferSelect): ProcessStep | null {
   const onFailFor = (target: string | null) => (target ? `jump:${target}` : "pause");
@@ -1418,11 +1465,17 @@ function stageProcessStep(stage: typeof pipelineStages.$inferSelect): ProcessSte
  * THE process definition for a pipeline — the DB-backed replacement for what
  * `apex flows show <name> --output json` used to return.
  *
- * Stages that declare no step at all are still steps: a board column somebody
- * drags a card into is a real part of the process, and dropping it here would
- * make the brief's "what happens next" skip stages the case will actually
- * visit. They project as `kind: "gate", mode: "notify"` — a step that says so
- * and proceeds — rather than being invented into something they are not.
+ * Only stages that EXECUTE something become steps. A `working` column with no
+ * `onEnter` — which is what the DEFAULT stages are, so this is the common case
+ * and not an edge — is a waiting position where a person does the work and
+ * then moves the card. It executes nothing and therefore has no consequence,
+ * and a decision brief that narrated it would be adding noise to the one
+ * screen that exists to remove noise.
+ *
+ * An earlier draft projected those as a `gate` in `notify` mode so that
+ * nothing was dropped. That was wrong in the expensive direction: it labelled
+ * the most common stage in the product a gate, putting "the process pauses for
+ * another approval" on a brief about a column where no approval exists.
  */
 function pipelineProcessDefinition(
   pipeline: typeof pipelines.$inferSelect,
@@ -1434,17 +1487,44 @@ function pipelineProcessDefinition(
     version: pipeline.version ?? "1.0",
     description: pipeline.description ?? "",
     ticket_type: pipeline.ticketType ?? pipeline.key,
-    steps: ordered.map(
-      (stage) =>
-        stageProcessStep(stage) ?? {
-          id: stage.key,
-          kind: "gate" as const,
-          gate: { mode: "notify" as const, prompt: null, requires: null, request_changes_to: null },
-          acceptance: null,
-          on_fail: "pause",
-        },
-    ),
+    steps: ordered
+      .map((stage) => stageProcessStep(stage))
+      .filter((step): step is ProcessStep => step !== null),
   };
+}
+
+/**
+ * Load THE process definition for a company's pipeline, by key.
+ *
+ * The replacement for `loadFlowDefinition`, which shelled
+ * `apex flows show <name> --output json`. Same shape out, different source:
+ * two indexed reads instead of a ~10-20s cold CLI start, and no dependency on
+ * an apex install being present for a reviewer to see what happens after a
+ * gate they are looking at.
+ *
+ * Returns null rather than throwing for an unknown key. Every caller so far is
+ * assembling a decision brief, where a missing definition must degrade the
+ * brief rather than fail the screen — a reviewer with a partial brief can
+ * still decide; a reviewer with a 500 cannot.
+ */
+export async function loadProcessDefinitionByKey(
+  db: PipelineDb,
+  companyId: string,
+  key: string,
+): Promise<ProcessDefinition | null> {
+  const pipeline = await db
+    .select()
+    .from(pipelines)
+    .where(and(eq(pipelines.companyId, companyId), eq(pipelines.key, key)))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (!pipeline) return null;
+  const stages = await db
+    .select()
+    .from(pipelineStages)
+    .where(eq(pipelineStages.pipelineId, pipeline.id))
+    .orderBy(asc(pipelineStages.position));
+  return pipelineProcessDefinition(pipeline, stages);
 }
 
 /**
@@ -2690,6 +2770,133 @@ function pipelineBatchError(error: unknown, fallbackCode = "unknown") {
     message: httpError.message ?? "Unknown error",
     details: httpError.details ?? { code: fallbackCode },
   };
+}
+
+/**
+ * Open the GATE a review stage is — the pipeline host of `GateStepPort`.
+ *
+ * This is the gap the whole merge set out to close. A pipeline review stage
+ * already knew WHO may decide (`requireApproval`, `approver`) and WHERE each
+ * decision sends the case (`approveToStageKey` and friends). What it had
+ * nowhere to put was WHAT IS BEING DECIDED: the review API took a decision, a
+ * reason and edits, and a reviewer arriving at it saw a column, not a
+ * question. The founder's words for the flow-side version of this were
+ * "reviewing agent slop… I don't know what to interpret, where to start and
+ * where to end."
+ *
+ * So the gate creates an APPROVAL, and the approval's payload is the seed the
+ * decision brief grows from (server/src/apex/steps/brief.ts assembles the rest
+ * — the artifact, the verified acceptance, what happens next, the review
+ * passes, the provenance). The payload deliberately carries only what the
+ * brief cannot re-derive: which case, which process, which step, and the
+ * prompt. Everything else is read fresh at render time, because a payload is a
+ * snapshot and a snapshot of a moving case goes stale.
+ *
+ * `notify` mode does NOT open an approval. A gate that only announces itself
+ * and proceeds must not manufacture a pending decision for someone to close —
+ * an inbox full of approvals nobody needed to make is how a gate stops being
+ * read.
+ *
+ * Idempotent: re-entering a review stage that already has a pending gate
+ * reuses it rather than stacking a second one.
+ */
+async function openStageGateInTransaction(
+  tx: PipelineDb,
+  input: {
+    companyId: string;
+    caseId: string;
+    stage: typeof pipelineStages.$inferSelect;
+    actor: PipelineActor;
+  },
+) {
+  const gate = stageGate(input.stage);
+  if (!gate || gate.mode !== "approve") return null;
+
+  const existing = await tx
+    .select({ id: approvals.id })
+    .from(approvals)
+    .where(and(
+      eq(approvals.companyId, input.companyId),
+      eq(approvals.type, PIPELINE_GATE_APPROVAL_TYPE),
+      eq(approvals.status, "pending"),
+      sql`${approvals.payload} ->> 'caseId' = ${input.caseId}`,
+      sql`${approvals.payload} ->> 'stepKey' = ${input.stage.key}`,
+    ))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (existing) return existing.id;
+
+  const detail = await tx
+    .select({ caseRow: pipelineCases, pipeline: pipelines })
+    .from(pipelineCases)
+    .innerJoin(pipelines, eq(pipelineCases.pipelineId, pipelines.id))
+    .where(eq(pipelineCases.id, input.caseId))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (!detail) return null;
+
+  // The conversation issue, when there is one. The brief's artifact and
+  // provenance sections are read from an issue's activity, so a case without
+  // one still gets a gate — it just gets a thinner brief, which is the honest
+  // outcome rather than a refusal to open the gate at all.
+  const link = await tx
+    .select({ issueId: pipelineCaseIssueLinks.issueId })
+    .from(pipelineCaseIssueLinks)
+    .where(and(
+      eq(pipelineCaseIssueLinks.caseId, input.caseId),
+      isNull(pipelineCaseIssueLinks.retiredAt),
+    ))
+    .orderBy(desc(pipelineCaseIssueLinks.createdAt))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+
+  const [approval] = await tx.insert(approvals).values({
+    companyId: input.companyId,
+    type: PIPELINE_GATE_APPROVAL_TYPE,
+    status: "pending",
+    requestedByAgentId: input.actor.type === "agent" ? input.actor.agentId : null,
+    requestedByUserId: input.actor.type === "user" ? input.actor.userId : null,
+    payload: {
+      caseId: input.caseId,
+      issueId: link?.issueId ?? null,
+      issueIdentifier: detail.caseRow.caseKey,
+      issueTitle: detail.caseRow.title,
+      // `flowName`/`nodeId` are the key names the brief and its UI already
+      // read. Kept verbatim rather than renamed: the rename is real but it is
+      // a separate change, and doing it here would mean a payload migration
+      // over pending approvals to save a word.
+      flowName: detail.pipeline.key,
+      nodeId: input.stage.key,
+      stepKey: input.stage.key,
+      prompt: gate.prompt,
+      requires: gate.requires,
+      ticketType: detail.pipeline.ticketType ?? detail.pipeline.key,
+    },
+  }).returning();
+
+  await writeCaseEvent(tx, {
+    companyId: input.companyId,
+    caseId: input.caseId,
+    type: "gate_opened",
+    actor: input.actor,
+    payload: {
+      stageId: input.stage.id,
+      stageKey: input.stage.key,
+      approvalId: approval!.id,
+      prompt: gate.prompt,
+      requires: gate.requires,
+    },
+  });
+
+  // `waiting_gate` is what turns "this case is in a review column" into "this
+  // case is waiting on a person" — the distinction the board needs to show a
+  // reviewer that something is theirs.
+  await tx
+    .update(pipelineCases)
+    .set({ stepStatus: "waiting_gate", updatedAt: nowDate() })
+    .where(eq(pipelineCases.id, input.caseId));
+
+  return approval!.id;
 }
 
 async function enqueueStageAutomationLedger(
@@ -4837,6 +5044,17 @@ export function pipelineService(
       eventId: event.id,
     });
     if (ledger) input.automationLedgers?.push(ledger);
+    // A gate opens on ENTRY, in the same transaction as the move that caused
+    // it. Doing it here rather than in a follow-up call is what makes "the
+    // case is at a review stage" and "there is a decision waiting" one fact
+    // instead of two that can disagree — the disagreement that let APE-5 close
+    // as done while its gate still read waiting_gate.
+    await openStageGateInTransaction(tx, {
+      companyId: input.companyId,
+      caseId: current.id,
+      stage: toStage,
+      actor: input.actor,
+    });
     const wasTerminal = isTerminalKind(current.terminalKind);
     const isTerminal = isTerminalKind(updated.terminalKind);
     if (current.parentCaseId && wasTerminal !== isTerminal) {

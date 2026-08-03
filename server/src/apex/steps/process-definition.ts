@@ -82,6 +82,25 @@ export type ProcessDefinition = {
   version: string;
   description: string;
   ticket_type: string;
+  /**
+   * The stages that EXECUTE something: a `run`, an `agent`, or a `gate`.
+   *
+   * Deliberately NOT every stage. A board column where a person does the work
+   * and then drags the card — which is what `pipeline_stages.kind = 'working'`
+   * with no `onEnter` means, and what the DEFAULT stages are — executes
+   * nothing. It is a waiting position between steps, not a step.
+   *
+   * An earlier draft projected those as a `gate` in `notify` mode so that
+   * nothing was dropped. That was wrong, and wrong in the expensive direction:
+   * it labelled the single most common stage in the product a gate, which
+   * would have put "the process pauses for another approval" on a decision
+   * brief about a column where no approval exists. Silence about a column with
+   * no consequence is accurate; inventing a consequence is not.
+   *
+   * See the note on the stage-kind overlap in services/pipelines.ts
+   * (`stageProcessStep`) for why this boundary is currently drawn here rather
+   * than resolved properly.
+   */
   steps: ProcessStep[];
 };
 
