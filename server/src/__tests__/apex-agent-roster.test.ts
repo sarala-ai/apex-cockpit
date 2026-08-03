@@ -24,7 +24,11 @@ import {
 } from "../services/apex-agent-roster.ts";
 import { validateBuiltInAgentDefinitions } from "../services/built-in-agents.ts";
 import { LIFECYCLE_DEFINITIONS } from "../apex/pipeline/lifecycles.ts";
-import { PERMISSION_PROFILES, derivePermissionPolicy } from "../apex/steps/run-policy.ts";
+import {
+  PERMISSION_PROFILES,
+  derivePermissionPolicy,
+  nativeToolsForProfile,
+} from "../apex/steps/run-policy.ts";
 
 /** Every agent step across every seeded lifecycle, with its stage key. */
 function agentSteps() {
@@ -280,5 +284,56 @@ describe("lifecycle agent steps resolve to roster agents", () => {
   it("changes agent mid-lifecycle on the feature process", () => {
     const featureSteps = agentSteps().filter((step) => step.lifecycle === "feature");
     expect(featureSteps.map((step) => step.onEnter!.agentKey)).toEqual(["specifier", "implementer"]);
+  });
+});
+
+/*
+ * The profile is a claim; the adapter config is the control.
+ *
+ * `derivePermissionPolicy` runs at flow-commission and pipeline-agent-port time
+ * only. A ROUTINE-triggered run reaches neither and inherits the claude-local
+ * adapter's `dangerouslySkipPermissions: true` default — so an agent declared
+ * read-only could write files on the very path its headline job uses. These
+ * pin the fix for the whole roster, because the first version of it reached
+ * exactly one agent and nobody would have noticed the other three.
+ */
+describe("every roster agent is governed on every run, not just commissioned ones", () => {
+  it("carries an explicit non-bypass adapter config", () => {
+    for (const definition of APEX_AGENT_ROSTER) {
+      expect(
+        definition.defaultAdapterConfig,
+        `${definition.key} has no defaultAdapterConfig — a routine run would bypass its profile`,
+      ).toBeTruthy();
+      expect(
+        definition.defaultAdapterConfig?.dangerouslySkipPermissions,
+        `${definition.key} would run with permissions skipped`,
+      ).toBe(false);
+    }
+  });
+
+  it("grants exactly what its declared profile means, from one source", () => {
+    for (const definition of APEX_AGENT_ROSTER) {
+      const profile = definition.defaultPermissionProfile;
+      if (!profile) continue;
+      expect(
+        definition.defaultAdapterConfig?.allowedTools,
+        `${definition.key} grants something other than its ${profile} profile`,
+      ).toBe(nativeToolsForProfile(profile));
+    }
+  });
+
+  it("never grants a write tool to an agent declared read-only", () => {
+    // The separation the roster exists to enforce: an agent that can edit the
+    // spec can make its own diff true, so the Specifier must not reach Edit,
+    // Write or an unscoped Bash on ANY path.
+    for (const definition of APEX_AGENT_ROSTER) {
+      const profile = definition.defaultPermissionProfile;
+      if (profile !== "read-only-broad" && profile !== "read-repos") continue;
+      const grant = definition.defaultAdapterConfig?.allowedTools ?? "";
+      expect(grant, `${definition.key} can Edit`).not.toMatch(/\bEdit\b/);
+      expect(grant, `${definition.key} can Write`).not.toMatch(/\bWrite\b/);
+      // Scoped `Bash(git log:*)` is fine; a bare `Bash` grant is not.
+      expect(grant.split(/\s+/), `${definition.key} has unscoped Bash`).not.toContain("Bash");
+    }
   });
 });

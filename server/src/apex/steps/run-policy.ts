@@ -188,7 +188,18 @@ export type RunPermissionPolicy = {
   notes: string[];
 };
 
-function nativeToolsForProfile(profile: PermissionProfile): string {
+/**
+ * The native-tool grant a profile means, as one string.
+ *
+ * Exported because a profile is only a claim until something applies it, and
+ * this module is read at FLOW-commission time ONLY (`derivePermissionPolicy`
+ * has two callers). A routine-triggered run never reaches it and would inherit
+ * the adapter's `dangerouslySkipPermissions: true` default — so an agent
+ * declared read-only could write files on the path that matters most. The
+ * roster carries the same grant on each agent's own `adapterConfig`, and takes
+ * it from HERE so the two can never drift.
+ */
+export function nativeToolsForProfile(profile: PermissionProfile): string {
   switch (profile) {
     case "bounded":
       return SANDBOX_ALLOWED_TOOLS;

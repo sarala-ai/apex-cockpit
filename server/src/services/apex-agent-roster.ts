@@ -92,7 +92,11 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { EnvBinding } from "@paperclipai/shared";
-import { READ_REPOS_ALLOWED_TOOLS, type PermissionProfile } from "../apex/steps/run-policy.js";
+import {
+  READ_REPOS_ALLOWED_TOOLS,
+  nativeToolsForProfile,
+  type PermissionProfile,
+} from "../apex/steps/run-policy.js";
 import type { BuiltInAgentDefinition } from "./built-in-agents.js";
 
 const BUILT_INS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../built-ins/agents");
@@ -136,7 +140,7 @@ export const APEX_AGENT_KEYS = {
 
 export type ApexAgentKey = (typeof APEX_AGENT_KEYS)[keyof typeof APEX_AGENT_KEYS];
 
-export const APEX_AGENT_ROSTER: BuiltInAgentDefinition[] = [
+const RAW_APEX_AGENT_ROSTER: BuiltInAgentDefinition[] = [
   {
     key: APEX_AGENT_KEYS.implementer,
     displayName: "Implementer",
@@ -322,6 +326,40 @@ export const APEX_AGENT_ROSTER: BuiltInAgentDefinition[] = [
     },
   },
 ];
+
+/*
+ * Make every roster entry's profile true on EVERY run, not just flow-commissioned ones.
+ *
+ * `run-policy.derivePermissionPolicy` has two callers (flow commission and the
+ * pipeline agent port). A routine-triggered run reaches neither, so it inherits
+ * the claude-local adapter's `dangerouslySkipPermissions: true` default and the
+ * declared profile governs nothing. That is not a corner case: the reconstruction
+ * routine IS a routine run, and a Specifier that could write files on that path
+ * would defeat the one separation the roster exists to enforce — an agent that
+ * can edit the spec can make its own diff true.
+ *
+ * So the same grant is carried on each agent's own `adapterConfig`, which
+ * `execute.ts` reads on every run. Derived here from `nativeToolsForProfile`
+ * rather than written per entry, because a per-entry copy is a place to forget
+ * one — which is exactly what happened when only Product Assistant got it.
+ * An entry may still set `defaultAdapterConfig` explicitly; that wins.
+ */
+function withGovernedAdapterConfig(definition: BuiltInAgentDefinition): BuiltInAgentDefinition {
+  if (definition.defaultAdapterConfig) return definition;
+  const profile = definition.defaultPermissionProfile;
+  if (!profile) return definition;
+  return {
+    ...definition,
+    defaultAdapterConfig: {
+      dangerouslySkipPermissions: false,
+      allowedTools: nativeToolsForProfile(profile),
+    },
+  };
+}
+
+/** The roster as it is seeded — every entry's profile made true on every run. */
+export const APEX_AGENT_ROSTER: BuiltInAgentDefinition[] =
+  RAW_APEX_AGENT_ROSTER.map(withGovernedAdapterConfig);
 
 const ROSTER_BY_KEY = new Map(APEX_AGENT_ROSTER.map((definition) => [definition.key, definition]));
 
