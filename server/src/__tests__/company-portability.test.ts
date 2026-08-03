@@ -2114,22 +2114,22 @@ describe("company portability", () => {
       },
       {
         id: "agent-built-in",
-        name: "Reflection Coach",
+        name: "Product Assistant",
         status: "paused",
-        role: "coach",
-        title: "Reflection Coach",
-        icon: "sparkles",
+        role: "product",
+        title: "Product Assistant",
+        icon: "search",
         reportsTo: null,
-        capabilities: "Reviews trajectories",
+        capabilities: "Reconstructs product history",
         adapterType: "codex_local",
-        adapterConfig: { promptTemplate: "You coach agents." },
+        adapterConfig: { promptTemplate: "You are the Product Assistant." },
         runtimeConfig: {},
         budgetMonthlyCents: 0,
         permissions: {},
         metadata: {
           paperclipBuiltInAgent: {
-            key: "reflection-coach",
-            featureKeys: ["recent-agent-reflection"],
+            key: "product-assistant",
+            featureKeys: ["product-assistant"],
           },
         },
       },
@@ -2141,8 +2141,8 @@ describe("company portability", () => {
         projectId: null,
         goalId: null,
         parentIssueId: null,
-        title: "Review recent agent trajectories for coaching proposals",
-        description: "Review recent agent work and propose coaching follow-ups.",
+        title: "Reconstruct initiatives and projects from the repositories and the board",
+        description: "Read the repositories and the board, and emit one proposal.",
         assigneeAgentId: "agent-built-in",
         priority: "medium",
         status: "paused",
@@ -2157,7 +2157,7 @@ describe("company portability", () => {
         createdAt: new Date(),
         updatedAt: new Date(),
         originKind: "built_in_agent_bundle",
-        originId: "reflection-coach:recent-agent-reflection",
+        originId: "product-assistant:reconstruct-initiatives",
         originFingerprint: null,
         triggers: [
           {
@@ -2165,9 +2165,9 @@ describe("company portability", () => {
             companyId: "company-1",
             routineId: "routine-built-in",
             kind: "schedule",
-            label: "Weekly review",
+            label: "Reconstruction sweep",
             enabled: false,
-            cronExpression: "0 9 * * 1",
+            cronExpression: "0 9 1 * *",
             timezone: "UTC",
             nextRunAt: null,
             lastFiredAt: null,
@@ -2201,8 +2201,10 @@ describe("company portability", () => {
     });
 
     expect(exported.files["agents/claudecoder/AGENTS.md"]).toBeDefined();
-    expect(exported.files["agents/reflection-coach/AGENTS.md"]).toBeUndefined();
-    expect(exported.files["tasks/review-recent-agent-trajectories-for-coaching-proposals/TASK.md"]).toBeUndefined();
+    expect(exported.files["agents/product-assistant/AGENTS.md"]).toBeUndefined();
+    expect(
+      exported.files["tasks/reconstruct-initiatives-and-projects-from-the-repositories-and-the-board/TASK.md"],
+    ).toBeUndefined();
     expect(exported.manifest.agents.map((agent) => agent.slug)).toEqual(["claudecoder"]);
     expect(exported.manifest.issues).toEqual([]);
     expect(exported.warnings).toContain("Skipped 1 built-in managed agent from export.");
