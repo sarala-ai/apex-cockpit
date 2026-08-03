@@ -69,6 +69,10 @@ export const pipelineStageOnEnterSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("run"),
     target: runTargetSchema,
+    /** One line, for a person, interpolated against the tool's result — e.g.
+     *  "deployed {{steps_completed}} services". Optional on purpose: a step
+     *  with no template reports nothing rather than dumping its payload. */
+    report: z.string().trim().min(1).max(500).optional(),
     ...stageStepRoutingSchema,
   }).passthrough(),
   z.object({

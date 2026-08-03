@@ -252,6 +252,90 @@ describeEmbeddedPostgres("pipeline stage step config — the run step and its ac
     });
   });
 
+  /*
+   * A run step says what happened in ONE LINE, when its author wrote one.
+   * The full result stays nested under `result` for anyone who wants it — the
+   * point of the template is that a timeline reads as sentences rather than
+   * payloads, and only the step's author knows which of its result fields are
+   * worth a person's attention.
+   */
+  it("renders a declared one-line report against the tool's own result fields", async () => {
+    const { runner } = stubRunner({
+      ok: true,
+      detail: { status: "success", steps_completed: 3, steps_failed: 0 },
+    });
+    const svc = serviceWith(runner);
+    const { company, pipeline, byKey } = await seedPipeline(svc);
+
+    await svc.updateStage({
+      companyId: company.id,
+      pipelineId: pipeline.id,
+      stageId: byKey.get("in_progress")!.id,
+      patch: {
+        config: {
+          onEnter: {
+            type: "run",
+            target: { type: "workflow", workflow: "cloud_run_deploy" },
+            report: "{{case_key}}: deployed {{steps_completed}} services, {{steps_failed}} failed",
+          },
+        },
+      },
+    });
+
+    const created = await svc.ingestCase({
+      companyId: company.id,
+      pipelineId: pipeline.id,
+      caseKey: "APE-12",
+      title: "Reports itself",
+      actor: userActor,
+    });
+    await svc.transitionCase({
+      companyId: company.id,
+      caseId: created.case.id,
+      toStageKey: "in_progress",
+      expectedVersion: created.case.version,
+      actor: userActor,
+    });
+
+    const [executed] = await eventsOfType(created.case.id, "automation_executed");
+    expect(executed!.payload).toMatchObject({
+      summary: "APE-12: deployed 3 services, 0 failed",
+      result: { steps_completed: 3 },
+    });
+  });
+
+  it("reports NOTHING when no template is declared — never a payload dump", async () => {
+    const { runner } = stubRunner({ ok: true, detail: { status: "success", steps_completed: 3 } });
+    const svc = serviceWith(runner);
+    const { company, pipeline, byKey } = await seedPipeline(svc);
+
+    await svc.updateStage({
+      companyId: company.id,
+      pipelineId: pipeline.id,
+      stageId: byKey.get("in_progress")!.id,
+      patch: {
+        config: { onEnter: { type: "run", target: { type: "workflow", workflow: "cloud_run_deploy" } } },
+      },
+    });
+    const created = await svc.ingestCase({
+      companyId: company.id,
+      pipelineId: pipeline.id,
+      caseKey: "APE-13",
+      title: "Says nothing",
+      actor: userActor,
+    });
+    await svc.transitionCase({
+      companyId: company.id,
+      caseId: created.case.id,
+      toStageKey: "in_progress",
+      expectedVersion: created.case.version,
+      actor: userActor,
+    });
+
+    const [executed] = await eventsOfType(created.case.id, "automation_executed");
+    expect((executed!.payload as { summary: unknown }).summary).toBeNull();
+  });
+
   it("HOLDS the stage when a workflow entry step exits non-zero with no failure route", async () => {
     const { runner } = stubRunner({ ok: false, errorType: "workflow_failed", message: "step 2 failed" });
     const svc = serviceWith(runner);

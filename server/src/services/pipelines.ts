@@ -257,6 +257,23 @@ export type PipelineStageConfig = Record<string, unknown> & {
     executionWorkspaceId?: string | null;
     executionWorkspacePreference?: ExecutionWorkspaceMode | null;
     executionWorkspaceSettings?: IssueExecutionWorkspaceSettings | null;
+    /**
+     * `run` only — how to SAY what happened, in one line, to a person.
+     *
+     * A template interpolated against the case's variables plus the tool's own
+     * result fields, e.g. `"deployed {{steps_completed}} services,
+     * {{steps_failed}} failed"`. The rendered line rides the
+     * `automation_executed` event as `summary`.
+     *
+     * DECLARED AND OPTIONAL, both deliberately. A step that declares no
+     * template produces no line — it does not fall back to dumping the result
+     * payload. The full result is already nested under `result` on the same
+     * event for anyone who wants it, and a JSON blob on a timeline is not
+     * reporting, it is the absence of reporting with extra characters. Only
+     * the author of a step knows which of its result fields are worth a
+     * person's attention, so only they can write the sentence.
+     */
+    report?: string;
     /** Where a zero-exit lands the case. Absent = stay put. */
     onSuccessToStageKey?: string;
     /** Where a non-zero exit lands the case. Absent = HOLD the stage. */
@@ -1310,9 +1327,40 @@ function stageRunStep(stage: typeof pipelineStages.$inferSelect) {
   return {
     id: onEnter.id ?? `${stage.id}:on_enter`,
     target,
+    report: readOptionalTrimmedString(onEnter.report),
     onSuccessToStageKey: readOptionalTrimmedString(onEnter.onSuccessToStageKey),
     onFailureToStageKey: readOptionalTrimmedString(onEnter.onFailureToStageKey),
   };
+}
+
+/**
+ * Render a run step's one-line report, or null.
+ *
+ * The result's own fields are made available as tokens alongside the case
+ * variables, so `"deployed {{steps_completed}} services"` resolves against
+ * what the tool actually returned. Only scalars are exposed: an object or an
+ * array interpolated into a sentence is a JSON blob wearing a sentence's
+ * clothes, which is the outcome this whole affordance exists to avoid.
+ *
+ * Unknown tokens are left verbatim by `renderTemplate` rather than blanked.
+ * A visible `{{steps_completed}}` on the timeline tells the author their
+ * template does not match the tool's output; a silently empty sentence tells
+ * them nothing and reads as though the step did nothing.
+ */
+function renderStepReport(
+  template: string | null,
+  variables: Record<string, string | number | boolean>,
+  detail: Record<string, unknown>,
+): string | null {
+  if (!template) return null;
+  const scalars: Record<string, string | number | boolean> = { ...variables };
+  for (const [key, value] of Object.entries(detail)) {
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      scalars[key] = value;
+    }
+  }
+  const line = renderTemplate(template, scalars).trim();
+  return line.length > 0 ? line : null;
 }
 
 /**
@@ -3848,6 +3896,8 @@ export function pipelineService(
         payload: {
           automationId: execution.automationId,
           kind: "run",
+          // The line a person reads, when the step's author wrote one.
+          summary: renderStepReport(entry.report, variables, outcome.detail),
           result: outcome.detail,
         },
       });
