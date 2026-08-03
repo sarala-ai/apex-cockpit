@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
   DISPATCH_PRECONDITION_NO_CODEBASE_REASON,
   DISPATCH_PRECONDITION_NO_PERMISSION_DECISION_REASON,
@@ -95,6 +96,44 @@ describe("dispatch precondition: no codebase", () => {
         buildInput({
           issue: { id: "issue-1", identifier: "APEX-12", projectId: "project-1" },
           resolvedWorkspace: buildResolvedWorkspace({ projectId: "project-1" }),
+        }),
+      ),
+    ).toThrowError(/has no codebase/);
+  });
+
+  it("refuses a project that has no workspace row, despite the project_primary label", () => {
+    // resolveWorkspaceForRun reports `project_primary` for a managed directory
+    // it just created for a project with no project_workspaces row. The label
+    // says project; the directory is empty.
+    expect(() =>
+      assertRunDispatchPreconditions(
+        buildInput({
+          issue: { id: "issue-1", identifier: "APEX-12", projectId: "project-1" },
+          resolvedWorkspace: buildResolvedWorkspace({
+            cwd: "/Users/someone/.paperclip/managed/project-1",
+            source: "project_primary",
+            projectId: "project-1",
+            workspaceId: null,
+          }),
+        }),
+      ),
+    ).toThrowError(/has no codebase/);
+  });
+
+  it("refuses a project workspace whose configured cwd silently fell back to agent home", () => {
+    // The fallback branch keeps source `project_primary` and the workspace id
+    // while handing back the agent's own empty directory.
+    expect(() =>
+      assertRunDispatchPreconditions(
+        buildInput({
+          agent: { id: "agent-7", name: "Implementer", adapterType: "claude_local" },
+          issue: { id: "issue-1", identifier: "APEX-12", projectId: "project-1" },
+          resolvedWorkspace: buildResolvedWorkspace({
+            cwd: resolveDefaultAgentWorkspaceDir("agent-7"),
+            source: "project_primary",
+            projectId: "project-1",
+            workspaceId: "workspace-1",
+          }),
         }),
       ),
     ).toThrowError(/has no codebase/);

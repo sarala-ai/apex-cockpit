@@ -1460,8 +1460,21 @@ export function assertRunDispatchPreconditions(input: {
       readNonEmptyString(input.issue.projectId) ??
         readNonEmptyString(input.resolvedWorkspace.projectId),
     );
-    const launchedFromAgentHome = input.resolvedWorkspace.source === "agent_home";
-    if (!hasRepoBinding && (!hasProjectBinding || launchedFromAgentHome)) {
+    // A project row alone is not a codebase. `resolveWorkspaceForRun` has two
+    // ways to report `project_primary` while handing back an empty directory:
+    // a project with no `project_workspaces` row at all (managed empty dir),
+    // and a project whose configured cwds were all unavailable (silent fallback
+    // to the agent's home dir, with the project's workspace id still attached).
+    // Both are checked, because both are the reported failure wearing a
+    // different source label.
+    const hasProjectWorkspaceRow = Boolean(readNonEmptyString(input.resolvedWorkspace.workspaceId));
+    const launchedFromAgentHome =
+      input.resolvedWorkspace.source === "agent_home" ||
+      sameResolvedPath(input.resolvedWorkspace.cwd, resolveDefaultAgentWorkspaceDir(input.agent.id));
+    if (
+      !hasRepoBinding &&
+      (!hasProjectBinding || !hasProjectWorkspaceRow || launchedFromAgentHome)
+    ) {
       fail(
         DISPATCH_PRECONDITION_NO_CODEBASE_REASON,
         `${agentLabel} has no codebase: assign this task to a project with a repository, ` +
@@ -1499,7 +1512,7 @@ export function assertRunDispatchPreconditions(input: {
     {
       missingPrecondition: "permission_decision",
       declaredDangerouslySkipPermissions:
-        declaredSkip === undefined ? null : JSON.stringify(declaredSkip) ?? null,
+        declaredSkip === undefined ? null : (JSON.stringify(declaredSkip) ?? String(declaredSkip)),
     },
   );
 }
