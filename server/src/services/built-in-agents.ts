@@ -1709,6 +1709,34 @@ export function builtInAgentService(db: Db) {
     return Promise.all(DEFINITIONS.map(async (definition) => state(definition, await findSingleAgent(companyId, definition))));
   }
 
+  /**
+   * Carry the definition's permission DECISION onto an already-provisioned record.
+   *
+   * A definition change does not reach agents that were provisioned before it.
+   * That drift is normally cosmetic; here it is not. `heartbeat.executeRun`
+   * refuses to dispatch a run whose effective config states no
+   * `dangerouslySkipPermissions`, so an agent seeded before its definition
+   * gained a governed `adapterConfig` becomes UNRUNNABLE — which is exactly what
+   * happened to Implementer and Specifier on the live board, while the two
+   * seeded afterwards were fine.
+   *
+   * Fill the key ONLY when the record does not state it. An operator who set it
+   * either way made a decision, and the dispatch guard's contract is about the
+   * ABSENCE of a decision, not about which one was made — so reconciling over an
+   * explicit choice would be the definition overruling a human, which is not
+   * what a default means. Every other adapter key the operator set is preserved.
+   */
+  function reconciledAdapterConfig(
+    definition: BuiltInAgentDefinition,
+    existing: { adapterConfig?: Record<string, unknown> | null },
+  ): { adapterConfig?: Record<string, unknown> } {
+    const declared = definition.defaultAdapterConfig;
+    if (!declared) return {};
+    const current = existing.adapterConfig ?? {};
+    if ("dangerouslySkipPermissions" in current) return {};
+    return { adapterConfig: { ...current, ...declared } };
+  }
+
   async function reconcileDefinitionDefaults(companyId: string, key: string) {
     const definition = requireBuiltInAgentDefinition(key);
     await ensureCompany(companyId);
@@ -1725,6 +1753,7 @@ export function builtInAgentService(db: Db) {
       // permission keys on the record are preserved around it.
       permissions: { ...(existing.permissions ?? {}), ...definitionPermissions(definition) },
       metadata: builtInMetadata(definition, existing.metadata),
+      ...reconciledAdapterConfig(definition, existing),
     };
     const updated = await agentSvc.update(existing.id, patch, {
       allowBuiltInAgentMetadata: true,

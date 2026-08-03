@@ -67,7 +67,10 @@ import { claudeCommandSupportsEffortFlag } from "./cli-capabilities.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
-import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
+import {
+  assertExplicitPermissionDecision,
+  buildClaudeExecutionPermissionArgs,
+} from "./permissions.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import {
   createClaudeAcpExecutor,
