@@ -79,14 +79,15 @@ export interface BuiltInAgentDefinition {
    */
   defaultAdapterConfig?: Record<string, unknown>;
   /**
-   * Provision this definition into every company at startup.
+   * Provision this definition into every company at startup. THE ONLY signal
+   * that does so — see `autoProvisionBundledAgents`.
    *
-   * Before the roster, the only auto-provisioned definitions were the ones
-   * carrying a `bundle` (i.e. `reflection-coach`), which made "has a bundle"
-   * accidentally mean "is part of the workforce". A lifecycle agent step needs
-   * its agent to EXIST before the first ticket reaches it, and none of the
-   * roster carries a bundle — so the intent is declared directly instead of
-   * inferred from an unrelated field.
+   * Before the roster, auto-provisioning was inferred from carrying a `bundle`,
+   * which made "ships instructions/a skill/a routine" accidentally mean "is
+   * part of the workforce". Those are different claims: a bundle describes what
+   * an agent WOULD be, this flag says the product wants it hired. A lifecycle
+   * agent step needs its agent to EXIST before the first ticket reaches it, so
+   * every roster entry sets this explicitly, bundle or not.
    */
   autoProvision?: boolean;
   bundle?: BuiltInAgentBundleDefinition;
