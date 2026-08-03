@@ -179,17 +179,25 @@ function named(table: PgTable): ErasableTable {
  * gets asked.
  */
 const ERASED_TABLES: ErasableTable[] = [
-  // The workforce and everything it carries. An agent is company data, not
-  // company configuration: the immediate case for this endpoint is 156 objects
-  // attributed to an agent that never ran.
-  named(agents),
-  named(agentApiKeys),
-  named(agentConfigRevisions),
-  named(agentMemberships),
+  // What the workforce DID. The agent RECORDS themselves are preserved — see
+  // the note on `agents` in PRESERVED_TABLES for why that classification
+  // changed. What survives is who works here; what goes is everything they
+  // produced, attempted, or were mid-way through.
+  //
+  // `agent_runtime_state` is the agent's in-flight execution state, and
+  // `agent_task_sessions` / `agent_wakeup_requests` are queued and historical
+  // work. Preserving any of them would hand a reset company a worker holding a
+  // lock on a run that no longer exists.
   named(agentRuntimeState),
   named(agentTaskSessions),
   named(agentWakeupRequests),
+  // A request to join, not a membership. It is an inbox item awaiting a
+  // decision, and it references an invite; the resolved memberships survive.
   named(joinRequests),
+  // The BINDINGS from a built-in agent to the instructions/skill/routine it
+  // manages. Forced as much as chosen: they point at routines, which are
+  // erased below. Startup reconciliation rebuilds them from the definitions.
+  named(builtInManagedResources),
 
   // Runs and their traces.
   named(heartbeatRuns),
@@ -304,7 +312,6 @@ const ERASED_TABLES: ErasableTable[] = [
   // forced: the row hard-references agents and issues ON DELETE RESTRICT, so
   // preserving it would make erasing the workforce impossible.
   named(companySkillTestRuns),
-  named(builtInManagedResources),
 
   // Assets — special-cased at execution: everything except the asset backing
   // the company logo, which is branding and is preserved with it.
@@ -324,6 +331,43 @@ const ERASED_TABLES: ErasableTable[] = [
  * working, and start over — not hand them an empty shell to reconfigure.
  */
 const PRESERVED_TABLES: ErasableTable[] = [
+  // ── THE WORKFORCE ──
+  //
+  // This used to be erased, on the reading that "an agent is company data, not
+  // company configuration". Using the erasure disproved it. Read what an agent
+  // ROW actually is: a name, a role, an adapter type, an adapter config, a
+  // permission set, a budget and an instruction prompt. That is a description
+  // of WHO WORKS HERE AND UNDER WHAT RULES — the same category as
+  // `company_memberships`, `company_secrets`, `budget_policies` and
+  // `pipelines`, every one of which is preserved. The rule this file states in
+  // its own header is "who the company IS and how it is configured survives;
+  // what the company DID does not", and an agent is on the first side of it.
+  //
+  // What the workforce DID is still erased, all of it: heartbeat runs and their
+  // events, cost and finance events, task sessions, wakeup requests, runtime
+  // state, and every issue, case, document and approval they touched. The
+  // original motivating case — objects attributed to an agent that never ran —
+  // is answered by erasing the objects, which is what it was asking for.
+  //
+  // The decisive argument is what the old classification produced. A reset left
+  // a company with NO AGENTS and no in-product way to get any back:
+  // `enableBuiltInAgents` is off by default, so the built-in provisioning
+  // routes 404, and creating an agent by hand means re-entering an adapter
+  // config and re-authoring instructions the operator never wrote in the first
+  // place. "Clean the board" turned into "dismantle the company", which is not
+  // what anyone who asks for a reset means — and it silently broke every
+  // lifecycle agent step, since those resolve their executor by roster key.
+  //
+  // Agent CREDENTIALS and CONFIG HISTORY follow the record they belong to:
+  // `agent_api_keys` is a credential (same class as `company_secrets`), and
+  // `agent_config_revisions` is the change history of a row that survives —
+  // erasing it would leave a preserved agent with a forged-looking blank past.
+  // `agent_memberships` is access, exactly like `company_memberships`.
+  named(agents),
+  named(agentApiKeys),
+  named(agentConfigRevisions),
+  named(agentMemberships),
+
   // Identity and access.
   named(companyMemberships),
   named(principalPermissionGrants),

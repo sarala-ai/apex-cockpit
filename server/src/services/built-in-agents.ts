@@ -20,6 +20,7 @@ import {
 } from "./built-in-agent-metadata.js";
 import { companySkillService } from "./company-skills.js";
 import { routineService } from "./routines.js";
+import { secretService } from "./secrets.js";
 import { accessService } from "./access.js";
 import { APEX_AGENT_ROSTER } from "./apex-agent-roster.js";
 
@@ -671,6 +672,49 @@ export function builtInAgentService(db: Db) {
   const instructionsSvc = agentInstructionsService();
   const skillSvc = companySkillService(db);
   const routineSvc = routineService(db);
+  const secretsSvc = secretService(db);
+
+  /**
+   * Declare the SLOTS a definition's `user_secret_ref` bindings point at.
+   *
+   * `syncUserSecretDeclarationsForTarget` resolves each reference against a
+   * user secret DEFINITION and 404s when there is none — so writing an agent
+   * with a reference to a slot nobody has created fails the whole provision.
+   * Creating the definition IS the declaration: an empty, valueless slot that
+   * says "this company needs a PENPOT_PASSWORD, and here is who needs it",
+   * which is exactly what an operator has to see in order to fill it in.
+   *
+   * No value is written, and none can be: `createUserSecretDefinition` takes a
+   * key, a name and guidance. The secret itself is supplied once, by a person,
+   * through the secrets UI. Idempotent by key — a definition an operator has
+   * already created (possibly pointing at their own vault) is left untouched.
+   */
+  async function ensureDeclaredUserSecrets(companyId: string, definition: BuiltInAgentDefinition) {
+    for (const [envKey, binding] of Object.entries(definition.defaultAdapterEnv ?? {})) {
+      if (!isPlainRecord(binding) || binding.type !== "user_secret_ref") continue;
+      const key = typeof binding.key === "string" ? binding.key.trim() : "";
+      if (!key) continue;
+      const existing = await secretsSvc.listUserSecretDefinitions(companyId);
+      if (existing.some((row) => row.key === key)) continue;
+      try {
+        await secretsSvc.createUserSecretDefinition(companyId, {
+          key,
+          name: envKey,
+          description: `Required by the built-in ${definition.displayName}.`,
+          // `local_encrypted` with no provider config is the no-external-vault
+          // path — it creates the slot without asserting a vault the company
+          // may not have. An operator can repoint it at a real provider later.
+          provider: "local_encrypted",
+          usageGuidance:
+            `Delivered to ${definition.displayName} as the ${envKey} environment variable at dispatch. ` +
+            `The agent never sees or stores the value.`,
+        });
+      } catch (err) {
+        // A concurrent reconcile created it first. Anything else is real.
+        if (!(err instanceof HttpError) || err.status !== 409) throw err;
+      }
+    }
+  }
 
   async function findSingleRootManager(companyId: string) {
     const roots = await db
@@ -1421,6 +1465,9 @@ export function builtInAgentService(db: Db) {
   async function ensure(companyId: string, key: string, input: BuiltInAgentProvisionInput = {}) {
     const definition = requireBuiltInAgentDefinition(key);
     await ensureCompany(companyId);
+    // Before any agent write: the slots its env references must exist, or the
+    // write fails resolving them. See ensureDeclaredUserSecrets.
+    await ensureDeclaredUserSecrets(companyId, definition);
     const existing = await findSingleAgent(companyId, definition);
     const existingPendingApproval = existing?.status === "pending_approval";
     const preserveExistingAdapter = Boolean(
@@ -1558,6 +1605,7 @@ export function builtInAgentService(db: Db) {
       return { state: await state(definition, existing), approval: null };
     }
 
+    await ensureDeclaredUserSecrets(companyId, definition);
     const reportsTo = definition.defaultManager === "single_root_agent"
       ? await findSingleRootManager(companyId)
       : null;
