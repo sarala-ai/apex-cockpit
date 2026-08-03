@@ -89,6 +89,14 @@ function instructions(key: string): string {
   return readFileSync(path.join(BUILT_INS_DIR, key, "AGENTS.md"), "utf8");
 }
 
+/** A routine's authored body, frontmatter included — the same convention the
+ *  reflection-coach bundle uses. The markdown is the routine DESCRIPTION the
+ *  run reads; its frontmatter mirrors the definition below so the file reads as
+ *  a whole routine to a person editing it. */
+function routine(key: string, routineKey: string): string {
+  return readFileSync(path.join(BUILT_INS_DIR, key, "routines", `${routineKey}.md`), "utf8");
+}
+
 /** The adapters a roster agent may be provisioned onto — every local coding
  *  adapter the fork ships. `process` is deliberately absent: these agents are
  *  commissioned unattended under a permission profile the claude/codex-style
@@ -200,6 +208,80 @@ export const APEX_AGENT_ROSTER: BuiltInAgentDefinition[] = [
     allowedAdapterTypes: ROSTER_ADAPTER_TYPES,
     defaultBudgetMonthlyCents: 0,
     autoProvision: true,
+    /**
+     * THE BROWNFIELD ROUTINE.
+     *
+     * A company arriving with years of shipped work and an empty board had no
+     * bulk path onto it — only "Add Goal", one at a time, which is how a board
+     * gets abandoned rather than corrected. This is that path, and its shape is
+     * the doctrine: it reads the repositories, the specs and the board's own
+     * history, and emits ONE proposal for a person to review.
+     *
+     * `status: "paused"` and the schedule trigger `enabled: false` together mean
+     * it spends nothing until someone asks for it. Reconstruction is a
+     * first-contact act, not a background job — running it monthly by default
+     * would re-propose the same rows at a reviewer who already corrected them.
+     * The cron expression exists so the operator has something to enable, not
+     * because anything should be enabled.
+     *
+     * No skill in this bundle. The reflection-coach pattern splits an operating
+     * procedure (skill) from a bounded run configuration (routine) because the
+     * procedure is reused across targets; here there is one procedure and one
+     * routine, and putting the doctrine in two files would let them drift.
+     */
+    bundle: {
+      stockVersion: "2026-08-03",
+      instructions: {
+        entryFile: "AGENTS.md",
+        files: { "AGENTS.md": instructions("product-assistant") },
+      },
+      routine: {
+        routineKey: "reconstruct-initiatives",
+        title: "Reconstruct initiatives and projects from the repositories and the board",
+        description: routine("product-assistant", "reconstruct-initiatives"),
+        status: "paused",
+        priority: "medium",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+        variables: [
+          {
+            name: "repoPaths",
+            label: "Repository paths (comma-separated; blank scans every registered repo)",
+            type: "text",
+            defaultValue: "",
+            required: false,
+            options: [],
+          },
+          // Wide by default and capped anyway: a brownfield product's history is
+          // the point, and the record cap — not the window — is what bounds the
+          // run's cost and the reviewer's reading.
+          { name: "lookbackDays", label: "Lookback days", type: "number", defaultValue: 540, required: true, options: [] },
+          // The reviewer's budget, not the agent's. Forty rows with provenance
+          // is a long but finishable scan; two hundred is a spreadsheet nobody
+          // reads, which is the failure this whole surface replaced.
+          { name: "maxRecords", label: "Max records in the proposal", type: "number", defaultValue: 40, required: true, options: [] },
+          {
+            name: "recordKind",
+            label: "What to reconstruct",
+            type: "select",
+            defaultValue: "initiatives",
+            required: true,
+            // One option because one proposal kind is registered. The variable
+            // exists so adding a kind is a registration, not a rewrite.
+            options: ["initiatives"],
+          },
+        ],
+        triggers: [
+          {
+            kind: "schedule",
+            label: "Reconstruction sweep",
+            enabled: false,
+            cronExpression: "0 9 1 * *",
+            timezone: "UTC",
+          },
+        ],
+      },
+    },
   },
 ];
 

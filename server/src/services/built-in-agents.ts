@@ -129,7 +129,14 @@ export interface BuiltInAgentBundleDefinition {
     entryFile: string;
     files: Record<string, string>;
   };
-  skill: {
+  /**
+   * OPTIONAL. A bundle exists to ship whatever managed resources an agent
+   * needs; a skill is one of them, not a tax on the other two. The Product
+   * Assistant ships instructions + a routine and no skill, because its
+   * operating procedure IS the routine — inventing a SKILL.md to satisfy a
+   * required field would put the same doctrine in two files that then drift.
+   */
+  skill?: {
     skillKey: string;
     displayName: string;
     slug: string;
@@ -490,7 +497,7 @@ export function validateBuiltInAgentDefinitions(definitions: BuiltInAgentDefinit
       if (!definition.bundle.instructions.files[definition.bundle.instructions.entryFile]) {
         throw new Error(`Built-in agent ${definition.key} bundle instructions require the entry file`);
       }
-      if (!definition.bundle.skill.files[`${definition.bundle.skill.slug}/SKILL.md`]) {
+      if (definition.bundle.skill && !definition.bundle.skill.files[`${definition.bundle.skill.slug}/SKILL.md`]) {
         throw new Error(`Built-in agent ${definition.key} bundle skill requires SKILL.md`);
       }
       if (!definition.bundle.routine.description.trim()) {
@@ -508,10 +515,12 @@ export function validateBuiltInAgentDefinitions(definitions: BuiltInAgentDefinit
         ...definition.bundle.instructions,
         files: { ...definition.bundle.instructions.files },
       },
-      skill: {
-        ...definition.bundle.skill,
-        files: { ...definition.bundle.skill.files },
-      },
+      skill: definition.bundle.skill
+        ? {
+          ...definition.bundle.skill,
+          files: { ...definition.bundle.skill.files },
+        }
+        : undefined,
       routine: {
         ...definition.bundle.routine,
         variables: definition.bundle.routine.variables.map((variable) => ({ ...variable, options: [...variable.options] })),
@@ -933,7 +942,7 @@ export function builtInAgentService(db: Db) {
 
   async function getCurrentSkillFiles(companyId: string, skill: CompanySkill | null, bundle: BuiltInAgentBundleDefinition) {
     const currentFiles: Record<string, string | null> = {};
-    const stockFiles = bundle.skill.files;
+    const stockFiles = bundle.skill?.files ?? {};
     for (const packagePath of Object.keys(stockFiles)) {
       const relativePath = packagePath.split("/").slice(1).join("/") || "SKILL.md";
       if (!skill) {
@@ -954,10 +963,11 @@ export function builtInAgentService(db: Db) {
   }
 
   async function importBundledSkill(companyId: string, definition: BuiltInAgentDefinition) {
-    const results = await skillSvc.importPackageFiles(companyId, definition.bundle!.skill.files, { onConflict: "replace" });
-    const imported = results.find((result) => result.skill.key === definition.bundle!.skill.canonicalKey)?.skill
+    const bundleSkill = definition.bundle!.skill!;
+    const results = await skillSvc.importPackageFiles(companyId, bundleSkill.files, { onConflict: "replace" });
+    const imported = results.find((result) => result.skill.key === bundleSkill.canonicalKey)?.skill
       ?? results[0]?.skill
-      ?? await skillSvc.getByKey(companyId, definition.bundle!.skill.canonicalKey);
+      ?? await skillSvc.getByKey(companyId, bundleSkill.canonicalKey);
     if (!imported) throw notFound("Built-in bundled skill was not imported");
     return imported;
   }
@@ -979,10 +989,11 @@ export function builtInAgentService(db: Db) {
 
   async function materializeSkill(agent: Agent, definition: BuiltInAgentDefinition, mode: "reconcile" | "reset") {
     const bundle = definition.bundle!;
-    const stock = stockHash(bundle.skill.files);
-    const binding = await getManagedResourceBinding(agent.companyId, definition.key, "skill", bundle.skill.skillKey);
+    const bundleSkill = bundle.skill!;
+    const stock = stockHash(bundleSkill.files);
+    const binding = await getManagedResourceBinding(agent.companyId, definition.key, "skill", bundleSkill.skillKey);
     const boundSkill = binding ? await skillSvc.getById(agent.companyId, binding.resourceId) : null;
-    const existingByKey = await skillSvc.getByKey(agent.companyId, bundle.skill.canonicalKey);
+    const existingByKey = await skillSvc.getByKey(agent.companyId, bundleSkill.canonicalKey);
     const skill = boundSkill ?? existingByKey;
     const currentFiles = await getCurrentSkillFiles(agent.companyId, skill, bundle);
     const currentHash = skill && Object.values(currentFiles).every((value) => value !== null)
@@ -990,13 +1001,13 @@ export function builtInAgentService(db: Db) {
       : null;
     const currentState = stockState({
       resourceKind: "skill",
-      resourceKey: bundle.skill.skillKey,
+      resourceKey: bundleSkill.skillKey,
       resourceId: skill?.id ?? null,
       stockVersion: bundle.stockVersion,
       latestStockHash: stock,
       currentHash,
       bindingStockHash: binding?.stockHash ?? null,
-      changedFiles: changedFileList(currentFiles, bundle.skill.files),
+      changedFiles: changedFileList(currentFiles, bundleSkill.files),
     });
 
     const shouldWrite =
@@ -1008,26 +1019,26 @@ export function builtInAgentService(db: Db) {
       companyId: agent.companyId,
       bundleKey: definition.key,
       resourceKind: "skill",
-      resourceKey: bundle.skill.skillKey,
+      resourceKey: bundleSkill.skillKey,
       resourceId: nextSkill.id,
       stockVersion: bundle.stockVersion,
       stockHash: shouldWrite ? stock : binding?.stockHash ?? stock,
       defaultsJson: {
-        canonicalKey: bundle.skill.canonicalKey,
-        slug: bundle.skill.slug,
-        files: Object.keys(bundle.skill.files),
+        canonicalKey: bundleSkill.canonicalKey,
+        slug: bundleSkill.slug,
+        files: Object.keys(bundleSkill.files),
       },
     });
     await syncBundledSkillToAgent(agent, nextSkill);
     return stockState({
       resourceKind: "skill",
-      resourceKey: bundle.skill.skillKey,
+      resourceKey: bundleSkill.skillKey,
       resourceId: nextSkill.id,
       stockVersion: bundle.stockVersion,
       latestStockHash: stock,
       currentHash: shouldWrite ? stock : currentHash,
       bindingStockHash: shouldWrite ? stock : binding?.stockHash ?? stock,
-      changedFiles: shouldWrite ? [] : changedFileList(currentFiles, bundle.skill.files),
+      changedFiles: shouldWrite ? [] : changedFileList(currentFiles, bundleSkill.files),
     });
   }
 
@@ -1321,13 +1332,17 @@ export function builtInAgentService(db: Db) {
     const bundle = definition.bundle;
     const [instructionBinding, skillBinding, routineBinding] = await Promise.all([
       getManagedResourceBinding(companyId, definition.key, "instructions", "AGENTS.md"),
-      getManagedResourceBinding(companyId, definition.key, "skill", bundle.skill.skillKey),
+      bundle.skill
+        ? getManagedResourceBinding(companyId, definition.key, "skill", bundle.skill.skillKey)
+        : Promise.resolve(null),
       getManagedResourceBinding(companyId, definition.key, "routine", bundle.routine.routineKey),
     ]);
     const instructionFiles = await currentInstructionFiles(agent, bundle);
-    const skill = skillBinding
-      ? await skillSvc.getById(companyId, skillBinding.resourceId)
-      : await skillSvc.getByKey(companyId, bundle.skill.canonicalKey);
+    const skill = !bundle.skill
+      ? null
+      : skillBinding
+        ? await skillSvc.getById(companyId, skillBinding.resourceId)
+        : await skillSvc.getByKey(companyId, bundle.skill.canonicalKey);
     const skillFiles = await getCurrentSkillFiles(companyId, skill, bundle);
     const { routine, triggers } = await getRoutineByBinding(companyId, definition);
     const proposal = await pendingUpdateProposal(agent);
@@ -1356,16 +1371,18 @@ export function builtInAgentService(db: Db) {
         bindingStockHash: instructionBinding?.stockHash ?? null,
         changedFiles: changedFileList(instructionFiles, bundle.instructions.files),
       }),
-      stockState({
-        resourceKind: "skill",
-        resourceKey: bundle.skill.skillKey,
-        resourceId: skill?.id ?? null,
-        stockVersion: bundle.stockVersion,
-        latestStockHash: stockHash(bundle.skill.files),
-        currentHash: skillHash,
-        bindingStockHash: skillBinding?.stockHash ?? null,
-        changedFiles: changedFileList(skillFiles, bundle.skill.files),
-      }),
+      ...(bundle.skill
+        ? [stockState({
+          resourceKind: "skill" as const,
+          resourceKey: bundle.skill.skillKey,
+          resourceId: skill?.id ?? null,
+          stockVersion: bundle.stockVersion,
+          latestStockHash: stockHash(bundle.skill.files),
+          currentHash: skillHash,
+          bindingStockHash: skillBinding?.stockHash ?? null,
+          changedFiles: changedFileList(skillFiles, bundle.skill.files),
+        })]
+        : []),
       withRoutineControls(stockState({
         resourceKind: "routine",
         resourceKey: bundle.routine.routineKey,
@@ -1393,15 +1410,17 @@ export function builtInAgentService(db: Db) {
       : byKind.get("instructions")!;
     const refreshedAgent = await agentSvc.getById(agent.id) as Agent | null;
     if (!refreshedAgent) throw notFound("Built-in agent not found");
-    const skill = selected.has("skill")
-      ? await materializeSkill(refreshedAgent, definition, mode)
-      : byKind.get("skill")!;
+    const skill = !definition.bundle.skill
+      ? null
+      : selected.has("skill")
+        ? await materializeSkill(refreshedAgent, definition, mode)
+        : byKind.get("skill")!;
     const refreshedAfterSkill = await agentSvc.getById(agent.id) as Agent | null;
     if (!refreshedAfterSkill) throw notFound("Built-in agent not found");
     const routine = selected.has("routine")
       ? await materializeRoutine(refreshedAfterSkill, definition, mode)
       : byKind.get("routine")!;
-    return [instruction, skill, routine];
+    return skill ? [instruction, skill, routine] : [instruction, routine];
   }
 
   async function ensureCompany(companyId: string) {
