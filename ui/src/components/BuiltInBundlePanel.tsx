@@ -333,7 +333,10 @@ export function BuiltInBundlePanel({
           }
         />
 
-        {skill &&
+        {/* A bundle ships whatever managed resources its agent needs; not every
+            one has a skill (the Product Assistant ships instructions + routine),
+            so the row is absent rather than empty. */}
+        {skill && bundle.skill &&
           renderResourceRow(
             "skill",
             "Skill",
