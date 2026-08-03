@@ -181,9 +181,18 @@ invented is the failure this entire routine is shaped to prevent.
   approves it.
 - **Do not edit any file**, in any repository or working directory. Do not open
   a pull request, push a branch, or run any command that changes anything.
-- **Read-only git only.** `git log`, `git show`, `git diff` against history.
-  Nothing that writes to a repository, including `git checkout`, `git fetch`
-  and `git stash`.
+- **Read-only git and `gh` only.** `git log`, `git show`, `git diff`,
+  `git rev-list`, `git blame`, `git shortlog` and the other read verbs;
+  `gh pr view`, `gh pr diff`, `gh issue view`, `gh release view`, `gh run view`
+  and their `list` forms. Everything else through `Bash` is refused by the
+  runtime — including `git checkout`, `git fetch`, `git stash`, every `gh`
+  write, and `gh api` (the grant cannot tell a GET from a POST). If a read you
+  want is refused, report that it was refused rather than looking for another
+  way to run it.
+- **`gh` may not be authenticated.** If it fails on auth, say so in the summary
+  and reconstruct from git and the board alone — clearly marked as such, since
+  a window read without pull requests is a window with its review discussion
+  missing. Never print a token, and never set one.
 - Keep every read company-scoped. Do not cross company boundaries.
 - Never quote a credential, token or connection string you encounter while
   reading, even to report that you found one. Report the location and the fact,

@@ -22,27 +22,51 @@
  *   - "read-only-broad": broad native READ tools, zero write/network — for
  *     agent nodes whose job is declared diagnostics (inspect and report,
  *     never mutate).
- *   - "read-repos": v1 ACCEPTS and RECORDS this profile (so flow authors can
- *     declare intent now) but ENFORCES it identically to "read-only-broad".
- *     True path-scoped enforcement (reads limited to the company's declared
- *     repo checkouts, nothing else on the machine) needs the execution
- *     adapter to accept a path allowlist, which it does not today — the
- *     adapter's --allowedTools grammar gates by *tool name*, not by
- *     filesystem path. TODO(follow-up): once an adapter exposes path-scoped
- *     read enforcement, tighten this profile instead of aliasing it.
+ *   - "read-repos": the read-only tools PLUS Bash scoped to read-only VCS
+ *     commands (git log/show/diff/…, gh pr view/issue view/…). For an agent
+ *     whose job is to reconstruct what happened from the record — commits,
+ *     pull requests, releases — which Glob/Grep/Read cannot reach, because
+ *     history is not a file.
  *
  * nativeTools grammar: derived from the exact precedent the claude_local
  * adapter already uses for its remote-execution path — a space-separated
- * Claude Code --allowedTools tool-name list
+ * Claude Code --allowedTools list
  * (packages/adapters/claude-local/src/server/permissions.ts,
  * SANDBOX_ALLOWED_TOOLS). "bounded" reuses that constant verbatim (single
  * source of truth — the adapter module's own comment already flags it needs
  * review whenever Claude Code ships a new built-in tool; a second
- * hand-maintained copy here would just be a second place to forget). Caveat
- * inherited from the adapter, not invented here: --allowedTools gates by
- * tool *name*, so "workspace-scoped" for Read/Bash is a documented intent
- * backed by the run's cwd convention, not a hard filesystem boundary the CLI
- * enforces — same limitation the read-repos TODO above calls out.
+ * hand-maintained copy here would just be a second place to forget).
+ *
+ * ── WHAT --allowedTools ACTUALLY GATES (measured, not assumed) ──
+ *
+ * This module previously asserted that the grammar "gates by *tool name*, not
+ * by filesystem path", and used that to justify aliasing "read-repos" to
+ * "read-only-broad". Half of it was wrong, and the wrong half was load-bearing:
+ * the CLI DOES honour per-command scoping inside the tool name.
+ *
+ * Measured against Claude Code 2.1.220, `--permission-mode default`, `-p`, same
+ * prompt, same cwd:
+ *
+ *   --allowedTools "Bash(git log:*) Read"  →  "touch scope-a.tmp"  DENIED, no file
+ *   --allowedTools "Bash Read"             →  "touch scope-b.tmp"  ran, file created
+ *   --allowedTools "Bash(git log:*) …"     →  "git commit --allow-empty"  DENIED
+ *   --allowedTools "… Bash(gh pr list:*)"  →  "gh pr list --limit 1"  ran
+ *
+ * So a scoped grant is real enforcement, and the space inside `Bash(git log:*)`
+ * survives the space-separated grant string intact (the adapter passes the
+ * whole string as ONE argv element — see buildClaudeExecutionPermissionArgs).
+ *
+ * Two limits that remain true and are NOT papered over:
+ *   - Scoping is by COMMAND PREFIX, not by filesystem path. "workspace-scoped"
+ *     for Read/Glob/Grep is still a cwd convention, not a boundary the CLI
+ *     enforces. A read-only grant can read anything on the machine it is
+ *     pointed at, including a checkout's untracked .env — see the
+ *     workspace-fetch posture note below.
+ *   - A prefix cannot express an HTTP method, which is why `gh api` is NOT in
+ *     the read-repos grant: `Bash(gh api:*)` would also permit
+ *     `gh api -X POST`, i.e. a write. Read-only `gh` verbs are listed one by
+ *     one instead. If a future run genuinely needs `gh api` GETs, it needs a
+ *     narrower matcher or a wrapper, not a looser prefix.
  *
  * apex/MCP tools: whatever the node declares under `permissions.mcpTools`
  * (array of literal tool identifiers, e.g. "mcp__github__create_pr") passes
@@ -51,7 +75,18 @@
  * gateway's configured MCP surface (whatever `--mcp-config` wires stays
  * available) — there is no per-run MCP tool gate today, only the native
  * --allowedTools gate above. Declaring mcpTools here is recorded (surfaced on
- * the run) but not yet enforced; follow-up alongside the read-repos TODO.
+ * the run) but not yet enforced; follow-up alongside the path-scoping gap.
+ *
+ * ── SCOPE OF THIS MODULE, STATED PLAINLY ──
+ *
+ * Everything here applies to FLOW-COMMISSIONED runs only (commission.ts and
+ * flow/coordinator.ts are its only two callers). A ROUTINE-triggered run of the
+ * same agent does NOT pass through here and gets the adapter's own default,
+ * which is full bypass. An agent whose blast radius must hold on every run
+ * therefore carries the grant on its own adapterConfig
+ * (`dangerouslySkipPermissions: false` + `allowedTools`) — the seam
+ * execute.ts already reads — and the roster sets that from the same constants
+ * below, so the two cannot drift.
  *
  * Workspace-fetch posture (documentation only, no machinery this session):
  * the founder-decided default is that an unattended flow-commissioned run
@@ -89,6 +124,52 @@ export const DEFAULT_PERMISSION_PROFILE: PermissionProfile = "bounded";
 export const READ_ONLY_BROAD_ALLOWED_TOOLS =
   "AskUserQuestion Glob Grep Monitor Read TaskOutput TaskStop ToolSearch";
 
+/**
+ * Read-only tools PLUS the VCS history commands, each scoped to its own
+ * read-only verb.
+ *
+ * Why this profile has to exist at all: an agent asked to reconstruct what a
+ * product did cannot do it from files. What shipped and when, what was
+ * reverted, what a reviewer objected to — that is commits, pull requests and
+ * releases, and Glob/Grep/Read reach none of it. A "repo reader" without
+ * `git log` is a scanning agent that cannot scan.
+ *
+ * Every entry is a verb that cannot mutate a repository, a remote or the
+ * machine. Deliberately ABSENT, each for a reason worth keeping:
+ *   - `git branch`, `git tag`, `git config` — read in one form, write in
+ *     another (`git branch -D`), and a prefix matcher cannot tell them apart.
+ *   - `git checkout`, `git fetch`, `git pull`, `git stash` — mutate the
+ *     working tree or the object store even when they look like navigation.
+ *   - `gh api` — see the module doc: a prefix cannot express "GET only".
+ *   - `gh pr create/merge/comment`, `gh issue create` — writes, obviously, and
+ *     absent because the ONLY write this agent has is a proposal.
+ */
+export const READ_REPOS_ALLOWED_TOOLS = [
+  READ_ONLY_BROAD_ALLOWED_TOOLS,
+  "Bash(git log:*)",
+  "Bash(git show:*)",
+  "Bash(git diff:*)",
+  "Bash(git status:*)",
+  "Bash(git rev-list:*)",
+  "Bash(git rev-parse:*)",
+  "Bash(git describe:*)",
+  "Bash(git blame:*)",
+  "Bash(git shortlog:*)",
+  "Bash(git ls-files:*)",
+  "Bash(git ls-tree:*)",
+  "Bash(git cat-file:*)",
+  "Bash(git grep:*)",
+  "Bash(gh pr list:*)",
+  "Bash(gh pr view:*)",
+  "Bash(gh pr diff:*)",
+  "Bash(gh issue list:*)",
+  "Bash(gh issue view:*)",
+  "Bash(gh release list:*)",
+  "Bash(gh release view:*)",
+  "Bash(gh run list:*)",
+  "Bash(gh run view:*)",
+].join(" ");
+
 export type RunPermissionPolicy = {
   profile: PermissionProfile;
   /** Always "governed" — this module only ever produces the governed
@@ -112,8 +193,9 @@ function nativeToolsForProfile(profile: PermissionProfile): string {
     case "bounded":
       return SANDBOX_ALLOWED_TOOLS;
     case "read-only-broad":
-    case "read-repos":
       return READ_ONLY_BROAD_ALLOWED_TOOLS;
+    case "read-repos":
+      return READ_REPOS_ALLOWED_TOOLS;
   }
 }
 
@@ -150,9 +232,13 @@ export function derivePermissionPolicy(rawPermissions: unknown): RunPermissionPo
     }
   }
   if (profile === "read-repos") {
+    // The grant is real (Bash scoped per read-only VCS verb, measured against
+    // the CLI — see module doc). The note that remains is the honest residue:
+    // the READS themselves are not path-scoped, so this profile bounds what the
+    // run can DO, not where it can look.
     notes.push(
-      "profile 'read-repos' recorded but v1 enforces it identically to 'read-only-broad' " +
-        "(path-scoped enforcement needs adapter support — see module doc TODO)",
+      "profile 'read-repos' grants read-only VCS commands (git log/show/diff, gh pr/issue/release view) " +
+        "and no write verbs; reads are NOT path-scoped — the run can read any file the process can reach",
     );
   }
 

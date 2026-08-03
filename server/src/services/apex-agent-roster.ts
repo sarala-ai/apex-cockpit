@@ -24,7 +24,8 @@
  *   Implementer       `bounded`          repo write + test execution
  *   Specifier         `read-only-broad`  documents and board records; NO repo write
  *   Design Engineer   `bounded`          Penpot + the design repo, via the apex CLI
- *   Product Assistant `read-repos`       read everything; writes proposals only
+ *   Product Assistant `read-repos`       read-only tools + read-only git/gh;
+ *                                        its ONLY write is a proposal
  *
  * Two consequences worth stating out loud, because both were live options:
  *
@@ -36,12 +37,23 @@
  *    permission surface, i.e. a job title masquerading as governance. Agent
  *    reuse across lifecycles is the norm here, not the exception.
  *
- * 2. **`read-only-broad` vs `read-repos` is a real distinction to the author
- *    even though v1 ENFORCES them identically** (run-policy aliases the second
- *    to the first until an adapter can scope reads by path). It is recorded
- *    rather than collapsed because the day the adapter grows path scoping, the
- *    Product Assistant tightens for free and the Specifier does not have to be
- *    re-reasoned about.
+ * 2. **`read-only-broad` and `read-repos` are now enforced differently**, and
+ *    the difference is `git`. `read-repos` adds Bash scoped per read-only VCS
+ *    verb, because an agent that reconstructs what a product did cannot do it
+ *    from files: commits, pull requests and releases are the evidence, and
+ *    Glob/Grep/Read reach none of them.
+ *
+ *    This corrects a lie the roster shipped with. `read-repos` was originally
+ *    ALIASED to `read-only-broad` on the stated ground that "--allowedTools
+ *    gates by tool name" — an assumption inherited from an adapter comment and
+ *    never tested. It is false: Claude Code honours `Bash(git log:*)` scoping,
+ *    measured, with the evidence recorded in run-policy's module doc. The
+ *    Product Assistant was therefore declared a repo reader while holding a
+ *    grant that could not read a repository's history.
+ *
+ *    What is still NOT enforced, and is now said in the name's own comment
+ *    rather than left to be inferred: reads are not path-scoped. `read-repos`
+ *    bounds what a run can DO, not where it can look.
  *
  * ── WHY THE SPECIFIER HAS NO REPO WRITE ──
  *
@@ -80,7 +92,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { EnvBinding } from "@paperclipai/shared";
-import type { PermissionProfile } from "../apex/steps/run-policy.js";
+import { READ_REPOS_ALLOWED_TOOLS, type PermissionProfile } from "../apex/steps/run-policy.js";
 import type { BuiltInAgentDefinition } from "./built-in-agents.js";
 
 const BUILT_INS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../built-ins/agents");
@@ -199,12 +211,38 @@ export const APEX_AGENT_ROSTER: BuiltInAgentDefinition[] = [
     defaultRole: "product",
     defaultTitle: "Product Assistant",
     defaultIcon: "search",
-    // `read-repos`: read-only, declared as repo-scoped. v1 enforces it exactly
-    // as `read-only-broad` and run-policy says so in a note on every run; the
-    // declaration is kept so it tightens for free once an adapter can scope
-    // reads by path.
+    // `read-repos`: the read-only native tools PLUS Bash scoped to read-only
+    // VCS verbs — `git log`, `git show`, `git diff`, `gh pr view`, and the
+    // rest. Not decoration: reconstruction runs on commits, pull requests and
+    // releases, and Glob/Grep/Read reach none of them. History is not a file,
+    // so a "repo reader" without `git log` is a scanning agent that cannot
+    // scan. The grant carries no write verb of any kind.
+    //
+    // What it does NOT enforce, said plainly rather than implied by the name:
+    // reads are not path-scoped. The profile bounds what this agent can DO,
+    // not where it can look, and a checkout's untracked .env is as readable as
+    // its source. That is why "never quote a credential you encounter" is a
+    // rule in its instructions rather than an assumption about its sandbox.
     defaultPermissionProfile: "read-repos",
+    // The profile alone would be a claim, not a control: `run-policy` is read
+    // at FLOW-commission time only, and this agent's headline job — the
+    // reconstruction routine below — is dispatched by the routine scheduler,
+    // which never passes through it and would otherwise inherit the adapter's
+    // full bypass. Carrying the same grant on the agent's own adapterConfig is
+    // what makes the boundary true on every run, from the same constant, so
+    // the two cannot drift.
+    defaultAdapterConfig: {
+      dangerouslySkipPermissions: false,
+      allowedTools: READ_REPOS_ALLOWED_TOOLS,
+    },
     defaultPermissions: { canCreateAgents: false, canCreateSkills: false },
+    // `gh` against a private repo needs a token. Declared as a NON-required
+    // reference: it creates the slot an operator can fill, without blocking a
+    // machine whose `gh` is already authenticated through its own keyring.
+    // Never a value — see the module doc's credentials note.
+    defaultAdapterEnv: {
+      GH_TOKEN: { type: "user_secret_ref", key: "GH_TOKEN", required: false },
+    },
     allowedAdapterTypes: ROSTER_ADAPTER_TYPES,
     defaultBudgetMonthlyCents: 0,
     autoProvision: true,

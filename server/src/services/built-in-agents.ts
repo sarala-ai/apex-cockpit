@@ -60,6 +60,28 @@ export interface BuiltInAgentDefinition {
    */
   defaultAdapterEnv?: Record<string, EnvBinding>;
   /**
+   * Adapter config the definition needs on EVERY run, not only the ones a flow
+   * commissions.
+   *
+   * The distinction is load-bearing. `defaultPermissionProfile` is read by
+   * `run-policy` at flow-commission time and by nothing else — a
+   * routine-triggered or ticket-assigned run of the same agent never passes
+   * through it and gets the adapter's own default, which is full bypass. An
+   * agent whose blast radius is part of what it IS (the Product Assistant
+   * cannot be allowed to edit the history it reports on) has to carry the
+   * grant on its own record, via the seam `execute.ts` already reads:
+   * `dangerouslySkipPermissions: false` plus an explicit `allowedTools`.
+   *
+   * Operator input wins per key — someone who deliberately widens an agent
+   * has done so on the record, which is auditable; silently re-narrowing them
+   * at every reconcile would not be.
+   *
+   * Never a credential. Same rule as `defaultAdapterEnv`: this object is read
+   * back by the API, mirrored into config revisions and carried into
+   * portability exports.
+   */
+  defaultAdapterConfig?: Record<string, unknown>;
+  /**
    * Provision this definition into every company at startup.
    *
    * Before the roster, the only auto-provisioned definitions were the ones
@@ -490,6 +512,15 @@ export function validateBuiltInAgentDefinitions(definitions: BuiltInAgentDefinit
         );
       }
     }
+    // Environment belongs in `defaultAdapterEnv`, where every entry is forced
+    // to be a secret REFERENCE. Allowing it through here would reopen exactly
+    // the hole that check exists to close, one indirection further out.
+    if (definition.defaultAdapterConfig && "env" in definition.defaultAdapterConfig) {
+      throw new Error(
+        `Built-in agent ${definition.key} defaultAdapterConfig must not carry 'env' — ` +
+          `declare environment as secret references in defaultAdapterEnv instead.`,
+      );
+    }
     if (definition.bundle) {
       if (!definition.bundle.stockVersion.trim()) {
         throw new Error(`Built-in agent ${definition.key} bundle requires a stockVersion`);
@@ -623,10 +654,13 @@ function withDefaultAdapterEnv(
   definition: BuiltInAgentDefinition,
   adapterConfig: Record<string, unknown>,
 ): Record<string, unknown> {
+  // Definition-level config first, operator input on top: an operator who
+  // deliberately widens an agent has done so on the record.
+  const merged = { ...(definition.defaultAdapterConfig ?? {}), ...adapterConfig };
   const defaults = definition.defaultAdapterEnv;
-  if (!defaults || Object.keys(defaults).length === 0) return adapterConfig;
-  const existingEnv = isPlainRecord(adapterConfig.env) ? adapterConfig.env : {};
-  return { ...adapterConfig, env: { ...defaults, ...existingEnv } };
+  if (!defaults || Object.keys(defaults).length === 0) return merged;
+  const existingEnv = isPlainRecord(merged.env) ? merged.env : {};
+  return { ...merged, env: { ...defaults, ...existingEnv } };
 }
 
 /** The agent record's `permissions`, carrying the definition's declared run
