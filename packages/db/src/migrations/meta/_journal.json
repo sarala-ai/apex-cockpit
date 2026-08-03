@@ -1177,6 +1177,13 @@
       "when": 1786000010000,
       "tag": "0169_stage_workflow_and_acceptance",
       "breakpoints": true
+    },
+    {
+      "idx": 170,
+      "version": "7",
+      "when": 1786000011000,
+      "tag": "0170_pipeline_step_kinds",
+      "breakpoints": true
     }
   ]
 }

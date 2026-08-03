@@ -5,6 +5,7 @@ import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  approvals,
   documents,
   documentRevisions,
   heartbeatRuns,
@@ -44,15 +45,25 @@ import {
   type RoutineRevisionSnapshotV1,
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
-import { CliFlowNodeRunner, type FlowNodeRunner } from "../apex/steps/runner.js";
-import { renderTemplate, stepExecutor } from "../apex/steps/step-executor.js";
+import { logger } from "../middleware/logger.js";
+import { CliStepTargetRunner, type StepTargetRunner } from "../apex/steps/runner.js";
+import { renderTemplate, stepExecutor, type RunTarget } from "../apex/steps/step-executor.js";
+import type { ProcessDefinition, ProcessStep } from "../apex/steps/process-definition.js";
 import { isMachineEvaluableAcceptance } from "../apex/steps/agent-step.js";
+import { validateReviewPassIds } from "../apex/steps/review-passes.js";
+import {
+  commissionBoundedAgentRun,
+  STEP_AGENT_CONTEXT_KEY,
+  STEP_TERMINAL_RUN_STATUSES,
+} from "../apex/steps/commission.js";
+import type { ChangeRequestRound } from "../apex/steps/agent-step.js";
 import { routineService } from "./routines.js";
 import { secretService } from "./secrets.js";
 import type { IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logActivity } from "./activity-log.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import { authorizationService } from "./authorization.js";
+import { accessService } from "./access.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { pipelineIdOfCase } from "./pipeline-case-shape.js";
 import {
@@ -98,6 +109,18 @@ const DEFAULT_STAGES = [
   { key: "done", name: "Done", kind: "done", position: 900 },
   { key: "cancelled", name: "Cancelled", kind: "cancelled", position: 1000 },
 ] as const;
+
+/**
+ * The approval type a stage gate opens.
+ *
+ * Deliberately the SAME string the flow coordinator used (`flow_gate`). The
+ * approvals route, its decision brief and the UI that renders it all key on
+ * this value, and there are pending approvals carrying it right now. Changing
+ * the word would mean migrating live rows and rewiring three surfaces to save
+ * a name that is about to stop appearing anywhere a person reads. The rename
+ * is real and it is a separate change.
+ */
+export const PIPELINE_GATE_APPROVAL_TYPE = "flow_gate";
 
 export type PipelineActor =
   | { type: "user"; userId: string }
@@ -168,35 +191,112 @@ export type PipelineStageConfig = Record<string, unknown> & {
     whenFinishedMoveTo?: unknown;
   };
   /**
-   * What running this stage MEANS. Two members, one per shape of step
-   * (docs/architecture/execution-substrate.md §6 step 3):
+   * What running this stage MEANS — the stage's STEP, in the one vocabulary
+   * the step executor speaks (docs/architecture/process-definition.md §2a).
    *
-   * - `run_routine` — an AGENT step. Commissions a routine run. Costs tokens.
-   * - `run_workflow` — a WORKFLOW step. Runs a deterministic, previewed APEX
-   *   operation through the step executor at ZERO tokens, and WRITES ITS EXIT
-   *   STATUS BACK: `onSuccessToStageKey` / `onFailureToStageKey` move the case,
-   *   and a failure with no failure route HOLDS the stage (`step_held`). That
-   *   write-back is the whole point — the old zero-token escape hatch ran and
-   *   then nothing read the result, so the case never moved.
+   * THREE kinds, distinguished by WHO EXECUTES — the only axis that changes
+   * cost, accountability and blast radius:
+   *
+   * - `run` — the MACHINE executes it, deterministically, and it costs
+   *   NOTHING. What it runs is its `target`, and the target is pluggable:
+   *   `{type:"workflow", workflow, params}` for an APEX workflow, or
+   *   `{type:"command", tool, args}` for any other command. A third target
+   *   later is one registration in the executor, not a fourth step kind.
+   * - `agent` — a MODEL executes it, bounded by a permission profile, and it
+   *   costs tokens. The only door to a model.
+   * - `routine` — also an agent step, but the ROUTINE-shaped one that predates
+   *   the merge: it instantiates a routine template into its own execution
+   *   issue. Kept because it is a genuinely different useful thing, not a
+   *   second way to do the same thing.
+   *
+   * There is no `check` kind, and that is the point. Read the two configs it
+   * used to have side by side and they are one step with two spellings of
+   * *what to run*; a check is a run whose failure HOLDS rather than ROUTES,
+   * and that is `on_fail` configuration, not identity. A former check is a
+   * `run` with a `command` target and an `acceptance` contract.
+   *
+   * The GATE kind is not here because a gate is not something a stage does on
+   * entry — it is what a `review` stage IS. See `gate` below.
+   *
+   * SECURITY (docs/architecture/process-definition.md §2a): a `command` target
+   * executes on the HOST, and a process definition is editable in the product.
+   * Offering commands to in-product authoring would turn a board permission
+   * into a shell, so `command` targets are accepted only from seeded
+   * definitions and instance-admin authoring, enforced server-side by
+   * `assertRunTargetAuthorized` — never by omitting it from a dropdown.
+   *
+   * `onSuccessToStageKey` / `onFailureToStageKey` move the case, and a failure
+   * with no failure route HOLDS the stage (`step_held`). That write-back is
+   * the whole point — the old zero-token escape hatch ran and then nothing
+   * read the result, so the case never moved.
    */
   onEnter?: {
-    type?: "run_routine" | "run_workflow";
+    type?: "run" | "agent" | "routine";
     id?: string;
-    /** `run_routine` only. */
+    /** `run` only — what to execute. */
+    target?: {
+      type?: "workflow" | "command";
+      /** `workflow` target. */
+      workflow?: string;
+      params?: Record<string, unknown>;
+      /** `command` target. */
+      tool?: string;
+      args?: string[];
+    };
+    /** `agent` only — the instruction, `{{case_key}}`-interpolated. */
+    promptTemplate?: string;
+    /** `agent` only — advisory in v1, recorded in the instruction. */
+    budget?: Record<string, unknown> | null;
+    /** `agent` only — a permission profile declaration, read defensively
+     *  (see server/src/apex/steps/run-policy.ts). */
+    permissions?: unknown;
+    /** `routine` only. */
     routineId?: string;
     projectId?: string | null;
     projectWorkspaceId?: string | null;
     executionWorkspaceId?: string | null;
     executionWorkspacePreference?: ExecutionWorkspaceMode | null;
     executionWorkspaceSettings?: IssueExecutionWorkspaceSettings | null;
-    /** `run_workflow` only — the APEX workflow name. */
-    workflow?: string;
-    /** `run_workflow` only — params, `{{case_key}}`-interpolated. */
-    params?: Record<string, unknown>;
+    /**
+     * `run` only — how to SAY what happened, in one line, to a person.
+     *
+     * A template interpolated against the case's variables plus the tool's own
+     * result fields, e.g. `"deployed {{steps_completed}} services,
+     * {{steps_failed}} failed"`. The rendered line rides the
+     * `automation_executed` event as `summary`.
+     *
+     * DECLARED AND OPTIONAL, both deliberately. A step that declares no
+     * template produces no line — it does not fall back to dumping the result
+     * payload. The full result is already nested under `result` on the same
+     * event for anyone who wants it, and a JSON blob on a timeline is not
+     * reporting, it is the absence of reporting with extra characters. Only
+     * the author of a step knows which of its result fields are worth a
+     * person's attention, so only they can write the sentence.
+     */
+    report?: string;
     /** Where a zero-exit lands the case. Absent = stay put. */
     onSuccessToStageKey?: string;
     /** Where a non-zero exit lands the case. Absent = HOLD the stage. */
     onFailureToStageKey?: string;
+  };
+  /**
+   * The GATE a `review` stage is — a human decision, carrying a BRIEF.
+   *
+   * `requireApproval` / `approver` already say WHO may decide. This says what
+   * they are being asked, and it is the half that was missing: the review API
+   * took a decision, a reason and edits, with nowhere for a decision brief to
+   * live (docs/architecture/execution-substrate.md §3). `prompt` is the one
+   * line naming the decision; `requires` names the review passes the approver
+   * is asked to run, whose question text lives in the catalogue
+   * (server/src/apex/steps/review-passes.ts) and is never restated here.
+   *
+   * `mode: "notify"` is the reversible-by-default case: it says so and
+   * auto-proceeds rather than parking for attention nobody needs to spend.
+   */
+  gate?: {
+    mode?: "approve" | "notify";
+    prompt?: string | null;
+    requires?: string[] | null;
   };
   /**
    * The stage's acceptance contract — SERVER-EVALUATED, and it HOLDS the
@@ -1165,9 +1265,17 @@ function targetStageKeyForReviewDecision(config: PipelineStageConfig, decision: 
   return config.requestChangesToStageKey;
 }
 
+/**
+ * The stage's ROUTINE step, or null.
+ *
+ * An agent step in the sense that it costs tokens, but the routine-shaped one
+ * that predates the merge: it instantiates a routine template into its OWN
+ * execution issue. Kept distinct from `stageAgentStep` because it is a
+ * genuinely different useful thing, not a second way to do the same thing.
+ */
 function stageAutomation(stage: typeof pipelineStages.$inferSelect) {
   const onEnter = stageConfig(stage).onEnter;
-  if (!onEnter || onEnter.type !== "run_routine" || !onEnter.routineId) return null;
+  if (!onEnter || onEnter.type !== "routine" || !onEnter.routineId) return null;
   return {
     id: onEnter.id ?? `${stage.id}:on_enter`,
     routineId: onEnter.routineId,
@@ -1175,27 +1283,296 @@ function stageAutomation(stage: typeof pipelineStages.$inferSelect) {
   };
 }
 
-/**
- * The stage's WORKFLOW entry step, or null — the deterministic sibling of
- * `stageAutomation`. Zero tokens: the executor shells the apex CLI and no
- * agent is involved anywhere on this path.
- */
-function stageWorkflowEntry(stage: typeof pipelineStages.$inferSelect) {
-  const onEnter = stageConfig(stage).onEnter;
-  if (!onEnter || onEnter.type !== "run_workflow") return null;
-  const workflow = typeof onEnter.workflow === "string" ? onEnter.workflow.trim() : "";
+/** Parse a declared run target into the executor's union, or null. */
+function readRunTarget(raw: NonNullable<PipelineStageConfig["onEnter"]>["target"]): RunTarget | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  if (raw.type === "command") {
+    const tool = typeof raw.tool === "string" ? raw.tool.trim() : "";
+    if (!tool) return null;
+    return {
+      type: "command",
+      tool,
+      args: Array.isArray(raw.args) ? raw.args.filter((arg): arg is string => typeof arg === "string") : [],
+    };
+  }
+  // `workflow` is the default reading, and that is a safety property rather
+  // than a convenience: a target whose type was omitted or garbled must never
+  // fall through to the one that runs an arbitrary command on the host.
+  const workflow = typeof raw.workflow === "string" ? raw.workflow.trim() : "";
   if (!workflow) return null;
-  const params =
-    onEnter.params && typeof onEnter.params === "object" && !Array.isArray(onEnter.params)
-      ? (onEnter.params as Record<string, unknown>)
-      : {};
+  return {
+    type: "workflow",
+    workflow,
+    params:
+      raw.params && typeof raw.params === "object" && !Array.isArray(raw.params)
+        ? (raw.params as Record<string, unknown>)
+        : {},
+  };
+}
+
+/**
+ * The stage's RUN step, or null — the kind the MACHINE executes, at zero cost.
+ *
+ * ONE accessor for both targets, because they are one kind. An earlier draft
+ * had a `stageWorkflowEntry` and a sibling `stageCheckEntry`, which is exactly
+ * the duplication the three-kind collapse removed: whether a step shells an
+ * APEX workflow or another command is a property of the TARGET, not a fact
+ * about the process (docs/architecture/process-definition.md §2a).
+ */
+function stageRunStep(stage: typeof pipelineStages.$inferSelect) {
+  const onEnter = stageConfig(stage).onEnter;
+  if (!onEnter || onEnter.type !== "run") return null;
+  const target = readRunTarget(onEnter.target);
+  if (!target) return null;
   return {
     id: onEnter.id ?? `${stage.id}:on_enter`,
-    workflow,
-    params,
+    target,
+    report: readOptionalTrimmedString(onEnter.report),
     onSuccessToStageKey: readOptionalTrimmedString(onEnter.onSuccessToStageKey),
     onFailureToStageKey: readOptionalTrimmedString(onEnter.onFailureToStageKey),
   };
+}
+
+/**
+ * Render a run step's one-line report, or null.
+ *
+ * The result's own fields are made available as tokens alongside the case
+ * variables, so `"deployed {{steps_completed}} services"` resolves against
+ * what the tool actually returned. Only scalars are exposed: an object or an
+ * array interpolated into a sentence is a JSON blob wearing a sentence's
+ * clothes, which is the outcome this whole affordance exists to avoid.
+ *
+ * Unknown tokens are left verbatim by `renderTemplate` rather than blanked.
+ * A visible `{{steps_completed}}` on the timeline tells the author their
+ * template does not match the tool's output; a silently empty sentence tells
+ * them nothing and reads as though the step did nothing.
+ */
+function renderStepReport(
+  template: string | null,
+  variables: Record<string, string | number | boolean>,
+  detail: Record<string, unknown>,
+): string | null {
+  if (!template) return null;
+  const scalars: Record<string, string | number | boolean> = { ...variables };
+  for (const [key, value] of Object.entries(detail)) {
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      scalars[key] = value;
+    }
+  }
+  const line = renderTemplate(template, scalars).trim();
+  return line.length > 0 ? line : null;
+}
+
+/**
+ * The stage's AGENT step, or null — the only door in this file to a model.
+ *
+ * Deliberately the member with the most machinery around it: a resolved
+ * executor agent, an instruction posted as a comment BEFORE anything is
+ * commissioned, a park that happens before the instruction (so a crash
+ * mid-commission leaves a parked case rather than a running one with an orphan
+ * run), and a server-evaluated acceptance contract the agent is never asked to
+ * attest to.
+ *
+ * The acceptance criteria are NOT read here. They live in the stage's own
+ * `acceptance` block, shared with `run` steps and evaluated by one evaluator —
+ * because a run and an agent step are judged the same way, and the moment that
+ * stopped being true a model would be attesting to its own success.
+ */
+function stageAgentStep(stage: typeof pipelineStages.$inferSelect) {
+  const onEnter = stageConfig(stage).onEnter;
+  if (!onEnter || onEnter.type !== "agent") return null;
+  const promptTemplate = typeof onEnter.promptTemplate === "string" ? onEnter.promptTemplate.trim() : "";
+  if (!promptTemplate) return null;
+  return {
+    id: onEnter.id ?? `${stage.id}:on_enter`,
+    promptTemplate,
+    budget:
+      onEnter.budget && typeof onEnter.budget === "object" && !Array.isArray(onEnter.budget)
+        ? (onEnter.budget as Record<string, unknown>)
+        : null,
+    permissions: onEnter.permissions,
+    onSuccessToStageKey: readOptionalTrimmedString(onEnter.onSuccessToStageKey),
+    onFailureToStageKey: readOptionalTrimmedString(onEnter.onFailureToStageKey),
+  };
+}
+
+/**
+ * The GATE a review stage is, or null.
+ *
+ * A gate is not an entry action — it is what the stage IS, so it is read off
+ * the stage's own kind rather than off `onEnter`. A review stage with no
+ * explicit `gate` block still IS a gate; it just has no prompt and asks no
+ * review passes, which is the honest reading of a stage somebody created on
+ * the board without saying what the decision is for.
+ */
+function stageGate(stage: typeof pipelineStages.$inferSelect) {
+  if (stage.kind !== "review") return null;
+  const gate = stageConfig(stage).gate;
+  const mode = gate?.mode === "notify" ? ("notify" as const) : ("approve" as const);
+  return {
+    mode,
+    prompt: readOptionalTrimmedString(gate?.prompt ?? undefined) ?? null,
+    requires: Array.isArray(gate?.requires)
+      ? gate!.requires!.filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+      : null,
+  };
+}
+
+/**
+ * A stage projected into THE process step it declares, or null when it
+ * declares none — the one shape the step executor and the decision brief both
+ * read (server/src/apex/steps/process-definition.ts).
+ *
+ * `on_fail` is DERIVED rather than stored, because a stage already says the
+ * same thing in the vocabulary a board speaks: an entry step naming
+ * `onFailureToStageKey` is a `jump`, and one that names none HOLDS the stage,
+ * which is exactly `pause`. Storing both would be two ways to say one thing,
+ * and they would drift.
+ *
+ * ── THE UNRESOLVED OVERLAP, recorded here because it is load-bearing ──
+ *
+ * There are TWO "kind" vocabularies in this codebase and this function is
+ * where they meet:
+ *
+ *   `pipeline_stages.kind`  — open | working | review | done | cancelled.
+ *                             What the board COLUMN means to a reader.
+ *   step kind (this file)   — run | agent | gate. WHO EXECUTES.
+ *
+ * They are not orthogonal, and pretending otherwise is how a product grows two
+ * dropdowns both labelled "type". Read the mapping this function actually
+ * performs and the overlap is plain: `gate` is read off `kind === "review"`;
+ * `run` and `agent` are read off a `working` stage's `onEnter`; `done` and
+ * `cancelled` execute nothing at all.
+ *
+ * The honest resolution is that step kind SUBSUMES the execution-bearing half:
+ * `review` IS a gate under another name, `working` + `onEnter` IS a run or an
+ * agent step, and what stage kind would keep is only its genuinely
+ * board-positional meaning — is this column terminal, and with which outcome.
+ * That leaves one question per field ("who does this step?" and "does work end
+ * here?") instead of two overlapping ones.
+ *
+ * It is NOT done here, and the reason is size rather than doubt: `review` is
+ * keyed on at ~18 server sites (`targetStageKeyForReviewDecision`,
+ * `assertReviewTargetsInSet`, the review-decision path) and ~70 in the UI, and
+ * collapsing it means a migration over existing stages plus a rewrite of the
+ * approval machinery. Half-applying that would leave exactly the two-vocabulary
+ * state it is meant to remove.
+ *
+ * What IS done here is refusing to make it worse: a stage that executes
+ * nothing projects as NO STEP rather than being invented into a gate, so the
+ * third vocabulary this projection could have become stays honest until the
+ * collapse is done properly.
+ */
+function stageProcessStep(stage: typeof pipelineStages.$inferSelect): ProcessStep | null {
+  const onFailFor = (target: string | null) => (target ? `jump:${target}` : "pause");
+  const acceptance = stageDeclaredAcceptance(stage);
+  const run = stageRunStep(stage);
+  if (run) {
+    return {
+      id: stage.key,
+      kind: "run",
+      run: { target: run.target },
+      acceptance,
+      on_fail: onFailFor(run.onFailureToStageKey),
+    };
+  }
+  const agent = stageAgentStep(stage);
+  if (agent) {
+    return {
+      id: stage.key,
+      kind: "agent",
+      agent: {
+        prompt_template: agent.promptTemplate,
+        budget: agent.budget,
+        permissions: agent.permissions,
+      },
+      acceptance,
+      on_fail: onFailFor(agent.onFailureToStageKey),
+    };
+  }
+  const gate = stageGate(stage);
+  if (gate) {
+    const config = stageConfig(stage);
+    return {
+      id: stage.key,
+      kind: "gate",
+      gate: {
+        mode: gate.mode,
+        prompt: gate.prompt,
+        requires: gate.requires,
+        request_changes_to: config.requestChangesToStageKey ?? null,
+      },
+      acceptance,
+      on_fail: "pause",
+    };
+  }
+  return null;
+}
+
+/**
+ * THE process definition for a pipeline — the DB-backed replacement for what
+ * `apex flows show <name> --output json` used to return.
+ *
+ * Only stages that EXECUTE something become steps. A `working` column with no
+ * `onEnter` — which is what the DEFAULT stages are, so this is the common case
+ * and not an edge — is a waiting position where a person does the work and
+ * then moves the card. It executes nothing and therefore has no consequence,
+ * and a decision brief that narrated it would be adding noise to the one
+ * screen that exists to remove noise.
+ *
+ * An earlier draft projected those as a `gate` in `notify` mode so that
+ * nothing was dropped. That was wrong in the expensive direction: it labelled
+ * the most common stage in the product a gate, putting "the process pauses for
+ * another approval" on a brief about a column where no approval exists.
+ */
+function pipelineProcessDefinition(
+  pipeline: typeof pipelines.$inferSelect,
+  stages: Array<typeof pipelineStages.$inferSelect>,
+): ProcessDefinition {
+  const ordered = [...stages].sort((a, b) => a.position - b.position);
+  return {
+    name: pipeline.key,
+    version: pipeline.version ?? "1.0",
+    description: pipeline.description ?? "",
+    ticket_type: pipeline.ticketType ?? pipeline.key,
+    steps: ordered
+      .map((stage) => stageProcessStep(stage))
+      .filter((step): step is ProcessStep => step !== null),
+  };
+}
+
+/**
+ * Load THE process definition for a company's pipeline, by key.
+ *
+ * The replacement for `loadFlowDefinition`, which shelled
+ * `apex flows show <name> --output json`. Same shape out, different source:
+ * two indexed reads instead of a ~10-20s cold CLI start, and no dependency on
+ * an apex install being present for a reviewer to see what happens after a
+ * gate they are looking at.
+ *
+ * Returns null rather than throwing for an unknown key. Every caller so far is
+ * assembling a decision brief, where a missing definition must degrade the
+ * brief rather than fail the screen — a reviewer with a partial brief can
+ * still decide; a reviewer with a 500 cannot.
+ */
+export async function loadProcessDefinitionByKey(
+  db: PipelineDb,
+  companyId: string,
+  key: string,
+): Promise<ProcessDefinition | null> {
+  const pipeline = await db
+    .select()
+    .from(pipelines)
+    .where(and(eq(pipelines.companyId, companyId), eq(pipelines.key, key)))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (!pipeline) return null;
+  const stages = await db
+    .select()
+    .from(pipelineStages)
+    .where(eq(pipelineStages.pipelineId, pipeline.id))
+    .orderBy(asc(pipelineStages.position));
+  return pipelineProcessDefinition(pipeline, stages);
 }
 
 /**
@@ -1227,6 +1604,26 @@ function assertStageAcceptanceIsCheckable(config?: PipelineStageConfig | null) {
   );
 }
 
+/**
+ * A gate may only ask review passes that exist.
+ *
+ * Refused at authoring time, naming the legal vocabulary, because the failure
+ * mode of a typo is silent and total: an unknown pass id renders no question,
+ * so the reviewer is never asked, and a review that was supposed to happen
+ * simply does not — while the gate reports itself configured. The catalogue is
+ * small and closed (server/src/apex/steps/review-passes.ts); there is no
+ * reading under which an unrecognised id is a useful thing to keep.
+ */
+function assertStageGateIsAnswerable(config?: PipelineStageConfig | null) {
+  const requires = config?.gate?.requires;
+  if (!Array.isArray(requires) || requires.length === 0) return;
+  try {
+    validateReviewPassIds(requires.filter((id): id is string => typeof id === "string"));
+  } catch (err) {
+    throw unprocessable(err instanceof Error ? err.message : String(err), { code: "validation" });
+  }
+}
+
 /** The stage's acceptance contract, or null when it declares none (or has
  *  disabled it). See `PipelineStageConfig.acceptance`. */
 function stageAcceptance(stage: typeof pipelineStages.$inferSelect) {
@@ -1235,6 +1632,28 @@ function stageAcceptance(stage: typeof pipelineStages.$inferSelect) {
   if (acceptance.disabled === true) return null;
   const criteria = typeof acceptance.criteria === "string" ? acceptance.criteria.trim() : "";
   return criteria ? { criteria } : null;
+}
+
+/**
+ * Everything the stage SAYS about acceptance, including a contract it has
+ * explicitly waived — which `stageAcceptance` (the enforcement reader)
+ * correctly hides and this one must not.
+ *
+ * The difference matters in exactly one place and it is the important one: the
+ * criteria still go into an agent step's instruction and onto the decision
+ * brief even when the server cannot check them. Telling the agent "this is
+ * what done means" is useful; telling the reviewer "and nothing verified it"
+ * is what keeps that from being a false assurance. Hiding the waived criteria
+ * would lose the first; hiding the waiver would lose the second.
+ */
+function stageDeclaredAcceptance(
+  stage: typeof pipelineStages.$inferSelect,
+): { criteria: string; enforced: boolean } | null {
+  const acceptance = stageConfig(stage).acceptance;
+  if (!acceptance || typeof acceptance !== "object" || Array.isArray(acceptance)) return null;
+  const criteria = typeof acceptance.criteria === "string" ? acceptance.criteria.trim() : "";
+  if (!criteria) return null;
+  return { criteria, enforced: acceptance.disabled !== true };
 }
 
 function stageRef(stage: typeof pipelineStages.$inferSelect) {
@@ -1277,7 +1696,7 @@ function secretRefsFromEnv(env: Record<string, EnvBinding> | null | undefined) {
 
 function stageAutomationRoutineIdFromConfig(config?: PipelineStageConfig | null) {
   const onEnter = config?.onEnter;
-  return onEnter?.type === "run_routine" && typeof onEnter.routineId === "string"
+  return onEnter?.type === "routine" && typeof onEnter.routineId === "string"
     ? onEnter.routineId
     : null;
 }
@@ -2401,6 +2820,133 @@ function pipelineBatchError(error: unknown, fallbackCode = "unknown") {
   };
 }
 
+/**
+ * Open the GATE a review stage is — the pipeline host of `GateStepPort`.
+ *
+ * This is the gap the whole merge set out to close. A pipeline review stage
+ * already knew WHO may decide (`requireApproval`, `approver`) and WHERE each
+ * decision sends the case (`approveToStageKey` and friends). What it had
+ * nowhere to put was WHAT IS BEING DECIDED: the review API took a decision, a
+ * reason and edits, and a reviewer arriving at it saw a column, not a
+ * question. The founder's words for the flow-side version of this were
+ * "reviewing agent slop… I don't know what to interpret, where to start and
+ * where to end."
+ *
+ * So the gate creates an APPROVAL, and the approval's payload is the seed the
+ * decision brief grows from (server/src/apex/steps/brief.ts assembles the rest
+ * — the artifact, the verified acceptance, what happens next, the review
+ * passes, the provenance). The payload deliberately carries only what the
+ * brief cannot re-derive: which case, which process, which step, and the
+ * prompt. Everything else is read fresh at render time, because a payload is a
+ * snapshot and a snapshot of a moving case goes stale.
+ *
+ * `notify` mode does NOT open an approval. A gate that only announces itself
+ * and proceeds must not manufacture a pending decision for someone to close —
+ * an inbox full of approvals nobody needed to make is how a gate stops being
+ * read.
+ *
+ * Idempotent: re-entering a review stage that already has a pending gate
+ * reuses it rather than stacking a second one.
+ */
+async function openStageGateInTransaction(
+  tx: PipelineDb,
+  input: {
+    companyId: string;
+    caseId: string;
+    stage: typeof pipelineStages.$inferSelect;
+    actor: PipelineActor;
+  },
+) {
+  const gate = stageGate(input.stage);
+  if (!gate || gate.mode !== "approve") return null;
+
+  const existing = await tx
+    .select({ id: approvals.id })
+    .from(approvals)
+    .where(and(
+      eq(approvals.companyId, input.companyId),
+      eq(approvals.type, PIPELINE_GATE_APPROVAL_TYPE),
+      eq(approvals.status, "pending"),
+      sql`${approvals.payload} ->> 'caseId' = ${input.caseId}`,
+      sql`${approvals.payload} ->> 'stepKey' = ${input.stage.key}`,
+    ))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (existing) return existing.id;
+
+  const detail = await tx
+    .select({ caseRow: pipelineCases, pipeline: pipelines })
+    .from(pipelineCases)
+    .innerJoin(pipelines, eq(pipelineCases.pipelineId, pipelines.id))
+    .where(eq(pipelineCases.id, input.caseId))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (!detail) return null;
+
+  // The conversation issue, when there is one. The brief's artifact and
+  // provenance sections are read from an issue's activity, so a case without
+  // one still gets a gate — it just gets a thinner brief, which is the honest
+  // outcome rather than a refusal to open the gate at all.
+  const link = await tx
+    .select({ issueId: pipelineCaseIssueLinks.issueId })
+    .from(pipelineCaseIssueLinks)
+    .where(and(
+      eq(pipelineCaseIssueLinks.caseId, input.caseId),
+      isNull(pipelineCaseIssueLinks.retiredAt),
+    ))
+    .orderBy(desc(pipelineCaseIssueLinks.createdAt))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+
+  const [approval] = await tx.insert(approvals).values({
+    companyId: input.companyId,
+    type: PIPELINE_GATE_APPROVAL_TYPE,
+    status: "pending",
+    requestedByAgentId: input.actor.type === "agent" ? input.actor.agentId : null,
+    requestedByUserId: input.actor.type === "user" ? input.actor.userId : null,
+    payload: {
+      caseId: input.caseId,
+      issueId: link?.issueId ?? null,
+      issueIdentifier: detail.caseRow.caseKey,
+      issueTitle: detail.caseRow.title,
+      // `flowName`/`nodeId` are the key names the brief and its UI already
+      // read. Kept verbatim rather than renamed: the rename is real but it is
+      // a separate change, and doing it here would mean a payload migration
+      // over pending approvals to save a word.
+      flowName: detail.pipeline.key,
+      nodeId: input.stage.key,
+      stepKey: input.stage.key,
+      prompt: gate.prompt,
+      requires: gate.requires,
+      ticketType: detail.pipeline.ticketType ?? detail.pipeline.key,
+    },
+  }).returning();
+
+  await writeCaseEvent(tx, {
+    companyId: input.companyId,
+    caseId: input.caseId,
+    type: "gate_opened",
+    actor: input.actor,
+    payload: {
+      stageId: input.stage.id,
+      stageKey: input.stage.key,
+      approvalId: approval!.id,
+      prompt: gate.prompt,
+      requires: gate.requires,
+    },
+  });
+
+  // `waiting_gate` is what turns "this case is in a review column" into "this
+  // case is waiting on a person" — the distinction the board needs to show a
+  // reviewer that something is theirs.
+  await tx
+    .update(pipelineCases)
+    .set({ stepStatus: "waiting_gate", updatedAt: nowDate() })
+    .where(eq(pipelineCases.id, input.caseId));
+
+  return approval!.id;
+}
+
 async function enqueueStageAutomationLedger(
   db: PipelineDb,
   input: {
@@ -2412,20 +2958,26 @@ async function enqueueStageAutomationLedger(
     generation?: number;
   },
 ) {
-  // Either member of `onEnter` enqueues here — the ledger is the substrate's
-  // record of "a step ran on entry", not a routine-only concept. A workflow
-  // entry carries no routine (0169).
+  // EVERY member of `onEnter` enqueues here — the ledger is the substrate's
+  // record of "a step ran on entry", not a routine-only concept. Idempotency
+  // (case, automation, triggering event), retry, generation and the
+  // `automation_executed` / `automation_failed` events already live here, and
+  // a parallel table per kind would duplicate all of them. Only a routine
+  // carries a routine id (0169/0170).
   const automation = stageAutomation(input.stage);
-  const workflowEntry = automation ? null : stageWorkflowEntry(input.stage);
-  if (!automation && !workflowEntry) return null;
+  const runStep = automation ? null : stageRunStep(input.stage);
+  const agentStep = automation || runStep ? null : stageAgentStep(input.stage);
+  const entry = automation ?? runStep ?? agentStep;
+  if (!entry) return null;
+  const kind = automation ? "routine" : runStep ? "run" : "agent";
   const [ledger] = await db
     .insert(pipelineAutomationExecutions)
     .values({
       companyId: input.companyId,
       caseId: input.caseId,
-      automationId: (automation ?? workflowEntry)!.id,
+      automationId: entry.id,
       triggeringEventId: input.eventId,
-      kind: automation ? "routine" : "workflow",
+      kind,
       routineId: automation?.routineId ?? null,
       status: "failed",
       retryOfExecutionId: input.retryOfExecutionId ?? null,
@@ -2485,15 +3037,16 @@ export function pipelineService(
   db: Db,
   deps: {
     heartbeat?: IssueAssignmentWakeupDeps;
-    /** The deterministic step runner (workflow + check). Injectable so tests
-     *  never shell the apex CLI; the default shells it and nothing else. */
-    stepRunner?: FlowNodeRunner;
+    /** The `run` kind's hands. Injectable so tests never shell the apex CLI;
+     *  the default shells it and nothing else. */
+    stepRunner?: StepTargetRunner;
   } = {},
 ) {
   const routinesSvc = routineService(db, { heartbeat: deps.heartbeat });
-  const workflowRunner = deps.stepRunner ?? new CliFlowNodeRunner();
+  const workflowRunner = deps.stepRunner ?? new CliStepTargetRunner();
   const outputsSvc = pipelineCaseOutputsService(db);
   const authorization = authorizationService(db);
+  const accessSvc = accessService(db);
   const secretsSvc = secretService(db);
 
   async function assertRoutineInCompany(companyId: string, routineId: string) {
@@ -2510,21 +3063,80 @@ export function pipelineService(
     return routine;
   }
 
-  async function validateStageAutomationConfig(companyId: string, config?: PipelineStageConfig | null) {
+  async function validateStageAutomationConfig(
+    companyId: string,
+    config?: PipelineStageConfig | null,
+    actor?: PipelineActor,
+  ) {
     assertStageAcceptanceIsCheckable(config);
+    assertStageGateIsAnswerable(config);
     const onEnter = config?.onEnter;
     if (!onEnter) return;
-    if (onEnter.type === "run_workflow") {
-      if (typeof onEnter.workflow !== "string" || onEnter.workflow.trim().length === 0) {
-        throw unprocessable("Stage onEnter run_workflow requires a workflow name", { code: "validation" });
+    if (onEnter.type === "run") {
+      const target = readRunTarget(onEnter.target);
+      if (!target) {
+        throw unprocessable(
+          `Stage onEnter run requires a readable target: {type:"workflow", workflow} or {type:"command", tool}`,
+          { code: "validation" },
+        );
       }
       if (onEnter.routineId) {
-        throw unprocessable("Stage onEnter run_workflow must not carry a routineId", { code: "validation" });
+        throw unprocessable("Stage onEnter run must not carry a routineId", { code: "validation" });
+      }
+      await assertRunTargetAuthorized(companyId, target, actor);
+      return;
+    }
+    if (onEnter.type === "agent") {
+      if (typeof onEnter.promptTemplate !== "string" || onEnter.promptTemplate.trim().length === 0) {
+        throw unprocessable("Stage onEnter agent requires a promptTemplate", { code: "validation" });
+      }
+      if (onEnter.routineId) {
+        throw unprocessable("Stage onEnter agent must not carry a routineId", { code: "validation" });
       }
       return;
     }
-    if (onEnter.type !== "run_routine" || !onEnter.routineId) return;
+    if (onEnter.type !== "routine" || !onEnter.routineId) return;
     await assertRoutineInCompany(companyId, onEnter.routineId);
+  }
+
+  /**
+   * A `command` target executes on the HOST. A process definition lives in the
+   * database and is editable in the product. Put those two facts together and
+   * an unguarded `command` target means anyone who can edit a process can
+   * execute code on the host — a board permission silently becoming a shell
+   * (docs/architecture/process-definition.md §2a).
+   *
+   * So it is refused HERE, server-side, rather than by declining to offer it in
+   * a dropdown. A dropdown is a suggestion; this is the boundary. Two callers
+   * are trusted, and both have a different trust boundary already:
+   *
+   *  - the `system` actor — seeded definitions, which ship with the platform
+   *    and are reviewed as code;
+   *  - an instance admin — the role that can already reach the host by other
+   *    means, so this grants nothing new.
+   *
+   * A `workflow` target is always allowed: workflows are named, catalogued,
+   * previewed and versioned outside the board, which is exactly what makes
+   * them the safe surface.
+   *
+   * If a `command` target is ever wanted in-product it needs its OWN
+   * permission, distinct from "can edit a process", decided on purpose. It
+   * must not arrive by widening this check.
+   */
+  async function assertRunTargetAuthorized(
+    companyId: string,
+    target: RunTarget,
+    actor?: PipelineActor,
+  ) {
+    if (target.type !== "command") return;
+    if (!actor || actor.type === "system") return;
+    if (actor.type === "user" && (await accessSvc.isInstanceAdmin(actor.userId))) return;
+    throw new HttpError(
+      403,
+      `A "command" run target executes on the host and cannot be authored from the product. ` +
+        `Use a "workflow" target, or have an instance admin author this step.`,
+      { code: "command_target_forbidden", companyId, tool: target.tool },
+    );
   }
 
   async function loadBreakdownTarget(
@@ -3061,7 +3673,7 @@ export function pipelineService(
       return {
         ...configWithVariables,
         onEnter: {
-          type: "run_routine" as const,
+          type: "routine" as const,
           routineId: revised.id,
           ...input.executionContext,
         },
@@ -3100,7 +3712,7 @@ export function pipelineService(
     return {
       ...configWithVariables,
       onEnter: {
-        type: "run_routine" as const,
+        type: "routine" as const,
         routineId: revised.id,
         ...input.executionContext,
       },
@@ -3145,7 +3757,7 @@ export function pipelineService(
       .innerJoin(pipelines, eq(pipelineStages.pipelineId, pipelines.id))
       .where(and(
         eq(pipelines.companyId, input.companyId),
-        sql`${pipelineStages.config}->'onEnter'->>'type' = 'run_routine'`,
+        sql`${pipelineStages.config}->'onEnter'->>'type' = 'routine'`,
         sql`${pipelineStages.config}->'onEnter'->>'routineId' = ${input.routineId}`,
         input.exceptStageId ? ne(pipelineStages.id, input.exceptStageId) : undefined,
       ))
@@ -3185,9 +3797,10 @@ export function pipelineService(
 
   async function validateStageTargets(companyId: string, pipelineId: string, kind: PipelineStageKind | string, config: PipelineStageConfig) {
     const onEnter = config?.onEnter;
+    const routesByStageKey = onEnter?.type === "run" || onEnter?.type === "agent";
     const needsStageKeys =
       kind === "review" ||
-      (onEnter?.type === "run_workflow" && (onEnter.onSuccessToStageKey || onEnter.onFailureToStageKey));
+      (routesByStageKey && Boolean(onEnter.onSuccessToStageKey || onEnter.onFailureToStageKey));
     if (!needsStageKeys) return;
     const rows = await db
       .select({ key: pipelineStages.key })
@@ -3196,7 +3809,7 @@ export function pipelineService(
       .where(and(eq(pipelineStages.pipelineId, pipelineId), eq(pipelines.companyId, companyId)));
     const stageKeys = new Set(rows.map((row) => row.key));
     assertReviewTargetsInSet(kind, config, stageKeys);
-    if (onEnter?.type === "run_workflow") {
+    if (routesByStageKey) {
       for (const [label, key] of [
         ["onSuccessToStageKey", onEnter.onSuccessToStageKey],
         ["onFailureToStageKey", onEnter.onFailureToStageKey],
@@ -3209,7 +3822,7 @@ export function pipelineService(
   }
 
   /**
-   * Run a stage's WORKFLOW entry step and WRITE ITS EXIT STATUS BACK.
+   * Execute a stage's RUN step and WRITE ITS EXIT STATUS BACK.
    *
    * This is the defect the substrate doc names: a zero-token entry step
    * genuinely ran, and then nothing read the result, so the case never moved.
@@ -3222,17 +3835,20 @@ export function pipelineService(
    *   non-zero      → `automation_failed`, and either a transition to
    *                   `onFailureToStageKey` or — with no failure route — a
    *                   `step_held`, which stops the case leaving the stage
-   *                   (assertStageTransitionGates).
+   *                   (assertStageTransitionGates). "No failure route" IS the
+   *                   `on_fail: pause` of the old check node: a run whose
+   *                   failure HOLDS rather than ROUTES.
    *
-   * ZERO TOKENS on every path: the only executor port supplied is the CLI
-   * runner. No agent is resolved, no routine is run, no model is consulted.
+   * ZERO COST on every path: the only executor port supplied is the target
+   * runner. No agent is resolved, no routine is run, no model is consulted —
+   * and that is true for BOTH targets, which is why they are one kind.
    */
-  async function executeWorkflowEntryLedger(
+  async function executeRunEntryLedger(
     execution: typeof pipelineAutomationExecutions.$inferSelect,
     actor: PipelineActor,
   ): Promise<PipelineAutomationExecutionResult> {
     const detail = await getCaseWithStageOrThrow(db, execution.companyId, execution.caseId);
-    const entry = stageWorkflowEntry(detail.stage);
+    const entry = stageRunStep(detail.stage);
     if (!entry || entry.id !== execution.automationId) {
       const [failed] = await db
         .update(pipelineAutomationExecutions)
@@ -3244,7 +3860,7 @@ export function pipelineService(
         caseId: execution.caseId,
         type: "automation_failed",
         actor,
-        payload: { automationId: execution.automationId, kind: "workflow", error: "automation_not_configured" },
+        payload: { automationId: execution.automationId, kind: "run", error: "automation_not_configured" },
       });
       return { status: "failed", execution: failed! };
     }
@@ -3254,9 +3870,9 @@ export function pipelineService(
       runner: workflowRunner,
       render: (template) => renderTemplate(template, variables),
     }).execute({
-      kind: "workflow",
+      kind: "run",
       key: detail.stage.key,
-      config: { workflow: entry.workflow, params: entry.params },
+      config: { target: entry.target },
     });
 
     if (outcome.status === "succeeded") {
@@ -3270,15 +3886,23 @@ export function pipelineService(
         caseId: execution.caseId,
         type: "automation_executed",
         actor,
+        // The tool's own payload is NESTED, never spread. Spreading it beside
+        // the event's `automationId` / `kind` meant any tool whose result
+        // happened to carry one of those names silently overwrote the event's
+        // own field — a corrupted audit record produced by the audited thing.
+        // Nesting also keeps the boundary `runner.ts` learned the hard way:
+        // the CLI envelope's status is authoritative, and a `result.status`
+        // inside `detail` is domain-specific and must never be read as one.
         payload: {
           automationId: execution.automationId,
-          kind: "workflow",
-          workflow: entry.workflow,
-          ...outcome.detail,
+          kind: "run",
+          // The line a person reads, when the step's author wrote one.
+          summary: renderStepReport(entry.report, variables, outcome.detail),
+          result: outcome.detail,
         },
       });
       await clearStepHold(execution.companyId, execution.caseId, detail.stage, {
-        reason: "workflow_exit_success",
+        reason: "run_exit_success",
       });
       await evaluateStageAcceptance({
         companyId: execution.companyId,
@@ -3286,9 +3910,9 @@ export function pipelineService(
         actor,
       });
       if (entry.onSuccessToStageKey) {
-        await moveCaseAfterWorkflowExit(execution.companyId, execution.caseId, {
+        await moveCaseAfterStepExit(execution.companyId, execution.caseId, {
           toStageKey: entry.onSuccessToStageKey,
-          reason: "workflow_exit_success",
+          reason: "run_exit_success",
           actor,
         });
       }
@@ -3297,7 +3921,7 @@ export function pipelineService(
 
     const failure = outcome.status === "failed"
       ? outcome.failure
-      : { errorType: "workflow_step_not_terminal", message: "workflow step did not reach a terminal outcome" };
+      : { errorType: "run_step_not_terminal", message: "run step did not reach a terminal outcome" };
     const [failed] = await db
       .update(pipelineAutomationExecutions)
       .set({ status: "failed", error: failure.message, updatedAt: nowDate() })
@@ -3310,21 +3934,20 @@ export function pipelineService(
       actor,
       payload: {
         automationId: execution.automationId,
-        kind: "workflow",
-        workflow: entry.workflow,
+        kind: "run",
         errorType: failure.errorType,
         error: failure.message,
       },
     });
     if (entry.onFailureToStageKey) {
-      await moveCaseAfterWorkflowExit(execution.companyId, execution.caseId, {
+      await moveCaseAfterStepExit(execution.companyId, execution.caseId, {
         toStageKey: entry.onFailureToStageKey,
-        reason: "workflow_exit_failure",
+        reason: "run_exit_failure",
         actor,
       });
     } else {
       await writeStepHold(execution.companyId, execution.caseId, detail.stage, {
-        reason: "workflow_exit_failure",
+        reason: "run_exit_failure",
         errorType: failure.errorType,
         message: failure.message,
         stepKey: detail.stage.key,
@@ -3333,11 +3956,581 @@ export function pipelineService(
     return { status: "failed", execution: failed! };
   }
 
+  /**
+   * Execute a stage's AGENT step — the pipeline host of `AgentStepPort`.
+   *
+   * This is the capability pipelines did not have. A `routine` entry
+   * instantiates a template into its own execution issue; this commissions ONE
+   * bounded run, against the case's own conversation, under a permission
+   * profile, with a server-evaluated acceptance contract nobody asks the agent
+   * to attest to.
+   *
+   * The ORDER is the load-bearing part and is carried across from the flow
+   * coordinator unchanged, because each step of it was paid for:
+   *
+   *   1. resolve the executor — a classified failure, never a guess;
+   *   2. render acceptance FIRST, then the prompt, so the prompt's own
+   *      `{{acceptance}}` token resolves to the already-rendered string and the
+   *      agent and the evaluator read one identical concrete criteria;
+   *   3. PARK before posting anything, so a crash mid-commission leaves a
+   *      parked case rather than a running one with an orphan run;
+   *   4. post the instruction — it IS the run's wake comment;
+   *   5. commission; a null return is a DEFERRAL, not a failure.
+   */
+  async function executeAgentStepLedger(
+    execution: typeof pipelineAutomationExecutions.$inferSelect,
+    actor: PipelineActor,
+  ): Promise<PipelineAutomationExecutionResult> {
+    const detail = await getCaseWithStageOrThrow(db, execution.companyId, execution.caseId);
+    const entry = stageAgentStep(detail.stage);
+    if (!entry || entry.id !== execution.automationId) {
+      return failAutomationLedger(execution, actor, "agent", "automation_not_configured");
+    }
+
+    // The conversation IS where a bounded run happens: the instruction rides
+    // the same thread a human reads, rather than a private side channel.
+    const conversation = await resolvePipelineCaseConversationSource(db, execution.companyId, execution.caseId);
+    if (!conversation?.isActive) {
+      return failAutomationLedger(
+        execution,
+        actor,
+        "agent",
+        "agent_step_has_no_conversation: the case has no active issue to commission a run against",
+      );
+    }
+    const issueId = conversation.issue.id;
+
+    const variables = buildPipelineCaseVariables(detail);
+    const declared = stageDeclaredAcceptance(detail.stage);
+    const acceptance = declared ? renderTemplate(declared.criteria, variables) : "";
+    const rounds = await readCaseChangeRequestRounds(execution.companyId, execution.caseId, detail.stage);
+
+    const executorAgentId = await resolveStepExecutorAgent(detail, conversation.issue);
+    if (!executorAgentId.ok) {
+      return failAutomationLedger(execution, actor, "agent", executorAgentId.message);
+    }
+
+    const outcome = await stepExecutor({
+      runner: workflowRunner,
+      render: (template) => renderTemplate(template, variables),
+      agent: {
+        definitionName: () => detail.pipeline.key,
+        resolveExecutorAgent: async () => ({
+          ok: true as const,
+          agentId: executorAgentId.agentId,
+          assigned: executorAgentId.autoAssigned,
+        }),
+        readChangeRequestRounds: async () => rounds,
+        // Both renderers interpolate against the SAME variable map, and
+        // acceptance is rendered first so `{{acceptance}}` in the prompt
+        // resolves to the concrete string the evaluator will later check.
+        renderAcceptance: () => acceptance,
+        renderPrompt: (template, rendered) =>
+          renderTemplate(template, { ...variables, acceptance: rendered }),
+        park: async (input) => {
+          await db
+            .update(pipelineCases)
+            .set({
+              stepStatus: "waiting_agent",
+              stepRunId: null,
+              stepExecutorAgentId: input.agentId,
+              updatedAt: nowDate(),
+            })
+            .where(eq(pipelineCases.id, execution.caseId));
+          await writeCaseEvent(db, {
+            companyId: execution.companyId,
+            caseId: execution.caseId,
+            type: "step_waiting",
+            actor,
+            payload: {
+              stageId: detail.stage.id,
+              stageKey: detail.stage.key,
+              agentId: input.agentId,
+              agentAutoAssigned: input.agentAutoAssigned,
+              acceptance: input.acceptance,
+              acceptanceEnforced: declared?.enforced ?? false,
+              budget: input.budget,
+              changeRequestRound: input.changeRequestRound,
+            },
+          });
+        },
+        postInstruction: async (body) => {
+          const { issueService } = await import("./issues.js");
+          const comment = await issueService(db).addComment(issueId, body, {});
+          return (comment as { id: string }).id;
+        },
+        commission: (input) =>
+          commissionBoundedAgentRun(db, {
+            issueId,
+            agentId: input.agentId,
+            instructionCommentId: input.instructionCommentId,
+            permissions: input.permissions,
+            definitionName: detail.pipeline.key,
+            stepKey: detail.stage.key,
+          }),
+        recordCommissioned: async (input) => {
+          await db
+            .update(pipelineCases)
+            .set({ stepRunId: input.runId, updatedAt: nowDate() })
+            .where(eq(pipelineCases.id, execution.caseId));
+          await writeCaseEvent(db, {
+            companyId: execution.companyId,
+            caseId: execution.caseId,
+            type: "automation_executed",
+            actor,
+            payload: {
+              automationId: execution.automationId,
+              kind: "agent",
+              runId: input.runId,
+              agentId: input.agentId,
+              instructionCommentId: input.instructionCommentId,
+            },
+          });
+        },
+        // Deferral is the COMMON real case: the agent already holds the
+        // execution lock and heartbeat will promote this wake when it
+        // finishes. The case stays parked and the sweep classifies a hold only
+        // if no run ever materialises — surfaced and classified, never silent,
+        // and never a premature pause that strands the promoted run.
+        recordDeferred: async (input) => {
+          await writeCaseEvent(db, {
+            companyId: execution.companyId,
+            caseId: execution.caseId,
+            type: "automation_executed",
+            actor,
+            payload: {
+              automationId: execution.automationId,
+              kind: "agent",
+              deferred: true,
+              agentId: input.agentId,
+              instructionCommentId: input.instructionCommentId,
+            },
+          });
+        },
+      },
+    }).execute({
+      kind: "agent",
+      key: detail.stage.key,
+      config: {
+        prompt_template: entry.promptTemplate,
+        acceptance,
+        budget: entry.budget,
+      },
+      acceptance,
+      permissions: entry.permissions,
+    });
+
+    if (outcome.status === "failed") {
+      const [failed] = await db
+        .update(pipelineAutomationExecutions)
+        .set({ status: "failed", error: outcome.failure.message, updatedAt: nowDate() })
+        .where(eq(pipelineAutomationExecutions.id, execution.id))
+        .returning();
+      // The case is no longer waiting on anything — the commission never
+      // happened. Clearing this is not tidiness: a case left `waiting_agent`
+      // with no run is exactly what the sweep would spend the next hour
+      // failing to recover.
+      await db
+        .update(pipelineCases)
+        .set({ stepStatus: null, stepRunId: null, updatedAt: nowDate() })
+        .where(eq(pipelineCases.id, execution.caseId));
+      await writeCaseEvent(db, {
+        companyId: execution.companyId,
+        caseId: execution.caseId,
+        type: "automation_failed",
+        actor,
+        payload: {
+          automationId: execution.automationId,
+          kind: "agent",
+          errorType: outcome.failure.errorType,
+          error: outcome.failure.message,
+        },
+      });
+      if (entry.onFailureToStageKey) {
+        await moveCaseAfterStepExit(execution.companyId, execution.caseId, {
+          toStageKey: entry.onFailureToStageKey,
+          reason: "agent_step_failure",
+          actor,
+        });
+      } else {
+        await writeStepHold(execution.companyId, execution.caseId, detail.stage, {
+          reason: "agent_step_failure",
+          errorType: outcome.failure.errorType,
+          message: outcome.failure.message,
+          stepKey: detail.stage.key,
+        });
+      }
+      return { status: "failed", execution: failed! };
+    }
+
+    // `waiting` is the SUCCESS path for an agent step: the ledger records that
+    // the commission happened, not that the work is done. What the agent
+    // produced is judged later, by the server, against acceptance.
+    const [updated] = await db
+      .update(pipelineAutomationExecutions)
+      .set({ status: "succeeded", error: null, updatedAt: nowDate() })
+      .where(eq(pipelineAutomationExecutions.id, execution.id))
+      .returning();
+    return { status: "succeeded", execution: updated! };
+  }
+
+  /** One classified ledger failure, written the same way for every kind. */
+  async function failAutomationLedger(
+    execution: typeof pipelineAutomationExecutions.$inferSelect,
+    actor: PipelineActor,
+    kind: string,
+    error: string,
+  ): Promise<PipelineAutomationExecutionResult> {
+    const [failed] = await db
+      .update(pipelineAutomationExecutions)
+      .set({ status: "failed", error, updatedAt: nowDate() })
+      .where(eq(pipelineAutomationExecutions.id, execution.id))
+      .returning();
+    await writeCaseEvent(db, {
+      companyId: execution.companyId,
+      caseId: execution.caseId,
+      type: "automation_failed",
+      actor,
+      payload: { automationId: execution.automationId, kind, error },
+    });
+    return { status: "failed", execution: failed! };
+  }
+
+  /**
+   * Who executes this agent step.
+   *
+   * Order, and why: the case's own STICKY executor first, so a step sent back
+   * by a reviewer is redone by whoever did it and the rework rounds land on an
+   * agent that remembers the work. Then the conversation issue's assignee,
+   * which is the human-visible answer to "whose ticket is this". Then, only if
+   * the company has exactly ONE assignable agent, that agent — because with
+   * one candidate there is no choice being made silently.
+   *
+   * Never a guess past that point. An unresolvable executor is a classified
+   * failure that holds the step, because picking an arbitrary agent to spend
+   * tokens under a permission profile is not a recoverable mistake.
+   */
+  async function resolveStepExecutorAgent(
+    detail: Awaited<ReturnType<typeof getCaseWithStageOrThrow>>,
+    issue: typeof issues.$inferSelect,
+  ): Promise<{ ok: true; agentId: string; autoAssigned: boolean } | { ok: false; message: string }> {
+    const sticky = detail.case.stepExecutorAgentId;
+    if (sticky) return { ok: true, agentId: sticky, autoAssigned: false };
+    if (issue.assigneeAgentId) return { ok: true, agentId: issue.assigneeAgentId, autoAssigned: false };
+    const assignable = await db
+      .select({ id: agents.id })
+      .from(agents)
+      .where(and(eq(agents.companyId, detail.case.companyId), ne(agents.status, "archived")))
+      .limit(2);
+    if (assignable.length === 1) return { ok: true, agentId: assignable[0]!.id, autoAssigned: true };
+    return {
+      ok: false,
+      message:
+        assignable.length === 0
+          ? "agent_step_executor_unresolved: the company has no assignable agent"
+          : "agent_step_executor_unresolved: the case has no assignee and the company has more than one " +
+            "assignable agent — assign the ticket rather than having the platform choose",
+    };
+  }
+
+  /**
+   * The rework rounds still binding on this step.
+   *
+   * Read from the case EVENT LOG rather than a column, and every round is
+   * carried rather than only the latest, because a round-1 correction stays
+   * binding after round 2 is raised — dropping it invites the agent to fix the
+   * new complaint by regressing the old fix, which is the exact loop rework
+   * exists to end.
+   *
+   * Scoped to `review_decided` events whose target was THIS stage, so a gate
+   * elsewhere in the process does not bleed its feedback into an unrelated
+   * step's instruction.
+   */
+  async function readCaseChangeRequestRounds(
+    companyId: string,
+    caseId: string,
+    stage: typeof pipelineStages.$inferSelect,
+  ): Promise<ChangeRequestRound[]> {
+    const rows = await db
+      .select({
+        payload: pipelineCaseEvents.payload,
+        userId: pipelineCaseEvents.actorUserId,
+        createdAt: pipelineCaseEvents.createdAt,
+        toStageId: pipelineCaseEvents.toStageId,
+      })
+      .from(pipelineCaseEvents)
+      .where(and(
+        eq(pipelineCaseEvents.companyId, companyId),
+        eq(pipelineCaseEvents.caseId, caseId),
+        eq(pipelineCaseEvents.type, "review_decided"),
+        sql`${pipelineCaseEvents.payload}->>'decision' = 'request_changes'`,
+        eq(pipelineCaseEvents.toStageId, stage.id),
+      ))
+      .orderBy(pipelineCaseEvents.createdAt, pipelineCaseEvents.id);
+    return rows.map((row, index) => ({
+      round: index + 1,
+      gateNodeId: String((row.payload as Record<string, unknown> | null)?.gateStageKey ?? "review"),
+      feedback: String((row.payload as Record<string, unknown> | null)?.reason ?? "").trim(),
+      decidedByUserId: row.userId ?? null,
+      at: row.createdAt ? new Date(row.createdAt).toISOString() : null,
+    }));
+  }
+
+  /**
+   * What happens when a commissioned agent run FINISHES.
+   *
+   * This is the other half of the agent step, and without it a case parks at
+   * `waiting_agent` forever. The keystone lives here: the run reaching
+   * `succeeded` is NOT the step succeeding. The SERVER then evaluates the
+   * stage's acceptance contract, and only that verdict advances the case. No
+   * agent is asked whether it succeeded — if it were, a model would be
+   * attesting to its own work and the platform's central claim would be gone.
+   *
+   * Idempotent by compare-and-set on `stepStatus`: a case that is no longer
+   * waiting on this run has already been dealt with (by an earlier sweep tick,
+   * or by a human moving it), and re-processing would double-advance it.
+   */
+  async function processAgentStepCompletion(
+    companyId: string,
+    caseId: string,
+    outcome: { runId: string; runStatus: string; error?: string | null },
+  ): Promise<boolean> {
+    const detail = await getCaseWithStageOrThrow(db, companyId, caseId);
+    if (detail.case.stepStatus !== "waiting_agent") return false;
+    const actor: PipelineActor = { type: "system" };
+
+    // Single-writer: only the update that still sees `waiting_agent` proceeds.
+    const [claimed] = await db
+      .update(pipelineCases)
+      .set({ stepStatus: null, stepRunId: null, updatedAt: nowDate() })
+      .where(and(eq(pipelineCases.id, caseId), eq(pipelineCases.stepStatus, "waiting_agent")))
+      .returning();
+    if (!claimed) return false;
+
+    await writeCaseEvent(db, {
+      companyId,
+      caseId,
+      type: "step_resumed",
+      actor,
+      payload: {
+        stageId: detail.stage.id,
+        stageKey: detail.stage.key,
+        runId: outcome.runId,
+        runStatus: outcome.runStatus,
+      },
+    });
+
+    const entry = stageAgentStep(detail.stage);
+    if (outcome.runStatus !== "succeeded") {
+      await recordAgentStepFailure(companyId, caseId, detail.stage, entry?.onFailureToStageKey ?? null, {
+        errorType: `agent_run_${outcome.runStatus}`,
+        message: outcome.error ?? `the commissioned run ended ${outcome.runStatus}`,
+      });
+      return true;
+    }
+
+    // The run succeeded. Now the SERVER looks.
+    const verdict = await evaluateStageAcceptance({ companyId, caseId, actor });
+    if (verdict.status === "held") {
+      // `evaluateStageAcceptance` has already written the hold and the
+      // verdict. Nothing further: the case stays where it is, visibly held,
+      // for a human or a re-run to resolve.
+      return true;
+    }
+    if (entry?.onSuccessToStageKey) {
+      await moveCaseAfterStepExit(companyId, caseId, {
+        toStageKey: entry.onSuccessToStageKey,
+        reason: "agent_step_accepted",
+        actor,
+      });
+    }
+    return true;
+  }
+
+  async function recordAgentStepFailure(
+    companyId: string,
+    caseId: string,
+    stage: typeof pipelineStages.$inferSelect,
+    onFailureToStageKey: string | null,
+    failure: { errorType: string; message: string },
+  ) {
+    await writeCaseEvent(db, {
+      companyId,
+      caseId,
+      type: "automation_failed",
+      actor: { type: "system" },
+      payload: { stageKey: stage.key, kind: "agent", errorType: failure.errorType, error: failure.message },
+    });
+    if (onFailureToStageKey) {
+      await moveCaseAfterStepExit(companyId, caseId, {
+        toStageKey: onFailureToStageKey,
+        reason: "agent_step_failure",
+        actor: { type: "system" },
+      });
+      return;
+    }
+    await writeStepHold(companyId, caseId, stage, {
+      reason: "agent_step_failure",
+      errorType: failure.errorType,
+      message: failure.message,
+      stepKey: stage.key,
+    });
+  }
+
+  /**
+   * Recover ONE case parked at `waiting_agent` past the staleness window.
+   *
+   * Carried across from the flow coordinator's `recoverWaitingAgent` with its
+   * classifications intact, because each branch is a real failure mode that
+   * was observed rather than imagined:
+   *
+   *  - NO RECORDED RUN. Either the commission crashed before linkage, or the
+   *    wakeup was DEFERRED and heartbeat later promoted it into a run carrying
+   *    this step's context markers. The promoted run is looked for before
+   *    giving up — treating a deferral as a failure would strand exactly the
+   *    runs that are about to work.
+   *  - A RETRY CHAIN. Heartbeat's process-loss retry makes a new run; the
+   *    chain is followed (bounded at 5, because a deeper one is itself
+   *    suspicious) and the case re-linked so completion matches.
+   *  - IN FLIGHT. Correct silence. A long agent step is not a stuck one.
+   *  - INTERRUPTED with no retry. Terminal-but-revivable that never revived.
+   *
+   * Every give-up path HOLDS the case with a classified reason. None of them
+   * silently advances it, and none of them silently leaves it parked.
+   */
+  async function recoverWaitingAgentCase(
+    caseRow: typeof pipelineCases.$inferSelect,
+  ): Promise<boolean> {
+    const companyId = caseRow.companyId;
+    const detail = await getCaseWithStageOrThrow(db, companyId, caseRow.id);
+    const entry = stageAgentStep(detail.stage);
+    const hold = async (failure: { errorType: string; message: string }) => {
+      await db
+        .update(pipelineCases)
+        .set({ stepStatus: null, stepRunId: null, updatedAt: nowDate() })
+        .where(and(eq(pipelineCases.id, caseRow.id), eq(pipelineCases.stepStatus, "waiting_agent")));
+      await recordAgentStepFailure(companyId, caseRow.id, detail.stage, entry?.onFailureToStageKey ?? null, failure);
+      return true;
+    };
+
+    let linkedRunId = caseRow.stepRunId;
+    if (!linkedRunId) {
+      const marker = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(and(
+          sql`${heartbeatRuns.contextSnapshot} ->> 'stepKey' = ${detail.stage.key}`,
+          sql`${heartbeatRuns.contextSnapshot} ->> '${sql.raw(STEP_AGENT_CONTEXT_KEY)}' = 'true'`,
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' is not null`,
+        ))
+        .orderBy(desc(heartbeatRuns.createdAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!marker) {
+        return hold({
+          errorType: "agent_run_not_commissioned",
+          message:
+            "the case parked at waiting_agent past the staleness window with no commissioned run recorded " +
+            "and no run carrying this step's context — the commission was interrupted or the wakeup was skipped",
+        });
+      }
+      linkedRunId = marker.id;
+    }
+
+    let runId = linkedRunId;
+    let run = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    for (let depth = 0; run && depth < 5; depth += 1) {
+      const retry = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.retryOfRunId, run.id))
+        .orderBy(desc(heartbeatRuns.createdAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!retry) break;
+      run = retry;
+      runId = retry.id;
+    }
+    if (!run) {
+      return hold({
+        errorType: "agent_run_lost",
+        message: `commissioned run ${runId} no longer exists — its completion can never be observed`,
+      });
+    }
+    if (["queued", "running", "scheduled_retry"].includes(run.status)) {
+      if (runId !== caseRow.stepRunId) {
+        await db
+          .update(pipelineCases)
+          .set({ stepRunId: runId, updatedAt: nowDate() })
+          .where(eq(pipelineCases.id, caseRow.id));
+        return true;
+      }
+      return false; // still in flight — correct silence
+    }
+    if (run.status === "interrupted") {
+      return hold({
+        errorType: "agent_run_interrupted",
+        message: `commissioned run ${runId} was interrupted and no retry followed`,
+      });
+    }
+    if ((STEP_TERMINAL_RUN_STATUSES as readonly string[]).includes(run.status)) {
+      return processAgentStepCompletion(companyId, caseRow.id, {
+        runId,
+        runStatus: run.status,
+        error: run.error ?? null,
+      });
+    }
+    return hold({
+      errorType: "agent_run_status_unknown",
+      message: `commissioned run ${runId} is in unrecognized status '${run.status}'`,
+    });
+  }
+
+  /**
+   * The sweep. Cases parked at `waiting_agent` whose row has not moved for a
+   * full tick.
+   *
+   * `waiting_gate` is deliberately NOT swept. A gate waiting on a person is
+   * not a stuck case, and "recovering" it would mean either deciding for them
+   * or holding work that is behaving exactly as designed. How long a gate has
+   * been waiting belongs on the decision brief, where a human can see it —
+   * not in a job that acts on it.
+   */
+  async function sweepWaitingAgentCases(staleMs: number) {
+    const cutoff = new Date(Date.now() - staleMs);
+    const stale = await db
+      .select()
+      .from(pipelineCases)
+      .where(and(
+        eq(pipelineCases.stepStatus, "waiting_agent"),
+        isNull(pipelineCases.retiredAt),
+        sql`${pipelineCases.updatedAt} < ${cutoff}`,
+      ))
+      .limit(200);
+    let recovered = 0;
+    for (const caseRow of stale) {
+      try {
+        if (await recoverWaitingAgentCase(caseRow)) recovered += 1;
+      } catch (err) {
+        // One bad case must not stop the sweep for every other case.
+        logger.error(
+          { err, caseId: caseRow.id, stepRunId: caseRow.stepRunId },
+          "pipeline sweep: agent-step recovery failed (classified: agent_sweep_failed)",
+        );
+      }
+    }
+    return { examined: stale.length, recovered };
+  }
+
   /** The transition half of the write-back. Best-effort by design: a gate the
    *  case does not satisfy (approval, blockers, an unmet acceptance contract)
    *  must leave the case where it is with the failure recorded, never roll back
    *  the ledger write that recorded the exit status. */
-  async function moveCaseAfterWorkflowExit(
+  async function moveCaseAfterStepExit(
     companyId: string,
     caseId: string,
     input: { toStageKey: string; reason: string; actor: PipelineActor },
@@ -3361,7 +4554,7 @@ export function pipelineService(
     } catch (error) {
       if (!(error instanceof HttpError)) throw error;
       await writeStepHold(companyId, caseId, detail.stage, {
-        reason: "workflow_exit_transition_blocked",
+        reason: "step_exit_transition_blocked",
         errorType: (error.details as { code?: string } | undefined)?.code ?? "transition_blocked",
         message: error.message,
         stepKey: detail.stage.key,
@@ -3474,9 +4667,13 @@ export function pipelineService(
     }
     // A workflow entry has no execution issue and no routine — it is the
     // deterministic member of `onEnter` and runs through the step executor.
-    if (execution.kind === "workflow") {
+    if (execution.kind === "run") {
       if (execution.status === "succeeded") return { status: "succeeded", execution };
-      return executeWorkflowEntryLedger(execution, actor);
+      return executeRunEntryLedger(execution, actor);
+    }
+    if (execution.kind === "agent") {
+      if (execution.status === "succeeded") return { status: "succeeded", execution };
+      return executeAgentStepLedger(execution, actor);
     }
 
     const detail = await getCaseWithStageOrThrow(db, execution.companyId, execution.caseId);
@@ -3897,6 +5094,17 @@ export function pipelineService(
       eventId: event.id,
     });
     if (ledger) input.automationLedgers?.push(ledger);
+    // A gate opens on ENTRY, in the same transaction as the move that caused
+    // it. Doing it here rather than in a follow-up call is what makes "the
+    // case is at a review stage" and "there is a decision waiting" one fact
+    // instead of two that can disagree — the disagreement that let APE-5 close
+    // as done while its gate still read waiting_gate.
+    await openStageGateInTransaction(tx, {
+      companyId: input.companyId,
+      caseId: current.id,
+      stage: toStage,
+      actor: input.actor,
+    });
     const wasTerminal = isTerminalKind(current.terminalKind);
     const isTerminal = isTerminalKind(updated.terminalKind);
     if (current.parentCaseId && wasTerminal !== isTerminal) {
@@ -5510,6 +6718,14 @@ export function pipelineService(
       });
     },
 
+    /** Close the loop on a finished agent run. The run reaching `succeeded` is
+     *  not the step succeeding — the server evaluates acceptance, and only
+     *  that verdict advances the case. */
+    processAgentStepCompletion,
+
+    /** The recovery half of advancement. See `sweepWaitingAgentCases`. */
+    sweepWaitingAgentCases,
+
     async suggestTransition(input: {
       companyId: string;
       caseId: string;
@@ -5618,6 +6834,57 @@ export function pipelineService(
         };
       }
       return result;
+    },
+
+    /**
+     * A gate APPROVAL was decided — move the case.
+     *
+     * The other half of `openStageGateInTransaction`. Without it the gate is
+     * worse than no gate: a reviewer opens the approval, reads the brief,
+     * clicks approve, and nothing happens — the case sits in the review column
+     * while the approval reads decided. An approval that does not move the
+     * work it is about teaches people to stop trusting approvals.
+     *
+     * Reads the case's CURRENT version rather than taking one from the caller.
+     * The approvals surface has no lease and no version to offer; the decision
+     * was made about the artifact, and `reviewCase` re-checks the stage's
+     * acceptance contract before letting the case out, which is the guard that
+     * actually matters. A stale-version check here would only reject decisions
+     * a human already made correctly.
+     *
+     * Returns null for a payload that is not a pipeline gate, so the caller
+     * can fall through to whatever else handles it.
+     */
+    async decideStageGate(input: {
+      payload: Record<string, unknown>;
+      decision: PipelineReviewDecision;
+      reason?: string | null;
+      actor: PipelineActor;
+    }) {
+      const caseId = typeof input.payload.caseId === "string" ? input.payload.caseId : null;
+      if (!caseId) return null;
+      const caseRow = await db
+        .select({ id: pipelineCases.id, companyId: pipelineCases.companyId, version: pipelineCases.version })
+        .from(pipelineCases)
+        .where(eq(pipelineCases.id, caseId))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!caseRow) return null;
+      // The case is no longer waiting on a person the moment the person
+      // answered — cleared here rather than inside the transition so it is
+      // cleared even when the decision routes the case nowhere.
+      await db
+        .update(pipelineCases)
+        .set({ stepStatus: null, updatedAt: nowDate() })
+        .where(and(eq(pipelineCases.id, caseId), eq(pipelineCases.stepStatus, "waiting_gate")));
+      return this.reviewCase({
+        companyId: caseRow.companyId,
+        caseId,
+        decision: input.decision,
+        reason: input.reason ?? null,
+        expectedVersion: caseRow.version,
+        actor: input.actor,
+      });
     },
 
     async reviewCase(input: {

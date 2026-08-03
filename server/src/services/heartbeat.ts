@@ -51,6 +51,7 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  pipelineCases,
   issueWorkProducts,
   projects,
   projectWorkspaces,
@@ -6944,6 +6945,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const context = parseObject(run.contextSnapshot);
     if (context.flowAgentStep !== true) return;
     const issueId = readNonEmptyString(context.issueId);
+
+    // A run commissioned by a PIPELINE agent step carries `stepKey` where a
+    // flow node carried `flowNodeId` (see apex/steps/commission.ts). Without
+    // this branch such a run falls through the `flowNodeId` guard below and is
+    // never routed anywhere — the case would sit at `waiting_agent` until the
+    // sweep noticed it minutes later. The sweep is the recovery path, not the
+    // normal one; a finished agent step should move the case now.
+    const stepKey = readNonEmptyString(context.stepKey);
+    if (stepKey && !readNonEmptyString(context.flowNodeId)) {
+      void (async () => {
+        const { pipelineService } = await import("./pipelines.js");
+        const svc = pipelineService(db);
+        const caseRow = await db
+          .select({ id: pipelineCases.id, companyId: pipelineCases.companyId })
+          .from(pipelineCases)
+          .where(eq(pipelineCases.stepRunId, run.id))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (!caseRow) return;
+        await svc.processAgentStepCompletion(caseRow.companyId, caseRow.id, {
+          runId: run.id,
+          runStatus: run.status,
+          error: run.error ?? null,
+        });
+      })().catch((err) => {
+        logger.warn(
+          { err, runId: run.id, stepKey },
+          "pipeline agent-step completion hook failed (classified: step_completion_hook_failed) — the sweep will recover",
+        );
+      });
+      return;
+    }
+
     const flowNodeId = readNonEmptyString(context.flowNodeId);
     if (!issueId || !flowNodeId) return;
     const flowName = readNonEmptyString(context.flowName);

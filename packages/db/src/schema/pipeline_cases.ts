@@ -41,11 +41,17 @@ export type PipelineCaseWorkspaceRef = {
  *  Both address the current step by `stepKey`: a stage key and a flow node id
  *  are the same kind of thing (docs/architecture/execution-substrate.md §6.1). */
 /** Which step kind an entry-automation row ran (0169). */
-export const PIPELINE_AUTOMATION_EXECUTION_KINDS = ["routine", "workflow"] as const;
+export const PIPELINE_AUTOMATION_EXECUTION_KINDS = ["routine", "run", "agent"] as const;
 export type PipelineAutomationExecutionKind = (typeof PIPELINE_AUTOMATION_EXECUTION_KINDS)[number];
 
 export const CASE_DEFINITION_KINDS = ["pipeline", "flow"] as const;
 export type CaseDefinitionKind = (typeof CASE_DEFINITION_KINDS)[number];
+
+/** What is in flight at a case's current step (0170). Deliberately NOT the
+ *  flow front-end's six statuses: those conflated "where the case is" with
+ *  "what is happening to it", and the case row already answers the first. */
+export const PIPELINE_CASE_STEP_STATUSES = ["waiting_agent", "waiting_gate"] as const;
+export type PipelineCaseStepStatus = (typeof PIPELINE_CASE_STEP_STATUSES)[number];
 
 export const pipelineCases = pgTable(
   "pipeline_cases",
@@ -64,6 +70,20 @@ export const pipelineCases = pgTable(
     /** The AUTHORITATIVE current-step pointer. For pipeline-defined cases
      *  `stageId` is kept as a denormalised convenience and moves with it. */
     stepKey: text("step_key"),
+    /** What is IN FLIGHT at the current step, or null when the case is simply
+     *  sitting at it (0170). A `workflow` or `check` step finishes inside the
+     *  call that starts it and never appears here; an `agent` step and a
+     *  `gate` step do, because one waits on a run elsewhere and the other on a
+     *  human. This is not a second location pointer — `stepKey` and
+     *  `terminalKind` own where the case IS. */
+    stepStatus: text("step_status").$type<PipelineCaseStepStatus | null>(),
+    /** The bounded agent run this case is parked on (stepStatus =
+     *  `waiting_agent`). The sweep and the run-completion hook both find the
+     *  case through it. */
+    stepRunId: uuid("step_run_id"),
+    /** Who is executing the current agent step. Sticky across rework rounds:
+     *  a step sent back by a reviewer is redone by whoever did it. */
+    stepExecutorAgentId: uuid("step_executor_agent_id").references(() => agents.id, { onDelete: "set null" }),
     caseKey: text("case_key").notNull(),
     title: text("title").notNull(),
     summary: text("summary"),
@@ -105,6 +125,16 @@ export const pipelineCases = pgTable(
     automationAttemptIdx: index("pipeline_cases_automation_attempt_idx").on(table.automationAttemptId),
     retiredIdx: index("pipeline_cases_retired_idx").on(table.companyId, table.retiredAt),
     leaseExpiresIdx: index("pipeline_cases_lease_expires_idx").on(table.leaseExpiresAt).where(sql`${table.leaseExpiresAt} is not null`),
+    stepStatusIdx: index("pipeline_cases_step_status_idx")
+      .on(table.companyId, table.stepStatus, table.updatedAt)
+      .where(sql`${table.stepStatus} is not null`),
+    stepRunIdx: index("pipeline_cases_step_run_idx")
+      .on(table.stepRunId)
+      .where(sql`${table.stepRunId} is not null`),
+    stepStatusCheck: check(
+      "pipeline_cases_step_status_check",
+      sql`${table.stepStatus} is null or ${table.stepStatus} in ('waiting_agent', 'waiting_gate')`,
+    ),
     flowCaseKeyUq: uniqueIndex("pipeline_cases_flow_case_key_uq")
       .on(table.companyId, table.definitionRef, table.caseKey)
       .where(sql`${table.definitionKind} = 'flow'`),
@@ -260,11 +290,14 @@ export const pipelineAutomationExecutions = pgTable(
     executionIssueIdx: index("pipeline_automation_executions_execution_issue_idx").on(table.executionIssueId),
     retryOfExecutionIdx: index("pipeline_automation_executions_retry_of_execution_idx").on(table.retryOfExecutionId),
     statusCheck: check("pipeline_automation_executions_status_check", sql`${table.status} in ('succeeded', 'failed')`),
-    kindCheck: check("pipeline_automation_executions_kind_check", sql`${table.kind} in ('routine', 'workflow')`),
+    kindCheck: check(
+      "pipeline_automation_executions_kind_check",
+      sql`${table.kind} in ('routine', 'run', 'agent')`,
+    ),
     shapeCheck: check(
       "pipeline_automation_executions_shape_check",
       sql`(${table.kind} = 'routine' and ${table.routineId} is not null)
-        or (${table.kind} = 'workflow' and ${table.routineId} is null)`,
+        or (${table.kind} in ('run', 'agent') and ${table.routineId} is null)`,
     ),
   }),
 );

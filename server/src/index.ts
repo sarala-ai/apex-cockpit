@@ -1132,6 +1132,14 @@ export async function startServer(): Promise<StartedServer> {
   const { startFlowCoordinatorSweep } = await import("./apex/flow/sweep.js");
   const stopFlowCoordinatorSweep = startFlowCoordinatorSweep(db as any);
 
+  // Pipeline step sweep — the same recovery duty for CASES, which is where
+  // process execution is moving. A case parked on a bounded agent run whose
+  // completion nobody observed would otherwise sit there indefinitely,
+  // indistinguishable from one whose agent is still working. Every
+  // APEX_PIPELINE_TICK_MINUTES (default 5m; 0 disables).
+  const { startPipelineStepSweep } = await import("./apex/pipeline/step-sweep.js");
+  const stopPipelineStepSweep = startPipelineStepSweep(db as any);
+
   // Criterion-review sweep (docs/architecture/initiative-discipline.md §3) —
   // finds pre-registered validation criteria whose review date has arrived and
   // puts them in front of the reader named when they were written. APEX wrote
@@ -1241,6 +1249,7 @@ export async function startServer(): Promise<StartedServer> {
       stopAttributionRefreshScheduler();
       stopGithubIssueIngestScheduler();
       stopFlowCoordinatorSweep();
+      stopPipelineStepSweep();
       stopCriterionReviewSweep();
       stopCapabilitySyncScheduler();
       await waitForHeartbeatSchedulerIdle();

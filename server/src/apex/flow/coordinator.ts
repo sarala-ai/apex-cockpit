@@ -68,7 +68,7 @@ import {
   type FlowNode,
   type LoadedFlowDefinition,
 } from "./definition.js";
-import { CliFlowNodeRunner, type FlowNodeRunner } from "../steps/runner.js";
+import { CliStepTargetRunner, type StepTargetRunner } from "../steps/runner.js";
 import {
   parseOnFail,
   stepExecutor,
@@ -149,7 +149,7 @@ export type AgentRunCommission = {
 
 export type FlowCoordinatorDeps = {
   loadDefinition: (name: string) => Promise<LoadedFlowDefinition>;
-  nodeRunner: FlowNodeRunner;
+  nodeRunner: StepTargetRunner;
   /** Commission a REAL bounded agent run through the fork's native execution
    *  path (heartbeat wakeup). Returns the created run's id, or null when the
    *  machinery declined (skipped/deferred) — never throws silently. */
@@ -316,7 +316,7 @@ async function defaultCommissionAgentRun(
 export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> = {}) {
   const deps: FlowCoordinatorDeps = {
     loadDefinition: overrides.loadDefinition ?? loadFlowDefinition,
-    nodeRunner: overrides.nodeRunner ?? new CliFlowNodeRunner(),
+    nodeRunner: overrides.nodeRunner ?? new CliStepTargetRunner(),
     commissionAgentRun:
       overrides.commissionAgentRun ??
       ((issue, node, commission) => defaultCommissionAgentRun(db, issue, node, commission)),
@@ -693,7 +693,7 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
     issue: FlowIssue,
     flow: FlowDefinition,
     index: number,
-    spec: Extract<StepSpec, { kind: "workflow" | "check" }>,
+    spec: Extract<StepSpec, { kind: "run" }>,
   ): Promise<FlowIssue | null> {
     const outcome = await executor({
       // W-node params interpolate against the ticket before the step runs.
@@ -1277,10 +1277,16 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
             // resolves against the ticket before the workflow runs. ZERO
             // TOKENS — see step-executor.ts's keystone note.
             issue = await runDeterministicStep(issue, flow, index, {
-              kind: "workflow",
+              kind: "run",
               key: node.id,
               onFail: node.on_fail,
-              config: { workflow: node.workflow.workflow, params: node.workflow.params ?? {} },
+              config: {
+                target: {
+                  type: "workflow",
+                  workflow: node.workflow.workflow,
+                  params: node.workflow.params ?? {},
+                },
+              },
             });
             break;
           }
@@ -1293,14 +1299,17 @@ export function flowCoordinator(db: Db, overrides: Partial<FlowCoordinatorDeps> 
               break;
             }
             // ZERO TOKENS — see step-executor.ts's keystone note.
+            // A check is a RUN with a command target: same executor, same zero
+            // cost. Its `pass_criteria` is not passed down because it was
+            // never evaluated as an expression — it is the step's acceptance
+            // contract now (docs/architecture/process-definition.md §2a), and
+            // this front-end is being deleted rather than taught to carry one.
             issue = await runDeterministicStep(issue, flow, index, {
-              kind: "check",
+              kind: "run",
               key: node.id,
               onFail: node.on_fail,
               config: {
-                tool: node.check.tool,
-                args: node.check.args ?? [],
-                pass_criteria: node.check.pass_criteria,
+                target: { type: "command", tool: node.check.tool, args: node.check.args ?? [] },
               },
             });
             break;

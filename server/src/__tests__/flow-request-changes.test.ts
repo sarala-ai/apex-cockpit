@@ -28,7 +28,7 @@ import {
 import { flowCoordinator, FLOW_CHANGES_REQUESTED_ACTION } from "../apex/flow/coordinator.js";
 import { noopFlowProjection, type FlowProjectionHooks } from "../apex/flow/github-projection.js";
 import { findChangeRequestTarget, type FlowDefinition, type LoadedFlowDefinition } from "../apex/flow/definition.js";
-import type { FlowNodeRunner, NodeExecutionResult } from "../apex/steps/runner.js";
+import type { StepTargetRunner, NodeExecutionResult } from "../apex/steps/runner.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe.sequential : describe.skip;
@@ -200,9 +200,9 @@ describeEmbeddedPostgres("request_changes at a flow gate", () => {
     const commissions: Harness["commissions"] = [];
     const checkRuns: string[] = [];
     const projected: Harness["projected"] = [];
-    const runner: FlowNodeRunner = {
+    const runner: StepTargetRunner = {
       runWorkflow: async () => ok,
-      runCheck: async (config) => {
+      runCommand: async (config) => {
         checkRuns.push(config.tool);
         return ok;
       },

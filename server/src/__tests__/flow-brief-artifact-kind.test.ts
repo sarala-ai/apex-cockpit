@@ -13,7 +13,7 @@ import {
   deriveRisk,
   nodeReversibility,
   type PrDiffSummary,
-} from "../apex/flow/brief.js";
+} from "../apex/steps/brief.js";
 import type { FlowDefinition, FlowNode } from "../apex/flow/definition.js";
 
 const files = (...paths: string[]) => paths.map((path) => ({ path }));
@@ -71,10 +71,15 @@ describe("classifyArtifactKind", () => {
 
 const gate: FlowNode = { id: "g", kind: "gate", gate: { mode: "approve" }, on_fail: "pause" } as FlowNode;
 const workflowNode = (name: string): FlowNode =>
-  ({ id: name, kind: "workflow", workflow: { workflow: name, params: {} }, on_fail: "pause" }) as FlowNode;
+  ({
+    id: name,
+    kind: "run",
+    run: { target: { type: "workflow", workflow: name, params: {} } },
+    on_fail: "pause",
+  }) as FlowNode;
 
-function flowOf(...nodes: FlowNode[]): FlowDefinition {
-  return { name: "f", version: "1.0", description: "", ticket_type: "t", nodes } as FlowDefinition;
+function flowOf(...steps: FlowNode[]): FlowDefinition {
+  return { name: "f", version: "1.0", description: "", ticket_type: "t", steps } as FlowDefinition;
 }
 
 describe("nodeReversibility", () => {
@@ -96,9 +101,19 @@ describe("nodeReversibility", () => {
     expect(nodeReversibility(workflowNode("frobnicate"))).toBe("unknown");
   });
 
-  it("treats checks and further gates as harmless", () => {
-    expect(nodeReversibility({ id: "c", kind: "check", check: { tool: "pytest", args: [], pass_criteria: "x" }, on_fail: "pause" } as FlowNode)).toBe("reversible");
+  it("treats a further gate as harmless, and refuses to guess a command target", () => {
     expect(nodeReversibility(gate)).toBe("reversible");
+    // A command target is an arbitrary tool invocation. Its blast radius
+    // cannot be read off its name the way a catalogued workflow's can, so it
+    // stays `unknown` rather than being optimistically called reversible.
+    expect(
+      nodeReversibility({
+        id: "c",
+        kind: "run",
+        run: { target: { type: "command", tool: "pytest", args: [] } },
+        on_fail: "pause",
+      } as FlowNode),
+    ).toBe("unknown");
   });
 });
 
@@ -125,7 +140,7 @@ describe("deriveRisk", () => {
     // A merge is reversible, but the destroy after it is not — the gate is
     // only as reversible as its least reversible consequence.
     const risk = deriveRisk({
-      flow: flowOf(gate, workflowNode("design-pr-merge"), workflowNode("destroy-staging")),
+      definition: flowOf(gate, workflowNode("design-pr-merge"), workflowNode("destroy-staging")),
       gateNodeId: "g",
       verified: verifiedOk,
       artifact: healthyArtifact(),
@@ -135,9 +150,9 @@ describe("deriveRisk", () => {
     expect(risk.risks.some((r) => r.includes("destroy-staging"))).toBe(true);
   });
 
-  it("is reversible when the gate is the flow's last node", () => {
+  it("is reversible when the gate is the process's last step", () => {
     const risk = deriveRisk({
-      flow: flowOf(gate),
+      definition: flowOf(gate),
       gateNodeId: "g",
       verified: verifiedOk,
       artifact: healthyArtifact(),
@@ -148,7 +163,7 @@ describe("deriveRisk", () => {
 
   it("names a deploy as the reason the change goes live", () => {
     const risk = deriveRisk({
-      flow: flowOf(gate, workflowNode("cloud_run_deploy")),
+      definition: flowOf(gate, workflowNode("cloud_run_deploy")),
       gateNodeId: "g",
       verified: verifiedOk,
       artifact: healthyArtifact({ artifactKind: "code" }),
@@ -159,7 +174,7 @@ describe("deriveRisk", () => {
 
   it("degrades to unknown, not to optimism, when the flow cannot be read", () => {
     const risk = deriveRisk({
-      flow: null,
+      definition: null,
       gateNodeId: "g",
       verified: verifiedOk,
       artifact: healthyArtifact(),
@@ -170,7 +185,7 @@ describe("deriveRisk", () => {
 
   it("degrades to unknown when the gate is not in the flow it names", () => {
     const risk = deriveRisk({
-      flow: flowOf(workflowNode("a")),
+      definition: flowOf(workflowNode("a")),
       gateNodeId: "missing-gate",
       verified: verifiedOk,
       artifact: healthyArtifact(),
@@ -181,7 +196,7 @@ describe("deriveRisk", () => {
 
   it("raises a risk when the automatic check failed", () => {
     const risk = deriveRisk({
-      flow: flowOf(gate, workflowNode("design-pr-merge")),
+      definition: flowOf(gate, workflowNode("design-pr-merge")),
       gateNodeId: "g",
       verified: { headline: "no", ok: false, machine: [] },
       artifact: healthyArtifact(),
@@ -191,7 +206,7 @@ describe("deriveRisk", () => {
 
   it("raises a risk when the artifact could not be loaded", () => {
     const risk = deriveRisk({
-      flow: flowOf(gate),
+      definition: flowOf(gate),
       gateNodeId: "g",
       verified: verifiedOk,
       artifact: {
@@ -208,7 +223,7 @@ describe("deriveRisk", () => {
 
   it("says out loud that a binary design file has no line-level diff", () => {
     const risk = deriveRisk({
-      flow: flowOf(gate, workflowNode("design-pr-merge")),
+      definition: flowOf(gate, workflowNode("design-pr-merge")),
       gateNodeId: "g",
       verified: verifiedOk,
       artifact: healthyArtifact(),
@@ -218,7 +233,7 @@ describe("deriveRisk", () => {
 
   it("flags a truncated file list", () => {
     const risk = deriveRisk({
-      flow: flowOf(gate),
+      definition: flowOf(gate),
       gateNodeId: "g",
       verified: verifiedOk,
       artifact: healthyArtifact({ files_truncated: true }),

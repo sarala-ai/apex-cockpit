@@ -1,22 +1,21 @@
 /**
- * Flow node executors — the coordinator's hands for W (workflow) and C (check)
- * nodes. Both shell the apex CLI (`apex --output json run …`) and read results
- * through the central `readApexResult`, so parsing/validation stay in one place.
+ * The hands of a `run` step — the deterministic kind, the one that costs
+ * nothing (docs/architecture/process-definition.md §2a). Both target types
+ * shell the apex CLI (`apex --output json run …`) and read results through one
+ * envelope parser, so parsing and classification stay in one place.
  *
- * Execution-mode doctrine: flows are the approved plan, so the coordinator —
- * and only the coordinator — opts workflow nodes into apply
- * (`--execution-mode apply`) and check nodes into real execution
+ * Execution-mode doctrine: a process definition IS the approved plan, so this
+ * runner — and only this runner — opts a workflow target into apply
+ * (`--execution-mode apply`) and a command target into real execution
  * (`APEX_EXECUTION_MODE=apply` for the invocation). Nothing else in the
  * cockpit escalates past dry-run.
  *
- * Honest v1 simplifications (documented, not hidden):
- * - `pass_criteria` on check nodes is NOT evaluated as an expression. v1 pass
- *   = the CLI invocation succeeds (exit 0 + envelope status "success"). The
- *   criteria string is recorded in logs for the day a real evaluator ships.
- * - check `tool` must name its resource server: "<server> <tool>" (e.g.
- *   "health generate_health_report"). Bare tool names (the placeholder
- *   `ci_status_check` style in older flows) are classified unresolvable and
- *   routed through the node's on_fail — never guessed at.
+ * Honest v1 simplification (documented, not hidden): a command target's `tool`
+ * must name its resource server as "<server> <tool>" (e.g.
+ * "health generate_health_report"). Bare tool names — the placeholder
+ * `ci_status_check` style the seeded lifecycles still carry from their YAML
+ * ancestors — are classified unresolvable and routed through the step's
+ * `on_fail`, never guessed at.
  */
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -46,14 +45,28 @@ export type NodeExecutionResult =
   | { ok: true; detail: Record<string, unknown> }
   | { ok: false; errorType: string; message: string };
 
-export interface FlowNodeRunner {
+/**
+ * The two things a `run` step can target (docs/architecture/process-definition.md
+ * §2a). They are targets, not step kinds: whether a step shells an APEX
+ * workflow or another command is an implementation detail of the target, not a
+ * fact about the process. Adding a third target later is one registration here,
+ * not a new kind rippling through the executor, the UI, the schema and every
+ * seeded definition.
+ *
+ * `pass_criteria` is deliberately absent from `runCommand`. It used to ride
+ * along on a check node and was never evaluated as an expression; it is now the
+ * step's `acceptance` contract, which the server actually evaluates and which
+ * refuses criteria it cannot check. One criteria concept, in the place that
+ * enforces it.
+ */
+export interface StepTargetRunner {
   runWorkflow(config: { workflow: string; params: Record<string, unknown> }): Promise<NodeExecutionResult>;
-  runCheck(config: { tool: string; args: string[]; pass_criteria: string }): Promise<NodeExecutionResult>;
+  runCommand(config: { tool: string; args: string[] }): Promise<NodeExecutionResult>;
 }
 
 const toDash = (s: string): string => s.replace(/_/g, "-");
 
-export class CliFlowNodeRunner implements FlowNodeRunner {
+export class CliStepTargetRunner implements StepTargetRunner {
   constructor(
     private readonly bin: string = process.env.APEX_BIN ?? "apex",
     private readonly cwd: string = process.env.APEX_LAUNCH_DIR ?? join(homedir(), ".apex-cockpit"),
@@ -85,22 +98,22 @@ export class CliFlowNodeRunner implements FlowNodeRunner {
     });
   }
 
-  async runCheck(config: { tool: string; args: string[]; pass_criteria: string }): Promise<NodeExecutionResult> {
+  async runCommand(config: { tool: string; args: string[] }): Promise<NodeExecutionResult> {
     const tokens = config.tool.trim().split(/\s+/);
     if (tokens.length !== 2) {
       return {
         ok: false,
-        errorType: "check_tool_unresolvable",
+        errorType: "command_tool_unresolvable",
         message:
-          `check tool ${JSON.stringify(config.tool)} is not resolvable — v1 requires ` +
+          `command tool ${JSON.stringify(config.tool)} is not resolvable — v1 requires ` +
           `"<server> <tool>" naming a real resource server tool (e.g. "health generate_health_report").`,
       };
     }
     const [server, tool] = tokens as [string, string];
     const args = ["--output", "json", "run", server, toDash(tool), ...config.args];
-    // Checks must be REAL to mean anything: opt this invocation into apply so
-    // the devtools tool executes instead of returning a dry-run simulation.
-    return this.execute(args, `check ${server} ${tool}`, { APEX_EXECUTION_MODE: "apply" });
+    // A command step must be REAL to mean anything: opt this invocation into
+    // apply so the tool executes instead of returning a dry-run simulation.
+    return this.execute(args, `command ${server} ${tool}`, { APEX_EXECUTION_MODE: "apply" });
   }
 
   private async execute(

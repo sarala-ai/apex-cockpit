@@ -13,8 +13,8 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
-import { enrichDesignFiles, readDesignEnrichment } from "../apex/flow/design-artifact.js";
-import type { PullRequestFile } from "../apex/flow/brief.js";
+import { enrichDesignFiles, readDesignEnrichment } from "../apex/steps/design-artifact.js";
+import type { PullRequestFile } from "../apex/steps/brief.js";
 
 const FIXTURE = fileURLToPath(
   new URL("../design/__fixtures__/apex-platform.penpot", import.meta.url),

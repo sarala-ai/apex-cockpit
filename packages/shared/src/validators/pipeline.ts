@@ -22,16 +22,77 @@ export const pipelineStageApproverSchema = z.object({
   }
 });
 
-export const pipelineStageOnEnterSchema = z.object({
-  type: z.literal("run_routine"),
-  routineId: z.string().uuid(),
+/**
+ * A stage's entry STEP, on the wire.
+ *
+ * This is the AUTHORING surface, and it is deliberately small: an author picks
+ * a kind, names a target, and optionally says where success and failure send
+ * the case. Everything else the substrate needs to run the step — cases,
+ * versions, leases, sweeps, briefs, permission profiles — is runtime machinery
+ * and appears nowhere here, because none of it is a decision an author makes
+ * (docs/architecture/process-definition.md).
+ *
+ * Three kinds, by WHO EXECUTES: `run` (the machine, free), `agent` (a model,
+ * tokens), `routine` (a model, via a routine template). The GATE kind is
+ * absent because a gate is not an entry action — it is what a `review` stage
+ * IS, and it is configured by the stage's `gate` block.
+ */
+const runTargetSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("workflow"),
+    workflow: z.string().trim().min(1).max(200),
+    params: z.record(z.string(), z.unknown()).optional(),
+  }),
+  // A `command` target executes on the HOST. It is accepted by the schema
+  // because seeded definitions and instance admins legitimately use it, and
+  // REFUSED for everyone else server-side (`assertRunTargetAuthorized` in
+  // services/pipelines.ts). The check lives there, not here, because a schema
+  // cannot see who is asking — and a boundary that depends on the client
+  // choosing not to send a field is not a boundary.
+  z.object({
+    type: z.literal("command"),
+    tool: z.string().trim().min(1).max(200),
+    args: z.array(z.string()).optional(),
+  }),
+]);
+
+const stageStepRoutingSchema = {
   id: z.string().trim().min(1).max(200).optional(),
-  projectId: z.string().uuid().optional().nullable(),
-  projectWorkspaceId: z.string().uuid().optional().nullable(),
-  executionWorkspaceId: z.string().uuid().optional().nullable(),
-  executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
-  executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
-}).passthrough();
+  /** Where a zero exit sends the case. Absent = stay put. */
+  onSuccessToStageKey: z.string().trim().min(1).max(200).optional(),
+  /** Where a non-zero exit sends the case. Absent = HOLD the stage, which is
+   *  what `on_fail: pause` means. */
+  onFailureToStageKey: z.string().trim().min(1).max(200).optional(),
+};
+
+export const pipelineStageOnEnterSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("run"),
+    target: runTargetSchema,
+    /** One line, for a person, interpolated against the tool's result — e.g.
+     *  "deployed {{steps_completed}} services". Optional on purpose: a step
+     *  with no template reports nothing rather than dumping its payload. */
+    report: z.string().trim().min(1).max(500).optional(),
+    ...stageStepRoutingSchema,
+  }).passthrough(),
+  z.object({
+    type: z.literal("agent"),
+    promptTemplate: z.string().trim().min(1),
+    budget: z.record(z.string(), z.unknown()).optional().nullable(),
+    permissions: z.unknown().optional(),
+    ...stageStepRoutingSchema,
+  }).passthrough(),
+  z.object({
+    type: z.literal("routine"),
+    routineId: z.string().uuid(),
+    projectId: z.string().uuid().optional().nullable(),
+    projectWorkspaceId: z.string().uuid().optional().nullable(),
+    executionWorkspaceId: z.string().uuid().optional().nullable(),
+    executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
+    executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
+    ...stageStepRoutingSchema,
+  }).passthrough(),
+]);
 
 export const pipelineStageAutomationSchema = z.object({
   routineId: z.string().uuid().optional().nullable(),

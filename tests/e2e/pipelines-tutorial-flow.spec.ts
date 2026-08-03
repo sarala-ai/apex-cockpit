@@ -445,10 +445,6 @@ test.describe("Pipelines tutorial UI flow", () => {
       capabilities: "Runs pipeline drafting automation during e2e coverage.",
     });
     const pipeline = await createPipeline(board, company.id);
-    await expectOk(
-      await board.patch("/api/instance/settings/experimental", { data: { enablePipelines: true } }),
-      "enable pipelines experimental flag",
-    );
 
     try {
       await page.goto("/");
@@ -651,10 +647,6 @@ test.describe("Pipelines tutorial UI flow", () => {
     await expect(page.getByText(overrideReason)).toBeVisible();
       await expectProsumerVocabulary(page);
     } finally {
-      await expectOk(
-        await board.patch("/api/instance/settings/experimental", { data: { enablePipelines: false } }),
-        "disable pipelines experimental flag",
-      );
       await board.dispose();
     }
   });

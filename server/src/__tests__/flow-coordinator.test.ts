@@ -24,7 +24,7 @@ import {
   type FlowIssue,
 } from "../apex/flow/coordinator.js";
 import type { FlowDefinition, FlowNode, LoadedFlowDefinition } from "../apex/flow/definition.js";
-import type { FlowNodeRunner, NodeExecutionResult } from "../apex/steps/runner.js";
+import type { StepTargetRunner, NodeExecutionResult } from "../apex/steps/runner.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe.sequential : describe.skip;
@@ -47,12 +47,12 @@ function fakeRunner(script: RunnerScript) {
     }
     return queue.shift() as NodeExecutionResult;
   };
-  const runner: FlowNodeRunner = {
+  const runner: StepTargetRunner = {
     runWorkflow: async (config) => {
       calls.push({ kind: "workflow", key: config.workflow, config });
       return next(config.workflow);
     },
-    runCheck: async (config) => {
+    runCommand: async (config) => {
       calls.push({ kind: "check", key: config.tool, config });
       return next(config.tool);
     },
@@ -983,11 +983,11 @@ describeEmbeddedPostgres("flow coordinator", () => {
 
   it("a coordinator error mid-flow marks the flow failed with classification", async () => {
     const { issueId } = await seedIssue();
-    const runner: FlowNodeRunner = {
+    const runner: StepTargetRunner = {
       runWorkflow: async () => {
         throw new Error("apex CLI exploded");
       },
-      runCheck: async () => ok,
+      runCommand: async () => ok,
     };
     const coordinator = flowCoordinator(db, {
       loadDefinition: loaderFor(choreFlow()),
@@ -1256,11 +1256,11 @@ describeEmbeddedPostgres("flow coordinator", () => {
       it("re-runs a failed flow's current node (markFailed path) the same way", async () => {
         const { issueId } = await seedIssue();
         const flow = choreFlow();
-        const runner: FlowNodeRunner = {
+        const runner: StepTargetRunner = {
           runWorkflow: async () => {
             throw new Error("apex CLI exploded");
           },
-          runCheck: async () => ok,
+          runCommand: async () => ok,
         };
         const coordinator = flowCoordinator(db, { loadDefinition: loaderFor(flow), nodeRunner: runner });
         const started = await coordinator.startFlow({ issueId, flowName: "noop-verify" });

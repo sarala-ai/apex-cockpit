@@ -6,6 +6,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
+
+  approvals,
   companies,
   companyMemberships,
   createDb,
@@ -89,6 +91,9 @@ describeEmbeddedPostgres("pipeline routes", () => {
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
     await db.delete(agents);
+    // A review stage now opens a gate APPROVAL on entry, and approvals
+    // reference the company — so they must go before it does.
+    await db.delete(approvals);
     await db.delete(companies);
     await db.delete(instanceSettings);
   });
@@ -446,7 +451,7 @@ describeEmbeddedPostgres("pipeline routes", () => {
       name: "Plan",
       kind: "working",
       position: 100,
-      config: { onEnter: { type: "run_routine", id: "build-content", routineId: routine!.id } },
+      config: { onEnter: { type: "routine", id: "build-content", routineId: routine!.id } },
     }).returning();
     const [targetPipeline] = await db.insert(pipelines).values({
       companyId: company.id,
@@ -1037,6 +1042,10 @@ describeEmbeddedPostgres("pipeline routes", () => {
     expect(approvedEvents.body.items.map((event: { type: string }) => event.type)).toEqual([
       "ingested",
       "transitioned",
+      // Entering the review stage OPENS THE GATE, in the same transaction as
+      // the move — so "the case is at a review stage" and "there is a decision
+      // waiting" are one fact rather than two that can disagree.
+      "gate_opened",
       "updated",
       "transitioned",
       "review_decided",
