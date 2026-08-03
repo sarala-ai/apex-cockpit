@@ -649,38 +649,52 @@ describeEmbeddedPostgres("companyService", () => {
     });
   });
 
-  it("auto-provisions one paused Reflection Coach bundle for a freshly created company", async () => {
+  /**
+   * A freshly created company arrives carrying THE ROSTER and nothing else.
+   *
+   * This used to assert the inherited reflection-coach bundle, which was
+   * auto-provisioned into every new company despite no lifecycle commissioning
+   * it. The property under test is unchanged — creation provisions the
+   * definitions that ask to exist, exactly once, and a startup reconcile does
+   * not double them — but the subject is now the four agents this product
+   * actually commissions.
+   */
+  it("auto-provisions exactly the roster for a freshly created company", async () => {
     const created = await companyService(db).create({
       name: "Fresh Company",
     });
 
     const agentRows = await db.select().from(agents).where(eq(agents.companyId, created.id));
-    const reflectionRows = agentRows.filter((row) => readBuiltInAgentMarker(row.metadata)?.key === "reflection-coach");
-    expect(reflectionRows).toHaveLength(1);
-    expect(reflectionRows[0]).toMatchObject({
-      name: "Reflection Coach",
-      status: "paused",
+    const builtInKeys = agentRows
+      .map((row) => readBuiltInAgentMarker(row.metadata)?.key)
+      .filter((key): key is string => Boolean(key))
+      .sort();
+    expect(builtInKeys).toEqual(["design-engineer", "implementer", "product-assistant", "specifier"]);
+
+    const [assistantRow] = agentRows.filter(
+      (row) => readBuiltInAgentMarker(row.metadata)?.key === "product-assistant",
+    );
+    expect(assistantRow).toMatchObject({
+      name: "Product Assistant",
       budgetMonthlyCents: 0,
       spentMonthlyCents: 0,
     });
 
-    const [skill] = await db
+    // No roster agent ships a bundled skill, so company creation must not
+    // install one on the company's behalf.
+    const skillRows = await db
       .select()
       .from(companySkills)
-      .where(and(
-        eq(companySkills.companyId, created.id),
-        eq(companySkills.key, "paperclipai/bundled/paperclip-operations/reflection-coach"),
-      ));
-    expect(skill).toMatchObject({
-      slug: "reflection-coach",
-    });
+      .where(eq(companySkills.companyId, created.id));
+    expect(skillRows).toHaveLength(0);
 
+    // The one bundled routine on the roster, paused and unscheduled.
     const [routine] = await db.select().from(routines).where(eq(routines.companyId, created.id));
     expect(routine).toMatchObject({
       status: "paused",
-      assigneeAgentId: reflectionRows[0]!.id,
+      assigneeAgentId: assistantRow!.id,
       originKind: "built_in_agent_bundle",
-      originId: "reflection-coach:recent-agent-reflection",
+      originId: "product-assistant:reconstruct-initiatives",
     });
     const [trigger] = await db.select().from(routineTriggers).where(eq(routineTriggers.routineId, routine!.id));
     expect(trigger).toMatchObject({
@@ -690,7 +704,12 @@ describeEmbeddedPostgres("companyService", () => {
 
     await reconcileBuiltInAgentsOnStartup(db);
     const afterReconcileRows = await db.select().from(agents).where(eq(agents.companyId, created.id));
-    expect(afterReconcileRows.filter((row) => readBuiltInAgentMarker(row.metadata)?.key === "reflection-coach")).toHaveLength(1);
+    expect(
+      afterReconcileRows
+        .map((row) => readBuiltInAgentMarker(row.metadata)?.key)
+        .filter((key): key is string => Boolean(key))
+        .sort(),
+    ).toEqual(builtInKeys);
   });
 
   it("archives companies by pausing runnable agents and cancelling active runs", async () => {

@@ -1,7 +1,4 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import { and, desc, eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -82,14 +79,15 @@ export interface BuiltInAgentDefinition {
    */
   defaultAdapterConfig?: Record<string, unknown>;
   /**
-   * Provision this definition into every company at startup.
+   * Provision this definition into every company at startup. THE ONLY signal
+   * that does so — see `autoProvisionBundledAgents`.
    *
-   * Before the roster, the only auto-provisioned definitions were the ones
-   * carrying a `bundle` (i.e. `reflection-coach`), which made "has a bundle"
-   * accidentally mean "is part of the workforce". A lifecycle agent step needs
-   * its agent to EXIST before the first ticket reaches it, and none of the
-   * roster carries a bundle — so the intent is declared directly instead of
-   * inferred from an unrelated field.
+   * Before the roster, auto-provisioning was inferred from carrying a `bundle`,
+   * which made "ships instructions/a skill/a routine" accidentally mean "is
+   * part of the workforce". Those are different claims: a bundle describes what
+   * an agent WOULD be, this flag says the product wants it hired. A lifecycle
+   * agent step needs its agent to EXIST before the first ticket reaches it, so
+   * every roster entry sets this explicitly, bundle or not.
    */
   autoProvision?: boolean;
   bundle?: BuiltInAgentBundleDefinition;
@@ -218,131 +216,41 @@ const BUILT_IN_AGENT_KEY_PATTERN = /^[a-z][a-z0-9_-]*$/;
 // the "renaming existing agents" note in the founder's identity-fix request.
 const BUILT_IN_AGENT_DISPLAY_NAME_PATTERN = /^[A-Z][a-zA-Z0-9']*(\s[A-Z][a-zA-Z0-9']*)*$/;
 
-const BUILT_INS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../built-ins/agents");
-
-function readBuiltInText(relativePath: string) {
-  return readFileSync(path.join(BUILT_INS_DIR, relativePath), "utf8");
-}
-
-const REFLECTION_COACH_INSTRUCTIONS = readBuiltInText("reflection-coach/AGENTS.md");
-const REFLECTION_COACH_ROUTINE = readBuiltInText("reflection-coach/routines/recent-agent-reflection.md");
-const REFLECTION_COACH_SKILL = readFileSync(
-  path.resolve(
-    path.dirname(fileURLToPath(import.meta.url)),
-    "../../../packages/skills-catalog/catalog/bundled/paperclip-operations/reflection-coach/SKILL.md",
-  ),
-  "utf8",
-);
-
+// THE ROSTER IS THE WHOLE CATALOGUE.
+//
+// This list used to be the roster PLUS three definitions inherited from the
+// upstream fork — `briefs`, `learning` and `reflection-coach`, whose
+// instructions opened "You are Paperclip's built-in…" and none of which any
+// seeded lifecycle commissioned. They were auto-provisioned into every company
+// regardless, so a fresh board arrived carrying three agents that did no
+// declared job and one paused routine nobody had asked for. Removed: a built-in
+// catalogue is a claim about what this product commissions, and inheriting
+// someone else's claim makes it a lie.
+//
+// The four agents below are cut by permission surface rather than job title.
+// See ./apex-agent-roster.ts — the reasoning lives beside the definitions, not
+// here.
 const DEFINITIONS = validateBuiltInAgentDefinitions([
-  // The four agents this product's OWN lifecycles commission, cut by
-  // permission surface rather than job title. See ./apex-agent-roster.ts —
-  // the reasoning lives beside the definitions, not here.
   ...APEX_AGENT_ROSTER,
-  // Inherited from the upstream fork. Not commissioned by any lifecycle step.
-  {
-    key: "briefs",
-    displayName: "Briefs Agent",
-    featureKeys: ["briefs"],
-    shortPurpose: "Prepares concise operational briefs for the board and agent company.",
-    defaultInstructions:
-      "You are Paperclip's built-in Briefs agent. Produce concise, sourced operational briefs that help the board understand current company work, risks, and next actions.",
-    defaultRole: "general",
-    allowedAdapterTypes: ["codex_local", "claude_local", "gemini_local", "opencode_local", "process"],
-    defaultBudgetMonthlyCents: 0,
-  },
-  {
-    key: "learning",
-    displayName: "Learning Agent",
-    featureKeys: ["learning"],
-    shortPurpose: "Maintains reusable company learning from completed work and recurring patterns.",
-    defaultInstructions:
-      "You are Paperclip's built-in Learning agent. Extract durable lessons from completed work, preserve useful patterns, and keep learning artifacts grounded in source context.",
-    defaultRole: "general",
-    allowedAdapterTypes: ["codex_local", "claude_local", "gemini_local", "opencode_local", "process"],
-    defaultBudgetMonthlyCents: 0,
-  },
-  {
-    key: "reflection-coach",
-    displayName: "Reflection Coach",
-    featureKeys: ["reflection-coach"],
-    shortPurpose:
-      "Runs evidence-backed reflection loops on recent agent work, proposes small instruction and skill improvements, and requests approval before changes are applied.",
-    defaultInstructions: REFLECTION_COACH_INSTRUCTIONS,
-    defaultRole: "general",
-    defaultTitle: "Reflection Coach",
-    defaultIcon: "eye",
-    defaultPermissions: {
-      canCreateAgents: false,
-      canCreateSkills: false,
-      builtInMutationPolicy: {
-        requiresDisplayedDiff: true,
-        requiresAcceptedTaskInteraction: true,
-        applyInSeparateFollowUpRun: true,
-      },
-    },
-    defaultStatus: "paused",
-    defaultManager: "single_root_agent",
-    allowedAdapterTypes: ["claude_local", "codex_local", "gemini_local", "opencode_local", "process"],
-    defaultBudgetMonthlyCents: 0,
-    bundle: {
-      stockVersion: "2026-07-08",
-      instructions: {
-        entryFile: "AGENTS.md",
-        files: {
-          "AGENTS.md": REFLECTION_COACH_INSTRUCTIONS,
-        },
-      },
-      skill: {
-        skillKey: "reflection-coach",
-        displayName: "Reflection Coach",
-        slug: "reflection-coach",
-        canonicalKey: "paperclipai/bundled/paperclip-operations/reflection-coach",
-        files: {
-          "reflection-coach/SKILL.md": REFLECTION_COACH_SKILL,
-        },
-      },
-      routine: {
-        routineKey: "recent-agent-reflection",
-        title: "Review recent agent trajectories for coaching proposals",
-        description: REFLECTION_COACH_ROUTINE,
-        status: "paused",
-        priority: "medium",
-        concurrencyPolicy: "coalesce_if_active",
-        catchUpPolicy: "skip_missed",
-        variables: [
-          { name: "lookbackDays", label: "Lookback days", type: "number", defaultValue: 7, required: true, options: [] },
-          { name: "maxTargetAgents", label: "Max target agents", type: "number", defaultValue: 8, required: true, options: [] },
-          {
-            name: "targetAgentMode",
-            label: "Target agent mode",
-            type: "select",
-            defaultValue: "recent_active",
-            required: true,
-            options: ["recent_active", "recent_blocked", "recent_completed"],
-          },
-          { name: "excludeAgentIds", label: "Excluded agent ids", type: "text", defaultValue: "", required: false, options: [] },
-        ],
-        triggers: [
-          {
-            kind: "schedule",
-            label: "Weekly reflection review",
-            enabled: false,
-            cronExpression: "0 9 * * 1",
-            timezone: "UTC",
-          },
-        ],
-      },
-    },
-  },
 ]);
 
 const DEFINITIONS_BY_KEY = new Map(DEFINITIONS.map((definition) => [definition.key, definition]));
 
 const ROOT_AGENT_DEFAULT_CHANGE_GRANTS: PermissionKey[] = ["agents:configure", "skills:create"];
-const BUILT_IN_AGENT_DEFAULT_GRANTS: Record<string, PermissionKey[]> = {
-  "reflection-coach": ["agents:suggest-changes", "skills:suggest-changes"],
-};
+/**
+ * Change-grants a built-in agent receives at provision time, keyed by
+ * definition.
+ *
+ * Empty on purpose. The only entry was `reflection-coach`, whose whole job was
+ * proposing edits to other agents' instructions and to company skills; no
+ * roster agent proposes changes to the company's own configuration, so no
+ * roster agent is granted `agents:suggest-changes` or `skills:suggest-changes`.
+ * Kept as the seam rather than deleted: `ensureBuiltInAgentDefaultGrants` reads
+ * it per definition, and a roster agent that ever needs a standing grant should
+ * declare it here — in git, next to the definitions — rather than have it
+ * conferred by a migration on a live board.
+ */
+const BUILT_IN_AGENT_DEFAULT_GRANTS: Record<string, PermissionKey[]> = {};
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -815,6 +723,14 @@ export function builtInAgentService(db: Db) {
 
   async function defaultProvisionInput(companyId: string, definition: BuiltInAgentDefinition, input: BuiltInAgentProvisionInput) {
     if (input.adapterType || input.adapterConfig) return input;
+    // Deliberately still `bundle || autoProvision`, unlike the provisioning
+    // filter in `autoProvisionBundledAgents`. Same shape, different question:
+    // that one asks whether to CREATE the agent at all (consent), this one asks
+    // whether to borrow a working adapter config from a sibling agent when a
+    // caller provisions without naming one (convenience). A bundled definition
+    // provisioned by hand still materializes instructions/skill/routine and
+    // still needs a runnable adapter, so shipping content is a fair signal here
+    // even though it is not consent there.
     if (!definition.bundle && !definition.autoProvision) return input;
     const rows = await db
       .select({
@@ -1837,21 +1753,30 @@ export function builtInAgentService(db: Db) {
   }
 
   /**
-   * Provision every definition that asks to exist in a company by default.
+   * Provision every definition that ASKS to exist in a company by default.
    *
-   * Two kinds qualify, for one reason: something in the product will look for
-   * them and must not find nobody. A `bundle` definition owns instructions, a
-   * skill and a routine that have to be materialized somewhere; an
-   * `autoProvision` definition is named by a seeded lifecycle's agent step,
-   * which resolves its executor by roster key and holds the step if the agent
-   * is missing. (The name is kept for its callers; the filter is no longer
-   * "has a bundle".)
+   * One flag decides it: `autoProvision`. A definition qualifies because a
+   * seeded lifecycle's agent step names it, resolves its executor by roster key,
+   * and holds the step if the agent is missing — so the agent must already be
+   * there when the first ticket moves.
+   *
+   * The filter used to be `entry.bundle || entry.autoProvision`, which treated
+   * SHIPPING CONTENT as consent to provision: any definition carrying
+   * instructions, a skill or a routine got a record in every company whether or
+   * not anything would ever commission it. A bundle says "here is what this
+   * agent would be if you hired it"; it does not say "hire it". The one
+   * definition that relied on the looser clause was the inherited
+   * reflection-coach, which is now gone, so the tightening changes no roster
+   * agent's behaviour — all four set `autoProvision: true` explicitly. What it
+   * changes is the meaning: a future bundled definition has to opt in.
+   *
+   * (Name kept for its callers.)
    */
   async function autoProvisionBundledAgents(companyId: string) {
     const company = await ensureCompany(companyId);
     let autoEnsured = 0;
     let pendingApprovals = 0;
-    for (const definition of DEFINITIONS.filter((entry) => entry.bundle || entry.autoProvision)) {
+    for (const definition of DEFINITIONS.filter((entry) => entry.autoProvision)) {
       if (company.requireBoardApprovalForNewAgents) {
         const result = await provision(companyId, definition.key);
         if (result.approval) pendingApprovals += 1;

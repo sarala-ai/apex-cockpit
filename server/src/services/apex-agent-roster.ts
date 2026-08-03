@@ -1,14 +1,21 @@
 /**
- * THE ROSTER — the four agents this product's own lifecycles commission.
+ * THE ROSTER — the four agents this product's own lifecycles commission, and
+ * now the WHOLE built-in catalogue.
  *
  * Until this file existed, the only built-in agent definitions in the cockpit
- * were the three inherited from the upstream fork (`briefs`, `learning`,
- * `reflection-coach`), whose instructions literally open "You are Paperclip's
- * built-in…" and none of which does a job any seeded lifecycle asks for. So
+ * were three inherited from the upstream fork (`briefs`, `learning`,
+ * `reflection-coach`), whose instructions literally opened "You are Paperclip's
+ * built-in…" and none of which did a job any seeded lifecycle asks for. So
  * every `agent` step in `server/src/apex/pipeline/lifecycles.ts` declared a
  * task with an acceptance contract and had nobody to commission: the executor
  * fell through to "the company's single assignable agent", which is a guess
  * dressed as a resolution.
+ *
+ * Those three have since been DELETED rather than left alongside the roster.
+ * They were auto-provisioned into every company, so the fork's catalogue kept
+ * seeding boards with agents no lifecycle would ever call — and a built-in
+ * catalogue is a claim about what this product commissions. `DEFINITIONS` in
+ * built-in-agents.ts is now exactly `APEX_AGENT_ROSTER`.
  *
  * ── THE AXIS: PERMISSION SURFACE, NOT JOB TITLE ──
  *
@@ -105,8 +112,7 @@ function instructions(key: string): string {
   return readFileSync(path.join(BUILT_INS_DIR, key, "AGENTS.md"), "utf8");
 }
 
-/** A routine's authored body, frontmatter included — the same convention the
- *  reflection-coach bundle uses. The markdown is the routine DESCRIPTION the
+/** A routine's authored body, frontmatter included. The markdown is the routine DESCRIPTION the
  *  run reads; its frontmatter mirrors the definition below so the file reads as
  *  a whole routine to a person editing it. */
 function routine(key: string, routineKey: string): string {
@@ -266,10 +272,11 @@ const RAW_APEX_AGENT_ROSTER: BuiltInAgentDefinition[] = [
      * The cron expression exists so the operator has something to enable, not
      * because anything should be enabled.
      *
-     * No skill in this bundle. The reflection-coach pattern splits an operating
-     * procedure (skill) from a bounded run configuration (routine) because the
-     * procedure is reused across targets; here there is one procedure and one
-     * routine, and putting the doctrine in two files would let them drift.
+     * No skill in this bundle. A bundle CAN split an operating procedure
+     * (skill) from a bounded run configuration (routine), and the fork's own
+     * reflection-coach did, because the procedure was reused across targets;
+     * here there is one procedure and one routine, and putting the doctrine in
+     * two files would let them drift.
      */
     bundle: {
       stockVersion: "2026-08-03",

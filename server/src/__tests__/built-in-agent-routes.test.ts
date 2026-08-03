@@ -48,12 +48,12 @@ function denyDecision() {
 function builtInState(overrides: Record<string, unknown> = {}) {
   return {
     definition: {
-      key: "briefs",
-      displayName: "Briefs Agent",
-      featureKeys: ["briefs"],
-      shortPurpose: "Prepares concise operational briefs.",
-      defaultInstructions: "Write briefs.",
-      defaultRole: "general",
+      key: "specifier",
+      displayName: "Specifier",
+      featureKeys: ["lifecycle-feature-spec"],
+      shortPurpose: "Drafts the spec a feature gate approves.",
+      defaultInstructions: "Draft the spec.",
+      defaultRole: "product",
       allowedAdapterTypes: ["codex_local"],
     },
     status: "ready",
@@ -61,7 +61,7 @@ function builtInState(overrides: Record<string, unknown> = {}) {
     agent: {
       id: agentId,
       companyId,
-      name: "Briefs Agent",
+      name: "Specifier",
       role: "general",
       status: "idle",
       adapterType: "codex_local",
@@ -176,7 +176,7 @@ describe("built-in agent routes", () => {
     });
 
     const res = await request(app)
-      .post(`/api/companies/${companyId}/built-in-agents/briefs/provision`)
+      .post(`/api/companies/${companyId}/built-in-agents/specifier/provision`)
       .send({ adapterType: "codex_local", adapterConfig: { model: "gpt-5.4" }, budgetMonthlyCents: 5000 });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
@@ -187,7 +187,7 @@ describe("built-in agent routes", () => {
     });
     expect(mockBuiltInAgentService.provision).toHaveBeenCalledWith(
       companyId,
-      "briefs",
+      "specifier",
       {
         adapterType: "codex_local",
         adapterConfig: { model: "gpt-5.4" },
@@ -215,7 +215,7 @@ describe("built-in agent routes", () => {
     });
 
     const res = await request(app)
-      .post(`/api/companies/${companyId}/built-in-agents/briefs/provision`)
+      .post(`/api/companies/${companyId}/built-in-agents/specifier/provision`)
       .send({ adapterType: "codex_local" });
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
@@ -234,7 +234,7 @@ describe("built-in agent routes", () => {
     });
 
     const res = await request(app)
-      .post(`/api/companies/${companyId}/built-in-agents/briefs/provision`)
+      .post(`/api/companies/${companyId}/built-in-agents/specifier/provision`)
       .send({ adapterType: "codex_local", unexpected: true });
 
     expect(res.status, JSON.stringify(res.body)).toBe(400);
@@ -252,21 +252,21 @@ describe("built-in agent routes", () => {
     });
 
     const res = await request(app)
-      .post(`/api/companies/${companyId}/built-in-agents/reflection-coach/routines/recent-agent-reflection/enable`)
+      .post(`/api/companies/${companyId}/built-in-agents/product-assistant/routines/reconstruct-initiatives/enable`)
       .send({});
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockAccessService.canUser).toHaveBeenCalledWith(companyId, "board-user", "tasks:assign");
     expect(mockBuiltInAgentService.enableRoutineSchedule).toHaveBeenCalledWith(
       companyId,
-      "reflection-coach",
-      "recent-agent-reflection",
+      "product-assistant",
+      "reconstruct-initiatives",
       { agentId: null, userId: "board-user", runId: null },
     );
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: "built_in_agent.routine_schedule_enabled",
       entityId: agentId,
-      details: expect.objectContaining({ routineKey: "recent-agent-reflection" }),
+      details: expect.objectContaining({ routineKey: "reconstruct-initiatives" }),
     }));
   });
 
@@ -280,14 +280,14 @@ describe("built-in agent routes", () => {
     });
 
     const res = await request(app)
-      .post(`/api/companies/${companyId}/built-in-agents/reflection-coach/routines/recent-agent-reflection/disable`)
+      .post(`/api/companies/${companyId}/built-in-agents/product-assistant/routines/reconstruct-initiatives/disable`)
       .send({});
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockBuiltInAgentService.disableRoutineSchedule).toHaveBeenCalledWith(
       companyId,
-      "reflection-coach",
-      "recent-agent-reflection",
+      "product-assistant",
+      "reconstruct-initiatives",
       { agentId: null, userId: "board-user", runId: null },
     );
   });
@@ -302,15 +302,15 @@ describe("built-in agent routes", () => {
     });
 
     const res = await request(app)
-      .post(`/api/companies/${companyId}/built-in-agents/reflection-coach/routines/recent-agent-reflection/run`)
+      .post(`/api/companies/${companyId}/built-in-agents/product-assistant/routines/reconstruct-initiatives/run`)
       .send({});
 
     expect(res.status, JSON.stringify(res.body)).toBe(202);
     expect(res.body).toMatchObject({ id: "routine-run-1", source: "manual" });
     expect(mockBuiltInAgentService.runRoutine).toHaveBeenCalledWith(
       companyId,
-      "reflection-coach",
-      "recent-agent-reflection",
+      "product-assistant",
+      "reconstruct-initiatives",
       { agentId: null, userId: "board-user", runId: null },
     );
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
@@ -330,7 +330,7 @@ describe("built-in agent routes", () => {
     });
 
     const res = await request(app)
-      .post(`/api/companies/${companyId}/built-in-agents/reflection-coach/routines/recent-agent-reflection/run`)
+      .post(`/api/companies/${companyId}/built-in-agents/product-assistant/routines/reconstruct-initiatives/run`)
       .send({});
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
@@ -347,7 +347,7 @@ describe("built-in agent routes", () => {
     });
 
     const res = await request(app)
-      .post(`/api/companies/${companyId}/built-in-agents/reflection-coach/routines/recent-agent-reflection/run`)
+      .post(`/api/companies/${companyId}/built-in-agents/product-assistant/routines/reconstruct-initiatives/run`)
       .send({});
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
@@ -377,7 +377,7 @@ describe("built-in agent routes", () => {
     });
 
     const res = await request(app)
-      .post(`/api/companies/${companyId}/built-in-agents/briefs/provision`)
+      .post(`/api/companies/${companyId}/built-in-agents/specifier/provision`)
       .send({ adapterType: "codex_local", adapterConfig: { model: "gpt-5.4" } });
 
     expect(res.status, JSON.stringify(res.body)).toBe(202);
@@ -386,7 +386,7 @@ describe("built-in agent routes", () => {
     expect(mockBuiltInAgentService.ensure).not.toHaveBeenCalled();
     expect(mockBuiltInAgentService.provision).toHaveBeenCalledWith(
       companyId,
-      "briefs",
+      "specifier",
       { adapterType: "codex_local", adapterConfig: { model: "gpt-5.4" } },
       { requestedByAgentId: "manager-agent", requestedByUserId: null },
     );
@@ -408,11 +408,11 @@ describe("built-in agent routes", () => {
     });
 
     const res = await request(app)
-      .post(`/api/companies/${companyId}/built-in-agents/briefs/reset`)
+      .post(`/api/companies/${companyId}/built-in-agents/specifier/reset`)
       .send({});
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockBuiltInAgentService.reset).toHaveBeenCalledWith(companyId, "briefs", {});
+    expect(mockBuiltInAgentService.reset).toHaveBeenCalledWith(companyId, "specifier", {});
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       companyId,
       actorType: "agent",
@@ -432,7 +432,7 @@ describe("built-in agent routes", () => {
     });
 
     const res = await request(app)
-      .post(`/api/companies/${companyId}/built-in-agents/briefs/reset`)
+      .post(`/api/companies/${companyId}/built-in-agents/specifier/reset`)
       .send({});
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
