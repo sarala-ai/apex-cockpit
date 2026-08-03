@@ -846,6 +846,54 @@ describeEmbeddedPostgres("built-in agents", () => {
     expect(readBuiltInAgentMarker(row?.metadata)).toEqual({ key: "specifier", featureKeys: ["lifecycle-feature-spec"] });
   });
 
+  /**
+   * THE ORPHAN. Deleting a definition does not delete the rows it already
+   * provisioned, and on the live board one of them — a paused reflection-coach
+   * — outlived its definition. Startup reconciliation must classify it and move
+   * on: not throw, not delete it, not re-provision it, and not drown the log by
+   * re-reporting it per row. It stays a plain agent record the operator can
+   * pause, rename or leave alone.
+   */
+  it("classifies a marked row whose definition no longer exists instead of failing startup", async () => {
+    const companyId = await seedCompany();
+    const orphanId = randomUUID();
+    await db.insert(agents).values({
+      id: orphanId,
+      companyId,
+      name: "Reflection Coach",
+      role: "general",
+      status: "paused",
+      pausedAt: new Date(),
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-5.4" },
+      runtimeConfig: {},
+      permissions: {},
+      metadata: withBuiltInAgentMarker({}, { key: "reflection-coach", featureKeys: ["reflection-coach"] }),
+    });
+
+    const result = await reconcileBuiltInAgentsOnStartup(db);
+    expect(result.unknown).toBe(1);
+
+    // Untouched: still there, still paused, still carrying its marker.
+    const [row] = await db.select().from(agents).where(eq(agents.id, orphanId));
+    expect(row).toMatchObject({ name: "Reflection Coach", status: "paused" });
+    expect(readBuiltInAgentMarker(row?.metadata)?.key).toBe("reflection-coach");
+
+    // Invisible to the built-in surface, which enumerates DEFINITIONS.
+    const listed = await builtInAgentService(db).list(companyId);
+    expect(listed.map((state) => state.definition.key)).not.toContain("reflection-coach");
+    expect(listed.every((state) => state.agentId !== orphanId)).toBe(true);
+
+    // Addressing it by key is a 404, not a crash.
+    await expect(builtInAgentService(db).get(companyId, "reflection-coach")).rejects.toMatchObject({
+      status: 404,
+    });
+
+    // Repeated startups keep classifying it the same way.
+    const second = await reconcileBuiltInAgentsOnStartup(db);
+    expect(second.unknown).toBe(1);
+  });
+
   it("reports duplicate active instances for a company/key", async () => {
     const companyId = await seedCompany();
     await db.insert(agents).values([
