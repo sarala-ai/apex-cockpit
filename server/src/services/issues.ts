@@ -103,6 +103,7 @@ import {
 } from "./recovery/origins.js";
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
+import { lockHeartbeatRunRows, lockIssueRow, readLockedRunStatus } from "./db-lock-order.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -4352,21 +4353,12 @@ export function issueService(db: Db) {
     expectedCheckoutRunId: string;
   }) {
     return db.transaction(async (tx) => {
-      const lockedIssue = await tx
-        .select({
-          id: issues.id,
-          status: issues.status,
-          assigneeAgentId: issues.assigneeAgentId,
-          checkoutRunId: issues.checkoutRunId,
-          executionRunId: issues.executionRunId,
-        })
-        .from(issues)
-        .where(eq(issues.id, input.issueId))
-        .for("update")
-        .then((rows) => rows[0] ?? null);
-      if (!lockedIssue) {
+      // `issues` before `heartbeat_runs` — see services/db-lock-order.ts.
+      const held = await lockIssueRow(tx, input.issueId);
+      if (!held) {
         return { adopted: null, latest: null };
       }
+      const lockedIssue = held.row;
 
       if (
         lockedIssue.status !== "in_progress" ||
@@ -4376,28 +4368,13 @@ export function issueService(db: Db) {
         return { adopted: null, latest: lockedIssue };
       }
 
-      await Promise.all([
-        tx.execute(
-          sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.expectedCheckoutRunId} for update`,
-        ),
-        tx.execute(
-          sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.actorRunId} for update`,
-        ),
+      await lockHeartbeatRunRows(tx, held.lock, [input.expectedCheckoutRunId, input.actorRunId]);
+      const [existingRunStatus, actorRunStatus] = await Promise.all([
+        readLockedRunStatus(tx, input.expectedCheckoutRunId),
+        readLockedRunStatus(tx, input.actorRunId),
       ]);
-      const [existingRun, actorRun] = await Promise.all([
-        tx
-          .select({ status: heartbeatRuns.status })
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, input.expectedCheckoutRunId))
-          .then((rows) => rows[0] ?? null),
-        tx
-          .select({ status: heartbeatRuns.status })
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, input.actorRunId))
-          .then((rows) => rows[0] ?? null),
-      ]);
-      const stale = !existingRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(existingRun.status);
-      const actorLive = actorRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRun.status);
+      const stale = !existingRunStatus || TERMINAL_HEARTBEAT_RUN_STATUSES.has(existingRunStatus);
+      const actorLive = actorRunStatus && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRunStatus);
       if (!stale || !actorLive) {
         return { adopted: null, latest: lockedIssue };
       }
@@ -4452,15 +4429,28 @@ export function issueService(db: Db) {
     actorRunId: string;
   }) {
     return db.transaction(async (tx) => {
-      await tx.execute(
-        sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.actorRunId} for update`,
-      );
-      const actorRun = await tx
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, input.actorRunId))
-        .then((rows) => rows[0] ?? null);
-      if (!actorRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRun.status)) return null;
+      /*
+       * THE INVERSION THAT CAUSED THE DEADLOCK, corrected.
+       *
+       * This used to lock the actor's run and only then write `issues`, while
+       * its three siblings (`adoptStaleCheckoutRun`,
+       * `clearExecutionRunIfTerminal`, `clearCheckoutRunIfTerminal`) lock
+       * `issues` and then the run. Two orders, two concurrent transactions,
+       * `deadlock detected`. The order is now the one rule, stated once in
+       * services/db-lock-order.ts and enforced by the type of `lock`.
+       *
+       * Taking the issue's row lock first also strictly STRENGTHENS this
+       * function: the `UPDATE ... WHERE` below already re-checked every
+       * precondition against the row, so it was never wrong, but it could
+       * previously lose the row to a concurrent writer between the run check
+       * and the update and simply return `null`. Now it cannot.
+       */
+      const held = await lockIssueRow(tx, input.issueId);
+      if (!held) return null;
+
+      await lockHeartbeatRunRows(tx, held.lock, [input.actorRunId]);
+      const actorRunStatus = await readLockedRunStatus(tx, input.actorRunId);
+      if (!actorRunStatus || TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRunStatus)) return null;
 
       const now = new Date();
       const adopted = await tx
@@ -4495,25 +4485,14 @@ export function issueService(db: Db) {
 
   async function clearExecutionRunIfTerminal(issueId: string): Promise<boolean> {
     return db.transaction(async (tx) => {
-      await tx.execute(
-        sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`,
-      );
-      const issue = await tx
-        .select({ executionRunId: issues.executionRunId })
-        .from(issues)
-        .where(eq(issues.id, issueId))
-        .then((rows) => rows[0] ?? null);
+      // `issues` before `heartbeat_runs` — see services/db-lock-order.ts.
+      const held = await lockIssueRow(tx, issueId);
+      const issue = held?.row ?? null;
       if (!issue?.executionRunId) return false;
 
-      await tx.execute(
-        sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
-      );
-      const run = await tx
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, issue.executionRunId))
-        .then((rows) => rows[0] ?? null);
-      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+      await lockHeartbeatRunRows(tx, held!.lock, [issue.executionRunId]);
+      const runStatus = await readLockedRunStatus(tx, issue.executionRunId);
+      if (runStatus && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(runStatus)) return false;
 
       const updated = await tx
         .update(issues)
@@ -4543,36 +4522,21 @@ export function issueService(db: Db) {
   // assigned or what status the issue is currently in.
   async function clearCheckoutRunIfTerminal(issueId: string): Promise<boolean> {
     return db.transaction(async (tx) => {
-      await tx.execute(
-        sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`,
-      );
-      const issue = await tx
-        .select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
-        .from(issues)
-        .where(eq(issues.id, issueId))
-        .then((rows) => rows[0] ?? null);
+      // `issues` before `heartbeat_runs` — see services/db-lock-order.ts. Both
+      // runs are taken in ONE call so they are locked in a stable sorted order
+      // rather than checkout-then-execution, which is a second inversion this
+      // function could hit against itself on two issues sharing a run pair.
+      const held = await lockIssueRow(tx, issueId);
+      const issue = held?.row ?? null;
       if (!issue?.checkoutRunId) return false;
 
-      await tx.execute(
-        sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.checkoutRunId} for update`,
-      );
-      const run = await tx
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, issue.checkoutRunId))
-        .then((rows) => rows[0] ?? null);
-      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+      await lockHeartbeatRunRows(tx, held!.lock, [issue.checkoutRunId, issue.executionRunId]);
+      const runStatus = await readLockedRunStatus(tx, issue.checkoutRunId);
+      if (runStatus && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(runStatus)) return false;
 
       if (issue.executionRunId && issue.executionRunId !== issue.checkoutRunId) {
-        await tx.execute(
-          sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
-        );
-        const executionRun = await tx
-          .select({ status: heartbeatRuns.status })
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, issue.executionRunId))
-          .then((rows) => rows[0] ?? null);
-        if (executionRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(executionRun.status)) return false;
+        const executionRunStatus = await readLockedRunStatus(tx, issue.executionRunId);
+        if (executionRunStatus && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(executionRunStatus)) return false;
       }
 
       const updated = await tx

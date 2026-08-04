@@ -69,6 +69,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { lockIssueRow } from "../db-lock-order.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["interrupted", "failed", "cancelled", "timed_out"] as const;
@@ -1329,6 +1330,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       },
     };
     const finalizedRun = await db.transaction(async (tx) => {
+      // THE LOCK ORDER: `issues` before `heartbeat_runs` — services/db-lock-order.ts.
+      // This transaction finalizes the run AND releases the issue's execution
+      // lock, so it holds both rows. It used to take them run-first, which is
+      // the inverted order against every path in services/issues.ts.
+      await lockIssueRow(tx, input.sourceIssue.id);
       const [updatedRun] = await tx
         .update(heartbeatRuns)
         .set({
