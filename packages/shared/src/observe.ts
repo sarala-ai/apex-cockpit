@@ -48,8 +48,8 @@ export const AgentRunSchema = ScopeSchema.extend({
   durationMs: z.number().nullable(),
   stopReason: z.string().nullable(),
   usage: RunUsageSchema.nullable(),
-  // Permission-policy visibility (server/src/apex/flow/run-policy.ts).
-  // "governed" = the flow coordinator applied a bounded/read-only permission
+  // Permission-policy visibility (server/src/apex/steps/run-policy.ts).
+  // "governed" = an agent step applied a bounded/read-only permission
   // profile for this run; "bypass" = the fork's ordinary default
   // (dangerously-skip-permissions) applied, unchanged from before this ever
   // existed — every interactive, human-started run, and any run this store

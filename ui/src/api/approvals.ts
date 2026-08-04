@@ -31,7 +31,7 @@ export type ApprovalPrDiffFile = {
 };
 
 /** What kind of thing the reviewer is looking at. Classified server-side in
- *  `server/src/apex/flow/brief.ts` (`classifyArtifactKind`) — the UI keys its
+ *  `server/src/apex/steps/brief.ts` (`classifyArtifactKind`) — the UI keys its
  *  renderer registry off this value and never re-derives it. */
 export type ApprovalArtifactKind = "code" | "design" | "plan" | "doc" | "unknown";
 export type ApprovalPrDiff =
@@ -61,7 +61,7 @@ export type ApprovalPrDiff =
 /** The healthy branch of ApprovalPrDiff — what an artifact renderer receives. */
 export type ApprovalArtifact = Extract<ApprovalPrDiff, { degraded: false }>;
 
-/** The flow-gate DECISION BRIEF (server: GET /approvals/:id/brief). Answers,
+/** The gate DECISION BRIEF (server: GET /approvals/:id/brief). Answers,
  *  in decision order: what is being decided → what was already verified →
  *  what to look at → what happens next → who did the work. Machine strings
  *  (raw acceptance declarations, UUIDs, run ids) are confined to
@@ -89,7 +89,7 @@ export type ApprovalBriefReviewPass = {
   question: string;
 };
 /** Risk + reversibility of approving this gate, derived server-side from the
- *  flow definition's post-gate nodes. Uses the same "Risks" vocabulary the
+ *  process definition's post-gate steps. Uses the same "Risks" vocabulary the
  *  board-approval brief already uses. */
 export type ApprovalBriefRisk = {
   reversibility: "reversible" | "reversible_with_effort" | "irreversible" | "unknown";

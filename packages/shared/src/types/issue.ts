@@ -740,14 +740,6 @@ export interface Issue {
   requestDepth: number;
   billingCode: string | null;
   assigneeAdapterOverrides: IssueAssigneeAdapterOverrides | null;
-  /** Flow coordinator state (work-loop typed flows) — set once a flow is
-   *  attached via `apex/flows/start`; null when no flow has ever run. */
-  flowName?: string | null;
-  flowNodeId?: string | null;
-  flowStatus?: string | null;
-  flowRunId?: string | null;
-  flowStartedAt?: Date | null;
-  flowAdvancedAt?: Date | null;
   executionPolicy?: IssueExecutionPolicy | null;
   executionState?: IssueExecutionState | null;
   monitorNextCheckAt?: Date | null;

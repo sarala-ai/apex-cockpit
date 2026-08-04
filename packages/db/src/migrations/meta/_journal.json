@@ -1198,6 +1198,13 @@
       "when": 1786086412000,
       "tag": "0172_issue_ticket_type",
       "breakpoints": true
+    },
+    {
+      "idx": 173,
+      "version": "7",
+      "when": 1786172812000,
+      "tag": "0173_retire_flow_front_end",
+      "breakpoints": true
     }
   ]
 }

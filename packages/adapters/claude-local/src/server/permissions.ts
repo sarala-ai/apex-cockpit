@@ -11,8 +11,8 @@
 // either add it here or document the deliberate exclusion. Omitting a tool
 // silently disables it inside remote targets, which can look like the tool is
 // "broken" rather than intentionally gated.
-// Exported (not just module-local) so the flow run-policy module
-// (server/src/apex/flow/run-policy.ts) can reuse the exact same grammar for
+// Exported (not just module-local) so the step run-policy module
+// (server/src/apex/steps/run-policy.ts) can reuse the exact same grammar for
 // its "bounded" permission profile instead of hand-maintaining a second copy
 // that silently drifts from this one.
 export const SANDBOX_ALLOWED_TOOLS =
@@ -55,7 +55,7 @@ export class MissingPermissionDecisionError extends Error {
  *   - `dangerouslySkipPermissions` present as a boolean — a straight true/false
  *     decision (including an explicit `true`: "yes, bypass, I mean it").
  *   - a non-empty `allowedTools` string — a governed grant (skip=false plus a
- *     specific --allowedTools list, how the flow run-policy expresses bounded
+ *     specific --allowedTools list, how the step run-policy expresses bounded
  *     permissions). This is a decision even if `dangerouslySkipPermissions`
  *     is absent, since a grant only exists because something computed it.
  */
@@ -68,7 +68,7 @@ export function hasExplicitPermissionDecision(config: Record<string, unknown>): 
 /**
  * Fail-closed guard invoked where a claude_local run actually launches
  * (execute.ts). `derivePermissionPolicy` is consulted by only the two
- * flow-commission callers; every other dispatch path (routine wakeups,
+ * step-commission callers; every other dispatch path (routine wakeups,
  * operator edits, agents created outside the roster) reaches the adapter
  * directly and, without this, inherits the unsafe bypass default. Refuse
  * such a run rather than launch it undecided, and name the agent so the
@@ -102,7 +102,7 @@ export function buildClaudeExecutionPermissionArgs(input: {
   targetIsRemote: boolean;
   /**
    * Explicit `--allowedTools` grant computed by a caller-owned policy (e.g.
-   * the flow run-policy for flow-commissioned runs). Takes precedence over
+   * the step run-policy for step-commissioned runs). Takes precedence over
    * the dangerouslySkipPermissions/targetIsRemote defaults below in either
    * direction — it is how a caller asks for governed permissions (skip=false
    * but specific tools pre-approved) that this function otherwise has no way
