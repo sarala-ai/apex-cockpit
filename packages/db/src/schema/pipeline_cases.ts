@@ -33,23 +33,24 @@ export type PipelineCaseWorkspaceRef = {
   path?: string;
 };
 
-/** Which kind of process definition owns this case's steps.
- *  `pipeline` — steps are rows in `pipeline_stages`, `definitionRef` is the
- *  pipeline id and `stageId` is populated.
- *  `flow` — steps are nodes in a typed flow YAML, `definitionRef` is the flow
- *  name and `stageId`/`pipelineId` are null.
- *  Both address the current step by `stepKey`: a stage key and a flow node id
- *  are the same kind of thing (docs/architecture/execution-substrate.md §6.1). */
 /** Which step kind an entry-automation row ran (0169). */
 export const PIPELINE_AUTOMATION_EXECUTION_KINDS = ["routine", "run", "agent"] as const;
 export type PipelineAutomationExecutionKind = (typeof PIPELINE_AUTOMATION_EXECUTION_KINDS)[number];
 
-export const CASE_DEFINITION_KINDS = ["pipeline", "flow"] as const;
+/** Which kind of process definition owns this case's steps.
+ *
+ *  One member since 0173, when the flow front-end was deleted. The
+ *  discriminator is kept rather than dropped because it is what a second
+ *  definition kind would reuse, and re-adding a dropped column later costs
+ *  more than carrying a single-valued one. A case's steps are rows in
+ *  `pipeline_stages`; the current one is addressed by `stepKey`. */
+export const CASE_DEFINITION_KINDS = ["pipeline"] as const;
 export type CaseDefinitionKind = (typeof CASE_DEFINITION_KINDS)[number];
 
 /** What is in flight at a case's current step (0170). Deliberately NOT the
- *  flow front-end's six statuses: those conflated "where the case is" with
- *  "what is happening to it", and the case row already answers the first. */
+ *  retired flow front-end's six statuses: those conflated "where the case is"
+ *  with "what is happening to it", and the case row already answers the
+ *  first. */
 export const PIPELINE_CASE_STEP_STATUSES = ["waiting_agent", "waiting_gate"] as const;
 export type PipelineCaseStepStatus = (typeof PIPELINE_CASE_STEP_STATUSES)[number];
 
@@ -58,23 +59,21 @@ export const pipelineCases = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-    // Nullable since 0165: a flow-defined case has no pipeline and no stage
-    // row. The `pipeline_cases_definition_shape_check` constraint makes an
-    // inconsistent combination impossible — see the migration for the full
-    // reasoning.
-    pipelineId: uuid("pipeline_id").references(() => pipelines.id, { onDelete: "cascade" }),
-    stageId: uuid("stage_id").references(() => pipelineStages.id),
+    // NOT NULL again since 0173. They were nullable only so a flow-defined
+    // case — which had neither — could share this table while both front-ends
+    // stood; that accommodation died with the flow front-end.
+    pipelineId: uuid("pipeline_id").notNull().references(() => pipelines.id, { onDelete: "cascade" }),
+    stageId: uuid("stage_id").notNull().references(() => pipelineStages.id),
     definitionKind: text("definition_kind").$type<CaseDefinitionKind>().notNull().default("pipeline"),
-    /** Pipeline id (as text) for pipeline-defined cases, flow name for flow-defined ones. */
+    /** The owning pipeline's id, as text. */
     definitionRef: text("definition_ref"),
-    /** The AUTHORITATIVE current-step pointer. For pipeline-defined cases
-     *  `stageId` is kept as a denormalised convenience and moves with it. */
+    /** The AUTHORITATIVE current-step pointer (a stage key). `stageId` is the
+     *  denormalised convenience that moves with it. */
     stepKey: text("step_key"),
     /** What is IN FLIGHT at the current step, or null when the case is simply
-     *  sitting at it (0170). A `workflow` or `check` step finishes inside the
-     *  call that starts it and never appears here; an `agent` step and a
-     *  `gate` step do, because one waits on a run elsewhere and the other on a
-     *  human. This is not a second location pointer — `stepKey` and
+     *  sitting at it (0170). A `run` step finishes inside the call that starts
+     *  it and never appears here; an `agent` step and a `gate` step do,
+     *  because one waits on a run elsewhere and the other on a human. This is not a second location pointer — `stepKey` and
      *  `terminalKind` own where the case IS. */
     stepStatus: text("step_status").$type<PipelineCaseStepStatus | null>(),
     /** The bounded agent run this case is parked on (stepStatus =
@@ -135,28 +134,11 @@ export const pipelineCases = pgTable(
       "pipeline_cases_step_status_check",
       sql`${table.stepStatus} is null or ${table.stepStatus} in ('waiting_agent', 'waiting_gate')`,
     ),
-    flowCaseKeyUq: uniqueIndex("pipeline_cases_flow_case_key_uq")
-      .on(table.companyId, table.definitionRef, table.caseKey)
-      .where(sql`${table.definitionKind} = 'flow'`),
     definitionIdx: index("pipeline_cases_definition_idx").on(table.companyId, table.definitionKind, table.definitionRef),
     terminalKindCheck: check("pipeline_cases_terminal_kind_check", sql`${table.terminalKind} is null or ${table.terminalKind} in ('done', 'cancelled')`),
     definitionKindCheck: check(
       "pipeline_cases_definition_kind_check",
-      sql`${table.definitionKind} in ('pipeline', 'flow')`,
-    ),
-    definitionShapeCheck: check(
-      "pipeline_cases_definition_shape_check",
-      sql`(
-        ${table.definitionKind} = 'pipeline'
-        and ${table.pipelineId} is not null
-        and ${table.stageId} is not null
-      ) or (
-        ${table.definitionKind} = 'flow'
-        and ${table.pipelineId} is null
-        and ${table.stageId} is null
-        and ${table.definitionRef} is not null
-        and ${table.stepKey} is not null
-      )`,
+      sql`${table.definitionKind} = 'pipeline'`,
     ),
     leaseOwnerTypeCheck: check("pipeline_cases_lease_owner_type_check", sql`${table.leaseOwnerType} is null or ${table.leaseOwnerType} in ('user', 'agent')`),
   }),
@@ -265,10 +247,10 @@ export const pipelineAutomationExecutions = pgTable(
     caseId: uuid("case_id").notNull().references(() => pipelineCases.id, { onDelete: "cascade" }),
     automationId: text("automation_id").notNull(),
     triggeringEventId: uuid("triggering_event_id").notNull(),
-    /** Which step kind this entry ran (0169). `routine` = an agent step;
-     *  `workflow` = a deterministic APEX operation at zero tokens. */
+    /** Which step kind this entry ran (0169). `run` is deterministic and costs
+     *  nothing; `agent` costs tokens; `routine` predates both. */
     kind: text("kind").$type<PipelineAutomationExecutionKind>().notNull().default("routine"),
-    /** Nullable since 0169: a workflow entry carries no routine. The shape
+    /** Nullable since 0169: a run entry carries no routine. The shape
      *  check below makes a half-populated row impossible either way. */
     routineId: uuid("routine_id").references(() => routines.id, { onDelete: "cascade" }),
     status: text("status").notNull(),

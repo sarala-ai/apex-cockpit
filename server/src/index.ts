@@ -1125,13 +1125,6 @@ export async function startServer(): Promise<StartedServer> {
   // scheduling shape as the attribution-refresh job above.
   const stopGithubIssueIngestScheduler = startGithubIssueIngestScheduler(db as any);
 
-  // Flow-coordinator sweep (work-loop typed flows) — resumes `running` flows
-  // whose advancement loop died with the process. Event-driven advancement
-  // (start API, gate decisions) stays primary; this is recovery only. Every
-  // APEX_FLOW_TICK_MINUTES (default 5m; 0 disables).
-  const { startFlowCoordinatorSweep } = await import("./apex/flow/sweep.js");
-  const stopFlowCoordinatorSweep = startFlowCoordinatorSweep(db as any);
-
   // Pipeline step sweep — the same recovery duty for CASES, which is where
   // process execution is moving. A case parked on a bounded agent run whose
   // completion nobody observed would otherwise sit there indefinitely,
@@ -1248,7 +1241,6 @@ export async function startServer(): Promise<StartedServer> {
       }
       stopAttributionRefreshScheduler();
       stopGithubIssueIngestScheduler();
-      stopFlowCoordinatorSweep();
       stopPipelineStepSweep();
       stopCriterionReviewSweep();
       stopCapabilitySyncScheduler();

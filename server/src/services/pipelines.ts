@@ -66,7 +66,6 @@ import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
 import { authorizationService } from "./authorization.js";
 import { accessService } from "./access.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
-import { pipelineIdOfCase } from "./pipeline-case-shape.js";
 import {
   formatPipelineCaseOutputContextMarkdown,
   pipelineCaseOutputsService,
@@ -2723,7 +2722,7 @@ async function notifyDependentWorkIssuesOfUpstreamContentChange(
   }
 
   const upstreamLink = buildCaseDeepLink({
-    pipelineId: pipelineIdOfCase(input.upstreamCase),
+    pipelineId: input.upstreamCase.pipelineId,
     caseId: input.upstreamCase.id,
   });
   const body = `Upstream case [${input.upstreamCase.caseKey}](${upstreamLink}) changed (v${input.previousVersion}→v${input.version}).`;
@@ -3422,7 +3421,7 @@ export function pipelineService(
     const availableTargetStages = await findUpstreamAutomatedStages(dbOrTx, {
       companyId: input.companyId,
       caseId: input.caseId,
-      pipelineId: pipelineIdOfCase(detail.case),
+      pipelineId: detail.case.pipelineId,
       currentStageId: detail.stage.id,
     });
     const requestedTargetStageId = input.targetStageId?.trim() || null;
@@ -5090,7 +5089,7 @@ export function pipelineService(
       throw conflict("Pipeline case version conflict", conflictDetailsForCase(current, fromStage));
     }
 
-    const currentPipelineId = pipelineIdOfCase(current);
+    const currentPipelineId = current.pipelineId;
     const toStage = input.toStageId
       ? await getStageOrThrow(tx, currentPipelineId, input.toStageId)
       : await getStageByKeyOrThrow(tx, currentPipelineId, input.toStageKey ?? "");
@@ -5245,7 +5244,7 @@ export function pipelineService(
     if (visited.has(input.stage.id)) return;
     const rollup = await computeCaseRollup(tx, input.companyId, input.caseRow.id);
     if (!rollup.complete || (rollup.total === 0 && !gate.explicitZeroChildrenPass)) return;
-    const toStage = await getStageByKeyOrThrow(tx, pipelineIdOfCase(input.caseRow), toStageKey);
+    const toStage = await getStageByKeyOrThrow(tx, input.caseRow.pipelineId, toStageKey);
     if (toStage.id === input.stage.id) return;
     visited.add(input.stage.id);
     try {
@@ -5307,7 +5306,7 @@ export function pipelineService(
         continue;
       }
       try {
-        const toStage = await getStageByKeyOrThrow(tx, pipelineIdOfCase(ancestor.case), toStageKey);
+        const toStage = await getStageByKeyOrThrow(tx, ancestor.case.pipelineId, toStageKey);
         assertStageEnabled(toStage, "auto_advance");
         if (toStage.id === ancestor.stage.id) continue;
         await transitionCaseInTransaction(tx, {
@@ -6858,7 +6857,7 @@ export function pipelineService(
     }) {
       return db.transaction(async (tx) => {
         const { case: existing } = await getCaseWithStageOrThrow(tx, input.companyId, input.caseId);
-        await getStageByKeyOrThrow(tx, pipelineIdOfCase(existing), input.toStageKey);
+        await getStageByKeyOrThrow(tx, existing.pipelineId, input.toStageKey);
         const suggestion = {
           id: randomUUID(),
           toStageKey: input.toStageKey,
@@ -7234,7 +7233,7 @@ export function pipelineService(
           ? db
             .select()
             .from(pipelineStages)
-            .where(eq(pipelineStages.pipelineId, pipelineIdOfCase(detail.case)))
+            .where(eq(pipelineStages.pipelineId, detail.case.pipelineId))
           : Promise.resolve([]),
       ]);
       const routinesById = new Map(routineRows.map((routine) => [routine.id, routine]));
