@@ -716,8 +716,10 @@ export interface Issue {
   agentBrief?: string | null;
   status: IssueStatus;
   /** What kind of work this is, and therefore which lifecycle it runs.
-   *  `null` means UNDECLARED — see TICKET_TYPES in ../constants.js. */
-  ticketType: TicketType | null;
+   *  `null`/absent means UNDECLARED — a distinct fact from "chore". Optional
+   *  for the same reason `agentBrief` is: not every payload shape that is
+   *  legitimately an Issue carries it. See TICKET_TYPES in ../constants.js. */
+  ticketType?: TicketType | null;
   workMode: IssueWorkMode;
   priority: IssuePriority;
   assigneeAgentId: string | null;

@@ -1,3 +1,4 @@
+export * from "./agent-repo-capability.js";
 export * from "./observe.js";
 export * from "./gateway.js";
 export * from "./design.js";
