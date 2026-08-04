@@ -82,6 +82,22 @@ describe("a ticket parked at a human gate", () => {
     expect(config.requestChangesToStageKey).toBeUndefined();
   });
 
+  it("carries the pipeline's own names for the stages a decision moves to", () => {
+    // The ticket must label a decision exactly as the board does. Left to
+    // humanise the raw key itself, the ticket would render `cancelled` as
+    // "Removed" — a word this pipeline never uses.
+    const shaped = shapeIssueLinkedCase({
+      ...row(),
+      stageNames: { spec: "Spec", cancelled: "Cancelled" },
+    });
+
+    expect(shaped.review!.stageNames).toEqual({ spec: "Spec", cancelled: "Cancelled" });
+  });
+
+  it("falls back to no names rather than failing when none were looked up", () => {
+    expect(shapeIssueLinkedCase(row()).review!.stageNames).toEqual({});
+  });
+
   it("says nothing rather than inventing a question when the gate declared none", () => {
     const shaped = shapeIssueLinkedCase(
       row({

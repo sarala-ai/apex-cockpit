@@ -189,7 +189,7 @@ import {
   startTicketLifecycle,
 } from "../apex/pipeline/ticket-lifecycle.js";
 import type { PipelineActor } from "../services/pipelines.js";
-import { shapeIssueLinkedCase } from "../apex/pipeline/issue-lifecycle.js";
+import { isAwaitingHumanDecision, shapeIssueLinkedCase } from "../apex/pipeline/issue-lifecycle.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -245,7 +245,33 @@ async function listIssueLinkedCases(db: Db, companyId: string, issueId: string) 
       isNull(pipelineCases.retiredAt),
     ))
     .orderBy(desc(pipelineCaseIssueLinks.createdAt), desc(pipelineCaseIssueLinks.id));
-  return rows.map(shapeIssueLinkedCase);
+
+  // Only a pending decision needs its pipeline's stage names, and pending
+  // decisions are rare — so the second query is skipped on the overwhelming
+  // majority of ticket loads rather than paid for on every one.
+  const awaitingPipelineIds = [
+    ...new Set(
+      rows
+        .filter((row) => isAwaitingHumanDecision(row.case, row.stage))
+        .map((row) => row.pipeline.id),
+    ),
+  ];
+  const stageNamesByPipeline = new Map<string, Record<string, string>>();
+  if (awaitingPipelineIds.length > 0) {
+    const stageRows = await db
+      .select({ pipelineId: pipelineStages.pipelineId, key: pipelineStages.key, name: pipelineStages.name })
+      .from(pipelineStages)
+      .where(inArray(pipelineStages.pipelineId, awaitingPipelineIds));
+    for (const stage of stageRows) {
+      const names = stageNamesByPipeline.get(stage.pipelineId) ?? {};
+      names[stage.key] = stage.name;
+      stageNamesByPipeline.set(stage.pipelineId, names);
+    }
+  }
+
+  return rows.map((row) =>
+    shapeIssueLinkedCase({ ...row, stageNames: stageNamesByPipeline.get(row.pipeline.id) })
+  );
 }
 
 

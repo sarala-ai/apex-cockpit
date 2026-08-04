@@ -50,6 +50,9 @@ export function shapeIssueLinkedCase(row: {
   case: Pick<CaseRow, "id" | "caseKey" | "title" | "terminalKind" | "version">;
   pipeline: Pick<PipelineRow, "id" | "key" | "name">;
   stage: StageRow;
+  /** Every stage key → name in this case's pipeline. Only read for a pending
+   *  review, so callers may skip the lookup when nothing is waiting. */
+  stageNames?: Record<string, string>;
 }) {
   const awaitingDecision = isAwaitingHumanDecision(row.case, row.stage);
   return {
@@ -79,6 +82,14 @@ export function shapeIssueLinkedCase(row: {
       ? {
         question: reviewStageQuestion(row.stage),
         config: safeReviewConfig(row.stage),
+        /**
+         * Stage key → the name that pipeline gave it, so a decision reads
+         * "Reject → Cancelled" here exactly as it does on the board. Without
+         * it the surfaces humanise the raw key independently and drift: the
+         * board's own name for `cancelled` is "Cancelled", the generic
+         * humaniser's is "Removed".
+         */
+        stageNames: row.stageNames ?? {},
       }
       : null,
   };

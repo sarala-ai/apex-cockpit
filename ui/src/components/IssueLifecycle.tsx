@@ -93,7 +93,12 @@ function IssueLifecycleGate({
   resolveUserLabel?: (userId: string) => string | null;
 }) {
   const [reason, setReason] = useState("");
-  const actions = reviewDecisionActions(reviewDecisionConfigFromStageConfig(review.config), new Map());
+  // The pipeline's OWN names for the stages a decision moves to, so
+  // "Reject → Cancelled" reads here exactly as it does on the board.
+  const actions = reviewDecisionActions(
+    reviewDecisionConfigFromStageConfig(review.config),
+    new Map(Object.entries(review.stageNames ?? {})),
+  );
   const trimmedReason = reason.trim();
   const pending = deciding !== null;
   const canDecideHere = Boolean(onDecide) && actions.length > 0;

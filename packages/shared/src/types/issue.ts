@@ -728,6 +728,9 @@ export interface IssueLinkedCase {
      *  Null when the gate never declared one. */
     question: string | null;
     config: Record<string, unknown>;
+    /** Stage key → the name that pipeline gave it, so a decision reads the
+     *  same on the ticket as it does on the board. */
+    stageNames: Record<string, string>;
   } | null;
 }
 

@@ -52,6 +52,9 @@ const GATE_CONFIG = {
   requireRequestChangesReason: true,
 };
 
+/** The pipeline's own names for its stages, as the server sends them. */
+const STAGE_NAMES = { spec: "Spec", cancelled: "Cancelled" };
+
 function linkedCase(overrides: Partial<IssueLinkedCase> = {}): IssueLinkedCase {
   return {
     id: "case-1",
@@ -102,7 +105,7 @@ describe("a ticket whose process is working", () => {
 
 describe("a ticket parked at a human gate", () => {
   const parked = {
-    linkedCases: [linkedCase({ review: { question: GATE_CONFIG.gate.prompt, config: GATE_CONFIG } })],
+    linkedCases: [linkedCase({ review: { question: GATE_CONFIG.gate.prompt, config: GATE_CONFIG, stageNames: STAGE_NAMES } })],
   };
 
   it("states the decision, the question the process asked, and who may answer", () => {
@@ -137,6 +140,7 @@ describe("a ticket parked at a human gate", () => {
               review: {
                 question: null,
                 config: { ...GATE_CONFIG, requestChangesToStageKey: "spec" },
+                stageNames: STAGE_NAMES,
               },
             }),
           ],
@@ -146,6 +150,17 @@ describe("a ticket parked at a human gate", () => {
     );
 
     expect(buttonLabels().some((label) => label.includes("Request changes"))).toBe(true);
+  });
+
+  it("labels each decision with the pipeline's own name for where it goes", () => {
+    render(<IssueLifecycle issue={parked} onDecide={() => {}} />);
+
+    // Not the generic humaniser, which renders the `cancelled` key as
+    // "Removed" — a word the board never shows for this stage.
+    const labels = buttonLabels();
+    expect(labels.some((label) => label.includes("Approve") && label.includes("Spec"))).toBe(true);
+    expect(labels.some((label) => label.includes("Reject") && label.includes("Cancelled"))).toBe(true);
+    expect(labels.some((label) => label.includes("Removed"))).toBe(false);
   });
 
   it("submits the decision with the case version the server needs to accept it", () => {
@@ -193,7 +208,7 @@ describe("a ticket parked at a human gate", () => {
   it("keeps saying a decision is pending even when the stage config was too broken to derive buttons", () => {
     render(
       <IssueLifecycle
-        issue={{ linkedCases: [linkedCase({ review: { question: "Worth doing?", config: {} } })] }}
+        issue={{ linkedCases: [linkedCase({ review: { question: "Worth doing?", config: {}, stageNames: {} } })] }}
         onDecide={() => {}}
       />,
     );
