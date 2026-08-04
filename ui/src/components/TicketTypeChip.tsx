@@ -52,7 +52,9 @@ export function TicketTypeChip({
         className,
       )}
     >
-      <Icon aria-hidden />
+      {/* Sized on the element, not only in CSS, so the rendered glyph and the
+          DOM agree — chip glyphs sit next to the row's 16px status glyph. */}
+      <Icon size={12} aria-hidden />
       {showLabel ? label : <span className="sr-only">{label}</span>}
     </Badge>
   );

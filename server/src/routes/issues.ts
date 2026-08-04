@@ -188,7 +188,8 @@ import {
   listTicketTypeOptions,
   startTicketLifecycle,
 } from "../apex/pipeline/ticket-lifecycle.js";
-import { reviewConfigForStage, type PipelineActor } from "../services/pipelines.js";
+import type { PipelineActor } from "../services/pipelines.js";
+import { shapeIssueLinkedCase } from "../apex/pipeline/issue-lifecycle.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -244,53 +245,9 @@ async function listIssueLinkedCases(db: Db, companyId: string, issueId: string) 
       isNull(pipelineCases.retiredAt),
     ))
     .orderBy(desc(pipelineCaseIssueLinks.createdAt), desc(pipelineCaseIssueLinks.id));
-  return rows.map((row) => {
-    const awaitingDecision = row.stage.kind === "review" && row.case.terminalKind === null;
-    return {
-      id: row.case.id,
-      caseKey: row.case.caseKey,
-      title: row.case.title,
-      status: row.case.terminalKind ?? "open",
-      role: row.link.role,
-      /** Required by `POST /cases/:id/review`; without it the ticket can show
-       *  a decision it cannot submit. */
-      version: row.case.version,
-      terminalKind: row.case.terminalKind,
-      pipeline: {
-        id: row.pipeline.id,
-        key: row.pipeline.key,
-        name: row.pipeline.name,
-      },
-      stage: {
-        id: row.stage.id,
-        key: row.stage.key,
-        name: row.stage.name,
-        kind: row.stage.kind,
-      },
-      /** Present only while a human decision is genuinely outstanding, so the
-       *  ticket never has to infer "does this need me?" from stage kinds. */
-      review: awaitingDecision
-        ? {
-          question: reviewStageQuestion(row.stage),
-          config: reviewConfigForStage(row.stage),
-        }
-        : null,
-    };
-  });
+  return rows.map(shapeIssueLinkedCase);
 }
 
-/**
- * What the gate is actually asking, in the words whoever built the process
- * wrote. Absent for a gate that never declared one — the surface then says
- * plainly that no question was written rather than inventing one.
- */
-function reviewStageQuestion(stage: typeof pipelineStages.$inferSelect): string | null {
-  const config = stage.config as Record<string, unknown> | null | undefined;
-  const gate = config?.gate;
-  if (!gate || typeof gate !== "object" || Array.isArray(gate)) return null;
-  const prompt = (gate as Record<string, unknown>).prompt;
-  return typeof prompt === "string" && prompt.trim().length > 0 ? prompt.trim() : null;
-}
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;

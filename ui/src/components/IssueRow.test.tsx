@@ -102,7 +102,11 @@ describe("IssueRow", () => {
       root.render(<IssueRow issue={createIssue({ status: "in_progress" })} />);
     });
 
-    const glyphs = container.querySelectorAll('svg[viewBox="0 0 24 24"]');
+    // Scoped to the row's own glyphs: chip glyphs (the ticket type) are
+    // deliberately smaller than the status glyph, so a blanket "every icon is
+    // 16px" would assert a rule the row does not actually follow.
+    const glyphs = [...container.querySelectorAll('svg[viewBox="0 0 24 24"]')]
+      .filter((glyph) => !glyph.closest("[data-slot='badge']"));
     expect(glyphs.length).toBeGreaterThan(0);
     glyphs.forEach((glyph) => {
       expect(glyph.getAttribute("width")).toBe("16");
