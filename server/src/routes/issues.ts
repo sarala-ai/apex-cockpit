@@ -80,6 +80,7 @@ import {
   type IssueWakeDiagnosticsResponse,
   type IssueRelationIssueSummary,
   type IssueWatchdogDiscoveryKind,
+  type PipelineStepHold,
   type ProjectWorkspace,
   type SourceTrustMetadata,
   type SuccessfulRunHandoffState,
@@ -188,8 +189,13 @@ import {
   listTicketTypeOptions,
   startTicketLifecycle,
 } from "../apex/pipeline/ticket-lifecycle.js";
-import type { PipelineActor } from "../services/pipelines.js";
-import { isAwaitingHumanDecision, shapeIssueLinkedCase } from "../apex/pipeline/issue-lifecycle.js";
+import { readActiveStepHold, type PipelineActor } from "../services/pipelines.js";
+import { shapeStepHold } from "../apex/pipeline/step-hold.js";
+import {
+  isAwaitingHumanDecision,
+  shapeIssueLinkedCase,
+  shouldLoadStepHold,
+} from "../apex/pipeline/issue-lifecycle.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -269,8 +275,27 @@ async function listIssueLinkedCases(db: Db, companyId: string, issueId: string) 
     }
   }
 
+  // A STOPPED STEP, for the one link that reports the ticket's lifecycle.
+  // Same economics as the stage-name lookup above: almost every ticket has no
+  // live `work` case, so almost every load pays nothing, and a ticket with one
+  // pays a couple of indexed event lookups to answer the question a person
+  // opening it is most likely to have — "why has nothing happened?"
+  const holdRows = rows.filter((row) => shouldLoadStepHold(row));
+  const holdsByCaseId = new Map<string, PipelineStepHold>();
+  await Promise.all(holdRows.map(async (row) => {
+    const hold = shapeStepHold(
+      await readActiveStepHold(db, row.case, row.stage),
+      { stageName: row.stage.name },
+    );
+    if (hold) holdsByCaseId.set(row.case.id, hold);
+  }));
+
   return rows.map((row) =>
-    shapeIssueLinkedCase({ ...row, stageNames: stageNamesByPipeline.get(row.pipeline.id) })
+    shapeIssueLinkedCase({
+      ...row,
+      stageNames: stageNamesByPipeline.get(row.pipeline.id),
+      hold: holdsByCaseId.get(row.case.id) ?? null,
+    })
   );
 }
 

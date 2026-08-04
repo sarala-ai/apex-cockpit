@@ -31,6 +31,7 @@ import {
   PIPELINE_CONTEXT_PACK_EVENT_LIMIT,
   ensurePipelineCaseBodyDocumentFromSummary,
   pipelineService,
+  readActiveStepHold,
   resolvePipelineCaseConversationSource,
   type PipelineActor,
   type PipelineStageConfig,
@@ -52,6 +53,7 @@ import {
   PIPELINE_ATTENTION_MAX_LIMIT,
   type AttentionCaller,
 } from "../services/pipelines-aggregation.js";
+import { shapeStepHold } from "../apex/pipeline/step-hold.js";
 import { accessService } from "../services/access.js";
 import { authorizationService } from "../services/authorization.js";
 import { issueService } from "../services/issues.js";
@@ -2644,6 +2646,36 @@ async function latestBreakdownCreatedEvent(db: Db, companyId: string, caseId: st
     .then((rows) => rows[0] ?? null);
 }
 
+/**
+ * The liveness payload for a step that stopped.
+ *
+ * `state: "attention"` rather than `"blocked"` on purpose: "blocked" in this
+ * union means waiting on something else to finish, and a hold is not waiting
+ * on anything. It is waiting on a PERSON, which is the whole point of
+ * surfacing it. The `message` is the server's own recorded sentence; the
+ * client supplies the surrounding words and the "what to do" line.
+ */
+function stepHeldLiveness(
+  hold: NonNullable<PipelineCaseLiveness["hold"]>,
+  automation: typeof pipelineAutomationExecutions.$inferSelect | null,
+): PipelineCaseLiveness {
+  return {
+    state: "attention",
+    reason: "step_held",
+    message: hold.message ?? "This step stopped and the process cannot move on until it is dealt with.",
+    hold,
+    automation: automation
+      ? {
+        automationId: automation.automationId,
+        routineId: automation.routineId,
+        executionId: automation.id,
+        error: automation.error,
+        fingerprint: null,
+      }
+      : null,
+  };
+}
+
 async function derivePipelineCaseLiveness(
   db: Db,
   companyId: string,
@@ -2662,6 +2694,21 @@ async function derivePipelineCaseLiveness(
       state: "live",
       reason: "lease_active",
       message: "Pipeline item has an active lease.",
+    };
+  }
+
+  // A COMMISSIONED AGENT STEP IS RUNNING. Reported before anything else that
+  // could look like trouble, and it is the reason a re-run is refused rather
+  // than merely discouraged: a step parked at `waiting_agent` has a live
+  // commission against it, and starting a second one would put two agents on
+  // the same work. It also outranks the hold below, so a re-run of a failed
+  // step stops shouting the moment the fresh run starts and only shouts again
+  // if that one fails too.
+  if (row.case.stepStatus === "waiting_agent") {
+    return {
+      state: "live",
+      reason: "step_running",
+      message: "An agent is working on this step now.",
     };
   }
 
@@ -2754,6 +2801,19 @@ async function derivePipelineCaseLiveness(
     };
   }
 
+  // THE HOLD. Read before the automation ledger because it is the fact that
+  // actually stops the case: `assertStageTransitionGates` refuses every
+  // transition out of this step while it stands, and it carries the recorded
+  // sentence about what went wrong. The ledger's own failure state says only
+  // "an automation failed", and for an agent step recovered by the sweep there
+  // may be no failed ledger at all — which is exactly how a held case used to
+  // fall all the way through to `no_action_path` ("This item is stuck") and
+  // tell a person nothing.
+  const stepHold = shapeStepHold(
+    await readActiveStepHold(db, row.case, row.stage),
+    { stageName: row.stage.name },
+  );
+
   const latestAutomation = await db
     .select()
     .from(pipelineAutomationExecutions)
@@ -2796,6 +2856,11 @@ async function derivePipelineCaseLiveness(
         };
       }
     }
+    // A missing permission has its own recovery path (grant, then automatic
+    // retry) and must keep precedence. Anything else: if the step also
+    // recorded a hold, the hold's message is the specific one and wins over
+    // the ledger's generic "automation failed".
+    if (!fingerprint && stepHold) return stepHeldLiveness(stepHold, latestAutomation);
     return {
       state: fingerprint ? "blocked" : "attention",
       reason: fingerprint ? "permission_preflight_failed" : "automation_failed",
@@ -2811,6 +2876,8 @@ async function derivePipelineCaseLiveness(
       },
     };
   }
+
+  if (stepHold) return stepHeldLiveness(stepHold, null);
 
   const breakdownConfig = readStageBreakdownConfig(row.stage.config);
   if (breakdownConfig) {

@@ -90,6 +90,7 @@ export type {
   PipelineCaseOutputsResponse,
   PipelineCaseWorkProductOutputItem,
   PipelineStageAutomation,
+  PipelineStepHold,
 } from "./types/pipeline.js";
 export {
   analyzeFrontmatterBlock,

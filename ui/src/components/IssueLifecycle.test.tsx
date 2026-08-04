@@ -67,6 +67,7 @@ function linkedCase(overrides: Partial<IssueLinkedCase> = {}): IssueLinkedCase {
     pipeline: { id: "pipeline-1", key: "feature", name: "Feature" },
     stage: { id: "stage-1", key: "promote", name: "Promote", kind: "review" },
     review: null,
+    hold: null,
     ...overrides,
   };
 }
@@ -216,5 +217,79 @@ describe("a ticket parked at a human gate", () => {
     expect(container.textContent).toContain("Waiting for a decision");
     expect(container.textContent).toContain("Worth doing?");
     expect(container.textContent).toContain("Open the decision");
+  });
+});
+
+/**
+ * The regression this closes. The retired flow coordinator posted a
+ * plain-language comment on the ticket every time a step paused or failed; the
+ * pipeline host that replaced it wrote case events and nothing reached the
+ * ticket. A founder watching APEX-14 saw "on the Feature process, now at Spec"
+ * about work that had been stopped for hours with a recorded reason.
+ */
+describe("a ticket whose step has stopped", () => {
+  const HOLD = {
+    eventId: "event-1",
+    stageId: "stage-1",
+    stageKey: "spec",
+    stageName: "Spec",
+    reason: "agent_step_failure",
+    errorType: "run_cancelled",
+    message: "Cancelled because issue assignee changed before the queued run could start",
+    heldAt: "2026-07-27T10:00:00.000Z",
+  };
+
+  const held = {
+    linkedCases: [linkedCase({
+      stage: { id: "stage-1", key: "spec", name: "Spec", kind: "working" },
+      hold: HOLD,
+    })],
+  };
+
+  it("says it stopped, why, and what to do — at the weight of a gate, not a footnote", () => {
+    render(<IssueLifecycle issue={held} />);
+    const block = container.querySelector('[data-testid="issue-lifecycle-hold"]');
+
+    expect(block).not.toBeNull();
+    expect(container.querySelector('[data-testid="issue-lifecycle-position"]')).toBeNull();
+    expect(block!.textContent).toContain("This stopped at Spec");
+    expect(block!.textContent).toContain("The Feature process has stopped and will not carry on by itself.");
+    // The server's recorded reason, verbatim.
+    expect(container.querySelector('[data-testid="issue-lifecycle-hold-detail"]')?.textContent)
+      .toBe("Cancelled because issue assignee changed before the queued run could start");
+    // And the way out, on the ticket rather than left to be guessed at.
+    expect(container.querySelector('[data-testid="issue-lifecycle-hold-next-step"]')?.textContent)
+      .toContain("re-run this step");
+    expect([...container.querySelectorAll("a")].map((el) => el.getAttribute("href")))
+      .toContain("/pipelines/pipeline-1/items/case-1");
+  });
+
+  it("gives a pending decision the floor when a ticket somehow has both", () => {
+    render(
+      <IssueLifecycle
+        issue={{
+          linkedCases: [linkedCase({
+            hold: HOLD,
+            review: { question: GATE_CONFIG.gate.prompt, config: GATE_CONFIG, stageNames: STAGE_NAMES },
+          })],
+        }}
+      />,
+    );
+    // A gate can be answered here; a hold has to be cleared elsewhere.
+    expect(container.querySelector('[data-testid="issue-lifecycle-gate"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="issue-lifecycle-hold"]')).toBeNull();
+  });
+
+  it("stays quiet about a hold on a process that has already finished", () => {
+    // The server drops the hold for a terminal case; the strip must fall back
+    // to its quiet sentence rather than to nothing.
+    render(
+      <IssueLifecycle
+        issue={{ linkedCases: [linkedCase({ terminalKind: "done", status: "done", hold: null })] }}
+      />,
+    );
+    expect(container.querySelector('[data-testid="issue-lifecycle-hold"]')).toBeNull();
+    expect(container.querySelector('[data-testid="issue-lifecycle-position"]')?.textContent)
+      .toBe("Finished the Feature process, at Promote.");
   });
 });

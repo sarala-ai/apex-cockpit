@@ -10,6 +10,7 @@ import {
   pipelineBoardGroupByStorageKey,
   readStoredPipelineBoardGroupBy,
   readPipelineStageAutomationAssigneeAgentId,
+  currentStageEntryStep,
   writeStoredPipelineBoardGroupBy,
 } from "./Pipelines";
 
@@ -152,5 +153,57 @@ describe("pipeline conversation comments", () => {
         pageParams: [null],
       }),
     ).toEqual([]);
+  });
+});
+
+/**
+ * Whether "Re-run this step" is offered at all.
+ *
+ * This read `onEnter.type === "routine"` and nothing else, which is why the
+ * menu item was greyed out on exactly the steps that stop: a `run` step and an
+ * `agent` step dispatch through the same ledger as a routine and are what a
+ * hold is written about, but neither was recognised as something re-runnable.
+ */
+describe("currentStageEntryStep", () => {
+  const stage = (config: Record<string, unknown> | null) => ({
+    id: "stage-1",
+    pipelineId: "pipeline-1",
+    key: "spec",
+    name: "Spec",
+    kind: "working",
+    position: 100,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    config: config as any,
+  });
+
+  it("recognises an agent step — the kind APEX-14 was held on", () => {
+    expect(currentStageEntryStep(stage({
+      onEnter: { type: "agent", promptTemplate: "Draft the spec for {{title}}." },
+    }))).toEqual({ kind: "agent" });
+  });
+
+  it("recognises a run step, whichever target it declares", () => {
+    expect(currentStageEntryStep(stage({
+      onEnter: { type: "run", target: { type: "workflow", workflow: "open-pr" } },
+    }))).toEqual({ kind: "run" });
+    expect(currentStageEntryStep(stage({
+      onEnter: { type: "run", target: { type: "command", tool: "pytest" } },
+    }))).toEqual({ kind: "run" });
+  });
+
+  it("still recognises a routine, and keeps its id", () => {
+    expect(currentStageEntryStep(stage({
+      onEnter: { type: "routine", routineId: "routine-1" },
+    }))).toEqual({ kind: "routine", routineId: "routine-1" });
+  });
+
+  it("offers nothing for a step that runs nothing, or is only half written", () => {
+    expect(currentStageEntryStep(stage(null))).toBeNull();
+    expect(currentStageEntryStep(stage({}))).toBeNull();
+    expect(currentStageEntryStep(stage({ onEnter: { type: "gate" } }))).toBeNull();
+    // A half-written stage must not offer a re-run the server would refuse.
+    expect(currentStageEntryStep(stage({ onEnter: { type: "routine" } }))).toBeNull();
+    expect(currentStageEntryStep(stage({ onEnter: { type: "run" } }))).toBeNull();
+    expect(currentStageEntryStep(stage({ onEnter: { type: "agent", promptTemplate: "  " } }))).toBeNull();
   });
 });

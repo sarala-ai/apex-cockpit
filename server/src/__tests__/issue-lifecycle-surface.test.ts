@@ -11,6 +11,7 @@ import {
   isAwaitingHumanDecision,
   reviewStageQuestion,
   shapeIssueLinkedCase,
+  shouldLoadStepHold,
 } from "../apex/pipeline/issue-lifecycle.js";
 
 type StageInput = Parameters<typeof shapeIssueLinkedCase>[0]["stage"];
@@ -175,5 +176,52 @@ describe("the link role is carried through untouched", () => {
   it("keeps roles distinguishable so a bystander case is not read as the ticket's work", () => {
     expect(shapeIssueLinkedCase(row({ role: "work" })).role).toBe("work");
     expect(shapeIssueLinkedCase(row({ role: "conversation" })).role).toBe("conversation");
+  });
+});
+
+describe("a ticket whose step has stopped", () => {
+  const hold = {
+    eventId: "event-1",
+    stageId: "stage-1",
+    stageKey: "spec",
+    stageName: "Spec",
+    reason: "agent_step_failure",
+    errorType: "run_cancelled",
+    message: "Cancelled because issue assignee changed before the queued run could start",
+    heldAt: "2026-07-27T10:00:00.000Z",
+  };
+
+  it("carries the hold, with the reason the server actually recorded", () => {
+    const shaped = shapeIssueLinkedCase({
+      ...row({ stage: stage({ key: "spec", name: "Spec", kind: "working", config: {} }) }),
+      hold,
+    });
+
+    expect(shaped.hold).not.toBeNull();
+    expect(shaped.hold!.message).toBe(
+      "Cancelled because issue assignee changed before the queued run could start",
+    );
+    expect(shaped.hold!.reason).toBe("agent_step_failure");
+  });
+
+  it("drops a hold on a case whose process has already ended", () => {
+    // The work is over; nothing is waiting on anybody. Reporting the last hold
+    // would put an urgent-looking block on a finished ticket — the same
+    // mistake `isAwaitingHumanDecision` avoids for gates.
+    const shaped = shapeIssueLinkedCase({ ...row({ terminalKind: "done" }), hold });
+    expect(shaped.hold).toBeNull();
+  });
+
+  it("reports no hold when none was passed", () => {
+    expect(shapeIssueLinkedCase(row()).hold).toBeNull();
+  });
+
+  it("only pays for the lookup on a live case the ticket actually runs on", () => {
+    // A ticket is a bystander to conversation and automation cases; loading a
+    // hold for those buys a query per ticket load and a field no surface reads.
+    expect(shouldLoadStepHold({ link: { role: "work" }, case: { terminalKind: null } })).toBe(true);
+    expect(shouldLoadStepHold({ link: { role: "work" }, case: { terminalKind: "done" } })).toBe(false);
+    expect(shouldLoadStepHold({ link: { role: "conversation" }, case: { terminalKind: null } })).toBe(false);
+    expect(shouldLoadStepHold({ link: { role: "automation" }, case: { terminalKind: null } })).toBe(false);
   });
 });

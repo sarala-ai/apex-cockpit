@@ -125,6 +125,10 @@ import { queryKeys } from "../lib/queryKeys";
 import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { shouldDisableRerunForPermission, type LivenessRetryKind } from "../lib/pipeline-liveness";
+import {
+  describeTransitionConflict,
+  type TransitionConflictCopy,
+} from "../lib/pipeline-transition-conflict";
 import { cn, formatNumber, relativeTime } from "../lib/utils";
 import { issueStatusText, issueStatusTextDefault } from "../lib/status-colors";
 import { formatBytes } from "../lib/issue-output";
@@ -235,13 +239,48 @@ function itemCountLabel(count: number) {
   return `${count} ${count === 1 ? "item" : "items"}`;
 }
 
-function currentStageAutomation(stage: PipelineStage) {
+/**
+ * The step this stage runs on entry, whatever kind it is — or null when it
+ * runs none.
+ *
+ * This used to match `routine` and nothing else, and that single omission is
+ * why "Re-run this step" was greyed out on exactly the steps that stop. A
+ * `run` step and an `agent` step go through the SAME ledger as a routine
+ * (`enqueueStageAutomationLedger` handles all three), fail the same way, and
+ * are what a hold is written about — so a menu item keyed on "is this a
+ * routine?" was disabled in the one state it was built for.
+ *
+ * The kind is returned rather than discarded so a caller can say something
+ * specific; today nothing needs to, and that is fine — what matters is that
+ * "is there something to re-run?" is now answered honestly.
+ */
+export type CurrentStageEntryStep =
+  | { kind: "routine"; routineId: string }
+  | { kind: "run" }
+  | { kind: "agent" };
+
+export function currentStageEntryStep(stage: PipelineStage): CurrentStageEntryStep | null {
   const onEnter = stage.config?.onEnter;
   if (!onEnter || typeof onEnter !== "object" || Array.isArray(onEnter)) return null;
   const config = onEnter as Record<string, unknown>;
-  return config.type === "routine" && typeof config.routineId === "string" && config.routineId.trim()
-    ? { routineId: config.routineId }
-    : null;
+  if (config.type === "routine") {
+    return typeof config.routineId === "string" && config.routineId.trim()
+      ? { kind: "routine", routineId: config.routineId }
+      : null;
+  }
+  // Mirrors the server's readers: a `run` step needs a target it can actually
+  // execute and an `agent` step needs a prompt, so a half-written stage does
+  // not offer a re-run the server would refuse.
+  if (config.type === "run") {
+    const target = config.target;
+    return target && typeof target === "object" && !Array.isArray(target) ? { kind: "run" } : null;
+  }
+  if (config.type === "agent") {
+    return typeof config.promptTemplate === "string" && config.promptTemplate.trim()
+      ? { kind: "agent" }
+      : null;
+  }
+  return null;
 }
 
 function readNonEmptyConfigString(value: unknown) {
@@ -1635,15 +1674,13 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
         queryClient.invalidateQueries({ queryKey: queryKeys.pipelines.cases(pipelineId) }),
       ]);
     },
-    onError: (error) => {
-      pushToast({
-        title: "Move blocked",
-        body:
-          error instanceof ApiError && error.status === 409
-            ? "This item changed while you were looking. The board has been refreshed."
-            : "The item could not be moved.",
-        tone: "error",
-      });
+    // Every 409 used to read "This item changed while you were looking", which
+    // is true for a version conflict and a fabrication for every other reason
+    // the server refuses — a held step above all. Same mapping as the item
+    // page, so a refusal reads the same wherever a person meets it.
+    onError: (error: unknown) => {
+      const copy = describeTransitionConflict(error, { verb: "move" });
+      pushToast({ title: copy.title, body: copy.body, tone: "error" });
       queryClient.invalidateQueries({ queryKey: queryKeys.pipelines.detail(pipelineId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.pipelines.cases(pipelineId) });
     },
@@ -1973,6 +2010,10 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
   const [retryTargetStageId, setRetryTargetStageId] = useState<string | null>(null);
   const [selectedRetryCleanupIds, setSelectedRetryCleanupIds] = useState<Set<string>>(() => new Set());
   const [retryDialogError, setRetryDialogError] = useState<string | null>(null);
+  // The server's reason for refusing a move or a removal, kept so the dialog
+  // can show it instead of discarding it behind a toast.
+  const [moveConflict, setMoveConflict] = useState<TransitionConflictCopy | null>(null);
+  const [removeConflict, setRemoveConflict] = useState<TransitionConflictCopy | null>(null);
 
   const pipeline = useQuery({
     queryKey: queryKeys.pipelines.detail(pipelineId),
@@ -2641,13 +2682,21 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
         force: true,
       });
     },
+    onMutate: () => setMoveConflict(null),
     onSuccess: async () => {
       setMoveDialogOpen(false);
       setMoveStageKey("");
       await invalidateItem();
       pushToast({ title: "Item moved", tone: "success" });
     },
-    onError: () => pushToast({ title: "Could not move the item", tone: "error" }),
+    // The server answers a refusal with a code and a reason. Keep the dialog
+    // open and put the reason where the person is already looking, rather than
+    // closing it behind a toast that says only that something went wrong.
+    onError: (error: unknown) => {
+      const copy = describeTransitionConflict(error, { verb: "move" });
+      setMoveConflict(copy);
+      pushToast({ title: copy.title, body: copy.body, tone: "error" });
+    },
   });
   const removeItem = useMutation({
     mutationFn: () => {
@@ -2658,13 +2707,18 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
         reason: "Removed from the item detail page.",
       });
     },
+    onMutate: () => setRemoveConflict(null),
     onSuccess: async () => {
       setRemoveDialogOpen(false);
       await invalidateItem();
       pushToast({ title: "Item removed", tone: "success" });
       navigate(`/pipelines/${pipelineId}`);
     },
-    onError: () => pushToast({ title: "Could not remove the item", tone: "error" }),
+    onError: (error: unknown) => {
+      const copy = describeTransitionConflict(error, { verb: "remove" });
+      setRemoveConflict(copy);
+      pushToast({ title: copy.title, body: copy.body, tone: "error" });
+    },
   });
 
   const reviewConfig = useMemo(
@@ -2737,11 +2791,23 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
   );
   const banner = getPendingTransitionBannerState(detail.case, stageLookup);
   const statusLabel = humanizePipelineItemStatus(detail.case.terminalKind ?? detail.stage.kind);
-  const stageAutomation = currentStageAutomation(detail.stage);
+  const stageEntryStep = currentStageEntryStep(detail.stage);
   const previousRetryPlan = previousRetryAvailability.data;
   // Don't let the operator re-run automation into the same 403 — they must get
   // the grant first. The banner's "Request access" path is the way out.
   const rerunBlockedByPermission = shouldDisableRerunForPermission(detail.liveness);
+  // THE ONE GENUINELY UNSAFE CASE. A commissioned agent step is running right
+  // now; a second commission would put two agents on the same work. Refused
+  // out loud, with the reason attached — never silently, which is how this
+  // affordance came to be dead in the state it exists for.
+  const rerunBlockedByRunInFlight = detail.liveness?.reason === "step_running";
+  const rerunDisabledReason = !stageEntryStep
+    ? "This step runs nothing on its own, so there is nothing to re-run."
+    : rerunBlockedByRunInFlight
+      ? "An agent is working on this step right now. Wait for that run to finish before starting another."
+      : rerunBlockedByPermission
+        ? "Permission still missing — request access first"
+        : null;
   const childRows = normalizePipelineChildRows(children.data);
   const eventRows = events.data?.items ?? [];
   const activeWork = detail.activeWork ?? null;
@@ -2850,8 +2916,8 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem
-                  disabled={!stageAutomation || rerunCurrentStageAutomation.isPending || rerunBlockedByPermission}
-                  title={rerunBlockedByPermission ? "Permission still missing — request access first" : undefined}
+                  disabled={Boolean(rerunDisabledReason) || rerunCurrentStageAutomation.isPending}
+                  title={rerunDisabledReason ?? undefined}
                   onSelect={(event) => {
                     event.preventDefault();
                     setRetryTargetStageId(null);
@@ -2910,7 +2976,13 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
         </div>
       </div>
 
-      <Dialog open={moveDialogOpen} onOpenChange={setMoveDialogOpen}>
+      <Dialog
+        open={moveDialogOpen}
+        onOpenChange={(open) => {
+          setMoveDialogOpen(open);
+          if (!open) setMoveConflict(null);
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Move to stage</DialogTitle>
@@ -2944,6 +3016,16 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
                 </SelectContent>
               </Select>
             </label>
+            {moveConflict ? (
+              <div
+                role="alert"
+                data-testid="pipeline-move-conflict"
+                className="rounded-sm border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"
+              >
+                <p className="font-medium">{moveConflict.title}</p>
+                <p className="mt-1 opacity-90">{moveConflict.body}</p>
+              </div>
+            ) : null}
           </div>
           <DialogFooter>
             <Button
@@ -3424,7 +3506,13 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
         </aside>
       </div>
 
-      <Dialog open={removeDialogOpen} onOpenChange={setRemoveDialogOpen}>
+      <Dialog
+        open={removeDialogOpen}
+        onOpenChange={(open) => {
+          setRemoveDialogOpen(open);
+          if (!open) setRemoveConflict(null);
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Remove item</DialogTitle>
@@ -3432,6 +3520,16 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
               This moves the item out of active work. It stays visible in the pipeline history.
             </DialogDescription>
           </DialogHeader>
+          {removeConflict ? (
+            <div
+              role="alert"
+              data-testid="pipeline-remove-conflict"
+              className="rounded-sm border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"
+            >
+              <p className="font-medium">{removeConflict.title}</p>
+              <p className="mt-1 opacity-90">{removeConflict.body}</p>
+            </div>
+          ) : null}
           <DialogFooter>
             <Button variant="outline" onClick={() => setRemoveDialogOpen(false)}>Keep item</Button>
             <Button variant="destructive" onClick={() => removeItem.mutate()} disabled={removeItem.isPending || !removeStage}>

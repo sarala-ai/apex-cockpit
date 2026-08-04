@@ -1307,6 +1307,32 @@ function stageAutomation(stage: typeof pipelineStages.$inferSelect) {
   };
 }
 
+/**
+ * The entry step a stage declares, in the ONE shape every caller that asks
+ * "can this step be run again?" needs.
+ *
+ * Three call sites used to spell this out independently — the ledger enqueue,
+ * the re-run endpoint and the retry plan — and two of the three spelled it
+ * `stageAutomation(stage)`, which matches a routine and nothing else. That is
+ * why a `run` or `agent` step could be dispatched on stage entry but never
+ * re-run afterwards: the machinery that STARTS a step knew about all three
+ * kinds and the machinery that RECOVERS one knew about a third of them.
+ */
+type StageEntryStep =
+  | { id: string; kind: "routine"; routineId: string }
+  | { id: string; kind: "run" }
+  | { id: string; kind: "agent" };
+
+function stageEntryStep(stage: typeof pipelineStages.$inferSelect): StageEntryStep | null {
+  const automation = stageAutomation(stage);
+  if (automation) return { id: automation.id, kind: "routine", routineId: automation.routineId };
+  const run = stageRunStep(stage);
+  if (run) return { id: run.id, kind: "run" };
+  const agent = stageAgentStep(stage);
+  if (agent) return { id: agent.id, kind: "agent" };
+  return null;
+}
+
 /** Parse a declared run target into the executor's union, or null. */
 function readRunTarget(raw: NonNullable<PipelineStageConfig["onEnter"]>["target"]): RunTarget | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
@@ -2378,8 +2404,13 @@ async function latestStageEntryAt(db: PipelineDb, caseId: string, stageId: strin
 }
 
 /** The hold currently binding on this stage visit, or null. A `step_held`
- *  with no later `step_hold_cleared` is a hold. */
-async function readActiveStepHold(
+ *  with no later `step_hold_cleared` is a hold.
+ *
+ *  Exported because the READERS live outside this service: the case liveness
+ *  payload and the ticket's lifecycle strip both have to be able to say a step
+ *  stopped, and re-deriving "is there a live hold" from raw events at each
+ *  call site is how two surfaces come to disagree about the same case. */
+export async function readActiveStepHold(
   db: PipelineDb,
   current: typeof pipelineCases.$inferSelect,
   stage: typeof pipelineStages.$inferSelect,
@@ -3008,12 +3039,9 @@ async function enqueueStageAutomationLedger(
   // `automation_executed` / `automation_failed` events already live here, and
   // a parallel table per kind would duplicate all of them. Only a routine
   // carries a routine id (0169/0170).
-  const automation = stageAutomation(input.stage);
-  const runStep = automation ? null : stageRunStep(input.stage);
-  const agentStep = automation || runStep ? null : stageAgentStep(input.stage);
-  const entry = automation ?? runStep ?? agentStep;
+  const entry = stageEntryStep(input.stage);
   if (!entry) return null;
-  const kind = automation ? "routine" : runStep ? "run" : "agent";
+  const kind = entry.kind;
   const [ledger] = await db
     .insert(pipelineAutomationExecutions)
     .values({
@@ -3022,7 +3050,7 @@ async function enqueueStageAutomationLedger(
       automationId: entry.id,
       triggeringEventId: input.eventId,
       kind,
-      routineId: automation?.routineId ?? null,
+      routineId: entry.kind === "routine" ? entry.routineId : null,
       status: "failed",
       retryOfExecutionId: input.retryOfExecutionId ?? null,
       generation: input.generation ?? 1,
@@ -3458,7 +3486,15 @@ export function pipelineService(
       ? availableTargetStages.find((stage) => stage.id === requestedTargetStageId) ?? null
       : availableTargetStages[0] ?? null;
     const targetStage = input.scope === "current_stage" ? detail.stage : selectedUpstreamStage;
-    const automation = targetStage ? stageAutomation(targetStage) : null;
+    // The plan reasons about the ENTRY STEP, whatever kind it is. Reading only
+    // `stageAutomation` here meant the preflight for a `run` or `agent` step
+    // reported "does not have compatible automation configured" and disabled
+    // its own primary button — so even once the menu item was reachable, the
+    // dialog behind it refused. A routine is the only kind with a routine to
+    // look up; the rest of the plan (effects, blockers, previous attempt) is
+    // kind-independent and always was.
+    const entry = targetStage ? stageEntryStep(targetStage) : null;
+    const automation = entry?.kind === "routine" ? entry : null;
     const routine = automation
       ? await dbOrTx
         .select({
@@ -3475,14 +3511,14 @@ export function pipelineService(
         .limit(1)
         .then((rows) => rows[0] ?? null)
       : null;
-    const previousAttempt = automation
+    const previousAttempt = entry
       ? await dbOrTx
         .select()
         .from(pipelineAutomationExecutions)
         .where(and(
           eq(pipelineAutomationExecutions.companyId, input.companyId),
           eq(pipelineAutomationExecutions.caseId, input.caseId),
-          eq(pipelineAutomationExecutions.automationId, automation.id),
+          eq(pipelineAutomationExecutions.automationId, entry.id),
         ))
         .orderBy(desc(pipelineAutomationExecutions.generation), desc(pipelineAutomationExecutions.createdAt))
         .limit(1)
@@ -3518,7 +3554,7 @@ export function pipelineService(
           },
         }
         : { kind: "previous_stage_not_found", message: "No previous automated stage was found for this item." });
-    } else if (!automation || !routine) {
+    } else if (!entry || (automation && !routine)) {
       blockers.push({ kind: "automation_not_configured", message: "Target stage does not have compatible automation configured." });
     }
     if (effects.unresolvedBlockerCaseIds.length > 0) {
@@ -3576,7 +3612,7 @@ export function pipelineService(
       currentStage: stageRef(detail.stage),
       targetStage: targetStage ? stageRef(targetStage) : null,
       availableTargetStages: availableTargetStages.map(stageRef),
-      automationId: automation?.id ?? null,
+      automationId: entry?.id ?? null,
       routine: routine
         ? {
           id: routine.id,
@@ -6899,8 +6935,18 @@ export function pipelineService(
     }) {
       const ledger = await db.transaction(async (tx) => {
         const detail = await getCaseWithStageForUpdateOrThrow(tx, input.companyId, input.caseId);
-        const automation = stageAutomation(detail.stage);
-        if (!automation) {
+        // EVERY entry kind is re-runnable, not just a routine.
+        //
+        // Reading `stageAutomation` here — which matches `onEnter.type ===
+        // "routine"` and nothing else — is why "Re-run this step" was dead on
+        // exactly the steps that hold. A run step and an agent step both
+        // enqueue through the same ledger (`enqueueStageAutomationLedger`
+        // handles all three kinds), both write `automation_failed`, and both
+        // are what `step_held` is written ABOUT. Refusing to re-run them left
+        // the one recovery affordance the product has unavailable in the one
+        // state it exists for.
+        const entry = stageEntryStep(detail.stage);
+        if (!entry) {
           throw unprocessable("Current stage does not have entry automation configured", {
             code: "automation_not_configured",
           });
@@ -6913,8 +6959,9 @@ export function pipelineService(
           toStageId: detail.stage.id,
           payload: {
             action: "stage_automation_rerun_requested",
-            automationId: automation.id,
-            routineId: automation.routineId,
+            automationId: entry.id,
+            kind: entry.kind,
+            routineId: entry.kind === "routine" ? entry.routineId : null,
             stageId: detail.stage.id,
             stageKey: detail.stage.key,
           },

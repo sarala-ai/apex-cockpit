@@ -382,6 +382,83 @@ describeEmbeddedPostgres("pipeline stage step config — the run step and its ac
     ).rejects.toMatchObject({ status: 409, details: { code: "stage_held" } });
   });
 
+  /**
+   * The recovery half of the hold.
+   *
+   * A hold with no way out is a dead end, and that is what this was: the
+   * re-run endpoint read `stageAutomation`, which matches `onEnter.type ===
+   * "routine"` and nothing else, so the one affordance that could clear a held
+   * `run` or `agent` step answered `automation_not_configured`. The step that
+   * CAN stop was the step that could not be restarted.
+   */
+  it("re-runs a held run step, and the successful re-run clears the hold", async () => {
+    let exitOk = false;
+    const runner: StepTargetRunner = {
+      runWorkflow: async () => (exitOk
+        ? { ok: true, detail: {} }
+        : { ok: false, errorType: "workflow_failed", message: "step 2 failed" }),
+      runCommand: async () => ({ ok: true, detail: {} }),
+    };
+    const svc = serviceWith(runner);
+    const { company, pipeline, byKey } = await seedPipeline(svc);
+
+    await svc.updateStage({
+      companyId: company.id,
+      pipelineId: pipeline.id,
+      stageId: byKey.get("in_progress")!.id,
+      patch: { config: { onEnter: { type: "run", target: { type: "workflow", workflow: "open-pr" } } } },
+    });
+
+    const created = await svc.ingestCase({
+      companyId: company.id,
+      pipelineId: pipeline.id,
+      caseKey: "APE-14",
+      title: "A held run step can be re-run",
+      actor: userActor,
+    });
+    await svc.transitionCase({
+      companyId: company.id,
+      caseId: created.case.id,
+      toStageKey: "in_progress",
+      expectedVersion: created.case.version,
+      actor: userActor,
+    });
+    expect(await eventsOfType(created.case.id, "step_held")).toHaveLength(1);
+
+    // The plan behind the dialog must not refuse it either — it read the same
+    // routine-only accessor and reported "no compatible automation".
+    const plan = await svc.getAutomationRetryPlan({
+      companyId: company.id,
+      caseId: created.case.id,
+      scope: "current_stage",
+    });
+    expect(plan.blockers.map((blocker) => blocker.kind)).not.toContain("automation_not_configured");
+    expect(plan.allowed).toBe(true);
+
+    exitOk = true;
+    const rerun = await svc.rerunCurrentStageAutomation({
+      companyId: company.id,
+      caseId: created.case.id,
+      actor: userActor,
+    });
+    expect(rerun.automationExecution.status).toBe("succeeded");
+
+    // A hold is cleared by SUCCESS, not by intent: the clearing event is
+    // written by the run's own exit status, not by the act of asking.
+    expect(await eventsOfType(created.case.id, "step_hold_cleared")).toHaveLength(1);
+
+    // And the case can now leave the step it was stuck on.
+    const current = await currentStageKey(created.case.id);
+    await svc.transitionCase({
+      companyId: company.id,
+      caseId: created.case.id,
+      toStageKey: "review",
+      expectedVersion: current.version,
+      actor: userActor,
+    });
+    expect((await currentStageKey(created.case.id)).stepKey).toBe("review");
+  });
+
   it("routes a non-zero exit to onFailureToStageKey when the stage declares one", async () => {
     const { runner } = stubRunner({ ok: false, errorType: "workflow_failed", message: "boom" });
     const svc = serviceWith(runner);

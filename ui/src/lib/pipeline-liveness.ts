@@ -1,4 +1,5 @@
 import type { PipelineCaseLiveness } from "@paperclipai/shared";
+import { describeStepHold } from "./step-hold";
 
 /**
  * Visual tone for a pipeline item liveness banner. Each tone maps to a palette
@@ -96,6 +97,7 @@ export function derivePipelineLivenessBanner(
     // Handled elsewhere or not "stuck" — no banner.
     case "terminal":
     case "lease_active":
+    case "step_running":
     case "linked_issue_active":
     case "linked_issue_waiting":
     case "children_waiting":
@@ -166,6 +168,31 @@ export function derivePipelineLivenessBanner(
         retryKind: automationId ? "automation" : "stage",
         retryLabel: "Retry now",
         helperNote: recovered ? AUTO_RETRY_NOTE : null,
+      };
+    }
+
+    // A STEP THAT STOPPED. The server has always known this and always
+    // refused to let the item leave the step because of it; until now nothing
+    // rendered it, so the item read "In progress" with no sign of trouble.
+    // Distinct from `automation_failed` in the one way that matters to the
+    // reader: this one carries the recorded reason for THIS item, so the body
+    // says what happened rather than that something did.
+    case "step_held": {
+      // No step name in the headline here: the page header already says which
+      // step this is, two lines above the banner.
+      const copy = describeStepHold(liveness.hold, { stepName: null });
+      return {
+        reason: liveness.reason,
+        tone: "attention",
+        title: copy?.headline ?? "This step stopped and needs you",
+        body: [copy?.detail, copy?.nextStep].filter(Boolean).join(" "),
+        blockerLink: null,
+        automationLink: automationLinkFromLiveness(liveness),
+        permissionKey: null,
+        showRetry: true,
+        retryKind: "stage",
+        retryLabel: "Re-run this step",
+        helperNote: null,
       };
     }
 
