@@ -723,7 +723,7 @@ export function approvalRoutes(
     assertCompanyAccess(req, approval.companyId);
 
     if (approval.type !== PIPELINE_GATE_APPROVAL_TYPE) {
-      res.json({ available: false, reason: "not_a_gate_approval" });
+      res.json({ available: false, reason: "not_a_flow_gate_approval" });
       return;
     }
     const payload = approval.payload as Record<string, unknown>;
@@ -778,7 +778,7 @@ export function approvalRoutes(
     if (!(await assertApprovalAccessAllowed(req, res, approval.companyId))) return;
 
     if (approval.type !== PIPELINE_GATE_APPROVAL_TYPE) {
-      res.json({ available: false, reason: "not_a_gate_approval" });
+      res.json({ available: false, reason: "not_a_flow_gate_approval" });
       return;
     }
     const payload = approval.payload as Record<string, unknown>;

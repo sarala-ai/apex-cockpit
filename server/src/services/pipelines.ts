@@ -52,6 +52,7 @@ import type { ProcessDefinition, ProcessStep } from "../apex/steps/process-defin
 import { isMachineEvaluableAcceptance } from "../apex/steps/agent-step.js";
 import { validateReviewPassIds } from "../apex/steps/review-passes.js";
 import {
+  clearStepRunPermissionOverride,
   commissionBoundedAgentRun,
   STEP_AGENT_CONTEXT_KEY,
   STEP_TERMINAL_RUN_STATUSES,
@@ -5210,6 +5211,7 @@ export function pipelineService(
     }
     if (!wasTerminal && isTerminal) {
       await handleChildrenTerminal(tx, input.companyId, current.parentCaseId, input.automationLedgers);
+      await releaseGovernedPermissionOverride(tx, input.companyId, current.id);
     }
     if (!isTerminal) {
       await maybeAutoAdvanceOnStageEntry(tx, {
@@ -5264,6 +5266,53 @@ export function pipelineService(
       // Best-effort: an unsatisfied gate (drift, approval) on the chained
       // advance must not roll back the transition that entered this stage.
       if (!(error instanceof HttpError)) throw error;
+    }
+  }
+
+  /**
+   * Undo the governed adapter-config override an agent step wrote on the case's
+   * conversation issue.
+   *
+   * Terminal is the ONLY safe moment. `commissionBoundedAgentRun` writes the
+   * bounded permission profile onto `issues.assigneeAdapterOverrides` before
+   * the wakeup, because a dispatch reads it asynchronously — undoing it any
+   * earlier races the run it governs, and undoing it between a process's own
+   * sequential agent steps would un-govern the next one.
+   *
+   * Not doing this at all was the shape of the drop this collapse was written
+   * to find: the flow coordinator cleared it on completion, failure and
+   * abandonment, and the pipeline host inherited the apply without the clear.
+   * The consequence is invisible and durable — a ticket whose process finished
+   * keeps a bounded profile forever, so a HUMAN opening that same agent on that
+   * same ticket silently runs restricted, with nothing on screen saying why.
+   *
+   * Best-effort by design: the case has legitimately reached its terminal
+   * stage, and failing that transition to tidy up an override would be the
+   * worse outcome.
+   */
+  async function releaseGovernedPermissionOverride(
+    tx: PipelineDb,
+    companyId: string,
+    caseId: string,
+  ): Promise<void> {
+    try {
+      const links = await tx
+        .select({ issueId: pipelineCaseIssueLinks.issueId })
+        .from(pipelineCaseIssueLinks)
+        .where(and(
+          eq(pipelineCaseIssueLinks.companyId, companyId),
+          eq(pipelineCaseIssueLinks.caseId, caseId),
+          isNull(pipelineCaseIssueLinks.retiredAt),
+        ));
+      for (const link of links) {
+        await clearStepRunPermissionOverride(tx as unknown as Db, link.issueId);
+      }
+    } catch (err) {
+      logger.error(
+        { err, caseId, companyId },
+        "pipeline case: failed to clear the governed permission override at terminal " +
+          "(classified: permission_override_release_failed)",
+      );
     }
   }
 

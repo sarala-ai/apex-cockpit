@@ -605,6 +605,52 @@ describeEmbeddedPostgres("pipelineService", () => {
     expect(events.map((event) => event.type)).toContain("blockers_resolved");
   });
 
+  it("releases the governed permission override when the case reaches a terminal stage", async () => {
+    // The drop this collapse was written to catch, in its general form. An
+    // agent step writes a bounded permission profile onto the case's
+    // conversation issue before every commission, and the flow coordinator
+    // cleared it at flow-terminal. The pipeline host inherited the apply and
+    // not the clear, so a finished ticket kept a bounded profile FOREVER —
+    // and the next human to open that agent on that ticket would silently run
+    // restricted, with nothing on screen saying why.
+    const { company, pipeline } = await seedPipeline();
+    const ingested = await svc.ingestCase({
+      companyId: company.id,
+      pipelineId: pipeline.id,
+      caseKey: "governed-release",
+      title: "A governed step ran here",
+      actor: userActor,
+    });
+    const issue = await seedLinkedIssue({
+      companyId: company.id,
+      caseId: ingested.case.id,
+      role: "work",
+    });
+    // What a commission leaves behind, plus a key the operator set themselves.
+    await db
+      .update(issues)
+      .set({
+        assigneeAdapterOverrides: {
+          dangerouslySkipPermissions: false,
+          allowedTools: ["Read", "Grep"],
+          model: "operator-choice",
+        } as never,
+      })
+      .where(eq(issues.id, issue.id));
+
+    await svc.transitionCase({
+      companyId: company.id,
+      caseId: ingested.case.id,
+      toStageKey: "done",
+      expectedVersion: ingested.case.version,
+      actor: userActor,
+    });
+
+    const [after] = await db.select().from(issues).where(eq(issues.id, issue.id));
+    // Only the two permission keys go. What a human put there is theirs.
+    expect(after!.assigneeAdapterOverrides).toEqual({ model: "operator-choice" });
+  });
+
   it("emits blockers_resolved once for each fresh blocker set", async () => {
     const { company, pipeline } = await seedPipeline();
     const blocked = await svc.ingestCase({
