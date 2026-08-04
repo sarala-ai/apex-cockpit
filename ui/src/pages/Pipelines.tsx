@@ -125,6 +125,10 @@ import { queryKeys } from "../lib/queryKeys";
 import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { shouldDisableRerunForPermission, type LivenessRetryKind } from "../lib/pipeline-liveness";
+import {
+  describeTransitionConflict,
+  type TransitionConflictCopy,
+} from "../lib/pipeline-transition-conflict";
 import { cn, formatNumber, relativeTime } from "../lib/utils";
 import { issueStatusText, issueStatusTextDefault } from "../lib/status-colors";
 import { formatBytes } from "../lib/issue-output";
@@ -1670,15 +1674,13 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
         queryClient.invalidateQueries({ queryKey: queryKeys.pipelines.cases(pipelineId) }),
       ]);
     },
-    onError: (error) => {
-      pushToast({
-        title: "Move blocked",
-        body:
-          error instanceof ApiError && error.status === 409
-            ? "This item changed while you were looking. The board has been refreshed."
-            : "The item could not be moved.",
-        tone: "error",
-      });
+    // Every 409 used to read "This item changed while you were looking", which
+    // is true for a version conflict and a fabrication for every other reason
+    // the server refuses — a held step above all. Same mapping as the item
+    // page, so a refusal reads the same wherever a person meets it.
+    onError: (error: unknown) => {
+      const copy = describeTransitionConflict(error, { verb: "move" });
+      pushToast({ title: copy.title, body: copy.body, tone: "error" });
       queryClient.invalidateQueries({ queryKey: queryKeys.pipelines.detail(pipelineId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.pipelines.cases(pipelineId) });
     },
@@ -2008,6 +2010,10 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
   const [retryTargetStageId, setRetryTargetStageId] = useState<string | null>(null);
   const [selectedRetryCleanupIds, setSelectedRetryCleanupIds] = useState<Set<string>>(() => new Set());
   const [retryDialogError, setRetryDialogError] = useState<string | null>(null);
+  // The server's reason for refusing a move or a removal, kept so the dialog
+  // can show it instead of discarding it behind a toast.
+  const [moveConflict, setMoveConflict] = useState<TransitionConflictCopy | null>(null);
+  const [removeConflict, setRemoveConflict] = useState<TransitionConflictCopy | null>(null);
 
   const pipeline = useQuery({
     queryKey: queryKeys.pipelines.detail(pipelineId),
@@ -2676,13 +2682,21 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
         force: true,
       });
     },
+    onMutate: () => setMoveConflict(null),
     onSuccess: async () => {
       setMoveDialogOpen(false);
       setMoveStageKey("");
       await invalidateItem();
       pushToast({ title: "Item moved", tone: "success" });
     },
-    onError: () => pushToast({ title: "Could not move the item", tone: "error" }),
+    // The server answers a refusal with a code and a reason. Keep the dialog
+    // open and put the reason where the person is already looking, rather than
+    // closing it behind a toast that says only that something went wrong.
+    onError: (error: unknown) => {
+      const copy = describeTransitionConflict(error, { verb: "move" });
+      setMoveConflict(copy);
+      pushToast({ title: copy.title, body: copy.body, tone: "error" });
+    },
   });
   const removeItem = useMutation({
     mutationFn: () => {
@@ -2693,13 +2707,18 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
         reason: "Removed from the item detail page.",
       });
     },
+    onMutate: () => setRemoveConflict(null),
     onSuccess: async () => {
       setRemoveDialogOpen(false);
       await invalidateItem();
       pushToast({ title: "Item removed", tone: "success" });
       navigate(`/pipelines/${pipelineId}`);
     },
-    onError: () => pushToast({ title: "Could not remove the item", tone: "error" }),
+    onError: (error: unknown) => {
+      const copy = describeTransitionConflict(error, { verb: "remove" });
+      setRemoveConflict(copy);
+      pushToast({ title: copy.title, body: copy.body, tone: "error" });
+    },
   });
 
   const reviewConfig = useMemo(
@@ -2957,7 +2976,13 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
         </div>
       </div>
 
-      <Dialog open={moveDialogOpen} onOpenChange={setMoveDialogOpen}>
+      <Dialog
+        open={moveDialogOpen}
+        onOpenChange={(open) => {
+          setMoveDialogOpen(open);
+          if (!open) setMoveConflict(null);
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Move to stage</DialogTitle>
@@ -2991,6 +3016,16 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
                 </SelectContent>
               </Select>
             </label>
+            {moveConflict ? (
+              <div
+                role="alert"
+                data-testid="pipeline-move-conflict"
+                className="rounded-sm border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"
+              >
+                <p className="font-medium">{moveConflict.title}</p>
+                <p className="mt-1 opacity-90">{moveConflict.body}</p>
+              </div>
+            ) : null}
           </div>
           <DialogFooter>
             <Button
@@ -3471,7 +3506,13 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
         </aside>
       </div>
 
-      <Dialog open={removeDialogOpen} onOpenChange={setRemoveDialogOpen}>
+      <Dialog
+        open={removeDialogOpen}
+        onOpenChange={(open) => {
+          setRemoveDialogOpen(open);
+          if (!open) setRemoveConflict(null);
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Remove item</DialogTitle>
@@ -3479,6 +3520,16 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
               This moves the item out of active work. It stays visible in the pipeline history.
             </DialogDescription>
           </DialogHeader>
+          {removeConflict ? (
+            <div
+              role="alert"
+              data-testid="pipeline-remove-conflict"
+              className="rounded-sm border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"
+            >
+              <p className="font-medium">{removeConflict.title}</p>
+              <p className="mt-1 opacity-90">{removeConflict.body}</p>
+            </div>
+          ) : null}
           <DialogFooter>
             <Button variant="outline" onClick={() => setRemoveDialogOpen(false)}>Keep item</Button>
             <Button variant="destructive" onClick={() => removeItem.mutate()} disabled={removeItem.isPending || !removeStage}>

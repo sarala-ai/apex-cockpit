@@ -383,6 +383,22 @@ export function formatPipelineItemEvent(event: PipelineCaseEvent, stages?: Stage
     const reason = readString(payload.error);
     return `Automation needs attention${reason ? ` — ${humanizeReason(reason)}` : ""}.`;
   }
+  // The events a stopped step writes. Without these the timeline rendered the
+  // decisive moment in a case's life as "Activity recorded." — the fallback —
+  // which is how a case could be visibly stuck with a history that never said
+  // it stopped.
+  if (kind === "step_held") {
+    const message = readString(payload.message);
+    return `This step stopped${message ? ` — ${message}` : " and is waiting for someone"}.`;
+  }
+  if (kind === "step_hold_cleared") return "The step is unstuck and the work can carry on.";
+  if (kind === "step_waiting") return "Handed to an agent to work on.";
+  if (kind === "step_resumed") return "Picked back up after the agent's run.";
+  if (kind === "acceptance_evaluated") {
+    if (payload.ok === true) return "Checked against what this step asks for — passed.";
+    const message = readString(payload.message);
+    return `Checked against what this step asks for — not met${message ? `: ${message}` : ""}.`;
+  }
   if (kind === "claimed") return "Work started.";
   if (kind === "lease_released" || kind === "lease_expired") return "Work handoff cleared.";
   return "Activity recorded.";
