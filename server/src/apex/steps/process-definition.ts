@@ -1,7 +1,7 @@
 /**
  * THE process definition — one shape, database-backed.
  *
- * This module used to be `apex/flow/definition.ts`, where the same types were
+ * This module used to be the flow front-end's `definition.ts`, where the same types were
  * parsed out of `apex flows show <name> --output json` (git YAML in apex-core).
  * The founder overruled that: *"we should add those nodes cleanly as pipeline
  * steps or features and the git should be discarded and moved to db for

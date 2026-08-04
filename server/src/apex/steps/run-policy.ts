@@ -1,20 +1,20 @@
 /**
- * Permission policy for FLOW-COMMISSIONED agent runs (founder-approved
- * design, see server/src/apex/flow/coordinator.ts).
+ * Permission policy for STEP-COMMISSIONED agent runs (founder-approved
+ * design, see ./commission.ts).
  *
  * The problem this closes: the claude_local adapter defaults
  * `dangerouslySkipPermissions=true` for local execution targets
  * (packages/adapters/claude-local/src/server/execute.ts, `asBoolean(config.
  * dangerouslySkipPermissions, true)`) — a reasonable default for a human
  * sitting at the keyboard who can answer a permission prompt, but wrong for
- * a run the flow coordinator commissions unattended off a heartbeat wakeup
- * (server/src/apex/flow/coordinator.ts `defaultCommissionAgentRun`): nothing
- * is present to answer an interactive prompt, and full bypass on a
- * self-directed run is a needlessly large blast radius. Interactive,
- * human-started runs are NOT touched by anything in this module — this is
- * additive governance for the flow-commissioned path only.
+ * a run an agent step commissions unattended off a heartbeat wakeup
+ * (./commission.ts `commissionBoundedAgentRun`): nothing is present to answer
+ * an interactive prompt, and full bypass on a self-directed run is a
+ * needlessly large blast radius. Interactive, human-started runs are NOT
+ * touched by anything in this module — this is additive governance for the
+ * step-commissioned path only.
  *
- * Profiles (declared per agent node under `permissions.profile` — see the
+ * Profiles (declared per agent step under `permissions.profile` — see the
  * core-schema note below):
  *   - "bounded" (DEFAULT): workspace-scoped native tools. No
  *     dangerously-skip-permissions; an explicit --allowedTools grant is
