@@ -8,6 +8,7 @@ import { authApi } from "../api/auth";
 import { dashboardApi } from "../api/dashboard";
 import { heartbeatsApi } from "../api/heartbeats";
 import { issuesApi } from "../api/issues";
+import { stoppedStepsApi } from "../api/stoppedSteps";
 import { queryKeys } from "../lib/queryKeys";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "./useSharedPolling";
 import {
@@ -20,11 +21,14 @@ import {
   saveReadInboxItems,
   READ_ITEMS_KEY,
 } from "../lib/inbox";
+import type { PipelineStoppedStep } from "@paperclipai/shared";
 
 const INBOX_ISSUE_STATUSES = "backlog,todo,in_progress,in_review,blocked,done";
 const INBOX_BADGE_ISSUE_LIMIT = 500;
 const INBOX_BADGE_HEARTBEAT_RUN_LIMIT = 200;
 const INBOX_BADGE_HOT_PATH_STALE_MS = 30_000;
+/** Stable identity so an empty result does not re-run the badge memo. */
+const EMPTY_STOPPED_STEPS: PipelineStoppedStep[] = [];
 
 export function useDismissedInboxAlerts() {
   const [dismissed, setDismissed] = useState<Set<string>>(loadDismissedInboxAlerts);
@@ -209,6 +213,18 @@ export function useInboxBadge(companyId: string | null | undefined) {
   const mineIssues = useMemo(() => getRecentTouchedIssues(mineIssuesRaw), [mineIssuesRaw]);
   const currentUserId = session?.user.id ?? session?.session.userId ?? null;
 
+  // Read on the same cadence as the rest of the badge, and derived server-side
+  // every time — so a hold that gets cleared stops counting at the next
+  // refetch without anybody dismissing anything.
+  const { data: stoppedStepsData } = useQuery({
+    queryKey: queryKeys.stoppedSteps(companyId!),
+    queryFn: () => stoppedStepsApi.list(companyId!),
+    enabled: !!companyId,
+    refetchOnWindowFocus: false,
+    staleTime: INBOX_BADGE_HOT_PATH_STALE_MS,
+  });
+  const stoppedSteps = stoppedStepsData?.items ?? EMPTY_STOPPED_STEPS;
+
   const { data: heartbeatRuns = [] } = useQuery({
     queryKey: [...queryKeys.heartbeats(companyId!), "limit", INBOX_BADGE_HEARTBEAT_RUN_LIMIT],
     queryFn: () => heartbeatsApi.list(companyId!, undefined, INBOX_BADGE_HEARTBEAT_RUN_LIMIT, { summary: true }),
@@ -228,7 +244,8 @@ export function useInboxBadge(companyId: string | null | undefined) {
         dismissedAlerts,
         dismissedAtByKey,
         currentUserId,
+        stoppedSteps,
       }),
-    [approvals, joinRequests, dashboard, heartbeatRuns, mineIssues, dismissedAlerts, dismissedAtByKey, currentUserId],
+    [approvals, joinRequests, dashboard, heartbeatRuns, mineIssues, dismissedAlerts, dismissedAtByKey, currentUserId, stoppedSteps],
   );
 }

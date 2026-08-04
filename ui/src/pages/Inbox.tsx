@@ -13,6 +13,8 @@ import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
+import { stoppedStepsApi } from "../api/stoppedSteps";
+import { StoppedWorkPanel } from "../components/StoppedWorkPanel";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
 import {
@@ -176,6 +178,7 @@ const INBOX_HOT_PATH_STALE_MS = 30_000;
 export { InboxIssueMetaLeading, InboxIssueTrailingColumns } from "../components/IssueColumns";
 export { IssueGroupHeader as InboxGroupHeader } from "../components/IssueGroupHeader";
 type SectionKey =
+  | "stopped"
   | "work_items"
   | "alerts";
 
@@ -898,6 +901,14 @@ export function Inbox() {
     enabled: !!selectedCompanyId,
   });
   usePublishSharedQueryData(sharedTouchedIssues, touchedIssuesRaw, touchedIssuesUpdatedAt);
+
+  // Derived server-side on every read, so a row leaves this list the moment
+  // the hold clears — there is nothing to dismiss and nothing to tidy up.
+  const { data: stoppedStepsData } = useQuery({
+    queryKey: queryKeys.stoppedSteps(selectedCompanyId!),
+    queryFn: () => stoppedStepsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
 
   const { data: heartbeatRuns, isLoading: isRunsLoading } = useQuery({
     queryKey: [...queryKeys.heartbeats(selectedCompanyId!), "limit", INBOX_HEARTBEAT_RUN_LIMIT],
@@ -2088,6 +2099,13 @@ export function Inbox() {
     dashboard.costs.monthUtilizationPercent >= 80 &&
     !dismissedAlerts.has("alert:budget");
   const hasAlerts = showAggregateAgentError || showBudgetAlert;
+  // On "mine" the list is only what this person is answerable for; everywhere
+  // else it is the whole board's. Showing everyone's stopped work under "mine"
+  // is how a personal list stops being personal and starts being scrolled past.
+  const visibleStoppedSteps = (stoppedStepsData?.items ?? []).filter(
+    (step) => (tab === "mine" ? step.isMine : true),
+  );
+  const showStoppedSection = visibleStoppedSteps.length > 0 && tab !== "blocked";
   const showWorkItemsSection = totalVisibleWorkItems > 0;
   const showAlertsSection = shouldShowInboxSection({
     tab,
@@ -2099,6 +2117,7 @@ export function Inbox() {
   });
 
   const visibleSections = [
+    showStoppedSection ? "stopped" : null,
     showAlertsSection ? "alerts" : null,
     showWorkItemsSection ? "work_items" : null,
   ].filter((key): key is SectionKey => key !== null);
@@ -2482,6 +2501,13 @@ export function Inbox() {
                 : "No inbox items match these filters."
           }
         />
+      )}
+
+      {showStoppedSection && (
+        <>
+          {showSeparatorBefore("stopped") && <Separator />}
+          <StoppedWorkPanel steps={visibleStoppedSteps} />
+        </>
       )}
 
       {tab !== "blocked" && showWorkItemsSection && (

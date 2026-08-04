@@ -44,6 +44,13 @@ export interface DashboardSummary {
     monthUtilizationPercent: number;
   };
   pendingApprovals: number;
+  /**
+   * Steps that stopped and will not move on until somebody deals with them,
+   * company-wide. A gate awaiting a decision is NOT counted — that is
+   * `pendingApprovals`, and counting it twice would double every outstanding
+   * decision on this screen.
+   */
+  stoppedSteps: number;
   budgets: {
     activeIncidents: number;
     pendingApprovals: number;

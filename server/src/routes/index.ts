@@ -17,6 +17,7 @@ export { costRoutes } from "./costs.js";
 export { activityRoutes } from "./activity.js";
 export { dashboardRoutes } from "./dashboard.js";
 export { sidebarBadgeRoutes } from "./sidebar-badges.js";
+export { stoppedStepRoutes } from "./stopped-steps.js";
 export { sidebarPreferenceRoutes } from "./sidebar-preferences.js";
 export { resourceMembershipRoutes } from "./resource-memberships.js";
 export { inboxDismissalRoutes } from "./inbox-dismissals.js";

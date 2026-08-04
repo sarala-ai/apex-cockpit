@@ -1,6 +1,7 @@
 import { and, eq, gte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, approvals, companies, costEvents, heartbeatRuns, issues } from "@paperclipai/db";
+import { listStoppedSteps } from "../apex/pipeline/stopped-steps.js";
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
@@ -46,6 +47,12 @@ export function dashboardService(db: Db) {
         .from(issues)
         .where(and(eq(issues.companyId, companyId), visibleIssueCondition()))
         .groupBy(issues.status);
+
+      // Work that STOPPED. The tile beside "Pending Approvals" exists because
+      // the two are different problems: an approval is the process asking a
+      // question, a stopped step is the process refusing to continue and
+      // nobody having been told.
+      const stoppedSteps = (await listStoppedSteps(db, companyId)).length;
 
       const pendingApprovals = await db
         .select({ count: sql<number>`count(*)` })
@@ -194,6 +201,7 @@ export function dashboardService(db: Db) {
           monthUtilizationPercent: Number(utilization.toFixed(2)),
         },
         pendingApprovals,
+        stoppedSteps,
         budgets: {
           activeIncidents: budgetOverview.activeIncidents.length,
           pendingApprovals: budgetOverview.pendingApprovalCount,

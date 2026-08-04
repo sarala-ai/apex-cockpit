@@ -91,6 +91,7 @@ export type {
   PipelineCaseWorkProductOutputItem,
   PipelineStageAutomation,
   PipelineStepHold,
+  PipelineStoppedStep,
 } from "./types/pipeline.js";
 export {
   analyzeFrontmatterBlock,

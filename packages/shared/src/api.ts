@@ -34,6 +34,7 @@ export const API = {
   activity: `${API_PREFIX}/activity`,
   dashboard: `${API_PREFIX}/dashboard`,
   sidebarBadges: `${API_PREFIX}/sidebar-badges`,
+  stoppedSteps: `${API_PREFIX}/stopped-steps`,
   sidebarPreferences: `${API_PREFIX}/sidebar-preferences`,
   resourceMemberships: `${API_PREFIX}/resource-memberships`,
   invites: `${API_PREFIX}/invites`,

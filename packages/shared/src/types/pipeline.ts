@@ -118,6 +118,34 @@ export interface PipelineStepHold {
   heldAt: string;
 }
 
+/**
+ * A stopped step as the attention surfaces read it.
+ *
+ * The count on the sidebar and the tile on the dashboard both need a list you
+ * can open, and that list has to name the ticket rather than the case: a
+ * person recognises "APEX-14", not a case key. Words are still the client's
+ * (`ui/src/lib/step-hold`) — this only carries the facts.
+ */
+export interface PipelineStoppedStep {
+  caseId: string;
+  caseKey: string;
+  pipelineId: string;
+  /** The step's own display name, so a surface never has to humanise a key. */
+  stageName: string;
+  /** The ticket this stopped on, when a live one points at it. */
+  issue: {
+    id: string;
+    identifier: string | null;
+    title: string;
+  } | null;
+  /** The human answerable for it: the ticket's, else whoever raised it, else
+   *  the company's default. Never the agent that was running the step. */
+  responsibleUserId: string | null;
+  /** True when that human is the one asking. */
+  isMine: boolean;
+  hold: PipelineStepHold;
+}
+
 export type PipelineAutomationRetryScope = "current_stage" | "previous_stage";
 
 export interface PipelineAutomationRetryCleanupOptions {
