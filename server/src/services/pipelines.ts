@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import {
@@ -4610,7 +4610,16 @@ export function pipelineService(
       .where(and(
         eq(pipelineCases.stepStatus, "waiting_agent"),
         isNull(pipelineCases.retiredAt),
-        sql`${pipelineCases.updatedAt} < ${cutoff}`,
+        // `lt`, NOT a raw sql template. A JS Date interpolated into sql`` is
+        // handed to the driver unserialised, which throws
+        //   TypeError: The "string" argument must be of type string ...
+        //              Received an instance of Date
+        // BEFORE any row is read — so this sweep threw on every tick since it
+        // shipped and never recovered a single case. It failed silently too:
+        // the periodic-job handler logged only the wrapper message (the whole
+        // SELECT) and dropped the cause. Observed live: APEX-14 stranded at
+        // `spec` for an hour with the sweep "running" every five minutes.
+        lt(pipelineCases.updatedAt, cutoff),
       ))
       .limit(200);
     let recovered = 0;

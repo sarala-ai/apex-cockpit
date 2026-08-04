@@ -252,6 +252,44 @@ describeEmbeddedPostgres("agent step executor resolution", () => {
    *
    * Filling the vacuum is what makes the run survive to dispatch.
    */
+  /*
+   * THE SWEEP MUST ACTUALLY RUN ITS QUERY.
+   *
+   * `sweepWaitingAgentCases` interpolated a JS Date into a raw sql`` template,
+   * which the driver cannot serialise:
+   *   TypeError: The "string" argument must be of type string ... Received an
+   *   instance of Date
+   * It threw before reading a row, on EVERY tick, since the day it shipped —
+   * so the recovery half of advancement never recovered anything. APEX-14 sat
+   * stranded at `spec` for an hour while the job "ran" every five minutes.
+   *
+   * It shipped because `pipeline-step-sweep.test.ts` STUBS this method: it
+   * proves the job is scheduled, never that the query executes. This test
+   * calls the real thing against a real database, which is the only shape of
+   * test that could have caught it.
+   */
+  it("executes the stale-case query against a real database", async () => {
+    const company = await seedCompany();
+    await seedRosterAgent(company.id, APEX_AGENT_KEYS.implementer, "Implementer");
+    const pipeline = await seedAgentStagePipeline(company.id, APEX_AGENT_KEYS.implementer);
+    const seeded = await seedCaseWithConversation(company.id, pipeline.id);
+
+    // Parked on an agent step, but touched JUST NOW — inside the staleness
+    // window, so the sweep reads it and recovers nothing. Recovery is not what
+    // is under test here: the bug threw while BUILDING the query, before any
+    // row was seen, so "it returned at all" is the whole assertion. Letting it
+    // recover for real would commission a run and leak rows past teardown.
+    await db
+      .update(pipelineCases)
+      .set({ stepStatus: "waiting_agent", updatedAt: new Date() })
+      .where(eq(pipelineCases.id, seeded.case.id));
+
+    const result = await svc.sweepWaitingAgentCases(5 * 60_000);
+
+    expect(typeof result.examined).toBe("number");
+    expect(result.recovered).toBe(0);
+  }, 60_000);
+
   it("claims an unassigned ticket for the agent the step names", async () => {
     const company = await seedCompany();
     const implementer = await seedRosterAgent(company.id, APEX_AGENT_KEYS.implementer, "Implementer");

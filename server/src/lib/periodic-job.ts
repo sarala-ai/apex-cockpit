@@ -62,7 +62,25 @@ export function startPeriodicJob(opts: PeriodicJobOptions): () => void {
   let interval: ReturnType<typeof setInterval> | null = null;
   const tick = () => {
     void opts.run().catch((e) => {
-      log(`run failed: ${e instanceof Error ? e.message : String(e)}`);
+      /*
+       * Log the CAUSE, not just the wrapper.
+       *
+       * Drizzle wraps a driver failure in a `DrizzleQueryError` whose message
+       * is the entire SQL statement and whose `cause` carries the actual
+       * reason ("column ... does not exist", "empty password returned by
+       * client"). Logging only `e.message` produced hours of identical
+       * 40-line SELECT dumps that said nothing about what was wrong — the
+       * pipeline step sweep failed on every tick for an entire session and
+       * nobody could tell why, while the cases it exists to rescue stranded.
+       *
+       * A recovery job that fails invisibly is worse than no recovery job:
+       * the queue looks healthy while work quietly stops moving.
+       */
+      const reason = e instanceof Error ? e.message : String(e);
+      const cause = e instanceof Error && e.cause instanceof Error
+        ? ` | cause: ${e.cause.name}: ${e.cause.message}`
+        : "";
+      log(`run failed: ${reason}${cause}`);
     });
   };
 
