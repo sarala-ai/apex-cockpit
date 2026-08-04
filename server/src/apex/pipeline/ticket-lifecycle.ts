@@ -40,8 +40,8 @@
  * issue stays the thing a person reads, comments on and assigns. They are
  * joined by a `pipeline_case_issue_links` row with role `work`, which is the
  * existing vocabulary for "this issue is where the work happens" — the same
- * role a stage automation's execution issue takes, and the same role
- * `services/flow-cases.ts` uses for a flow case. No new role is invented, so
+ * role a stage automation's execution issue takes, and the same role the
+ * retired flow front-end used for a flow case. No new role is invented, so
  * every reader that already resolves a case's work issue resolves this one.
  */
 
@@ -65,8 +65,9 @@ import { apexAgentPermissionProfile } from "../../services/apex-agent-roster.js"
 
 type LifecycleDb = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
 
-/** The link role a lifecycle case takes on its ticket. Same constant meaning
- *  as `FLOW_CASE_LINK_ROLE` in services/flow-cases.ts — one vocabulary. */
+/** The link role a lifecycle case takes on its ticket. The same role every
+ *  other case-to-issue link uses for "this is where the work happens" — one
+ *  vocabulary. */
 export const TICKET_LIFECYCLE_LINK_ROLE = "work";
 
 export type TicketLifecycleStart =
