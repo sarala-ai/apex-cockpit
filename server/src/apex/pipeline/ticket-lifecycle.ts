@@ -261,13 +261,7 @@ export async function listTicketTypeOptions(
     .where(and(eq(pipelines.companyId, companyId), isNull(pipelines.archivedAt)))
     .orderBy(asc(pipelines.createdAt));
 
-  const byTicketType = new Map<string, (typeof livePipelines)[number]>();
-  for (const pipeline of livePipelines) {
-    if (!pipeline.ticketType) continue;
-    if (!byTicketType.has(pipeline.ticketType)) byTicketType.set(pipeline.ticketType, pipeline);
-  }
-
-  const pipelineIds = [...byTicketType.values()].map((pipeline) => pipeline.id);
+  const pipelineIds = livePipelines.map((pipeline) => pipeline.id);
   const stages = pipelineIds.length
     ? await db
       .select({ pipelineId: pipelineStages.pipelineId, config: pipelineStages.config })
@@ -275,8 +269,30 @@ export async function listTicketTypeOptions(
       .where(inArray(pipelineStages.pipelineId, pipelineIds))
     : [];
 
+  return buildTicketTypeOptions({ pipelines: livePipelines, stages });
+}
+
+/**
+ * The shaping half of `listTicketTypeOptions`, with the database taken out.
+ *
+ * Separated so the rule — which is the part that can be wrong — is testable
+ * without a Postgres. The query above has no branches; every decision worth
+ * pinning is here.
+ */
+export function buildTicketTypeOptions(input: {
+  pipelines: ReadonlyArray<{ id: string; key: string; name: string; ticketType: string | null }>;
+  stages: ReadonlyArray<{ pipelineId: string; config: unknown }>;
+}): TicketTypeOption[] {
+  const byTicketType = new Map<string, (typeof input.pipelines)[number]>();
+  for (const pipeline of input.pipelines) {
+    if (!pipeline.ticketType) continue;
+    // First wins: the query orders by creation, so a company that somehow has
+    // two live pipelines for one type keeps using the one it already used.
+    if (!byTicketType.has(pipeline.ticketType)) byTicketType.set(pipeline.ticketType, pipeline);
+  }
+
   const writesReposByPipelineId = new Map<string, boolean>();
-  for (const stage of stages) {
+  for (const stage of input.stages) {
     const profile = readStagePermissionProfile(stage.config);
     if (!profile) continue;
     if (permissionProfileWritesRepositories(profile)) {
