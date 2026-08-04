@@ -57,6 +57,7 @@ export interface PipelineCaseLiveness {
     | "breakdown_incomplete"
     | "children_waiting"
     | "review_waiting"
+    | "step_running"
     | "step_held"
     | "no_action_path";
   message: string;

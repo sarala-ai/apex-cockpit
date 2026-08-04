@@ -97,6 +97,7 @@ export function derivePipelineLivenessBanner(
     // Handled elsewhere or not "stuck" — no banner.
     case "terminal":
     case "lease_active":
+    case "step_running":
     case "linked_issue_active":
     case "linked_issue_waiting":
     case "children_waiting":

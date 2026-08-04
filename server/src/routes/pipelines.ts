@@ -2697,6 +2697,21 @@ async function derivePipelineCaseLiveness(
     };
   }
 
+  // A COMMISSIONED AGENT STEP IS RUNNING. Reported before anything else that
+  // could look like trouble, and it is the reason a re-run is refused rather
+  // than merely discouraged: a step parked at `waiting_agent` has a live
+  // commission against it, and starting a second one would put two agents on
+  // the same work. It also outranks the hold below, so a re-run of a failed
+  // step stops shouting the moment the fresh run starts and only shouts again
+  // if that one fails too.
+  if (row.case.stepStatus === "waiting_agent") {
+    return {
+      state: "live",
+      reason: "step_running",
+      message: "An agent is working on this step now.",
+    };
+  }
+
   const blockerCase = await db
     .select({
       id: pipelineCases.id,

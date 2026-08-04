@@ -235,13 +235,48 @@ function itemCountLabel(count: number) {
   return `${count} ${count === 1 ? "item" : "items"}`;
 }
 
-function currentStageAutomation(stage: PipelineStage) {
+/**
+ * The step this stage runs on entry, whatever kind it is — or null when it
+ * runs none.
+ *
+ * This used to match `routine` and nothing else, and that single omission is
+ * why "Re-run this step" was greyed out on exactly the steps that stop. A
+ * `run` step and an `agent` step go through the SAME ledger as a routine
+ * (`enqueueStageAutomationLedger` handles all three), fail the same way, and
+ * are what a hold is written about — so a menu item keyed on "is this a
+ * routine?" was disabled in the one state it was built for.
+ *
+ * The kind is returned rather than discarded so a caller can say something
+ * specific; today nothing needs to, and that is fine — what matters is that
+ * "is there something to re-run?" is now answered honestly.
+ */
+export type CurrentStageEntryStep =
+  | { kind: "routine"; routineId: string }
+  | { kind: "run" }
+  | { kind: "agent" };
+
+export function currentStageEntryStep(stage: PipelineStage): CurrentStageEntryStep | null {
   const onEnter = stage.config?.onEnter;
   if (!onEnter || typeof onEnter !== "object" || Array.isArray(onEnter)) return null;
   const config = onEnter as Record<string, unknown>;
-  return config.type === "routine" && typeof config.routineId === "string" && config.routineId.trim()
-    ? { routineId: config.routineId }
-    : null;
+  if (config.type === "routine") {
+    return typeof config.routineId === "string" && config.routineId.trim()
+      ? { kind: "routine", routineId: config.routineId }
+      : null;
+  }
+  // Mirrors the server's readers: a `run` step needs a target it can actually
+  // execute and an `agent` step needs a prompt, so a half-written stage does
+  // not offer a re-run the server would refuse.
+  if (config.type === "run") {
+    const target = config.target;
+    return target && typeof target === "object" && !Array.isArray(target) ? { kind: "run" } : null;
+  }
+  if (config.type === "agent") {
+    return typeof config.promptTemplate === "string" && config.promptTemplate.trim()
+      ? { kind: "agent" }
+      : null;
+  }
+  return null;
 }
 
 function readNonEmptyConfigString(value: unknown) {
@@ -2737,11 +2772,23 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
   );
   const banner = getPendingTransitionBannerState(detail.case, stageLookup);
   const statusLabel = humanizePipelineItemStatus(detail.case.terminalKind ?? detail.stage.kind);
-  const stageAutomation = currentStageAutomation(detail.stage);
+  const stageEntryStep = currentStageEntryStep(detail.stage);
   const previousRetryPlan = previousRetryAvailability.data;
   // Don't let the operator re-run automation into the same 403 — they must get
   // the grant first. The banner's "Request access" path is the way out.
   const rerunBlockedByPermission = shouldDisableRerunForPermission(detail.liveness);
+  // THE ONE GENUINELY UNSAFE CASE. A commissioned agent step is running right
+  // now; a second commission would put two agents on the same work. Refused
+  // out loud, with the reason attached — never silently, which is how this
+  // affordance came to be dead in the state it exists for.
+  const rerunBlockedByRunInFlight = detail.liveness?.reason === "step_running";
+  const rerunDisabledReason = !stageEntryStep
+    ? "This step runs nothing on its own, so there is nothing to re-run."
+    : rerunBlockedByRunInFlight
+      ? "An agent is working on this step right now. Wait for that run to finish before starting another."
+      : rerunBlockedByPermission
+        ? "Permission still missing — request access first"
+        : null;
   const childRows = normalizePipelineChildRows(children.data);
   const eventRows = events.data?.items ?? [];
   const activeWork = detail.activeWork ?? null;
@@ -2850,8 +2897,8 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem
-                  disabled={!stageAutomation || rerunCurrentStageAutomation.isPending || rerunBlockedByPermission}
-                  title={rerunBlockedByPermission ? "Permission still missing — request access first" : undefined}
+                  disabled={Boolean(rerunDisabledReason) || rerunCurrentStageAutomation.isPending}
+                  title={rerunDisabledReason ?? undefined}
                   onSelect={(event) => {
                     event.preventDefault();
                     setRetryTargetStageId(null);
