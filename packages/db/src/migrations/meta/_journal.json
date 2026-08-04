@@ -1191,6 +1191,13 @@
       "when": 1786000012000,
       "tag": "0171_lifecycle_agent_roster",
       "breakpoints": true
+    },
+    {
+      "idx": 172,
+      "version": "7",
+      "when": 1786086412000,
+      "tag": "0172_issue_ticket_type",
+      "breakpoints": true
     }
   ]
 }

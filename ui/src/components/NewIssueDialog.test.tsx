@@ -49,7 +49,45 @@ const mockIssuesApi = vi.hoisted(() => ({
   create: vi.fn(),
   upsertDocument: vi.fn(),
   uploadAttachment: vi.fn(),
+  ticketTypes: vi.fn(),
 }));
+
+/** The four types as the live board serves them: three seeded processes, and
+ *  chore reported as processless BY DESIGN rather than simply absent. */
+const TICKET_TYPE_OPTIONS = [
+  {
+    ticketType: "chore",
+    pipelineId: null,
+    pipelineKey: null,
+    pipelineName: null,
+    processlessByDesign: true,
+    commissionsRepoWritingAgent: false,
+  },
+  {
+    ticketType: "bug",
+    pipelineId: "pipeline-bug",
+    pipelineKey: "bug",
+    pipelineName: "Bug",
+    processlessByDesign: false,
+    commissionsRepoWritingAgent: true,
+  },
+  {
+    ticketType: "design-change",
+    pipelineId: "pipeline-design",
+    pipelineKey: "design-change",
+    pipelineName: "Design change",
+    processlessByDesign: false,
+    commissionsRepoWritingAgent: true,
+  },
+  {
+    ticketType: "feature",
+    pipelineId: "pipeline-feature",
+    pipelineKey: "feature",
+    pipelineName: "Feature",
+    processlessByDesign: false,
+    commissionsRepoWritingAgent: true,
+  },
+];
 
 const mockExecutionWorkspacesApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -338,6 +376,8 @@ describe("NewIssueDialog", () => {
     mockIssuesApi.create.mockReset();
     mockIssuesApi.upsertDocument.mockReset();
     mockIssuesApi.uploadAttachment.mockReset();
+    mockIssuesApi.ticketTypes.mockReset();
+    mockIssuesApi.ticketTypes.mockResolvedValue(TICKET_TYPE_OPTIONS);
     mockExecutionWorkspacesApi.list.mockReset();
     mockExecutionWorkspacesApi.listSummaries.mockReset();
     mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([]);
@@ -1310,6 +1350,374 @@ describe("NewIssueDialog", () => {
 
       expect(statusOptionIconClass("Todo", "Executable - assignee will be woken")).toContain("text-amber-600");
       expect(statusOptionIconClass("In Progress")).toContain("text-blue-600");
+
+      act(() => root.unmount());
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // GAP 1 — a ticket can now enter a lifecycle.
+  // -------------------------------------------------------------------------
+  describe("ticket type", () => {
+    function typeOptionButton(ticketType: string) {
+      return container.querySelector<HTMLButtonElement>(
+        `[data-issue-ticket-type-option="${ticketType}"]`,
+      );
+    }
+
+    it("offers every type the board serves, plus an explicit no-type", async () => {
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        expect(typeOptionButton("bug")).not.toBeNull();
+      });
+
+      expect(typeOptionButton("none")?.textContent).toContain("No type");
+      expect(typeOptionButton("chore")?.textContent).toContain("Chore");
+      expect(typeOptionButton("bug")?.textContent).toContain("Bug");
+      expect(typeOptionButton("design-change")?.textContent).toContain("Design change");
+      expect(typeOptionButton("feature")?.textContent).toContain("Feature");
+
+      act(() => root.unmount());
+    });
+
+    it("defaults to NO type — it never guesses a process for you", async () => {
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        expect(typeOptionButton("bug")).not.toBeNull();
+      });
+
+      expect(
+        container.querySelector("[data-testid='new-issue-ticket-type-chip']")
+          ?.getAttribute("data-issue-ticket-type"),
+      ).toBe("none");
+
+      act(() => root.unmount());
+    });
+
+    it("names the process a type runs, and says chore has none BY DESIGN", async () => {
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        expect(typeOptionButton("bug")).not.toBeNull();
+      });
+
+      expect(typeOptionButton("bug")?.textContent).toContain("Runs the Bug process");
+      // The honest handling of chore: shown, selectable, and truthful.
+      expect(typeOptionButton("chore")?.textContent).toContain("No process, by design");
+      expect(typeOptionButton("chore")?.textContent).toContain("never enters a pipeline");
+
+      act(() => root.unmount());
+    });
+
+    it("distinguishes a type whose pipeline is merely missing from chore", async () => {
+      mockIssuesApi.ticketTypes.mockResolvedValue([
+        { ...TICKET_TYPE_OPTIONS[0] },
+        {
+          ticketType: "bug",
+          pipelineId: null,
+          pipelineKey: null,
+          pipelineName: null,
+          processlessByDesign: false,
+          commissionsRepoWritingAgent: false,
+        },
+      ]);
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        expect(typeOptionButton("bug")).not.toBeNull();
+      });
+
+      expect(typeOptionButton("bug")?.textContent).toContain("No process on this board yet");
+      expect(typeOptionButton("bug")?.textContent).not.toContain("by design");
+
+      act(() => root.unmount());
+    });
+
+    it("sends the chosen type so the server can start the process", async () => {
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        expect(typeOptionButton("chore")).not.toBeNull();
+      });
+
+      await act(async () => {
+        typeOptionButton("chore")!.click();
+      });
+      await flush();
+
+      const title = container.querySelector<HTMLTextAreaElement>("textarea[placeholder='Task title']")!;
+      await typeTextareaValue(title, "Rotate the deploy key");
+      await act(async () => {
+        [...container.querySelectorAll("button")]
+          .find((button) => button.textContent?.includes("Create Task"))!
+          .click();
+      });
+      await flush();
+
+      await waitForAssertion(() => {
+        expect(mockIssuesApi.create).toHaveBeenCalled();
+      });
+      expect(mockIssuesApi.create.mock.calls[0]![1]).toMatchObject({ ticketType: "chore" });
+
+      act(() => root.unmount());
+    });
+
+    it("omits ticketType entirely when the author declared none", async () => {
+      const { root } = renderDialog(container);
+      await flush();
+
+      const title = container.querySelector<HTMLTextAreaElement>("textarea[placeholder='Task title']")!;
+      await typeTextareaValue(title, "A question");
+      await act(async () => {
+        [...container.querySelectorAll("button")]
+          .find((button) => button.textContent?.includes("Create Task"))!
+          .click();
+      });
+      await flush();
+
+      await waitForAssertion(() => {
+        expect(mockIssuesApi.create).toHaveBeenCalled();
+      });
+      // Absent, not "chore". An undeclared type is its own fact.
+      expect(mockIssuesApi.create.mock.calls[0]![1]).not.toHaveProperty("ticketType");
+
+      act(() => root.unmount());
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // GAP 2 — a ticket cannot silently have no codebase.
+  // -------------------------------------------------------------------------
+  describe("codebase preflight", () => {
+    const implementer = {
+      id: "agent-implementer",
+      name: "Implementer",
+      role: "engineering",
+      title: "Implementer",
+      icon: "wrench",
+      adapterType: "claude_local",
+      adapterConfig: {
+        dangerouslySkipPermissions: false,
+        allowedTools: "Read Edit Write Bash Glob Grep",
+      },
+      permissions: {},
+    };
+    const specifier = {
+      ...implementer,
+      id: "agent-specifier",
+      name: "Specifier",
+      adapterConfig: {
+        dangerouslySkipPermissions: false,
+        allowedTools: "AskUserQuestion Glob Grep Monitor Read TaskOutput TaskStop ToolSearch",
+      },
+    };
+
+    function missingNote() {
+      return container.querySelector("[data-testid='new-issue-codebase-missing-note']");
+    }
+    function createButton() {
+      return [...container.querySelectorAll("button")]
+        .find((button) => button.textContent?.includes("Create Task")) as HTMLButtonElement;
+    }
+
+    it("warns and REFUSES when a repo-writing assignee has no codebase", async () => {
+      mockAgentsApi.list.mockResolvedValue([implementer]);
+      mockProjectsApi.list.mockResolvedValue([]);
+      dialogState.newIssueDefaults = { assigneeAgentId: "agent-implementer", title: "Fix it" };
+
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        expect(missingNote()).not.toBeNull();
+      });
+
+      expect(missingNote()!.getAttribute("data-codebase-blocking")).toBe("true");
+      expect(missingNote()!.textContent).toContain("Implementer needs a codebase");
+      expect(missingNote()!.textContent).toContain("Pick a project with a repository");
+      expect(createButton().disabled).toBe(true);
+
+      act(() => root.unmount());
+    });
+
+    it("warns without refusing when the ticket is parked in backlog", async () => {
+      mockAgentsApi.list.mockResolvedValue([implementer]);
+      mockProjectsApi.list.mockResolvedValue([]);
+      dialogState.newIssueDefaults = {
+        assigneeAgentId: "agent-implementer",
+        title: "Fix it later",
+        status: "backlog",
+      };
+
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        expect(missingNote()).not.toBeNull();
+      });
+
+      expect(missingNote()!.getAttribute("data-codebase-blocking")).toBe("false");
+      expect(missingNote()!.textContent).toContain("parked in Backlog");
+      expect(createButton().disabled).toBe(false);
+
+      act(() => root.unmount());
+    });
+
+    it("says nothing about a read-only assignee — project stays optional", async () => {
+      mockAgentsApi.list.mockResolvedValue([specifier]);
+      mockProjectsApi.list.mockResolvedValue([]);
+      dialogState.newIssueDefaults = { assigneeAgentId: "agent-specifier", title: "Draft the spec" };
+
+      const { root } = renderDialog(container);
+      await flush();
+      await flush();
+
+      expect(missingNote()).toBeNull();
+      expect(createButton().disabled).toBe(false);
+
+      act(() => root.unmount());
+    });
+
+    it("defaults to the single repo-bound project and SAYS it defaulted", async () => {
+      mockAgentsApi.list.mockResolvedValue([implementer]);
+      mockProjectsApi.list.mockResolvedValue([
+        {
+          id: "project-1",
+          name: "APEX Cockpit",
+          description: null,
+          archivedAt: null,
+          color: "#445566",
+          codebase: { repoUrl: "sarala-ai/apex-cockpit" },
+        },
+        {
+          id: "project-2",
+          name: "Notes",
+          description: null,
+          archivedAt: null,
+          color: "#112233",
+          codebase: { repoUrl: null },
+        },
+      ]);
+      dialogState.newIssueDefaults = { assigneeAgentId: "agent-implementer", title: "Fix it" };
+
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        expect(
+          container.querySelector("[data-testid='new-issue-codebase-defaulted-note']"),
+        ).not.toBeNull();
+      });
+
+      const note = container.querySelector("[data-testid='new-issue-codebase-defaulted-note']")!;
+      expect(note.textContent).toContain("APEX Cockpit");
+      expect(note.textContent).toContain("the only project with a repository bound");
+      expect(missingNote()).toBeNull();
+      expect(createButton().disabled).toBe(false);
+
+      act(() => root.unmount());
+    });
+
+    it("refuses to guess between two repo-bound projects", async () => {
+      mockAgentsApi.list.mockResolvedValue([implementer]);
+      mockProjectsApi.list.mockResolvedValue([
+        {
+          id: "project-1",
+          name: "APEX Cockpit",
+          archivedAt: null,
+          description: null,
+          color: "#445566",
+          codebase: { repoUrl: "sarala-ai/apex-cockpit" },
+        },
+        {
+          id: "project-2",
+          name: "Bloom",
+          archivedAt: null,
+          description: null,
+          color: "#112233",
+          codebase: { repoUrl: "sarala-ai/bloom" },
+        },
+      ]);
+      dialogState.newIssueDefaults = { assigneeAgentId: "agent-implementer", title: "Fix it" };
+
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        expect(missingNote()).not.toBeNull();
+      });
+
+      expect(container.querySelector("[data-testid='new-issue-codebase-defaulted-note']")).toBeNull();
+      expect(createButton().disabled).toBe(true);
+
+      act(() => root.unmount());
+    });
+
+    it("fires on the LIFECYCLE even with no assignee at all", async () => {
+      mockAgentsApi.list.mockResolvedValue([]);
+      mockProjectsApi.list.mockResolvedValue([]);
+
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        expect(
+          container.querySelector<HTMLButtonElement>("[data-issue-ticket-type-option='bug']"),
+        ).not.toBeNull();
+      });
+
+      await act(async () => {
+        container
+          .querySelector<HTMLButtonElement>("[data-issue-ticket-type-option='bug']")!
+          .click();
+      });
+      await flush();
+
+      await waitForAssertion(() => {
+        expect(missingNote()).not.toBeNull();
+      });
+      expect(missingNote()!.textContent).toContain("Bug process");
+
+      act(() => root.unmount());
+    });
+
+    it("says nothing for a chore, which commissions nobody", async () => {
+      mockAgentsApi.list.mockResolvedValue([]);
+      mockProjectsApi.list.mockResolvedValue([]);
+
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        expect(
+          container.querySelector<HTMLButtonElement>("[data-issue-ticket-type-option='chore']"),
+        ).not.toBeNull();
+      });
+
+      await act(async () => {
+        container
+          .querySelector<HTMLButtonElement>("[data-issue-ticket-type-option='chore']")!
+          .click();
+      });
+      await flush();
+
+      expect(missingNote()).toBeNull();
+
+      act(() => root.unmount());
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // GAP 3 — the mode chip cannot be read as an assignee picker.
+  // -------------------------------------------------------------------------
+  describe("work mode is labelled as a mode", () => {
+    it("prefixes the chip so 'Agent' cannot be read as an assignee", async () => {
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        expect(container.querySelector("[data-issue-work-mode-chip]")).not.toBeNull();
+      });
+
+      const chip = container.querySelector("[data-issue-work-mode-chip]")!;
+      expect(chip.textContent).toContain("Mode:");
+      expect(chip.textContent).toContain("Agent");
+      expect(chip.getAttribute("aria-label")).toContain("Work mode");
+      expect(chip.getAttribute("aria-label")).toContain("assignee itself is set above");
+
+      act(() => root.unmount());
+    });
+
+    it("says in the menu itself where the assignee is chosen", async () => {
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        expect(container.textContent).toContain("Work mode");
+      });
+
+      expect(container.textContent).toContain("How the assignee works");
 
       act(() => root.unmount());
     });

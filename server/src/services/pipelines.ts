@@ -5903,6 +5903,22 @@ export function pipelineService(
       requestKey?: string | null;
       blockedByCaseIds?: string[];
       blockedByCaseKeys?: string[];
+      /**
+       * An issue to link to the new case, written INSIDE the ingest
+       * transaction — i.e. before the first stage's automation ledger is
+       * executed.
+       *
+       * Why it cannot be a follow-up insert by the caller: a stage whose
+       * `onEnter` is an `agent` step resolves the issue to commission against
+       * through `resolvePipelineCaseConversationSource`, and the automation
+       * ledgers enqueued during this transaction are executed the moment it
+       * commits. A caller that links afterwards is always too late by exactly
+       * one step — and the lifecycle it is too late for is the one whose FIRST
+       * stage is an agent step (design-change's `board_diff`), which would
+       * fail with `agent_step_has_no_conversation` on a ticket that has a
+       * perfectly good conversation. Ordering, not a missing feature.
+       */
+      linkIssue?: { issueId: string; role: string } | null;
       actor: PipelineActor;
     }) {
       assertJsonSize(input.fields ?? {}, "fields");
@@ -6013,6 +6029,19 @@ export function pipelineService(
             .then((rows) => rows[0] ?? null);
           if (!existing) throw conflict("Pipeline case ingest conflict", { code: "ingest_conflict" });
           return { case: existing, created: false };
+        }
+
+        if (input.linkIssue) {
+          await tx
+            .insert(pipelineCaseIssueLinks)
+            .values({
+              companyId: input.companyId,
+              caseId: inserted.id,
+              issueId: input.linkIssue.issueId,
+              role: input.linkIssue.role,
+              createdByRunId: input.actor.type === "agent" ? input.actor.runId : null,
+            })
+            .onConflictDoNothing({ target: [pipelineCaseIssueLinks.caseId, pipelineCaseIssueLinks.issueId] });
         }
 
         await ensurePipelineCaseBodyDocumentFromSummary(tx, {

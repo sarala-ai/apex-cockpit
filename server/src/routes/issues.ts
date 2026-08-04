@@ -184,6 +184,11 @@ import {
   type TrustPresetResolution,
 } from "../services/trust-preset-resolver.js";
 import { externalObjectService } from "../services/external-objects.js";
+import {
+  listTicketTypeOptions,
+  startTicketLifecycle,
+} from "../apex/pipeline/ticket-lifecycle.js";
+import type { PipelineActor } from "../services/pipelines.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -480,6 +485,23 @@ function readObject(value: unknown): Record<string, unknown> {
 
 function hasOwn(record: Record<string, unknown>, key: string) {
   return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+/**
+ * The route's actor, as the pipeline substrate spells one.
+ *
+ * An agent WITHOUT a run id degrades to `system` rather than being passed
+ * through: `assertActorProvenance` rejects a run-less agent actor outright, and
+ * a ticket that entered its process is not worth failing over an attribution
+ * the caller could not supply. The provenance that matters — who created the
+ * ticket — is already on the issue row and in the activity log either way.
+ */
+function pipelineActorForIssueLifecycle(actor: ReturnType<typeof getActorInfo>): PipelineActor {
+  if (actor.actorType === "agent" && actor.agentId && actor.runId) {
+    return { type: "agent", agentId: actor.agentId, runId: actor.runId };
+  }
+  if (actor.actorType === "user") return { type: "user", userId: actor.actorId };
+  return { type: "system" };
 }
 
 async function auditAgentIssueCreateAttributionSpoof(input: {
@@ -2080,6 +2102,7 @@ function toCompactIssue(issue: any): CompactIssue {
     title: issue.title,
     description: issue.description,
     status: issue.status,
+    ticketType: issue.ticketType ?? null,
     workMode: issue.workMode,
     priority: issue.priority,
     assigneeAgentId: issue.assigneeAgentId,
@@ -4516,6 +4539,22 @@ export function issueRoutes(
     }
     const result = await getSearchService().search(companyId, query);
     res.json(result);
+  });
+
+  /**
+   * The ticket types this company can actually file, and what each one costs.
+   *
+   * The composer needs three facts BEFORE a ticket exists, and none of them
+   * can be hardcoded in the client: whether a type has a live process here,
+   * whether that process commissions an agent that will change a repository
+   * (and therefore whether the ticket needs a codebase bound before it is
+   * dispatched), and whether a missing process is by design or a gap. All
+   * three are computed from the seeded pipelines — see listTicketTypeOptions.
+   */
+  router.get("/companies/:companyId/ticket-types", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await listTicketTypeOptions(db, companyId));
   });
 
   router.get("/companies/:companyId/issues", async (req, res) => {
@@ -7111,6 +7150,39 @@ export function issueRoutes(
       });
     }
 
+    // THE TICKET ENTERS ITS PROCESS. A declared type is a request to run a
+    // lifecycle, so the case is opened HERE, on the create path, rather than
+    // left to a later manual step — that gap is the whole reason three seeded
+    // processes had no front door.
+    //
+    // Failure is REPORTED, never swallowed: a ticket whose lifecycle could not
+    // start is still a real ticket (the row is committed and the caller gets
+    // it), but the response and the activity log both say so. Rolling the
+    // ticket back would discard the author's work over a pipeline problem;
+    // staying quiet would recreate the silent-default defect this replaces.
+    const lifecycle = await startTicketLifecycle(db, {
+      companyId,
+      issue,
+      actor: pipelineActorForIssueLifecycle(actor),
+    }).catch((error: unknown) => ({
+      status: "failed" as const,
+      ticketType: issue.ticketType ?? null,
+      error: error instanceof Error ? error.message : String(error),
+    }));
+    if (lifecycle.status === "started" || lifecycle.status === "failed") {
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: lifecycle.status === "started" ? "issue.lifecycle_started" : "issue.lifecycle_start_failed",
+        entityType: "issue",
+        entityId: issue.id,
+        details: { identifier: issue.identifier, ...lifecycle },
+      });
+    }
+
     void queueIssueAssignmentWakeup({
       heartbeat,
       issue,
@@ -7124,6 +7196,7 @@ export function issueRoutes(
 
     res.status(201).json({
       ...issue,
+      lifecycle,
       relatedWork: referenceSummary,
       referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
     });

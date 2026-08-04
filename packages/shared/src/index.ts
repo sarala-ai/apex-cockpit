@@ -1,3 +1,4 @@
+export * from "./agent-repo-capability.js";
 export * from "./observe.js";
 export * from "./gateway.js";
 export * from "./design.js";
@@ -153,6 +154,9 @@ export {
   ISSUE_PRIORITIES,
   ISSUE_WORK_MODES,
   ISSUE_HARNESS_KINDS,
+  TICKET_TYPES,
+  TICKET_TYPES_WITHOUT_PROCESS,
+  isTicketType,
   MAX_ISSUE_REQUEST_DEPTH,
   ISSUE_COMMENT_AUTHOR_TYPES,
   ISSUE_COMMENT_METADATA_ROW_TYPES,
@@ -308,6 +312,7 @@ export {
   type IssueStatus,
   type IssuePriority,
   type IssueWorkMode,
+  type TicketType,
   type IssueHarnessKind,
   type IssueCommentAuthorType,
   type IssueCommentMetadataRowType,

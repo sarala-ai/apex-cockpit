@@ -33,6 +33,7 @@ import {
 import {
   PIPELINE_AUTOMATION_DEFAULT_TITLE_TEMPLATE,
   pipelineService,
+  resolvePipelineCaseConversationSource,
   type PipelineActor,
 } from "../services/pipelines.ts";
 import { routineService } from "../services/routines.ts";
@@ -166,6 +167,73 @@ describeEmbeddedPostgres("pipelineService", () => {
     });
     return issue!;
   }
+
+  it("links an issue INSIDE the ingest transaction, before the first stage fires", async () => {
+    // The ordering the ticket front door depends on. An `agent` first stage
+    // resolves who to commission against through the case's issue links, and
+    // ingestCase executes the first stage's automation the instant its
+    // transaction commits — so a link written by the caller afterwards is
+    // always one step too late. This pins that the link is in place by the
+    // time ingestCase returns, for the SAME case it created.
+    const { company, pipeline } = await seedPipeline();
+    const [issue] = await db.insert(issues).values({
+      companyId: company.id,
+      title: "Ticket that starts a process",
+      status: "todo",
+      priority: "medium",
+    }).returning();
+
+    const ingested = await svc.ingestCase({
+      companyId: company.id,
+      pipelineId: pipeline.id,
+      caseKey: `ticket:${issue!.id}`,
+      title: issue!.title,
+      linkIssue: { issueId: issue!.id, role: "work" },
+      actor: userActor,
+    });
+
+    const links = await db
+      .select()
+      .from(pipelineCaseIssueLinks)
+      .where(eq(pipelineCaseIssueLinks.caseId, ingested.case.id));
+    expect(links).toHaveLength(1);
+    expect(links[0]!.issueId).toBe(issue!.id);
+    expect(links[0]!.role).toBe("work");
+
+    // And the case is reachable as the conversation source for an agent step,
+    // which is the property the whole ordering exists to guarantee.
+    const source = await resolvePipelineCaseConversationSource(db, company.id, ingested.case.id);
+    expect(source?.issue?.id).toBe(issue!.id);
+  });
+
+  it("does not duplicate the link when an ingest is retried", async () => {
+    const { company, pipeline } = await seedPipeline();
+    const [issue] = await db.insert(issues).values({
+      companyId: company.id,
+      title: "Retried ticket",
+      status: "todo",
+      priority: "medium",
+    }).returning();
+    const args = {
+      companyId: company.id,
+      pipelineId: pipeline.id,
+      caseKey: `ticket:${issue!.id}`,
+      title: issue!.title,
+      linkIssue: { issueId: issue!.id, role: "work" as const },
+      actor: userActor,
+    };
+
+    const first = await svc.ingestCase(args);
+    const second = await svc.ingestCase(args);
+
+    expect(second.case.id).toBe(first.case.id);
+    expect(second.created).toBe(false);
+    const links = await db
+      .select()
+      .from(pipelineCaseIssueLinks)
+      .where(eq(pipelineCaseIssueLinks.caseId, first.case.id));
+    expect(links).toHaveLength(1);
+  });
 
   it("seeds default stages and protects non-empty stage deletion", async () => {
     const { company, pipeline, byKey } = await seedPipeline();

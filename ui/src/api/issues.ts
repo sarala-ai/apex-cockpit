@@ -101,7 +101,21 @@ function issueListSearchParams(filters?: IssueListFilters) {
   return params;
 }
 
+/** One row of `GET /companies/:id/ticket-types`. Mirrors TicketTypeOption in
+ *  server/src/apex/pipeline/ticket-lifecycle.ts — computed there from the
+ *  seeded pipelines, never authored on either side. */
+export type TicketTypeOption = {
+  ticketType: string;
+  pipelineId: string | null;
+  pipelineKey: string | null;
+  pipelineName: string | null;
+  processlessByDesign: boolean;
+  commissionsRepoWritingAgent: boolean;
+};
+
 export const issuesApi = {
+  ticketTypes: (companyId: string) =>
+    api.get<TicketTypeOption[]>(`/companies/${companyId}/ticket-types`),
   list: (
     companyId: string,
     filters?: IssueListFilters,

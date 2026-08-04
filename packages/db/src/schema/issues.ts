@@ -37,6 +37,11 @@ export const issues = pgTable(
     // Additive/nullable: existing tickets keep their body as their body.
     agentBrief: text("agent_brief"),
     status: text("status").notNull().default("backlog"),
+    // WHAT KIND OF WORK, and therefore WHICH LIFECYCLE — the join key to
+    // `pipelines.ticket_type`. Nullable with no default: an untyped ticket is
+    // untyped, not a chore. See migration 0172 and TICKET_TYPES in
+    // packages/shared/src/constants.ts.
+    ticketType: text("ticket_type"),
     workMode: text("work_mode").notNull().default("standard"),
     harnessKind: text("harness_kind"),
     priority: text("priority").notNull().default("medium"),
@@ -130,6 +135,9 @@ export const issues = pgTable(
   (table) => ({
     companyStatusIdx: index("issues_company_status_idx").on(table.companyId, table.status),
     companyHarnessKindIdx: index("issues_company_harness_kind_idx").on(table.companyId, table.harnessKind),
+    companyTicketTypeIdx: index("issues_company_ticket_type_idx")
+      .on(table.companyId, table.ticketType)
+      .where(sql`${table.ticketType} is not null`),
     assigneeStatusIdx: index("issues_company_assignee_status_idx").on(
       table.companyId,
       table.assigneeAgentId,
