@@ -1325,7 +1325,8 @@ export function IssueProperties({
     </>
   );
 
-  /** Non-null only while a process is actually moving this ticket. */
+  /** Non-null only while a process is actually moving this ticket; drives the
+   *  wording of the empty assignee state (see `describeUnassigned`). */
   const lifecycleCase = useMemo(() => selectIssueLifecycleCase(issue), [issue]);
   const unassignedText = useMemo(() => describeUnassigned(lifecycleCase), [lifecycleCase]);
 

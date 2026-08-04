@@ -50,11 +50,15 @@ export function issueLifecycleCaseHref(row: IssueLinkedCase): string {
 /**
  * How an unowned ticket describes itself.
  *
- * "Unassigned" is literally true whenever nobody owns a ticket — the pipeline
- * never writes `assigneeAgentId`; it commissions its agent by name and wakes it
- * directly. But in a board-shaped tool the word carries a second meaning:
- * nothing is happening here, pick it up. That half is false while a process is
- * moving the ticket.
+ * "Unassigned" is literally true whenever nobody owns a ticket, and a process
+ * leaves that vacuum wherever it is not running an agent — at a human gate
+ * above all, which is exactly where a person is most likely to be reading.
+ * (Where a process DOES commission an agent it fills the vacuum, so the ticket
+ * shows a real owner and this wording never appears.)
+ *
+ * But in a board-shaped tool "Unassigned" carries a second meaning: nothing is
+ * happening here, pick it up. That half is false while a process is moving the
+ * ticket, and it is the half this rewording removes.
  *
  * The fix is the wording, never the data. Assignment is a DISPATCH trigger —
  * writing it wakes that agent and gates who may hold the ticket's execution
