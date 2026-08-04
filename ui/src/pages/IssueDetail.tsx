@@ -1853,50 +1853,6 @@ export function IssueDetail() {
     () => buildCompanyUserLabelMap(companyMembers?.users),
     [companyMembers?.users],
   );
-  /**
-   * Answering a lifecycle gate from the ticket.
-   *
-   * Same endpoint the pipeline board's review panel calls, including the
-   * version check — a ticket left open while the process moved on must fail
-   * loudly rather than apply a decision to a stage that is no longer current.
-   */
-  const [decidingLifecycleGate, setDecidingLifecycleGate] = useState<PipelineReviewDecision | null>(null);
-  const decideLifecycleGate = useMutation({
-    mutationFn: (input: {
-      caseId: string;
-      version: number;
-      decision: PipelineReviewDecision;
-      reason: string | null;
-    }) =>
-      pipelinesApi.reviewCase(input.caseId, {
-        decision: input.decision,
-        reason: input.reason,
-        expectedVersion: input.version,
-      }),
-    onMutate: (input) => setDecidingLifecycleGate(input.decision),
-    onSettled: () => setDecidingLifecycleGate(null),
-    onSuccess: (_result, input) => {
-      invalidateIssueDetail();
-      if (selectedCompanyId) {
-        queryClient.invalidateQueries({ queryKey: ["pipelines", "review-cases", selectedCompanyId] });
-      }
-      pushToast({
-        title: input.decision === "approve"
-          ? "Approved — the process moves on"
-          : input.decision === "request_changes"
-            ? "Sent back for changes"
-            : "Stopped here",
-        tone: "success",
-      });
-    },
-    onError: () =>
-      pushToast({
-        title: "Could not record that decision",
-        body: "The process may have moved on since this page loaded. Reload and try again.",
-        tone: "error",
-      }),
-  });
-
   const mentionOptions = useMemo<MentionOption[]>(() => {
     return buildMarkdownMentionOptions({
       agents,
@@ -2014,6 +1970,50 @@ export function IssueDetail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref) });
     }
   }, [issueCacheRefs, queryClient]);
+  /**
+   * Answering a lifecycle gate from the ticket.
+   *
+   * Same endpoint the pipeline board's review panel calls, including the
+   * version check — a ticket left open while the process moved on must fail
+   * loudly rather than apply a decision to a stage that is no longer current.
+   */
+  const [decidingLifecycleGate, setDecidingLifecycleGate] = useState<PipelineReviewDecision | null>(null);
+  const decideLifecycleGate = useMutation({
+    mutationFn: (input: {
+      caseId: string;
+      version: number;
+      decision: PipelineReviewDecision;
+      reason: string | null;
+    }) =>
+      pipelinesApi.reviewCase(input.caseId, {
+        decision: input.decision,
+        reason: input.reason,
+        expectedVersion: input.version,
+      }),
+    onMutate: (input) => setDecidingLifecycleGate(input.decision),
+    onSettled: () => setDecidingLifecycleGate(null),
+    onSuccess: (_result, input) => {
+      invalidateIssueDetail();
+      if (selectedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: ["pipelines", "review-cases", selectedCompanyId] });
+      }
+      pushToast({
+        title: input.decision === "approve"
+          ? "Approved — the process moves on"
+          : input.decision === "request_changes"
+            ? "Sent back for changes"
+            : "Stopped here",
+        tone: "success",
+      });
+    },
+    onError: () =>
+      pushToast({
+        title: "Could not record that decision",
+        body: "The process may have moved on since this page loaded. Reload and try again.",
+        tone: "error",
+      }),
+  });
+
   const invalidateIssueThreadLazily = useCallback(() => {
     for (const ref of issueCacheRefs) {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(ref), refetchType: "inactive" });
