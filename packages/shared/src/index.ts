@@ -829,6 +829,8 @@ export type {
   LegacyPlanDocument,
   IssueAttachment,
   IssueLabel,
+  IssueLinkedCase,
+  IssueLinkedCaseRole,
   IssueTreeControlPreview,
   IssueTreeHold,
   IssueTreeHoldMember,

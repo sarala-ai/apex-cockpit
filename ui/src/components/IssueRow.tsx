@@ -8,6 +8,7 @@ import {
   withIssueDetailHeaderSeed,
 } from "../lib/issueDetailBreadcrumb";
 import { cn } from "../lib/utils";
+import { TicketTypeChip } from "./TicketTypeChip";
 import {
   deriveActiveRecoveryDisplayState,
   RECOVERY_CHIP_DEFAULT_TONE,
@@ -211,6 +212,12 @@ export function IssueRow({
               <span className="shrink-0 font-mono text-xs text-muted-foreground">
                 {identifier}
               </span>
+              {/* Next to the identifier because it is identity, not state:
+                  what this ticket IS, before what is happening to it. */}
+              <TicketTypeChip
+                ticketType={issue.ticketType}
+                className="hidden shrink-0 text-(length:--text-nano) md:inline-flex"
+              />
               {parkedBlockerIndicator}
               {recoveryIndicator}
             </>

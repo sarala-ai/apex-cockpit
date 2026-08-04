@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { issueStatusText } from "@/lib/status-colors";
+import { TicketTypeChip } from "@/components/TicketTypeChip";
 import { Link } from "@/lib/router";
 import { deriveOriginatingActor, type Issue, type IssueLabel } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -1877,6 +1878,13 @@ export function IssueProperties({
   return (
     <div>
       <PropertySection title="Triage" first>
+        {/* First row on purpose: type is the noun ("what is this"), status is
+            only its state. It also decides which process the ticket runs, so a
+            reader who never sees it cannot make sense of the rest. */}
+        <PropertyRow label="Type">
+          <TicketTypeChip ticketType={issue.ticketType} />
+        </PropertyRow>
+
         <PropertyRow label="Status">
           <StatusIcon
             status={issue.status}

@@ -430,6 +430,8 @@ export type {
   IssueAncestorGoal,
   IssueAttachment,
   IssueLabel,
+  IssueLinkedCase,
+  IssueLinkedCaseRole,
   IssueWatchdog,
   IssueWatchdogStatus,
   IssueWatchdogSummary,

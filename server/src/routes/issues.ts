@@ -188,7 +188,7 @@ import {
   listTicketTypeOptions,
   startTicketLifecycle,
 } from "../apex/pipeline/ticket-lifecycle.js";
-import type { PipelineActor } from "../services/pipelines.js";
+import { reviewConfigForStage, type PipelineActor } from "../services/pipelines.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -208,6 +208,21 @@ const promoteLowTrustOutputSchema = z.object({
   summary: z.string().trim().min(1).max(8_000),
 });
 
+/**
+ * The processes this ticket is running on, and — when one of them has stopped
+ * to ask a human something — everything needed to answer without leaving the
+ * ticket.
+ *
+ * This is the ONLY path from a ticket to its process. The `issues.flow*`
+ * columns are the retired flow mirror: they are null for every pipeline case
+ * and reading them reports "the lifecycle never started" about tickets that
+ * are demonstrably mid-flight. The truth is the issue-link table, the same
+ * join `resolvePipelineCaseConversationSource` walks in the other direction.
+ *
+ * Retired links are excluded. A link that was retired says where the ticket
+ * USED to sit; carrying it forward would put a stale process on the ticket
+ * header, which is exactly the failure this surface exists to fix.
+ */
 async function listIssueLinkedCases(db: Db, companyId: string, issueId: string) {
   const rows = await db
     .select({
@@ -225,25 +240,56 @@ async function listIssueLinkedCases(db: Db, companyId: string, issueId: string) 
       eq(pipelineCaseIssueLinks.issueId, issueId),
       eq(pipelineCases.companyId, companyId),
       eq(pipelines.companyId, companyId),
-    ));
-  return rows.map((row) => ({
-    id: row.case.id,
-    caseKey: row.case.caseKey,
-    title: row.case.title,
-    status: row.case.terminalKind ?? "open",
-    role: row.link.role,
-    pipeline: {
-      id: row.pipeline.id,
-      key: row.pipeline.key,
-      name: row.pipeline.name,
-    },
-    stage: {
-      id: row.stage.id,
-      key: row.stage.key,
-      name: row.stage.name,
-      kind: row.stage.kind,
-    },
-  }));
+      isNull(pipelineCaseIssueLinks.retiredAt),
+      isNull(pipelineCases.retiredAt),
+    ))
+    .orderBy(desc(pipelineCaseIssueLinks.createdAt), desc(pipelineCaseIssueLinks.id));
+  return rows.map((row) => {
+    const awaitingDecision = row.stage.kind === "review" && row.case.terminalKind === null;
+    return {
+      id: row.case.id,
+      caseKey: row.case.caseKey,
+      title: row.case.title,
+      status: row.case.terminalKind ?? "open",
+      role: row.link.role,
+      /** Required by `POST /cases/:id/review`; without it the ticket can show
+       *  a decision it cannot submit. */
+      version: row.case.version,
+      terminalKind: row.case.terminalKind,
+      pipeline: {
+        id: row.pipeline.id,
+        key: row.pipeline.key,
+        name: row.pipeline.name,
+      },
+      stage: {
+        id: row.stage.id,
+        key: row.stage.key,
+        name: row.stage.name,
+        kind: row.stage.kind,
+      },
+      /** Present only while a human decision is genuinely outstanding, so the
+       *  ticket never has to infer "does this need me?" from stage kinds. */
+      review: awaitingDecision
+        ? {
+          question: reviewStageQuestion(row.stage),
+          config: reviewConfigForStage(row.stage),
+        }
+        : null,
+    };
+  });
+}
+
+/**
+ * What the gate is actually asking, in the words whoever built the process
+ * wrote. Absent for a gate that never declared one — the surface then says
+ * plainly that no question was written rather than inventing one.
+ */
+function reviewStageQuestion(stage: typeof pipelineStages.$inferSelect): string | null {
+  const config = stage.config as Record<string, unknown> | null | undefined;
+  const gate = config?.gate;
+  if (!gate || typeof gate !== "object" || Array.isArray(gate)) return null;
+  const prompt = (gate as Record<string, unknown>).prompt;
+  return typeof prompt === "string" && prompt.trim().length > 0 ? prompt.trim() : null;
 }
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
