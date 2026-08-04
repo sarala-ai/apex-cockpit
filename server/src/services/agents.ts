@@ -34,6 +34,7 @@ import {
   builtInAgentMarkersEqual,
   readBuiltInAgentMarker,
 } from "./built-in-agent-metadata.js";
+import { detachIssueRunReferences } from "./db-lock-order.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -757,6 +758,17 @@ export function agentService(db: Db) {
         );
         await tx.delete(issueExecutionDecisions).where(eq(issueExecutionDecisions.actorAgentId, id));
         await tx.delete(issueComments).where(eq(issueComments.authorAgentId, id));
+        // THE LOCK ORDER: `issues` before `heartbeat_runs` — services/db-lock-order.ts.
+        // The `ON DELETE SET NULL` triggers on `issues.execution_run_id` /
+        // `checkout_run_id` would otherwise make this delete acquire the run
+        // rows first and `issues` second. The `update(issues)` above does not
+        // cover it: it nulls the ASSIGNEE columns, not the execution lock.
+        const agentRunIds = await tx
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.agentId, id))
+          .then((rows) => rows.map((row) => row.id));
+        await detachIssueRunReferences(tx, agentRunIds);
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, id));
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.agentId, id));

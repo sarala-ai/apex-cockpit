@@ -291,6 +291,7 @@ export {
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
   ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
 } from "./recovery/service.js";
+import { lockIssueRow } from "./db-lock-order.js";
 export const ACTIVE_RUN_OUTPUT_PROGRESS_FLUSH_INTERVAL_MS = 60 * 1000;
 export const ACTIVE_RUN_LOG_RUNTIME_STATUS_REFRESH_INTERVAL_MS = 5 * 1000;
 export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS = [
@@ -8137,6 +8138,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
 
     const queued = await db.transaction(async (tx) => {
+      // THE LOCK ORDER: `issues` before `heartbeat_runs` — services/db-lock-order.ts.
+      // The retry run's `retryOfRunId` FK takes a KEY SHARE lock on the lost
+      // run's row, and the issue's execution lock is rewritten below, so this
+      // transaction holds both. Taking the issue first is the order.
+      if (issueId) await lockIssueRow(tx, issueId);
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -8861,12 +8867,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
 
     const scheduleResult = await db.transaction(async (tx): Promise<ScheduledRetryTransactionResult> => {
+      // THE LOCK ORDER: `issues` before `heartbeat_runs` — services/db-lock-order.ts.
+      // Hoisted out of the max-turn branch below, which already did exactly
+      // this. Every branch of this transaction ends up holding both rows (the
+      // scheduled run's `retryOfRunId` FK takes a KEY SHARE lock on `run.id`,
+      // and the issue's execution lock is rewritten), so the issue lock belongs
+      // at the head where it covers all of them rather than one.
+      if (issueId) await lockIssueRow(tx, issueId);
       if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) {
-        if (issueId) {
-          await tx.execute(
-            sql`select id from issues where company_id = ${run.companyId} and id = ${issueId} for update`,
-          );
-        } else {
+        if (!issueId) {
           await tx.execute(
             sql`select id from heartbeat_runs where company_id = ${run.companyId} and id = ${run.id} for update`,
           );

@@ -13,7 +13,7 @@
  * mattered.
  */
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -44,6 +44,7 @@ import {
 import { pipelineService, type PipelineActor } from "../services/pipelines.ts";
 import { withBuiltInAgentMarker } from "../services/built-in-agent-metadata.ts";
 import { APEX_AGENT_KEYS, apexAgentPermissionProfile } from "../services/apex-agent-roster.ts";
+import { detachIssueRunReferences } from "../services/db-lock-order.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -82,6 +83,16 @@ describeEmbeddedPostgres("agent step executor resolution", () => {
     // wakeup request, and both hard-reference the agent.
     await db.delete(heartbeatRunEvents);
     await db.delete(agentTaskSessions);
+    // `issues` <-> `heartbeat_runs` is a REFERENCE CYCLE that no delete order
+    // satisfies: `heartbeat_runs.issue_id` points at `issues`, while
+    // `issues.execution_run_id` / `checkout_run_id` point back at
+    // `heartbeat_runs`. Deleting either table first makes the other table's FK
+    // fire — and `delete from heartbeat_runs` fires `ON DELETE SET NULL` on
+    // `issues`, which is the FORBIDDEN lock order (services/db-lock-order.ts)
+    // and deadlocked against the still-running heartbeat dispatch this suite's
+    // commissions kick off. Breaking the cycle from the issue side first is
+    // both the way out of the cycle and the way to obey the order.
+    await detachIssueRunReferences(db);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
@@ -89,6 +100,7 @@ describeEmbeddedPostgres("agent step executor resolution", () => {
     await db.delete(issues);
     await db.delete(agents);
     await db.delete(approvals);
+    await db.execute(sql`delete from company_skills`);
     await db.delete(companies);
   });
 

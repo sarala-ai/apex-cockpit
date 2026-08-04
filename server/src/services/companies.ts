@@ -45,6 +45,7 @@ import { environmentService } from "./environments.js";
 import { heartbeatService } from "./heartbeat.js";
 import { logActivity } from "./activity-log.js";
 import { builtInAgentService } from "./built-in-agents.js";
+import { detachIssueRunReferences } from "./db-lock-order.js";
 
 export interface CompanyActivityActor {
   actorType: "user" | "agent" | "system" | "plugin";
@@ -846,6 +847,12 @@ export function companyService(db: Db) {
         }
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.companyId, id));
         await tx.delete(activityLog).where(eq(activityLog.companyId, id));
+        // THE LOCK ORDER: `issues` before `heartbeat_runs` — services/db-lock-order.ts.
+        // `DELETE FROM heartbeat_runs` is secretly a two-table statement: the
+        // `ON DELETE SET NULL` triggers on `issues.execution_run_id` /
+        // `checkout_run_id` acquire `issues` AFTER the run rows. Detaching the
+        // references first puts `issues` first and leaves the trigger nothing.
+        await detachIssueRunReferences(tx, companyRunIds.map((run) => run.id));
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, id));
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.companyId, id));
