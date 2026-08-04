@@ -210,6 +210,24 @@ export function nativeToolsForProfile(profile: PermissionProfile): string {
   }
 }
 
+/**
+ * Whether a profile can CHANGE A REPOSITORY — the one question a ticket has to
+ * answer before it commissions anybody, because an agent that will write code
+ * and has no checkout to write it in is the failure this whole preflight
+ * exists to prevent.
+ *
+ * Only `bounded` grants Edit/Write/Bash (see `nativeToolsForProfile`).
+ * `read-only-broad` has no write verb at all and `read-repos` adds only
+ * read-only VCS commands — an agent under either can be asked a question about
+ * a codebase, but never dispatched to change one, so neither makes a repo
+ * binding a precondition. Derived from the profile rather than from a list of
+ * agent names, so a new agent inherits the right answer by declaring a
+ * profile and nothing has to be remembered.
+ */
+export function permissionProfileWritesRepositories(profile: PermissionProfile): boolean {
+  return profile === "bounded";
+}
+
 function isPermissionProfile(value: unknown): value is PermissionProfile {
   return typeof value === "string" && (PERMISSION_PROFILES as readonly string[]).includes(value);
 }

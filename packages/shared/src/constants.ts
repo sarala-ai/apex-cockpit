@@ -215,6 +215,37 @@ export const ISSUE_PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
 export const ISSUE_WORK_MODES = ["standard", "ask", "planning", "skill_test"] as const;
 export type IssueWorkMode = (typeof ISSUE_WORK_MODES)[number];
+/**
+ * WHAT KIND OF WORK A TICKET IS — and, through that, which lifecycle it runs.
+ *
+ * These four strings are the same vocabulary the seeded lifecycle pipelines
+ * carry in `pipelines.ticket_type` (server/src/apex/pipeline/lifecycles.ts).
+ * The mapping from a type to a process is therefore a LOOKUP, not a table in
+ * code: a type enters the process whose `ticketType` equals it. Adding a
+ * lifecycle is seeding a pipeline row, never editing a switch.
+ *
+ * `chore` is in this list and has no pipeline, deliberately. A fully
+ * deterministic sequence — no agent step, no gate — needs no case: cases,
+ * leases and versions exist to govern non-determinism and to hold work for a
+ * human, and a chore has neither to govern. It is still a real ticket type
+ * with a status, an assignee, a board seat and an audit trail; the only claim
+ * is that its lifecycle does not need stages. Surfaces must say that out loud
+ * rather than hide the option or imply a process that is not there.
+ *
+ * A ticket may also carry NO type at all (the column is nullable). That is the
+ * honest state of every ticket filed before types existed, and of a ticket
+ * whose author has not decided yet — not a silent "chore".
+ */
+export const TICKET_TYPES = ["chore", "bug", "design-change", "feature"] as const;
+export type TicketType = (typeof TICKET_TYPES)[number];
+
+/** Types that deliberately have no process. See TICKET_TYPES. */
+export const TICKET_TYPES_WITHOUT_PROCESS: readonly TicketType[] = ["chore"];
+
+export function isTicketType(value: unknown): value is TicketType {
+  return typeof value === "string" && (TICKET_TYPES as readonly string[]).includes(value);
+}
+
 export const ISSUE_HARNESS_KINDS = ["skill_test"] as const;
 export type IssueHarnessKind = (typeof ISSUE_HARNESS_KINDS)[number];
 export const MAX_ISSUE_REQUEST_DEPTH = 1024;
