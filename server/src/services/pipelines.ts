@@ -1480,6 +1480,15 @@ function stageGate(stage: typeof pipelineStages.$inferSelect) {
  * collapse is done properly.
  */
 function stageProcessStep(stage: typeof pipelineStages.$inferSelect): ProcessStep | null {
+  // DELIBERATELY NARROWER THAN THE RETIRED FLOW FRONT-END. A flow node could
+  // route a failure three ways — `pause`, `jump:<node>`, and `skip` (advance
+  // PAST the failed step as though it had passed). A stage says the same thing
+  // in the board's own vocabulary with two: naming `onFailureToStageKey` is a
+  // jump, naming none holds. There is no way to spell `skip`, and that is the
+  // right loss: a step that may be stepped over on failure is a step whose
+  // failure means nothing, which is indistinguishable from not having the step.
+  // If a real need for it appears, it belongs as explicit stage config — not as
+  // a third meaning smuggled into an absent field.
   const onFailFor = (target: string | null) => (target ? `jump:${target}` : "pause");
   const acceptance = stageDeclaredAcceptance(stage);
   const run = stageRunStep(stage);
@@ -2874,6 +2883,16 @@ async function openStageGateInTransaction(
   },
 ) {
   const gate = stageGate(input.stage);
+  // KNOWN GAP, recorded rather than papered over. `mode: "notify"` is accepted
+  // by the stage config and does NOTHING here: no approval (correct — a gate
+  // that only announces itself must not manufacture a decision), but also no
+  // case event, no comment and no auto-advance. The retired flow front-end DID
+  // auto-proceed a notify gate with a visible note saying so. Nothing seeded
+  // uses notify (lifecycles.ts types its gates as `mode: "approve"` only), so
+  // this is reachable only by hand-authoring a stage — but accepted config that
+  // silently does nothing is exactly the `autonomy` failure
+  // docs/architecture/execution-substrate.md §2 names: implement it or refuse
+  // it at authoring time. It should not stay in this state.
   if (!gate || gate.mode !== "approve") return null;
 
   const existing = await tx
@@ -4338,6 +4357,15 @@ export function pipelineService(
    * Scoped to `review_decided` events whose target was THIS stage, so a gate
    * elsewhere in the process does not bleed its feedback into an unrelated
    * step's instruction.
+   *
+   * KNOWN GAP against the retired flow front-end: it also CLOSED the rounds a
+   * gate had raised when that same gate later approved — the reviewer accepted
+   * the work, so their earlier complaints are settled. Nothing does that here,
+   * so a case that passes a gate and later returns to the same step still
+   * carries the feedback that was already satisfied. The fix is a filter on a
+   * subsequent `review_decided`/approve for the same gate, and it needs a
+   * decision about what "the same gate" means across a case that visits it more
+   * than once — which is why it is written down rather than guessed at.
    */
   async function readCaseChangeRequestRounds(
     companyId: string,
@@ -4657,6 +4685,23 @@ export function pipelineService(
     await executeAutomationLedgers(ledgers, input.actor);
   }
 
+  /**
+   * Record that the current step is HELD.
+   *
+   * KNOWN GAP against the retired flow front-end, and the most user-visible
+   * one: this writes a case event and nothing else. Case events render on the
+   * Pipelines surface; the flow coordinator ALSO posted a plain-language issue
+   * comment for every one of these (paused, failed, deferred, gate rejected,
+   * changes-request blocked), so a founder watching the TICKET saw why the work
+   * stopped. Today they see nothing on the ticket at all.
+   *
+   * Not fixed here because it is a product decision with a noise budget
+   * attached — which holds deserve a comment, how they are worded, and whether
+   * the ticket's own surface should read case events directly instead. But a
+   * case that stops silently on the surface the human is actually looking at is
+   * the same class of failure as the assignee-vacuum bug: correct underneath,
+   * invisible where it matters.
+   */
   async function writeStepHold(
     companyId: string,
     caseId: string,
@@ -7043,6 +7088,14 @@ export function pipelineService(
       // The case is no longer waiting on a person the moment the person
       // answered — cleared here rather than inside the transition so it is
       // cleared even when the decision routes the case nowhere.
+      //
+      // KNOWN GAP against the retired flow front-end, on the OTHER exit: a case
+      // that leaves a gate stage without the approval being decided (an
+      // operator transition, a cancellation) leaves that approval pending
+      // forever. `abandonFlow` rejected the dangling gate approval first, on
+      // purpose, so a later stray decision on it was a harmless no-op rather
+      // than a live decision nobody will ever resolve. Closing a pending gate
+      // when its case leaves the stage belongs on the transition path.
       await db
         .update(pipelineCases)
         .set({ stepStatus: null, updatedAt: nowDate() })
