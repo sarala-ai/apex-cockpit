@@ -1188,7 +1188,16 @@ function normalizeStageConfig(kind: PipelineStageKind | string, config?: Pipelin
   };
 }
 
-function reviewConfigForStage(stage: typeof pipelineStages.$inferSelect) {
+/**
+ * The normalised review settings of a stage: who decides, which decisions are
+ * offered, and which of them need a written reason.
+ *
+ * Exported because the TICKET surface has to answer "does this need me?" with
+ * exactly the settings the review queue would enforce. Deriving that a second
+ * time from the raw stage config is how the two surfaces drift apart and start
+ * offering a decision the server then refuses.
+ */
+export function reviewConfigForStage(stage: typeof pipelineStages.$inferSelect) {
   const config = normalizeStageConfig(stage.kind, stageConfig(stage));
   const reviewerKind: PipelineStageConfig["reviewerKind"] = config.requireApproval === true ? "human" : "any";
   return {

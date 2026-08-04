@@ -107,6 +107,8 @@ import { IssueRelatedWorkPanel } from "../components/IssueRelatedWorkPanel";
 import { IssueMonitorActivityCard } from "../components/IssueMonitorActivityCard";
 import { IssueScheduledRetryCard } from "../components/IssueScheduledRetryCard";
 import { IssueProperties } from "../components/IssueProperties";
+import { IssueLifecycle } from "../components/IssueLifecycle";
+import { pipelinesApi, type PipelineReviewDecision } from "../api/pipelines";
 import { PauseAffectsSummaryView } from "../components/interrupt-handoff/InterruptHandoffViews";
 import { computePauseAffectsSummary } from "../lib/interrupt-handoff";
 import { useIssueExternalObjects } from "../hooks/useIssueExternalObjects";
@@ -1968,6 +1970,50 @@ export function IssueDetail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref) });
     }
   }, [issueCacheRefs, queryClient]);
+  /**
+   * Answering a lifecycle gate from the ticket.
+   *
+   * Same endpoint the pipeline board's review panel calls, including the
+   * version check — a ticket left open while the process moved on must fail
+   * loudly rather than apply a decision to a stage that is no longer current.
+   */
+  const [decidingLifecycleGate, setDecidingLifecycleGate] = useState<PipelineReviewDecision | null>(null);
+  const decideLifecycleGate = useMutation({
+    mutationFn: (input: {
+      caseId: string;
+      version: number;
+      decision: PipelineReviewDecision;
+      reason: string | null;
+    }) =>
+      pipelinesApi.reviewCase(input.caseId, {
+        decision: input.decision,
+        reason: input.reason,
+        expectedVersion: input.version,
+      }),
+    onMutate: (input) => setDecidingLifecycleGate(input.decision),
+    onSettled: () => setDecidingLifecycleGate(null),
+    onSuccess: (_result, input) => {
+      invalidateIssueDetail();
+      if (selectedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: ["pipelines", "review-cases", selectedCompanyId] });
+      }
+      pushToast({
+        title: input.decision === "approve"
+          ? "Approved — the process moves on"
+          : input.decision === "request_changes"
+            ? "Sent back for changes"
+            : "Stopped here",
+        tone: "success",
+      });
+    },
+    onError: () =>
+      pushToast({
+        title: "Could not record that decision",
+        body: "The process may have moved on since this page loaded. Reload and try again.",
+        tone: "error",
+      }),
+  });
+
   const invalidateIssueThreadLazily = useCallback(() => {
     for (const ref of issueCacheRefs) {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(ref), refetchType: "inactive" });
@@ -4538,6 +4584,18 @@ export function IssueDetail() {
           onSave={(title) => updateIssue.mutateAsync({ title })}
           as="h2"
           className="text-xl font-bold"
+        />
+
+        {/* Directly under the title, before the description: "where is this and
+            does it need me?" is the first thing a person needs, and it must not
+            be reachable only by scrolling past the whole ticket. */}
+        <IssueLifecycle
+          issue={issue}
+          deciding={decidingLifecycleGate}
+          resolveUserLabel={(userId) => userLabelMap.get(userId) ?? null}
+          onDecide={({ row, decision, reason }) =>
+            decideLifecycleGate.mutate({ caseId: row.id, version: row.version, decision, reason })
+          }
         />
 
         <InlineEditor

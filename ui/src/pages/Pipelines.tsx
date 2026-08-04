@@ -109,6 +109,13 @@ import {
   pipelineConversationStarterAssigneeValue,
   splitPipelineItemFields,
 } from "../lib/pipeline-item-detail";
+import {
+  reviewDecisionActions,
+  reviewDecisionConfig,
+  reviewDecisionToastTitle,
+  type ReviewDecisionAction,
+  type ReviewDecisionConfig,
+} from "../lib/review-decision";
 import { extractWorkReferences, referenceFieldKeys } from "../lib/pipeline-references";
 import { pieceNounPlural, readStageBreakdown } from "../lib/pipeline-breakdown";
 import { hasBlockingShortcutDialog, isKeyboardShortcutTextInputTarget } from "../lib/keyboardShortcuts";
@@ -3535,91 +3542,6 @@ function WaitingChildRow({
       </Link>
     </li>
   );
-}
-
-interface ReviewDecisionConfig {
-  approveToStageKey: string | null;
-  rejectToStageKey: string | null;
-  requestChangesToStageKey: string | null;
-  requireRejectReason: boolean;
-  requireRequestChangesReason: boolean;
-}
-
-interface ReviewDecisionAction {
-  decision: PipelineReviewDecision;
-  label: string;
-  targetStageName: string;
-  targetStageKey: string;
-  requireReason: boolean;
-  variant: "default" | "outline" | "destructive";
-}
-
-function configString(config: Record<string, unknown> | null | undefined, key: string) {
-  const value = config?.[key];
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
-
-function stageKeyForKind(stages: PipelineStage[], kind: string) {
-  return stages.find((stage) => stage.kind === kind)?.key ?? stages.find((stage) => stage.key === kind)?.key ?? null;
-}
-
-function reviewDecisionConfig(stage: PipelineStage, stages: PipelineStage[]): ReviewDecisionConfig | null {
-  if (stage.kind !== "review") return null;
-  const config = stage.config ?? {};
-  return {
-    approveToStageKey: configString(config, "approveToStageKey") ?? stageKeyForKind(stages, "done"),
-    rejectToStageKey: configString(config, "rejectToStageKey") ?? stageKeyForKind(stages, "cancelled"),
-    requestChangesToStageKey: configString(config, "requestChangesToStageKey"),
-    requireRejectReason: config.requireRejectReason !== false,
-    requireRequestChangesReason: config.requireRequestChangesReason !== false,
-  };
-}
-
-function reviewDecisionActions(
-  config: ReviewDecisionConfig,
-  stageLookup: Map<string, string>,
-): ReviewDecisionAction[] {
-  const actions: ReviewDecisionAction[] = [];
-  if (config.approveToStageKey) {
-    actions.push({
-      decision: "approve",
-      label: "Approve",
-      targetStageKey: config.approveToStageKey,
-      targetStageName: stageLookup.get(config.approveToStageKey) ?? humanizePipelineItemStatus(config.approveToStageKey),
-      requireReason: false,
-      variant: "default",
-    });
-  }
-  if (config.requestChangesToStageKey) {
-    actions.push({
-      decision: "request_changes",
-      label: "Request changes",
-      targetStageKey: config.requestChangesToStageKey,
-      targetStageName: stageLookup.get(config.requestChangesToStageKey) ?? humanizePipelineItemStatus(config.requestChangesToStageKey),
-      requireReason: config.requireRequestChangesReason,
-      variant: "outline",
-    });
-  }
-  if (config.rejectToStageKey) {
-    actions.push({
-      decision: "reject",
-      label: "Reject",
-      targetStageKey: config.rejectToStageKey,
-      targetStageName: stageLookup.get(config.rejectToStageKey) ?? humanizePipelineItemStatus(config.rejectToStageKey),
-      requireReason: config.requireRejectReason,
-      variant: "destructive",
-    });
-  }
-  return actions;
-}
-
-function reviewDecisionToastTitle(decision: PipelineReviewDecision, movedToNextItem: boolean) {
-  const prefix = decision === "approve"
-    ? "Item approved"
-    : decision === "request_changes"
-      ? "Changes requested"
-      : "Item rejected";
-  return movedToNextItem ? `${prefix}; moved to the next review` : prefix;
 }
 
 function ReviewDecisionPanel({

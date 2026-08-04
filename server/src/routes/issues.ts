@@ -189,6 +189,7 @@ import {
   startTicketLifecycle,
 } from "../apex/pipeline/ticket-lifecycle.js";
 import type { PipelineActor } from "../services/pipelines.js";
+import { isAwaitingHumanDecision, shapeIssueLinkedCase } from "../apex/pipeline/issue-lifecycle.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -208,6 +209,21 @@ const promoteLowTrustOutputSchema = z.object({
   summary: z.string().trim().min(1).max(8_000),
 });
 
+/**
+ * The processes this ticket is running on, and — when one of them has stopped
+ * to ask a human something — everything needed to answer without leaving the
+ * ticket.
+ *
+ * This is the ONLY path from a ticket to its process. The `issues.flow*`
+ * columns are the retired flow mirror: they are null for every pipeline case
+ * and reading them reports "the lifecycle never started" about tickets that
+ * are demonstrably mid-flight. The truth is the issue-link table, the same
+ * join `resolvePipelineCaseConversationSource` walks in the other direction.
+ *
+ * Retired links are excluded. A link that was retired says where the ticket
+ * USED to sit; carrying it forward would put a stale process on the ticket
+ * header, which is exactly the failure this surface exists to fix.
+ */
 async function listIssueLinkedCases(db: Db, companyId: string, issueId: string) {
   const rows = await db
     .select({
@@ -225,26 +241,39 @@ async function listIssueLinkedCases(db: Db, companyId: string, issueId: string) 
       eq(pipelineCaseIssueLinks.issueId, issueId),
       eq(pipelineCases.companyId, companyId),
       eq(pipelines.companyId, companyId),
-    ));
-  return rows.map((row) => ({
-    id: row.case.id,
-    caseKey: row.case.caseKey,
-    title: row.case.title,
-    status: row.case.terminalKind ?? "open",
-    role: row.link.role,
-    pipeline: {
-      id: row.pipeline.id,
-      key: row.pipeline.key,
-      name: row.pipeline.name,
-    },
-    stage: {
-      id: row.stage.id,
-      key: row.stage.key,
-      name: row.stage.name,
-      kind: row.stage.kind,
-    },
-  }));
+      isNull(pipelineCaseIssueLinks.retiredAt),
+      isNull(pipelineCases.retiredAt),
+    ))
+    .orderBy(desc(pipelineCaseIssueLinks.createdAt), desc(pipelineCaseIssueLinks.id));
+
+  // Only a pending decision needs its pipeline's stage names, and pending
+  // decisions are rare — so the second query is skipped on the overwhelming
+  // majority of ticket loads rather than paid for on every one.
+  const awaitingPipelineIds = [
+    ...new Set(
+      rows
+        .filter((row) => isAwaitingHumanDecision(row.case, row.stage))
+        .map((row) => row.pipeline.id),
+    ),
+  ];
+  const stageNamesByPipeline = new Map<string, Record<string, string>>();
+  if (awaitingPipelineIds.length > 0) {
+    const stageRows = await db
+      .select({ pipelineId: pipelineStages.pipelineId, key: pipelineStages.key, name: pipelineStages.name })
+      .from(pipelineStages)
+      .where(inArray(pipelineStages.pipelineId, awaitingPipelineIds));
+    for (const stage of stageRows) {
+      const names = stageNamesByPipeline.get(stage.pipelineId) ?? {};
+      names[stage.key] = stage.name;
+      stageNamesByPipeline.set(stage.pipelineId, names);
+    }
+  }
+
+  return rows.map((row) =>
+    shapeIssueLinkedCase({ ...row, stageNames: stageNamesByPipeline.get(row.pipeline.id) })
+  );
 }
+
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;

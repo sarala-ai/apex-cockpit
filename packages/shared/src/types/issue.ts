@@ -701,6 +701,39 @@ export interface IssueWatchdog extends IssueWatchdogSummary {
   updatedByRunId: string | null;
 }
 
+/** How a ticket is attached to a pipeline case. `work` means the case IS this
+ *  ticket's work — the one that decides which process the ticket is on. */
+export type IssueLinkedCaseRole = "origin" | "conversation" | "work" | "automation";
+
+/**
+ * A process this ticket is on, and — when the process has stopped to ask a
+ * human something — what it is asking and what may be answered.
+ *
+ * `review` is non-null only while a decision is genuinely outstanding, so no
+ * surface has to infer "does this need me?" from a stage kind.
+ */
+export interface IssueLinkedCase {
+  id: string;
+  caseKey: string | null;
+  title: string;
+  status: string;
+  role: IssueLinkedCaseRole;
+  /** Required by the review endpoint's optimistic-concurrency check. */
+  version: number;
+  terminalKind: string | null;
+  pipeline: { id: string; key: string; name: string };
+  stage: { id: string; key: string; name: string; kind: string };
+  review: {
+    /** The gate's own question, as written by whoever built the process.
+     *  Null when the gate never declared one. */
+    question: string | null;
+    config: Record<string, unknown>;
+    /** Stage key → the name that pipeline gave it, so a decision reads the
+     *  same on the ticket as it does on the board. */
+    stageNames: Record<string, string>;
+  } | null;
+}
+
 export interface Issue {
   id: string;
   companyId: string;
@@ -785,6 +818,10 @@ export interface Issue {
   currentExecutionWorkspace?: ExecutionWorkspace | null;
   workProducts?: IssueWorkProduct[];
   mentionedProjects?: Project[];
+  /** The processes this ticket is running on, resolved through the pipeline
+   *  case issue links — NOT the retired `flow*` columns above, which are null
+   *  for every pipeline case. Detail payload only. */
+  linkedCases?: IssueLinkedCase[];
   myLastTouchAt?: Date | null;
   lastExternalCommentAt?: Date | null;
   lastActivityAt?: Date | null;
