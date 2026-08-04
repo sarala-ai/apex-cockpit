@@ -163,9 +163,22 @@ export async function startTicketLifecycle(
       ...(input.issue.identifier ? { issueIdentifier: input.issue.identifier } : {}),
       ticketType,
     },
+    // Linked INSIDE the ingest transaction, not after it. An `agent` step
+    // resolves who to commission the run against through the case's issue
+    // links, and `ingestCase` executes the first stage's automation the
+    // instant that transaction commits — so a link written afterwards is
+    // exactly one step too late, and design-change (whose FIRST stage is an
+    // agent step) would fail with `agent_step_has_no_conversation` on a
+    // ticket that has a perfectly good conversation. See `linkIssue` in
+    // services/pipelines.ts.
+    linkIssue: { issueId: input.issue.id, role: TICKET_LIFECYCLE_LINK_ROLE },
     actor: input.actor,
   });
 
+  // The link again, for the idempotent path. `ingestCase` only writes it when
+  // it INSERTS a case; a retried create that finds the existing one skips the
+  // insert entirely, and a case that somehow lost its link would otherwise
+  // stay unlinked forever. `onConflictDoNothing` makes the common case free.
   await db
     .insert(pipelineCaseIssueLinks)
     .values({
