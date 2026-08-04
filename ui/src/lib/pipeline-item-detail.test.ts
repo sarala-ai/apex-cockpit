@@ -58,3 +58,49 @@ describe("the events a stopped step writes", () => {
     expect(formatPipelineItemEvent(event("something_new"))).toBe("Activity recorded.");
   });
 });
+
+/**
+ * The rest of the timeline's silent events, found by listing every type the
+ * pipeline service writes against every type this function reads.
+ */
+describe("the events that were rendering as a shrug", () => {
+  const stages = new Map([["review", "Review"], ["spec", "Spec"]]);
+
+  it("says plainly when somebody moved an item past the process's own route", () => {
+    // The most audit-relevant event an item can carry, and it read as
+    // "Activity recorded."
+    const text = formatPipelineItemEvent(
+      {
+        ...event("transition_forced", { reason: "Unblocking the release" }),
+        actorType: "user",
+        fromStageId: "spec",
+        toStageId: "review",
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any,
+      stages,
+    );
+    expect(text).toContain("Moved by hand from Spec to Review");
+    expect(text).toContain("past the route this process defines");
+    expect(text).toContain("Unblocking the release");
+  });
+
+  it("carries the gate's own question when a decision opened", () => {
+    expect(formatPipelineItemEvent(event("gate_opened", { prompt: "Is it worth doing?" })))
+      .toBe("Waiting for a decision: Is it worth doing?");
+    expect(formatPipelineItemEvent(event("gate_opened", {}))).toBe("Waiting for a decision.");
+  });
+
+  it("distinguishes asking for a re-run from the run actually starting", () => {
+    expect(formatPipelineItemEvent(event("automation_retry_requested", { targetStageKey: "spec" }), stages))
+      .toBe("Asked to run Spec again.");
+    expect(formatPipelineItemEvent(event("automation_retry_dispatched", { targetStageKey: "spec" }), stages))
+      .toBe("Started a fresh run of Spec.");
+  });
+
+  it("counts what a re-run threw away, since that is the part worth checking", () => {
+    expect(formatPipelineItemEvent(event("automation_effects_retired", {
+      retiredCaseIds: ["a", "b"],
+      cancelledIssueIds: ["c"],
+    }))).toBe("Cleared out 2 items built from it and 1 task before the fresh run.");
+  });
+});

@@ -399,6 +399,44 @@ export function formatPipelineItemEvent(event: PipelineCaseEvent, stages?: Stage
     const message = readString(payload.message);
     return `Checked against what this step asks for — not met${message ? `: ${message}` : ""}.`;
   }
+  // The rest of the events that were rendering as "Activity recorded." — found
+  // by listing every type the service writes against every type this function
+  // reads. The costliest omission was `transition_forced`: a manual override
+  // that BYPASSED the process's own routing is the single most audit-relevant
+  // thing that can appear in an item's history, and it read as a shrug.
+  if (kind === "transition_forced") {
+    const from = stageName(event, stages, "from");
+    const to = stageName(event, stages, "to");
+    const where = from && to ? ` from ${from} to ${to}` : to ? ` to ${to}` : "";
+    const reason = readString(payload.reason);
+    const actor = actorName(event);
+    const who = actor && event.actorType !== "system" ? ` by ${actor}` : "";
+    return `Moved by hand${where}, past the route this process defines${who}${reason ? ` — '${reason}'` : ""}.`;
+  }
+  if (kind === "gate_opened") {
+    const prompt = readString(payload.prompt);
+    return prompt ? `Waiting for a decision: ${prompt}` : "Waiting for a decision.";
+  }
+  if (kind === "automation_retry_requested") {
+    const to = stageNameFromLookup(stages, readString(payload.targetStageKey)) ?? null;
+    const actor = actorName(event);
+    const who = actor && event.actorType !== "system" ? `${actor} asked` : "Asked";
+    return `${who} to run ${to ? `${to} ` : "this step "}again.`;
+  }
+  if (kind === "automation_retry_dispatched") {
+    const to = stageNameFromLookup(stages, readString(payload.targetStageKey)) ?? null;
+    return `Started a fresh run of ${to ?? "this step"}.`;
+  }
+  if (kind === "automation_effects_retired") {
+    const retired = Array.isArray(payload.retiredCaseIds) ? payload.retiredCaseIds.length : 0;
+    const cancelled = Array.isArray(payload.cancelledIssueIds) ? payload.cancelledIssueIds.length : 0;
+    const parts: string[] = [];
+    if (retired > 0) parts.push(`${retired} ${retired === 1 ? "item" : "items"} built from it`);
+    if (cancelled > 0) parts.push(`${cancelled} ${cancelled === 1 ? "task" : "tasks"}`);
+    return parts.length > 0
+      ? `Cleared out ${parts.join(" and ")} before the fresh run.`
+      : "Cleared out earlier output before the fresh run.";
+  }
   if (kind === "claimed") return "Work started.";
   if (kind === "lease_released" || kind === "lease_expired") return "Work handoff cleared.";
   return "Activity recorded.";
