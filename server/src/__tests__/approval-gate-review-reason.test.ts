@@ -165,7 +165,7 @@ describe("gate decisions require a reason", () => {
       expect.objectContaining({
         decision: "request_changes",
         reason: "The migration has no down step.",
-        decidedByUserId: "founder",
+        actor: { type: "user", userId: "founder" },
       }),
     );
   });
