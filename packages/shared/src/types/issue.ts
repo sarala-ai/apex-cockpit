@@ -29,6 +29,7 @@ import type {
   IssueStatus,
 } from "../constants.js";
 import type { Goal } from "./goal.js";
+import type { PipelineStepHold } from "./pipeline.js";
 import type { Project, ProjectWorkspace } from "./project.js";
 import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
 import type { IssueWorkProduct } from "./work-product.js";
@@ -732,6 +733,15 @@ export interface IssueLinkedCase {
      *  same on the ticket as it does on the board. */
     stageNames: Record<string, string>;
   } | null;
+  /**
+   * Set when the step this ticket is sitting on STOPPED and the process will
+   * not move on until somebody deals with it.
+   *
+   * The same class of signal as `review` — "this needs you" — and carried the
+   * same way, for the same reason: a ticket must not have to infer that a
+   * process has stalled from a stage name that still reads "in progress".
+   */
+  hold: PipelineStepHold | null;
 }
 
 export interface Issue {

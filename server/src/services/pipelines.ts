@@ -2378,8 +2378,13 @@ async function latestStageEntryAt(db: PipelineDb, caseId: string, stageId: strin
 }
 
 /** The hold currently binding on this stage visit, or null. A `step_held`
- *  with no later `step_hold_cleared` is a hold. */
-async function readActiveStepHold(
+ *  with no later `step_hold_cleared` is a hold.
+ *
+ *  Exported because the READERS live outside this service: the case liveness
+ *  payload and the ticket's lifecycle strip both have to be able to say a step
+ *  stopped, and re-deriving "is there a live hold" from raw events at each
+ *  call site is how two surfaces come to disagree about the same case. */
+export async function readActiveStepHold(
   db: PipelineDb,
   current: typeof pipelineCases.$inferSelect,
   stage: typeof pipelineStages.$inferSelect,

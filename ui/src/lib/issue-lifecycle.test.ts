@@ -27,6 +27,7 @@ function linkedCase(overrides: Partial<IssueLinkedCase> = {}): IssueLinkedCase {
     pipeline: { id: "pipeline-1", key: "feature", name: "Feature" },
     stage: { id: "stage-1", key: "promote", name: "Promote", kind: "review" },
     review: null,
+    hold: null,
     ...overrides,
   };
 }

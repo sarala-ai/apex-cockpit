@@ -6,13 +6,19 @@
  * board, and spot the card in a column. The ticket is where a person looks, so
  * the ticket is where the answer belongs.
  *
- * Two shapes, deliberately very different in weight:
+ * Three shapes, deliberately very different in weight:
  *
  *   - nothing is waiting  — one quiet sentence saying which process the ticket
  *                           is on and where it has got to.
  *   - a decision is due   — a gate the eye cannot skip, carrying the question
  *                           the process actually asked and the decisions it
  *                           actually offers, answerable here.
+ *   - a step has stopped  — the same weight as a gate, because it is the same
+ *                           class of signal: the process is not going to move
+ *                           on by itself. Carries the reason the server
+ *                           recorded and what a person can do about it. Not
+ *                           answerable here — the fix lives at the item — so
+ *                           it points there rather than pretending otherwise.
  *
  * The decisions are never assumed: they come from the stage's own settings via
  * `reviewDecisionActions`, the same derivation the pipeline board uses. A gate
@@ -33,6 +39,7 @@ import {
   selectIssueLifecycleCase,
 } from "../lib/issue-lifecycle";
 import { reviewDecisionActions, reviewDecisionConfigFromStageConfig } from "../lib/review-decision";
+import { describeStepHold } from "../lib/step-hold";
 
 export function IssueLifecycle({
   issue,
@@ -49,6 +56,10 @@ export function IssueLifecycle({
 }) {
   const row = selectIssueLifecycleCase(issue);
   if (!row) return null;
+  // A pending gate outranks a hold: the gate can be ANSWERED right here, so
+  // showing it is strictly more useful than showing a stop the person has to
+  // go elsewhere to clear. (In practice the two barely co-occur — a gate is a
+  // stage the process is waiting at, a hold is a step that failed.)
   if (row.review) {
     return (
       <IssueLifecycleGate
@@ -60,7 +71,73 @@ export function IssueLifecycle({
       />
     );
   }
+  if (row.hold) return <IssueLifecycleHold row={row} hold={row.hold} />;
   return <IssueLifecyclePosition row={row} />;
+}
+
+/**
+ * A step that stopped, on the ticket.
+ *
+ * The regression this closes: the retired flow coordinator posted a
+ * plain-language comment on the ticket every time a step paused or failed, so
+ * a founder watching the ticket learned that work had stopped and why. The
+ * pipeline host records the same facts and posted nothing, so the ticket said
+ * only "on the Feature process, now at Spec" about work that had been stuck
+ * for hours.
+ *
+ * Deliberately NOT a second notification system. There is no new table, no
+ * new comment and no new delivery path — the case event was always the truth,
+ * and this is a reader for it. That also means it disappears on its own the
+ * moment the hold clears, which a posted comment never did.
+ */
+function IssueLifecycleHold({
+  row,
+  hold,
+}: {
+  row: IssueLinkedCase;
+  hold: NonNullable<IssueLinkedCase["hold"]>;
+}) {
+  const copy = describeStepHold(hold, { stepName: row.stage.name });
+  if (!copy) return null;
+  const itemHref = issueLifecycleCaseHref(row);
+
+  return (
+    <section
+      data-testid="issue-lifecycle-hold"
+      className="border-y border-amber-300 bg-amber-50/70 p-4 text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100"
+    >
+      <div className="flex items-start gap-3">
+        <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" aria-hidden />
+        <div className="min-w-0 flex-1 space-y-3">
+          <div>
+            <p className="text-base font-semibold leading-tight" data-testid="issue-lifecycle-hold-headline">
+              {copy.headline}
+            </p>
+            <p className="mt-1 text-sm opacity-80">
+              The {row.pipeline.name} process has stopped and will not carry on by itself.
+            </p>
+          </div>
+
+          {copy.detail ? (
+            <p className="text-sm font-medium" data-testid="issue-lifecycle-hold-detail">
+              {copy.detail}
+            </p>
+          ) : null}
+
+          <p className="text-sm" data-testid="issue-lifecycle-hold-next-step">
+            {copy.nextStep}
+          </p>
+
+          <p className="text-sm">
+            <Link to={itemHref} className="inline-flex items-center gap-1 font-medium underline underline-offset-2">
+              Open {row.stage.name} to re-run it
+              <ArrowUpRight className="h-3 w-3" aria-hidden />
+            </Link>
+          </p>
+        </div>
+      </div>
+    </section>
+  );
 }
 
 function IssueLifecyclePosition({ row }: { row: IssueLinkedCase }) {

@@ -11,6 +11,7 @@
  * started" about tickets that are demonstrably mid-flight.
  */
 import type { pipelineCaseIssueLinks, pipelineCases, pipelineStages, pipelines } from "@paperclipai/db";
+import type { PipelineStepHold } from "@paperclipai/shared";
 import { reviewConfigForStage } from "../../services/pipelines.js";
 
 type LinkRow = typeof pipelineCaseIssueLinks.$inferSelect;
@@ -53,6 +54,10 @@ export function shapeIssueLinkedCase(row: {
   /** Every stage key → name in this case's pipeline. Only read for a pending
    *  review, so callers may skip the lookup when nothing is waiting. */
   stageNames?: Record<string, string>;
+  /** The step that stopped, when one has. Passed in rather than queried here
+   *  so this stays testable without a database, exactly as the review shaping
+   *  is. */
+  hold?: PipelineStepHold | null;
 }) {
   const awaitingDecision = isAwaitingHumanDecision(row.case, row.stage);
   return {
@@ -92,7 +97,30 @@ export function shapeIssueLinkedCase(row: {
         stageNames: row.stageNames ?? {},
       }
       : null,
+    /**
+     * Only ever set for a LIVE case. A terminal case's last hold is history:
+     * the process has already ended, nothing is waiting on anybody, and
+     * showing it would put an urgent-looking block on a ticket whose work is
+     * over — the same mistake `isAwaitingHumanDecision` exists to avoid for
+     * gates.
+     */
+    hold: row.case.terminalKind === null ? row.hold ?? null : null,
   };
+}
+
+/**
+ * Whether this link is one whose hold is worth loading.
+ *
+ * A ticket can be a bystander to several cases; only the `work` link is the
+ * one the lifecycle strip reports on, and a terminal case cannot be holding
+ * anything. Everything else would be a query paid for on every ticket load to
+ * produce a field no surface reads.
+ */
+export function shouldLoadStepHold(row: {
+  link: Pick<LinkRow, "role">;
+  case: Pick<CaseRow, "terminalKind">;
+}): boolean {
+  return row.link.role === "work" && row.case.terminalKind === null;
 }
 
 /**
