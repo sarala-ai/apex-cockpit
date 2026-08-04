@@ -78,7 +78,10 @@ export function describeStepHold(
   options: { stepName?: string | null } = {},
 ): StepHoldCopy | null {
   if (!hold) return null;
-  const stepName = options.stepName ?? hold.stageName ?? null;
+  // `in` rather than `??`: passing `stepName: null` means "do not name the
+  // step, the surface already has", which is a different instruction from
+  // omitting it and must not fall back to the hold's own name.
+  const stepName = "stepName" in options ? options.stepName ?? null : hold.stageName ?? null;
   return {
     headline: headlineFor(hold.reason, stepName),
     detail: hold.message?.trim() ? hold.message.trim() : null,
