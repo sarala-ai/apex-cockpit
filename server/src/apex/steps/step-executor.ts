@@ -159,6 +159,11 @@ export interface AgentStepPort {
   /** Commission the bounded run. `null` = the machinery deferred or declined. */
   commission(input: {
     agentId: string;
+    /** True when the executor was chosen by the STEP (a declared roster key or
+     *  a sole assignable agent) rather than taken from the ticket's existing
+     *  assignee. A host may need to claim the ticket for that agent before the
+     *  run is queued — see the pipeline host's `commission`. */
+    agentAutoAssigned: boolean;
     instructionCommentId: string;
     renderedPrompt: string;
     permissions: unknown;
@@ -314,6 +319,7 @@ export function stepExecutor(ports: StepExecutorPorts) {
     try {
       const commissioned = await port.commission({
         agentId: executor.agentId,
+        agentAutoAssigned: executor.assigned,
         instructionCommentId,
         renderedPrompt,
         permissions: spec.permissions,

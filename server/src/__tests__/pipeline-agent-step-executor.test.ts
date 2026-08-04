@@ -239,6 +239,59 @@ describeEmbeddedPostgres("agent step executor resolution", () => {
     expect(payload.agentId).not.toBe(other.id);
   }, 60_000);
 
+  /*
+   * THE LOOP-BREAKING BUG, pinned.
+   *
+   * `claimQueuedRun` cancels a queued run whose agent differs from the issue's
+   * `assigneeAgentId` (`issue_assignee_changed`) — right, because a human
+   * reassigning a ticket must not leave the old owner's run to start behind
+   * their back. But a STEP-declared agent has no assignment behind it, so every
+   * lifecycle agent step queued a run for an agent the ticket did not belong to
+   * and the heartbeat killed it seconds later. Observed live on APEX-14 at the
+   * `spec` stage: the case sat at waiting_agent with no comment and no owner.
+   *
+   * Filling the vacuum is what makes the run survive to dispatch.
+   */
+  it("claims an unassigned ticket for the agent the step names", async () => {
+    const company = await seedCompany();
+    const implementer = await seedRosterAgent(company.id, APEX_AGENT_KEYS.implementer, "Implementer");
+    const pipeline = await seedAgentStagePipeline(company.id, APEX_AGENT_KEYS.implementer);
+    const seeded = await seedCaseWithConversation(company.id, pipeline.id);
+    await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, seeded.issue.id));
+
+    await enterWorkStage(company.id, seeded.case.id, seeded.case.version);
+
+    const [after] = await db
+      .select({ assigneeAgentId: issues.assigneeAgentId })
+      .from(issues)
+      .where(eq(issues.id, seeded.issue.id));
+    expect(after!.assigneeAgentId).toBe(implementer.id);
+  }, 60_000);
+
+  /*
+   * The other half of the rule, and the reason this is not just "always set the
+   * assignee": `assigneeAgentId` has a SECOND writer. The per-issue execution
+   * policy reassigns it to the REVIEWER on a done-transition, deliberately
+   * excluding the executor so review stays independent. Re-routing here would
+   * silently defeat that. Fill a vacuum; never overwrite.
+   */
+  it("never re-routes a ticket that already has an assignee", async () => {
+    const company = await seedCompany();
+    const other = await seedPlainAgent(company.id, "Existing Owner");
+    await seedRosterAgent(company.id, APEX_AGENT_KEYS.implementer, "Implementer");
+    const pipeline = await seedAgentStagePipeline(company.id, APEX_AGENT_KEYS.implementer);
+    const seeded = await seedCaseWithConversation(company.id, pipeline.id);
+    await db.update(issues).set({ assigneeAgentId: other.id }).where(eq(issues.id, seeded.issue.id));
+
+    await enterWorkStage(company.id, seeded.case.id, seeded.case.version);
+
+    const [after] = await db
+      .select({ assigneeAgentId: issues.assigneeAgentId })
+      .from(issues)
+      .where(eq(issues.id, seeded.issue.id));
+    expect(after!.assigneeAgentId).toBe(other.id);
+  }, 60_000);
+
   /**
    * THE SAFETY PROPERTY. A declared agent that is not provisioned must HOLD the
    * step. Falling through to the company's single assignable agent — which is

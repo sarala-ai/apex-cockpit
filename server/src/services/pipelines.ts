@@ -4075,15 +4075,45 @@ export function pipelineService(
           const comment = await issueService(db).addComment(issueId, body, {});
           return (comment as { id: string }).id;
         },
-        commission: (input) =>
-          commissionBoundedAgentRun(db, {
+        commission: async (input) => {
+          /*
+           * CLAIM THE TICKET FOR THE AGENT WE ARE ABOUT TO COMMISSION.
+           *
+           * `claimQueuedRun` cancels any queued run whose `agentId` differs
+           * from the issue's `assigneeAgentId` (`issue_assignee_changed`) —
+           * a correct guard, because a human reassigning a ticket must not
+           * leave the previous owner's run to start behind their back.
+           *
+           * A stage-declared agent has no assignment behind it: the resolver
+           * returns `autoAssigned: true` for a roster key, the payload records
+           * it, and nothing ever wrote it to the issue. So every lifecycle
+           * agent step queued a run for an agent the ticket did not belong to,
+           * and the heartbeat cancelled it seconds later. The case then sat at
+           * `waiting_agent` until the staleness sweep, with no comment and no
+           * visible owner — observed live on APEX-14 at the `spec` stage.
+           *
+           * The rule is the flow coordinator's, and it is deliberately narrow
+           * (see `resolveExecutorAgent`): FILL A VACUUM, NEVER RE-ROUTE. The
+           * `assigneeAgentId` column has a second writer — the per-issue
+           * execution policy reassigns it to the REVIEWER on a done-transition,
+           * excluding the executor so review stays independent. Overwriting a
+           * non-null assignee here would silently defeat that.
+           */
+          if (input.agentAutoAssigned) {
+            await db
+              .update(issues)
+              .set({ assigneeAgentId: input.agentId, updatedAt: nowDate() })
+              .where(and(eq(issues.id, issueId), isNull(issues.assigneeAgentId)));
+          }
+          return commissionBoundedAgentRun(db, {
             issueId,
             agentId: input.agentId,
             instructionCommentId: input.instructionCommentId,
             permissions: input.permissions,
             definitionName: detail.pipeline.key,
             stepKey: detail.stage.key,
-          }),
+          });
+        },
         recordCommissioned: async (input) => {
           await db
             .update(pipelineCases)
