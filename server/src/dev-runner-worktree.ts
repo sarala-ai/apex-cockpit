@@ -49,7 +49,26 @@ export function isLinkedGitWorktreeCheckout(rootDir: string): boolean {
   const stat = lstatSync(gitMetadataPath);
   if (!stat.isFile()) return false;
 
-  return readFileSync(gitMetadataPath, "utf8").trimStart().startsWith("gitdir:");
+  const contents = readFileSync(gitMetadataPath, "utf8").trimStart();
+  if (!contents.startsWith("gitdir:")) return false;
+
+  /*
+   * A `.git` FILE means "this checkout's real git directory is elsewhere" —
+   * and git uses that shape for TWO different things:
+   *
+   *   linked worktree →  gitdir: /path/to/repo/.git/worktrees/<name>
+   *   submodule       →  gitdir: ../../.git/modules/<path>
+   *
+   * Only the first gets a per-worktree `.paperclip/.env`. Treating a submodule
+   * as a linked worktree makes `pnpm dev` refuse to start with "run
+   * `paperclipai worktree init`", which cannot help — a submodule has no
+   * worktree env to initialise. This cockpit IS a submodule of the sarala
+   * monorepo, so the check refused every restart; it went unnoticed only
+   * because a long-lived dev server had been started before the check existed.
+   */
+  const gitDir = contents.slice("gitdir:".length).trim();
+  const segments = gitDir.split(/[\\/]/);
+  return segments.includes("worktrees");
 }
 
 export function resolveWorktreeEnvFilePath(rootDir: string): string {
