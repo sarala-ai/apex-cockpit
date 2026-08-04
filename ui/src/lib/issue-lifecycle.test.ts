@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import type { IssueLinkedCase } from "@paperclipai/shared";
 import {
   describeGateApprover,
+  describeUnassigned,
   describeIssueLifecyclePosition,
   issueLifecycleCaseHref,
   selectIssueLifecycleCase,
@@ -115,5 +116,25 @@ describe("saying who is being waited on", () => {
     expect(describeGateApprover(null)).toBe("Anyone on the board can decide this.");
     expect(describeGateApprover({})).toBe("Anyone on the board can decide this.");
     expect(describeGateApprover({ approver: "nobody" })).toBe("Anyone on the board can decide this.");
+  });
+});
+
+describe("a ticket nobody owns", () => {
+  it("still reads as unassigned when no process is moving it", () => {
+    // Literally true and, with nothing else going on, not misleading either.
+    expect(describeUnassigned(null)).toEqual({ label: "Unassigned" });
+  });
+
+  it("stops implying the ticket is inert while a process is moving it", () => {
+    const described = describeUnassigned(linkedCase());
+
+    expect(described.label).toBe("Nobody yet");
+    expect(described.title).toContain("The Feature process is moving it");
+    expect(described.title).toContain("commissions its own agents");
+  });
+
+  it("goes back to plain unassigned once the process has ended", () => {
+    // Nothing is driving it any more, so "pick it up" is the correct reading.
+    expect(describeUnassigned(linkedCase({ terminalKind: "done" }))).toEqual({ label: "Unassigned" });
   });
 });

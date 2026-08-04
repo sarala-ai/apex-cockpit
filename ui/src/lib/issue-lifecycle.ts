@@ -48,6 +48,28 @@ export function issueLifecycleCaseHref(row: IssueLinkedCase): string {
 }
 
 /**
+ * How an unowned ticket describes itself.
+ *
+ * "Unassigned" is literally true whenever nobody owns a ticket — the pipeline
+ * never writes `assigneeAgentId`; it commissions its agent by name and wakes it
+ * directly. But in a board-shaped tool the word carries a second meaning:
+ * nothing is happening here, pick it up. That half is false while a process is
+ * moving the ticket.
+ *
+ * The fix is the wording, never the data. Assignment is a DISPATCH trigger —
+ * writing it wakes that agent and gates who may hold the ticket's execution
+ * lock — so inventing an assignee to make the panel look tidy would start real
+ * work, not merely mislabel it.
+ */
+export function describeUnassigned(row: IssueLinkedCase | null): { label: string; title?: string } {
+  if (!row || row.terminalKind !== null) return { label: "Unassigned" };
+  return {
+    label: "Nobody yet",
+    title: `Nobody owns this ticket. The ${row.pipeline.name} process is moving it, and commissions its own agents.`,
+  };
+}
+
+/**
  * Who is being waited on, in words. Resolving a named approver needs a member
  * lookup the strip does not own, so the caller passes one; without it the
  * sentence still says something true rather than guessing.
