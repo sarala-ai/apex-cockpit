@@ -161,3 +161,56 @@ describe("computePipelineHealth", () => {
     ]);
   });
 });
+
+/*
+ * The seeded lifecycles run their work through `onEnter: {type: "agent"}` and
+ * `{type: "run"}` — the step model is `run · agent · gate`. This predicate
+ * originally recognised only `routine`, which was the entire union before that
+ * change, so every seeded lifecycle rendered "Some steps won't run yet — 4
+ * things to fix" over stages that were correctly wired. A health panel that
+ * cries wolf about valid configuration is worse than none, because the next
+ * warning is the one nobody reads.
+ */
+describe("stage automation detection across all onEnter kinds", () => {
+  const stage = (config: Record<string, unknown>) => ({
+    pipelineId: "pipeline-1",
+    stages: [{ id: "s1", key: "spec", name: "Spec", kind: "working", config }],
+    agentsById: {},
+    pipelinesById: {},
+  });
+
+  const noAutomationWarnings = (config: Record<string, unknown>) =>
+    computePipelineHealth(stage(config)).warnings.filter((w) => w.code === "stage_no_automation");
+
+  it("counts an agent step declared by roster key as runnable", () => {
+    expect(noAutomationWarnings({ onEnter: { type: "agent", agentKey: "specifier" } })).toHaveLength(0);
+  });
+
+  it("counts an agent step declared by explicit id as runnable", () => {
+    expect(noAutomationWarnings({ onEnter: { type: "agent", agentId: "agent-1" } })).toHaveLength(0);
+  });
+
+  it("counts a run step with a target as runnable", () => {
+    expect(
+      noAutomationWarnings({ onEnter: { type: "run", target: { type: "workflow", workflow: "deploy" } } }),
+    ).toHaveLength(0);
+  });
+
+  it("still counts a routine step as runnable", () => {
+    expect(noAutomationWarnings({ onEnter: { type: "routine", routineId: "r1" } })).toHaveLength(0);
+  });
+
+  /* The warning must survive for stages that genuinely will not run — an
+   * agent step naming nobody, and a run step with nothing to run. */
+  it("still warns when an agent step names no agent", () => {
+    expect(noAutomationWarnings({ onEnter: { type: "agent" } })).toHaveLength(1);
+  });
+
+  it("still warns when a run step declares no target", () => {
+    expect(noAutomationWarnings({ onEnter: { type: "run" } })).toHaveLength(1);
+  });
+
+  it("still warns when a stage has no onEnter at all", () => {
+    expect(noAutomationWarnings({})).toHaveLength(1);
+  });
+});

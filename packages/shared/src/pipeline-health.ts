@@ -126,11 +126,43 @@ function agentLabel(agent: PipelineHealthAgentRef | undefined): string {
   return name && name.length > 0 ? name : "a teammate";
 }
 
-function hasOnEnterRoutineAutomation(config: StageConfig): boolean {
+/**
+ * Does anything actually execute when a case enters this stage?
+ *
+ * All three `onEnter` kinds count, and the newer two were missing here — this
+ * predicate knew only `routine`, which was the whole union before the step
+ * model became `run · agent · gate`. The result was a false alarm on exactly
+ * the stages that DO run: every seeded lifecycle reported "nothing runs here
+ * automatically" for its agent and run steps, in a panel whose entire job is
+ * to be trusted about that. A health check that cries wolf about correct
+ * configuration is worse than no health check.
+ *
+ *   `run`     — a deterministic step (workflow or command), zero tokens
+ *   `agent`   — a bounded agent step, resolved via `agentKey`
+ *   `routine` — the fork's original automation, still supported
+ */
+function hasOnEnterAutomation(config: StageConfig): boolean {
   const onEnter = config.onEnter;
   if (!onEnter || typeof onEnter !== "object" || Array.isArray(onEnter)) return false;
   const record = onEnter as Record<string, unknown>;
-  return record.type === "routine" && typeof record.routineId === "string" && record.routineId.trim().length > 0;
+
+  if (record.type === "routine") {
+    return typeof record.routineId === "string" && record.routineId.trim().length > 0;
+  }
+  if (record.type === "agent") {
+    // Either a declared roster key or an explicit agent id makes this runnable.
+    // A bare `type: "agent"` with neither does NOT — that stage really would sit.
+    const key = record.agentKey;
+    const id = record.agentId;
+    return (typeof key === "string" && key.trim().length > 0) ||
+      (typeof id === "string" && id.trim().length > 0);
+  }
+  if (record.type === "run") {
+    // A run step needs a target to run. The target shape is validated on write;
+    // here we only ask whether one was declared at all.
+    return record.target !== undefined && record.target !== null;
+  }
+  return false;
 }
 
 function hasChildrenGateAutoAdvance(config: StageConfig): boolean {
@@ -143,7 +175,7 @@ function hasChildrenGateAutoAdvance(config: StageConfig): boolean {
 
 /** True when a stage has saved automation that can move work forward. */
 function hasRunnableStageAutomation(config: StageConfig): boolean {
-  return readBreakdownConfig(config) !== null || hasOnEnterRoutineAutomation(config) || hasChildrenGateAutoAdvance(config);
+  return readBreakdownConfig(config) !== null || hasOnEnterAutomation(config) || hasChildrenGateAutoAdvance(config);
 }
 
 function automationAssigneeAgentId(config: StageConfig): string | null {
