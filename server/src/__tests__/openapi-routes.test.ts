@@ -65,11 +65,10 @@ const explicitOpenApiCoverageExclusions = new Set([
   // Case routes are not yet in the public OpenAPI document.
   "cases.ts",
   // APEX Tower in-progress surfaces (capability sync scheduler, Design viewer,
-  // Flows, Gateway registry/observe, workflow-builder groundwork) — mounted
+  // Gateway registry/observe, workflow-builder groundwork) — mounted
   // under /api but not yet part of the public OpenAPI document.
   "apex-capabilities.ts",
   "apex-design.ts",
-  "apex-flows.ts",
   "apex-gateway-observe.ts",
   "apex-workflows.ts",
 ]);

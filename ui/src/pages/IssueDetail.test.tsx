@@ -118,18 +118,6 @@ vi.mock("../api/approvals", () => ({
   },
 }));
 
-const mockApexFlowsApi = vi.hoisted(() => ({
-  list: vi.fn(),
-  start: vi.fn(),
-  retry: vi.fn(),
-  abandon: vi.fn(),
-}));
-
-vi.mock("../api/apex-flows", async () => {
-  const actual = await vi.importActual<typeof import("../api/apex-flows")>("../api/apex-flows");
-  return { ...actual, apexFlowsApi: mockApexFlowsApi };
-});
-
 vi.mock("../api/agents", () => ({
   agentsApi: mockAgentsApi,
 }));
@@ -994,10 +982,6 @@ describe("IssueDetail", () => {
       enableExternalObjects: false,
     });
     mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([]);
-    mockApexFlowsApi.list.mockReset().mockResolvedValue({ flows: [] });
-    mockApexFlowsApi.start.mockReset();
-    mockApexFlowsApi.retry.mockReset();
-    mockApexFlowsApi.abandon.mockReset();
     mockIssuesListRender.mockClear();
     mockIssueChatThreadRender.mockClear();
     mockImageGalleryRender.mockClear();
@@ -2520,112 +2504,6 @@ describe("IssueDetail", () => {
     expect(footer?.className).toContain("bg-background");
   });
 
-  describe("flow operator recovery (retry / abandon)", () => {
-    async function renderWithFlowStatus(flowStatus: Issue["flowStatus"]) {
-      mockIssuesApi.get.mockResolvedValue(
-        createIssue({ flowName: "gated", flowNodeId: "gate1", flowStatus }),
-      );
-      await act(async () => {
-        root.render(
-          <QueryClientProvider client={queryClient}>
-            <IssueDetail />
-          </QueryClientProvider>,
-        );
-      });
-      await flushReact();
-      await flushReact();
-
-      const moreButton = container.querySelector('button[aria-label="More task actions"]') as HTMLButtonElement | null;
-      expect(moreButton).toBeTruthy();
-      await act(async () => {
-        moreButton!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-      });
-      await flushReact();
-    }
-
-    function findButton(text: string) {
-      return Array.from(container.querySelectorAll("button")).find(
-        (button) => button.textContent?.trim() === text,
-      );
-    }
-
-    it("shows Retry and Abandon when the flow is paused", async () => {
-      await renderWithFlowStatus("paused");
-      expect(findButton("Retry flow")).toBeTruthy();
-      expect(findButton("Abandon flow...")).toBeTruthy();
-    });
-
-    it("shows Retry and Abandon when the flow is failed", async () => {
-      await renderWithFlowStatus("failed");
-      expect(findButton("Retry flow")).toBeTruthy();
-      expect(findButton("Abandon flow...")).toBeTruthy();
-    });
-
-    it("shows only Abandon (not Retry) when waiting on a gate", async () => {
-      await renderWithFlowStatus("waiting_gate");
-      expect(findButton("Retry flow")).toBeFalsy();
-      expect(findButton("Abandon flow...")).toBeTruthy();
-    });
-
-    it("hides both actions while the flow is running", async () => {
-      await renderWithFlowStatus("running");
-      expect(findButton("Retry flow")).toBeFalsy();
-      expect(findButton("Abandon flow...")).toBeFalsy();
-    });
-
-    it("hides both actions when no flow has ever run", async () => {
-      await renderWithFlowStatus(null);
-      expect(findButton("Retry flow")).toBeFalsy();
-      expect(findButton("Abandon flow...")).toBeFalsy();
-    });
-
-    it("retries directly (no confirm dialog) and calls the retry API", async () => {
-      mockApexFlowsApi.retry.mockResolvedValue({
-        issueId: "issue-1",
-        flowName: "gated",
-        flowNodeId: "gate1",
-        flowStatus: "running",
-      });
-      await renderWithFlowStatus("paused");
-
-      const retryButton = findButton("Retry flow") as HTMLButtonElement;
-      await act(async () => {
-        retryButton.click();
-      });
-      await flushReact();
-
-      expect(mockApexFlowsApi.retry).toHaveBeenCalledWith("PAP-1");
-    });
-
-    it("abandon requires confirmation before calling the abandon API", async () => {
-      mockApexFlowsApi.abandon.mockResolvedValue({
-        issueId: "issue-1",
-        flowName: "gated",
-        flowNodeId: "gate1",
-        flowStatus: "failed",
-      });
-      await renderWithFlowStatus("paused");
-
-      const abandonMenuButton = findButton("Abandon flow...") as HTMLButtonElement;
-      await act(async () => {
-        abandonMenuButton.click();
-      });
-      await flushReact();
-
-      // Clicking the menu item only opens the confirm dialog — no call yet.
-      expect(mockApexFlowsApi.abandon).not.toHaveBeenCalled();
-      expect(container.textContent).toContain("This terminal-fails flow");
-
-      const confirmButton = findButton("Abandon flow") as HTMLButtonElement;
-      expect(confirmButton).toBeTruthy();
-      await act(async () => {
-        confirmButton.click();
-      });
-      await flushReact();
-
-      expect(mockApexFlowsApi.abandon).toHaveBeenCalledWith("PAP-1");
-    });
-  });
 });
 
 describe("canBoardResolveRecoveryAction", () => {

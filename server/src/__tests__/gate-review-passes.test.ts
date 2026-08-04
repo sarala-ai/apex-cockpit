@@ -13,7 +13,8 @@ import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { assembleFlowGateBrief, collectReviewPasses } from "../apex/steps/brief.js";
-import type { FlowDefinition, ReviewPass } from "../apex/flow/definition.js";
+import type { ProcessDefinition } from "../apex/steps/process-definition.js";
+import type { ReviewPass } from "../apex/steps/review-passes.js";
 
 const CATALOG: Record<string, ReviewPass> = {
   customer_hat: {
@@ -30,7 +31,7 @@ const CATALOG: Record<string, ReviewPass> = {
   },
 };
 
-function flowWithGate(requires: string[] | undefined): FlowDefinition {
+function flowWithGate(requires: string[] | undefined): ProcessDefinition {
   return {
     name: "design-change",
     version: "1.1",
@@ -50,7 +51,7 @@ function flowWithGate(requires: string[] | undefined): FlowDefinition {
         on_fail: "pause",
       },
     ],
-  } as unknown as FlowDefinition;
+  } as unknown as ProcessDefinition;
 }
 
 describe("collectReviewPasses", () => {

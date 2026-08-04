@@ -1,15 +1,15 @@
 /**
- * A flow gate is a review stage, and a review stage requires a reason for any
- * non-approve decision — the same rule a pipeline review stage enforces via
+ * A gate is a review stage, and a review stage requires a reason for any
+ * non-approve decision — the same rule a review stage enforces via
  * `requireRejectReason` / `requireRequestChangesReason`
  * (server/src/services/pipelines.ts `reviewCase`).
  *
  * Two things are load-bearing and tested here rather than assumed:
- * - the reason is required for `flow_gate` approvals ONLY. Every other
- *   approval type keeps its optional note; this is a review-stage rule, not a
- *   new global ceremony.
+ * - the reason is required for gate approvals ONLY. Every other approval type
+ *   keeps its optional note; this is a review-stage rule, not a new global
+ *   ceremony.
  * - the check runs BEFORE the approval is resolved, so a reasonless decision
- *   never becomes a decided-but-unexplained ledger entry that the flow then
+ *   never becomes a decided-but-unexplained ledger entry that the case then
  *   cannot act on.
  */
 import express from "express";
@@ -22,7 +22,7 @@ const mockApprovalService = vi.hoisted(() => ({
   requestRevision: vi.fn(),
 }));
 
-const mockOnGateDecision = vi.hoisted(() => vi.fn());
+const mockDecideStageGate = vi.hoisted(() => vi.fn());
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockAccessService = vi.hoisted(() => ({ decide: vi.fn() }));
 
@@ -39,20 +39,28 @@ function registerModuleMocks() {
     logActivity: mockLogActivity,
     secretService: () => ({ normalizeHireApprovalPayloadForPersistence: vi.fn() }),
   }));
-  vi.doMock("../apex/flow/coordinator.js", async () => {
-    const actual = await vi.importActual<typeof import("../apex/flow/coordinator.js")>(
-      "../apex/flow/coordinator.js",
+  vi.doMock("../services/pipelines.js", async () => {
+    const actual = await vi.importActual<typeof import("../services/pipelines.js")>(
+      "../services/pipelines.js",
     );
-    return { ...actual, flowCoordinator: () => ({ onGateDecision: mockOnGateDecision }) };
+    return { ...actual, pipelineService: () => ({ decideStageGate: mockDecideStageGate }) };
   });
 }
 
 const GATE_APPROVAL = {
   id: "approval-1",
   companyId: "company-1",
+  // The approval type keeps the string it has always had: renaming it would
+  // mean a payload migration over pending approvals to save a word.
   type: "flow_gate",
   status: "pending",
-  payload: { issueId: "issue-1", nodeId: "diff_gate", flowName: "feature" },
+  payload: {
+    caseId: "case-1",
+    issueId: "issue-1",
+    nodeId: "diff_gate",
+    stepKey: "diff_gate",
+    flowName: "feature",
+  },
 };
 
 async function createApp() {
@@ -77,11 +85,11 @@ async function createApp() {
   return app;
 }
 
-describe("flow gate decisions require a reason", () => {
+describe("gate decisions require a reason", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("../services/index.js");
-    vi.doUnmock("../apex/flow/coordinator.js");
+    vi.doUnmock("../services/pipelines.js");
     registerModuleMocks();
     vi.clearAllMocks();
     mockAccessService.decide.mockResolvedValue({
@@ -91,7 +99,7 @@ describe("flow gate decisions require a reason", () => {
       explanation: "Allowed by test mock.",
     });
     mockLogActivity.mockResolvedValue(undefined);
-    mockOnGateDecision.mockResolvedValue({ resumed: false, reason: "rejected" });
+    mockDecideStageGate.mockResolvedValue({ transitioned: false });
   });
 
   for (const [label, path] of [
@@ -107,7 +115,7 @@ describe("flow gate decisions require a reason", () => {
       expect(res.body.details).toMatchObject({ errorType: "gate_review_reason_required" });
       expect(mockApprovalService.reject).not.toHaveBeenCalled();
       expect(mockApprovalService.requestRevision).not.toHaveBeenCalled();
-      expect(mockOnGateDecision).not.toHaveBeenCalled();
+      expect(mockDecideStageGate).not.toHaveBeenCalled();
     });
 
     it(`${label}: a whitespace-only note is a 400 too`, async () => {
@@ -123,7 +131,7 @@ describe("flow gate decisions require a reason", () => {
     });
   }
 
-  it("reject with a reason resolves the approval and stops the flow", async () => {
+  it("reject with a reason resolves the approval and stops the case", async () => {
     mockApprovalService.getById.mockResolvedValue(GATE_APPROVAL);
     mockApprovalService.reject.mockResolvedValue({
       approval: { ...GATE_APPROVAL, status: "rejected" },
@@ -135,40 +143,34 @@ describe("flow gate decisions require a reason", () => {
       .send({ decisionNote: "This should not ship." });
 
     expect(res.status).toBe(200);
-    expect(mockOnGateDecision).toHaveBeenCalledWith(
+    expect(mockDecideStageGate).toHaveBeenCalledWith(
       expect.objectContaining({ decision: "reject", reason: "This should not ship." }),
     );
   });
 
-  it("request-revision on a flow gate IS the request_changes decision, and carries the reason", async () => {
+  it("request-revision on a gate IS the request_changes decision, and carries the reason", async () => {
     mockApprovalService.getById.mockResolvedValue(GATE_APPROVAL);
     mockApprovalService.requestRevision.mockResolvedValue({
       ...GATE_APPROVAL,
       status: "revision_requested",
     });
-    mockOnGateDecision.mockResolvedValue({
-      resumed: true,
-      reason: "changes_requested",
-      targetNodeId: "tasks",
-      round: 1,
-      execution: Promise.resolve(),
-    });
+    mockDecideStageGate.mockResolvedValue({ transitioned: true, toStageKey: "tasks" });
 
     const res = await request(await createApp())
       .post("/api/approvals/approval-1/request-revision")
       .send({ decisionNote: "The migration has no down step." });
 
     expect(res.status).toBe(200);
-    expect(mockOnGateDecision).toHaveBeenCalledWith(
+    expect(mockDecideStageGate).toHaveBeenCalledWith(
       expect.objectContaining({
         decision: "request_changes",
         reason: "The migration has no down step.",
-        decidedByUserId: "founder",
+        actor: { type: "user", userId: "founder" },
       }),
     );
   });
 
-  it("a non-flow-gate approval keeps its optional note — this rule is review-stage scoped", async () => {
+  it("a non-gate approval keeps its optional note — this rule is review-stage scoped", async () => {
     const hireApproval = { ...GATE_APPROVAL, type: "hire_agent", payload: {} };
     mockApprovalService.getById.mockResolvedValue(hireApproval);
     mockApprovalService.reject.mockResolvedValue({
@@ -180,6 +182,6 @@ describe("flow gate decisions require a reason", () => {
 
     expect(res.status).toBe(200);
     expect(mockApprovalService.reject).toHaveBeenCalled();
-    expect(mockOnGateDecision).not.toHaveBeenCalled();
+    expect(mockDecideStageGate).not.toHaveBeenCalled();
   });
 });

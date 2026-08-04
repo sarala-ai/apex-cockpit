@@ -76,54 +76,10 @@ export const issues = pgTable(
     executionWorkspacePreference: text("execution_workspace_preference"),
     executionWorkspaceSettings: jsonb("execution_workspace_settings").$type<Record<string, unknown>>(),
     sourceTrust: jsonb("source_trust").$type<SourceTrustMetadata | null>(),
-    // ---------------------------------------------------------------------
-    // DERIVED FROM THE CASE — a denormalised mirror, not the source of truth.
-    //
-    // Since 0167 the authoritative runtime state of a flow-driven issue lives
-    // on its case row in `pipeline_cases` (definition_kind='flow'), linked here
-    // through `pipeline_case_issue_links` with role 'work': the case holds the
-    // current step (`step_key`), the optimistic-concurrency `version` and the
-    // terminal (`terminal_kind`/`terminal_at`). The flow coordinator writes the
-    // case FIRST, under a version compare-and-set, and only then mirrors into
-    // the columns below in the same transaction.
-    //
-    // They stay because many surfaces still read them directly — issue lists,
-    // IssueDetail, the observe plane, heartbeat's flow-context lookups. They
-    // are REMOVED by the step that retires the flow front-end
-    // (docs/architecture/execution-substrate.md §6 step 5); until then, treat
-    // every column below as read-only outside server/src/apex/flow/coordinator.ts.
-    // ---------------------------------------------------------------------
-    flowName: text("flow_name"),
-    flowNodeId: text("flow_node_id"),
-    // 'running' | 'waiting_gate' | 'waiting_agent' | 'paused' | 'done' | 'failed'
-    flowStatus: text("flow_status"),
-    // Heartbeat run commissioned for the current agent node (A-node bridge):
-    // set while flowStatus='waiting_agent', the completion hook + sweep match
-    // run completions against it. Nullable — a wakeup can be deferred.
-    flowRunId: uuid("flow_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
-    flowStartedAt: timestamp("flow_started_at", { withTimezone: true }),
-    flowAdvancedAt: timestamp("flow_advanced_at", { withTimezone: true }),
-    // The agent the flow commissions its agent nodes to, resolved ONCE when
-    // the flow's first agent node runs and owned by the coordinator until the
-    // flow reaches a terminal state.
-    //
-    // Why this is not `assigneeAgentId`: that column has another owner. The
-    // per-issue execution policy (services/issue-execution-policy.ts) rewrites
-    // it to the REVIEWER when it intercepts a done-transition, deliberately
-    // excluding the executor so that review is independent. The flow
-    // coordinator used to read `assigneeAgentId` as "who executes this flow",
-    // so on any issue carrying both mechanisms the flow's next agent step was
-    // commissioned to the reviewer — silently defeating the very independence
-    // the execution policy exists to enforce
-    // (server/src/__tests__/flow-execution-policy-interaction.test.ts pins it).
-    // Two single-writer claims on one column is the bug; a column the
-    // coordinator alone writes is the fix.
-    flowExecutorAgentId: uuid("flow_executor_agent_id").references(() => agents.id, { onDelete: "set null" }),
-    // GitHub projection mirror ref ("owner/repo#123") — set once when the
-    // projection CREATES a mirror issue for a board-origin ticket (typed column
-    // by doctrine, never jsonb). NULL for github-origin issues: their own
-    // origin issue (originKind='plugin:github', originId) is the mirror target
-    // and is never duplicated or closed by the projection.
+    // GitHub projection mirror ref ("owner/repo#123"). The projection that
+    // wrote it was the flow front-end's, and went with it in 0173; the column
+    // survives so the refs already written still resolve, and so a projection
+    // re-hosted on the pipeline step host has its seam waiting.
     githubMirrorRef: text("github_mirror_ref"),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
@@ -155,7 +111,6 @@ export const issues = pgTable(
     projectWorkspaceIdx: index("issues_company_project_workspace_idx").on(table.companyId, table.projectWorkspaceId),
     executionWorkspaceIdx: index("issues_company_execution_workspace_idx").on(table.companyId, table.executionWorkspaceId),
     dueMonitorIdx: index("issues_company_monitor_due_idx").on(table.companyId, table.monitorNextCheckAt),
-    flowStatusIdx: index("issues_company_flow_status_idx").on(table.companyId, table.flowStatus),
     companyUpdatedIdx: index("issues_company_updated_idx").on(table.companyId, table.updatedAt),
     companyCreatedIdx: index("issues_company_created_idx").on(table.companyId, table.createdAt),
     companyPriorityIdx: index("issues_company_priority_idx").on(table.companyId, table.priority),

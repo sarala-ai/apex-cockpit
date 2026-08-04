@@ -7089,7 +7089,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
       publishRunLifecyclePluginEvent(updated);
-      notifyFlowCoordinatorOfTerminalRun(updated);
+      notifyStepHostOfTerminalRun(updated);
       return { run: updated, updated: true as const };
     }
 
@@ -7102,71 +7102,43 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return { run: current, updated: false as const };
   }
 
-  /** A-node bridge (work-loop flows): when a run the flow coordinator
+  /** Agent-step completion bridge: when a run a process's agent step
    *  commissioned reaches a terminal status, hand completion back to the
-   *  coordinator — the narrow event seam mirroring the approvals gate hook.
+   *  pipeline host — the narrow event seam mirroring the approvals gate hook.
    *  `interrupted` is deliberately excluded (the process-loss retry may
-   *  revive it; the flow sweep resolves abandoned chains). Fire-and-forget:
-   *  run finalization must never block on flow advancement, and the sweep is
-   *  the at-least-once recovery if this in-process notify is lost. */
-  function notifyFlowCoordinatorOfTerminalRun(run: typeof heartbeatRuns.$inferSelect) {
+   *  revive it; the pipeline sweep resolves abandoned chains). Fire-and-forget:
+   *  run finalization must never block on case advancement, and the sweep is
+   *  the at-least-once recovery if this in-process notify is lost.
+   *
+   *  The context marker (`flowAgentStep`) keeps its historical spelling on
+   *  purpose — see apex/steps/commission.ts: it is data already written into
+   *  immutable context snapshots, and renaming it would orphan exactly the
+   *  in-flight runs this hook exists to catch. */
+  function notifyStepHostOfTerminalRun(run: typeof heartbeatRuns.$inferSelect) {
     if (!["succeeded", "failed", "timed_out", "cancelled"].includes(run.status)) return;
     const context = parseObject(run.contextSnapshot);
     if (context.flowAgentStep !== true) return;
-    const issueId = readNonEmptyString(context.issueId);
-
-    // A run commissioned by a PIPELINE agent step carries `stepKey` where a
-    // flow node carried `flowNodeId` (see apex/steps/commission.ts). Without
-    // this branch such a run falls through the `flowNodeId` guard below and is
-    // never routed anywhere — the case would sit at `waiting_agent` until the
-    // sweep noticed it minutes later. The sweep is the recovery path, not the
-    // normal one; a finished agent step should move the case now.
     const stepKey = readNonEmptyString(context.stepKey);
-    if (stepKey && !readNonEmptyString(context.flowNodeId)) {
-      void (async () => {
-        const { pipelineService } = await import("./pipelines.js");
-        const svc = pipelineService(db);
-        const caseRow = await db
-          .select({ id: pipelineCases.id, companyId: pipelineCases.companyId })
-          .from(pipelineCases)
-          .where(eq(pipelineCases.stepRunId, run.id))
-          .limit(1)
-          .then((rows) => rows[0] ?? null);
-        if (!caseRow) return;
-        await svc.processAgentStepCompletion(caseRow.companyId, caseRow.id, {
-          runId: run.id,
-          runStatus: run.status,
-          error: run.error ?? null,
-        });
-      })().catch((err) => {
-        logger.warn(
-          { err, runId: run.id, stepKey },
-          "pipeline agent-step completion hook failed (classified: step_completion_hook_failed) — the sweep will recover",
-        );
-      });
-      return;
-    }
-
-    const flowNodeId = readNonEmptyString(context.flowNodeId);
-    if (!issueId || !flowNodeId) return;
-    const flowName = readNonEmptyString(context.flowName);
+    if (!stepKey) return;
     void (async () => {
-      // Lazy import: keeps the flow module out of heartbeat's static graph
-      // (the coordinator lazily imports heartbeat on its commission path).
-      const { flowCoordinator } = await import("../apex/flow/coordinator.js");
-      const result = await flowCoordinator(db).onAgentRunCompletion({
+      const { pipelineService } = await import("./pipelines.js");
+      const svc = pipelineService(db);
+      const caseRow = await db
+        .select({ id: pipelineCases.id, companyId: pipelineCases.companyId })
+        .from(pipelineCases)
+        .where(eq(pipelineCases.stepRunId, run.id))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!caseRow) return;
+      await svc.processAgentStepCompletion(caseRow.companyId, caseRow.id, {
         runId: run.id,
-        issueId,
-        flowName,
-        flowNodeId,
-        runStatus: run.status as "succeeded" | "failed" | "timed_out" | "cancelled",
+        runStatus: run.status,
         error: run.error ?? null,
       });
-      if ("execution" in result && result.execution) await result.execution;
     })().catch((err) => {
       logger.warn(
-        { err, runId: run.id, issueId, flowNodeId },
-        "flow coordinator agent-run completion hook failed (classified: flow_completion_hook_failed) — sweep will recover",
+        { err, runId: run.id, stepKey },
+        "pipeline agent-step completion hook failed (classified: step_completion_hook_failed) — the sweep will recover",
       );
     });
   }

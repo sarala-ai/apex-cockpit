@@ -26,7 +26,6 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { pipelineService, type PipelineActor } from "../../services/pipelines.js";
-import { pipelineIdOfCase } from "../../services/pipeline-case-shape.js";
 
 /** Our review-stage keys, in gate order. Maps back to the `gate:*` Stage names. */
 export const GATE_STAGE_KEYS = ["spec_review", "plan_review", "pr_review"] as const;
@@ -73,9 +72,7 @@ async function loadCaseStage(db: Db, companyId: string, caseId: string): Promise
     .where(and(eq(pipelineCases.companyId, companyId), eq(pipelineCases.id, caseId)))
     .limit(1)
     .then((rows) => rows[0] ?? null);
-  // The inner join on pipeline_stages already restricts this to
-  // pipeline-defined cases; this says so in the type system.
-  return row ? { ...row, pipelineId: pipelineIdOfCase({ id: row.caseId, pipelineId: row.pipelineId }) } : null;
+  return row;
 }
 
 /**

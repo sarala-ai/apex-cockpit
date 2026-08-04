@@ -52,6 +52,7 @@ import type { ProcessDefinition, ProcessStep } from "../apex/steps/process-defin
 import { isMachineEvaluableAcceptance } from "../apex/steps/agent-step.js";
 import { validateReviewPassIds } from "../apex/steps/review-passes.js";
 import {
+  clearStepRunPermissionOverride,
   commissionBoundedAgentRun,
   STEP_AGENT_CONTEXT_KEY,
   STEP_TERMINAL_RUN_STATUSES,
@@ -66,7 +67,6 @@ import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
 import { authorizationService } from "./authorization.js";
 import { accessService } from "./access.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
-import { pipelineIdOfCase } from "./pipeline-case-shape.js";
 import {
   formatPipelineCaseOutputContextMarkdown,
   pipelineCaseOutputsService,
@@ -1489,6 +1489,15 @@ function stageGate(stage: typeof pipelineStages.$inferSelect) {
  * collapse is done properly.
  */
 function stageProcessStep(stage: typeof pipelineStages.$inferSelect): ProcessStep | null {
+  // DELIBERATELY NARROWER THAN THE RETIRED FLOW FRONT-END. A flow node could
+  // route a failure three ways — `pause`, `jump:<node>`, and `skip` (advance
+  // PAST the failed step as though it had passed). A stage says the same thing
+  // in the board's own vocabulary with two: naming `onFailureToStageKey` is a
+  // jump, naming none holds. There is no way to spell `skip`, and that is the
+  // right loss: a step that may be stepped over on failure is a step whose
+  // failure means nothing, which is indistinguishable from not having the step.
+  // If a real need for it appears, it belongs as explicit stage config — not as
+  // a third meaning smuggled into an absent field.
   const onFailFor = (target: string | null) => (target ? `jump:${target}` : "pause");
   const acceptance = stageDeclaredAcceptance(stage);
   const run = stageRunStep(stage);
@@ -2732,7 +2741,7 @@ async function notifyDependentWorkIssuesOfUpstreamContentChange(
   }
 
   const upstreamLink = buildCaseDeepLink({
-    pipelineId: pipelineIdOfCase(input.upstreamCase),
+    pipelineId: input.upstreamCase.pipelineId,
     caseId: input.upstreamCase.id,
   });
   const body = `Upstream case [${input.upstreamCase.caseKey}](${upstreamLink}) changed (v${input.previousVersion}→v${input.version}).`;
@@ -2883,6 +2892,16 @@ async function openStageGateInTransaction(
   },
 ) {
   const gate = stageGate(input.stage);
+  // KNOWN GAP, recorded rather than papered over. `mode: "notify"` is accepted
+  // by the stage config and does NOTHING here: no approval (correct — a gate
+  // that only announces itself must not manufacture a decision), but also no
+  // case event, no comment and no auto-advance. The retired flow front-end DID
+  // auto-proceed a notify gate with a visible note saying so. Nothing seeded
+  // uses notify (lifecycles.ts types its gates as `mode: "approve"` only), so
+  // this is reachable only by hand-authoring a stage — but accepted config that
+  // silently does nothing is exactly the `autonomy` failure
+  // docs/architecture/execution-substrate.md §2 names: implement it or refuse
+  // it at authoring time. It should not stay in this state.
   if (!gate || gate.mode !== "approve") return null;
 
   const existing = await tx
@@ -3431,7 +3450,7 @@ export function pipelineService(
     const availableTargetStages = await findUpstreamAutomatedStages(dbOrTx, {
       companyId: input.companyId,
       caseId: input.caseId,
-      pipelineId: pipelineIdOfCase(detail.case),
+      pipelineId: detail.case.pipelineId,
       currentStageId: detail.stage.id,
     });
     const requestedTargetStageId = input.targetStageId?.trim() || null;
@@ -4347,6 +4366,15 @@ export function pipelineService(
    * Scoped to `review_decided` events whose target was THIS stage, so a gate
    * elsewhere in the process does not bleed its feedback into an unrelated
    * step's instruction.
+   *
+   * KNOWN GAP against the retired flow front-end: it also CLOSED the rounds a
+   * gate had raised when that same gate later approved — the reviewer accepted
+   * the work, so their earlier complaints are settled. Nothing does that here,
+   * so a case that passes a gate and later returns to the same step still
+   * carries the feedback that was already satisfied. The fix is a filter on a
+   * subsequent `review_decided`/approve for the same gate, and it needs a
+   * decision about what "the same gate" means across a case that visits it more
+   * than once — which is why it is written down rather than guessed at.
    */
   async function readCaseChangeRequestRounds(
     companyId: string,
@@ -4675,6 +4703,23 @@ export function pipelineService(
     await executeAutomationLedgers(ledgers, input.actor);
   }
 
+  /**
+   * Record that the current step is HELD.
+   *
+   * KNOWN GAP against the retired flow front-end, and the most user-visible
+   * one: this writes a case event and nothing else. Case events render on the
+   * Pipelines surface; the flow coordinator ALSO posted a plain-language issue
+   * comment for every one of these (paused, failed, deferred, gate rejected,
+   * changes-request blocked), so a founder watching the TICKET saw why the work
+   * stopped. Today they see nothing on the ticket at all.
+   *
+   * Not fixed here because it is a product decision with a noise budget
+   * attached — which holds deserve a comment, how they are worded, and whether
+   * the ticket's own surface should read case events directly instead. But a
+   * case that stops silently on the surface the human is actually looking at is
+   * the same class of failure as the assignee-vacuum bug: correct underneath,
+   * invisible where it matters.
+   */
   async function writeStepHold(
     companyId: string,
     caseId: string,
@@ -5108,7 +5153,7 @@ export function pipelineService(
       throw conflict("Pipeline case version conflict", conflictDetailsForCase(current, fromStage));
     }
 
-    const currentPipelineId = pipelineIdOfCase(current);
+    const currentPipelineId = current.pipelineId;
     const toStage = input.toStageId
       ? await getStageOrThrow(tx, currentPipelineId, input.toStageId)
       : await getStageByKeyOrThrow(tx, currentPipelineId, input.toStageKey ?? "");
@@ -5229,6 +5274,7 @@ export function pipelineService(
     }
     if (!wasTerminal && isTerminal) {
       await handleChildrenTerminal(tx, input.companyId, current.parentCaseId, input.automationLedgers);
+      await releaseGovernedPermissionOverride(tx, input.companyId, current.id);
     }
     if (!isTerminal) {
       await maybeAutoAdvanceOnStageEntry(tx, {
@@ -5263,7 +5309,7 @@ export function pipelineService(
     if (visited.has(input.stage.id)) return;
     const rollup = await computeCaseRollup(tx, input.companyId, input.caseRow.id);
     if (!rollup.complete || (rollup.total === 0 && !gate.explicitZeroChildrenPass)) return;
-    const toStage = await getStageByKeyOrThrow(tx, pipelineIdOfCase(input.caseRow), toStageKey);
+    const toStage = await getStageByKeyOrThrow(tx, input.caseRow.pipelineId, toStageKey);
     if (toStage.id === input.stage.id) return;
     visited.add(input.stage.id);
     try {
@@ -5283,6 +5329,53 @@ export function pipelineService(
       // Best-effort: an unsatisfied gate (drift, approval) on the chained
       // advance must not roll back the transition that entered this stage.
       if (!(error instanceof HttpError)) throw error;
+    }
+  }
+
+  /**
+   * Undo the governed adapter-config override an agent step wrote on the case's
+   * conversation issue.
+   *
+   * Terminal is the ONLY safe moment. `commissionBoundedAgentRun` writes the
+   * bounded permission profile onto `issues.assigneeAdapterOverrides` before
+   * the wakeup, because a dispatch reads it asynchronously — undoing it any
+   * earlier races the run it governs, and undoing it between a process's own
+   * sequential agent steps would un-govern the next one.
+   *
+   * Not doing this at all was the shape of the drop this collapse was written
+   * to find: the flow coordinator cleared it on completion, failure and
+   * abandonment, and the pipeline host inherited the apply without the clear.
+   * The consequence is invisible and durable — a ticket whose process finished
+   * keeps a bounded profile forever, so a HUMAN opening that same agent on that
+   * same ticket silently runs restricted, with nothing on screen saying why.
+   *
+   * Best-effort by design: the case has legitimately reached its terminal
+   * stage, and failing that transition to tidy up an override would be the
+   * worse outcome.
+   */
+  async function releaseGovernedPermissionOverride(
+    tx: PipelineDb,
+    companyId: string,
+    caseId: string,
+  ): Promise<void> {
+    try {
+      const links = await tx
+        .select({ issueId: pipelineCaseIssueLinks.issueId })
+        .from(pipelineCaseIssueLinks)
+        .where(and(
+          eq(pipelineCaseIssueLinks.companyId, companyId),
+          eq(pipelineCaseIssueLinks.caseId, caseId),
+          isNull(pipelineCaseIssueLinks.retiredAt),
+        ));
+      for (const link of links) {
+        await clearStepRunPermissionOverride(tx as unknown as Db, link.issueId);
+      }
+    } catch (err) {
+      logger.error(
+        { err, caseId, companyId },
+        "pipeline case: failed to clear the governed permission override at terminal " +
+          "(classified: permission_override_release_failed)",
+      );
     }
   }
 
@@ -5325,7 +5418,7 @@ export function pipelineService(
         continue;
       }
       try {
-        const toStage = await getStageByKeyOrThrow(tx, pipelineIdOfCase(ancestor.case), toStageKey);
+        const toStage = await getStageByKeyOrThrow(tx, ancestor.case.pipelineId, toStageKey);
         assertStageEnabled(toStage, "auto_advance");
         if (toStage.id === ancestor.stage.id) continue;
         await transitionCaseInTransaction(tx, {
@@ -6876,7 +6969,7 @@ export function pipelineService(
     }) {
       return db.transaction(async (tx) => {
         const { case: existing } = await getCaseWithStageOrThrow(tx, input.companyId, input.caseId);
-        await getStageByKeyOrThrow(tx, pipelineIdOfCase(existing), input.toStageKey);
+        await getStageByKeyOrThrow(tx, existing.pipelineId, input.toStageKey);
         const suggestion = {
           id: randomUUID(),
           toStageKey: input.toStageKey,
@@ -7013,6 +7106,14 @@ export function pipelineService(
       // The case is no longer waiting on a person the moment the person
       // answered — cleared here rather than inside the transition so it is
       // cleared even when the decision routes the case nowhere.
+      //
+      // KNOWN GAP against the retired flow front-end, on the OTHER exit: a case
+      // that leaves a gate stage without the approval being decided (an
+      // operator transition, a cancellation) leaves that approval pending
+      // forever. `abandonFlow` rejected the dangling gate approval first, on
+      // purpose, so a later stray decision on it was a harmless no-op rather
+      // than a live decision nobody will ever resolve. Closing a pending gate
+      // when its case leaves the stage belongs on the transition path.
       await db
         .update(pipelineCases)
         .set({ stepStatus: null, updatedAt: nowDate() })
@@ -7252,7 +7353,7 @@ export function pipelineService(
           ? db
             .select()
             .from(pipelineStages)
-            .where(eq(pipelineStages.pipelineId, pipelineIdOfCase(detail.case)))
+            .where(eq(pipelineStages.pipelineId, detail.case.pipelineId))
           : Promise.resolve([]),
       ]);
       const routinesById = new Map(routineRows.map((routine) => [routine.id, routine]));

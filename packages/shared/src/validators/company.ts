@@ -84,13 +84,11 @@ export const updateCompanySchema = createCompanySchema
     brandColor: brandColorSchema,
     logoAssetId: logoAssetIdSchema,
     attachmentMaxBytes: attachmentMaxBytesSchema.optional(),
-    // GitHub projection (per-company opt-in, off by default): mirror flow
-    // lifecycle onto GitHub issues. `githubProjectionRepo` ("owner/name") is a
-    // FALLBACK ONLY — mirror targeting is primarily an ordered cascade off
-    // each ticket's project workspace repo (see
-    // server/src/apex/flow/projection-repo-resolver.ts) — so enabling
-    // projection with no repo here is allowed; only the owner/name SHAPE is
-    // validated when a value is supplied.
+    // GitHub projection (per-company opt-in, off by default): mirror process
+    // lifecycle onto GitHub issues. DORMANT since 0173 — the implementation
+    // was the flow front-end's and was deleted with it; the setting is
+    // accepted and stored, and projects nothing until it is re-hosted on the
+    // pipeline step host. Only the owner/name SHAPE is validated.
     githubProjectionEnabled: z.boolean().optional(),
     githubProjectionRepo: z
       .string()

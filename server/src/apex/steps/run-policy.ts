@@ -1,20 +1,20 @@
 /**
- * Permission policy for FLOW-COMMISSIONED agent runs (founder-approved
- * design, see server/src/apex/flow/coordinator.ts).
+ * Permission policy for STEP-COMMISSIONED agent runs (founder-approved
+ * design, see ./commission.ts).
  *
  * The problem this closes: the claude_local adapter defaults
  * `dangerouslySkipPermissions=true` for local execution targets
  * (packages/adapters/claude-local/src/server/execute.ts, `asBoolean(config.
  * dangerouslySkipPermissions, true)`) — a reasonable default for a human
  * sitting at the keyboard who can answer a permission prompt, but wrong for
- * a run the flow coordinator commissions unattended off a heartbeat wakeup
- * (server/src/apex/flow/coordinator.ts `defaultCommissionAgentRun`): nothing
- * is present to answer an interactive prompt, and full bypass on a
- * self-directed run is a needlessly large blast radius. Interactive,
- * human-started runs are NOT touched by anything in this module — this is
- * additive governance for the flow-commissioned path only.
+ * a run an agent step commissions unattended off a heartbeat wakeup
+ * (./commission.ts `commissionBoundedAgentRun`): nothing is present to answer
+ * an interactive prompt, and full bypass on a self-directed run is a
+ * needlessly large blast radius. Interactive, human-started runs are NOT
+ * touched by anything in this module — this is additive governance for the
+ * step-commissioned path only.
  *
- * Profiles (declared per agent node under `permissions.profile` — see the
+ * Profiles (declared per agent step under `permissions.profile` — see the
  * core-schema note below):
  *   - "bounded" (DEFAULT): workspace-scoped native tools. No
  *     dangerously-skip-permissions; an explicit --allowedTools grant is
@@ -79,8 +79,8 @@
  *
  * ── SCOPE OF THIS MODULE, STATED PLAINLY ──
  *
- * Everything here applies to FLOW-COMMISSIONED runs only (commission.ts and
- * flow/coordinator.ts are its only two callers). A ROUTINE-triggered run of the
+ * Everything here applies to STEP-COMMISSIONED runs only (commission.ts is its
+ * only caller). A ROUTINE-triggered run of the
  * same agent does NOT pass through here and gets the adapter's own default,
  * which is full bypass. An agent whose blast radius must hold on every run
  * therefore carries the grant on its own adapterConfig
@@ -89,7 +89,7 @@
  * below, so the two cannot drift.
  *
  * Workspace-fetch posture (documentation only, no machinery this session):
- * the founder-decided default is that an unattended flow-commissioned run
+ * the founder-decided default is that an unattended step-commissioned run
  * needing repo *content* should fetch a pinned ref into the run's own
  * workspace rather than read a human's local checkout directly — a local
  * checkout routinely carries untracked files (.env, credentials, scratch
@@ -100,14 +100,11 @@
  * machinery at all; this paragraph is the recorded intent for whoever builds
  * it.
  *
- * Core-side follow-up (NOT done here, core is out of scope for this
- * change): apex-core's `flow_models.AgentNodeConfig` (pydantic) needs a
- * `permissions` field added so `apex flows show --output json` actually
- * emits what a flow YAML author declares. Until then, this module's read of
- * `node.agent.permissions` is tolerant-not-contractual (see definition.ts's
- * `agentNodeConfigSchema.permissions: z.unknown().nullish()`) — it will
- * pick up the field the moment core emits it, but nothing here depends on
- * core actually doing so yet.
+ * A step's `permissions` config is read TOLERANTLY rather than
+ * contractually: whatever shape shows up degrades to the safest profile with
+ * a recorded note, rather than throwing. That was originally because the
+ * declaration came from a YAML file this codebase did not own; it stays
+ * because a permission declaration nobody can parse must never fail OPEN.
  */
 import { SANDBOX_ALLOWED_TOOLS } from "@paperclipai/adapter-claude-local/server";
 
@@ -192,8 +189,8 @@ export type RunPermissionPolicy = {
  * The native-tool grant a profile means, as one string.
  *
  * Exported because a profile is only a claim until something applies it, and
- * this module is read at FLOW-commission time ONLY (`derivePermissionPolicy`
- * has two callers). A routine-triggered run never reaches it and would inherit
+ * this module is read at STEP-commission time ONLY. A routine-triggered run
+ * never reaches it and would inherit
  * the adapter's `dangerouslySkipPermissions: true` default — so an agent
  * declared read-only could write files on the path that matters most. The
  * roster carries the same grant on each agent's own `adapterConfig`, and takes
@@ -232,10 +229,10 @@ function isPermissionProfile(value: unknown): value is PermissionProfile {
   return typeof value === "string" && (PERMISSION_PROFILES as readonly string[]).includes(value);
 }
 
-/** Tolerant read of a node's raw `permissions` config (whatever shape shows
- *  up — see module doc's core-side follow-up) into a concrete policy. Never
+/** Tolerant read of a step's raw `permissions` config (whatever shape shows
+ *  up — see the module doc) into a concrete policy. Never
  *  throws: anything unrecognized degrades to the "bounded" default with a
- *  note explaining why, since a flow-commissioned run with no readable
+ *  note explaining why, since a step-commissioned run with no readable
  *  permission declaration should get the SAFEST default, not the loosest. */
 export function derivePermissionPolicy(rawPermissions: unknown): RunPermissionPolicy {
   const notes: string[] = [];

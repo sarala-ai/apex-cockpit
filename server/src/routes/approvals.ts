@@ -27,7 +27,6 @@ import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { redactEventPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { resolveGateApproval } from "../apex/pipeline/gate-bridge.js";
-import { flowCoordinator, FLOW_GATE_APPROVAL_TYPE } from "../apex/flow/coordinator.js";
 import { CliApexInvoker, type ApexInvoker } from "../apex/invoke.js";
 import {
   assembleFlowGateBrief,
@@ -37,7 +36,12 @@ import {
 } from "../apex/steps/brief.js";
 import type { DesignArchiveFetcher } from "../apex/steps/design-artifact.js";
 import { fetchDesignArchive } from "../design/design-files.js";
-import { loadProcessDefinitionByKey, pipelineService, type PipelineActor } from "../services/pipelines.js";
+import {
+  loadProcessDefinitionByKey,
+  pipelineService,
+  PIPELINE_GATE_APPROVAL_TYPE,
+  type PipelineActor,
+} from "../services/pipelines.js";
 import type { ProcessDefinition } from "../apex/steps/process-definition.js";
 
 /** apex-tower (Task 2 §2b): a pipeline actor from the approving/rejecting board user. */
@@ -88,7 +92,7 @@ function isStatusOnlyCheapRecoveryContext(contextSnapshot: unknown) {
 
 /** Default provenance reader for the decision brief: the commissioned run's
  *  permission stamp (heartbeat_runs.permissionMode/permissionProfile, written
- *  by the flow coordinator) plus the agent's display name — so the brief can
+ *  by the step commissioner) plus the agent's display name — so the brief can
  *  say "Designer, bounded profile" instead of a bare UUID. Best-effort: any
  *  failure leaves the ids in place and the brief still answers the decision. */
 function dbProvenanceLookup(db: Db): ProvenanceLookup {
@@ -155,12 +159,11 @@ export function approvalRoutes(
   /**
    * Route a decided gate to whichever host owns it.
    *
-   * A gate approval carrying a `caseId` belongs to a PIPELINE CASE; one
-   * carrying only the issue/flow keys belongs to the flow front-end. Both
-   * share the `flow_gate` type, so the dispatch is on the PAYLOAD — which
-   * keeps one approval type, one brief and one UI across both hosts while the
-   * front-end is still standing, instead of forking the surface a reviewer
-   * sees to match an internal migration.
+   * A gate approval carries the `caseId` of the case it was opened for. The
+   * flow front-end that once shared this approval type is gone, so a payload
+   * without a `caseId` is a gate from before the collapse (or a malformed one):
+   * it is reported as unhandled rather than routed somewhere it does not
+   * belong.
    *
    * Returns true when the pipeline host handled it. Failures are surfaced, not
    * swallowed: a decision that did not move the work is exactly the thing a
@@ -371,33 +374,16 @@ export function approvalRoutes(
       });
     }
 
-    // Flow coordinator gate hook: an approved flow_gate advances the issue's
-    // typed flow past the gate node and resumes deterministic advancement in
-    // the background (a subsequent workflow node can run for minutes — never
-    // block the decision response on it).
-    if (applied && approval.type === FLOW_GATE_APPROVAL_TYPE) {
-      const handledByCase = await routeGateDecisionToCase(
+    // Gate hook: an approved gate advances the case past the gate step and
+    // resumes advancement in the background (a subsequent run step can take
+    // minutes — never block the decision response on it).
+    if (applied && approval.type === PIPELINE_GATE_APPROVAL_TYPE) {
+      await routeGateDecisionToCase(
         approval.payload,
         "approve",
         { type: "user", userId: req.actor.userId ?? "board" },
         null,
       );
-      const decision = handledByCase
-        ? { resumed: false as const, execution: Promise.resolve() }
-        : await flowCoordinator(db).onGateDecision({
-        approvalId: approval.id,
-        payload: approval.payload,
-        decision: "approve",
-        decidedByUserId: req.actor.userId ?? "board",
-      });
-      if (decision.resumed) {
-        void decision.execution.catch((err) => {
-          logger.error(
-            { err, approvalId: approval.id },
-            "flow coordinator: background advancement after gate approval rejected",
-          );
-        });
-      }
     }
 
     if (applied) {
@@ -495,16 +481,16 @@ export function approvalRoutes(
       res.status(404).json({ error: "Approval not found" });
       return;
     }
-    // A flow gate is a review stage, and a review stage requires a reason for
-    // any non-approve decision — exactly what a pipeline review stage's
+    // A gate is a review stage, and a review stage requires a reason for
+    // any non-approve decision — exactly what a review stage's
     // `requireRejectReason` enforces (services/pipelines.ts `reviewCase`).
     // Classified at the door, before the approval is resolved, so a reasonless
     // decision never becomes a decided-but-unexplained ledger entry.
     const reviewerNote =
       typeof req.body.decisionNote === "string" ? req.body.decisionNote.trim() : "";
-    if (existing.type === FLOW_GATE_APPROVAL_TYPE && reviewerNote.length === 0) {
+    if (existing.type === PIPELINE_GATE_APPROVAL_TYPE && reviewerNote.length === 0) {
       throw badRequest(
-        "Rejecting a flow gate requires a decision note explaining why the work should not proceed.",
+        "Rejecting a gate requires a decision note explaining why the work should not proceed.",
         { errorType: "gate_review_reason_required", decision: "reject", approvalId: id },
       );
     }
@@ -536,26 +522,17 @@ export function approvalRoutes(
       await proposalService(db).onApprovalDecision(approval.id, "reject");
     }
 
-    // Flow coordinator gate hook: a rejected flow_gate STOPS the flow (paused).
-    // Rejection means the work should not proceed at all; sending it back for
-    // another round is the separate `request_changes` decision, which rides
+    // Gate hook: a rejected gate STOPS the case. Rejection means the work
+    // should not proceed at all; sending it back for another round is the
+    // separate `request_changes` decision, which rides
     // POST /approvals/:id/request-revision.
-    if (applied && approval.type === FLOW_GATE_APPROVAL_TYPE) {
-      const handledByCase = await routeGateDecisionToCase(
+    if (applied && approval.type === PIPELINE_GATE_APPROVAL_TYPE) {
+      await routeGateDecisionToCase(
         approval.payload,
         "reject",
         { type: "user", userId: req.actor.userId ?? "board" },
         req.body.decisionNote ?? null,
       );
-      if (!handledByCase) {
-        await flowCoordinator(db).onGateDecision({
-          approvalId: approval.id,
-          payload: approval.payload,
-          decision: "reject",
-          decidedByUserId: req.actor.userId ?? "board",
-          reason: req.body.decisionNote ?? null,
-        });
-      }
     }
 
     if (applied) {
@@ -587,16 +564,16 @@ export function approvalRoutes(
         res.status(404).json({ error: "Approval not found" });
         return;
       }
-      // On a flow gate this route IS the `request_changes` decision (the fork's
+      // On a gate this route IS the `request_changes` decision (the fork's
       // existing "redo with feedback" verb on an approval). The reason is
       // required the way a pipeline review stage's `requireRequestChangesReason`
       // requires it, because the reason is the whole instruction: it is
       // delivered verbatim to the step that redoes the work.
       const reviewerNote =
         typeof req.body.decisionNote === "string" ? req.body.decisionNote.trim() : "";
-      if (existing.type === FLOW_GATE_APPROVAL_TYPE && reviewerNote.length === 0) {
+      if (existing.type === PIPELINE_GATE_APPROVAL_TYPE && reviewerNote.length === 0) {
         throw badRequest(
-          "Requesting changes at a flow gate requires a reason: it is delivered verbatim to the step that redoes the work.",
+          "Requesting changes at a gate requires a reason: it is delivered verbatim to the step that redoes the work.",
           { errorType: "gate_review_reason_required", decision: "request_changes", approvalId: id },
         );
       }
@@ -620,34 +597,17 @@ export function approvalRoutes(
         await proposalService(db).onApprovalDecision(approval.id, "request_changes");
       }
 
-      // Route the decision into the flow: the work goes back to the gate's
-      // change-request target and the flow resumes in the background (the
+      // Route the decision into the case: the work goes back to the gate's
+      // change-request target and the case resumes in the background (the
       // re-commissioned agent step can take minutes — never block the
       // decision response on it).
-      if (approval.type === FLOW_GATE_APPROVAL_TYPE) {
-        const handledByCase = await routeGateDecisionToCase(
+      if (approval.type === PIPELINE_GATE_APPROVAL_TYPE) {
+        await routeGateDecisionToCase(
           approval.payload,
           "request_changes",
           { type: "user", userId: decidedByUserId },
           req.body.decisionNote ?? null,
         );
-        const decision = handledByCase
-          ? { resumed: false as const, execution: Promise.resolve() }
-          : await flowCoordinator(db).onGateDecision({
-          approvalId: approval.id,
-          payload: approval.payload,
-          decision: "request_changes",
-          decidedByUserId,
-          reason: req.body.decisionNote ?? null,
-        });
-        if (decision.resumed) {
-          void decision.execution.catch((err) => {
-            logger.error(
-              { err, approvalId: approval.id },
-              "flow coordinator: background advancement after request_changes rejected",
-            );
-          });
-        }
       }
 
       res.json(redactApprovalPayload(approval));
@@ -743,11 +703,11 @@ export function approvalRoutes(
   });
 
   /**
-   * Read-only PR-diff summary for a flow_gate approval — fetched at VIEW
+   * Read-only PR-diff summary for a gate approval — fetched at VIEW
    * time from the PR head (never frozen into the approval payload), so an
    * already-pending approval benefits the moment this ships. Resolves the
-   * `pr_exists:<repo>#<head>` acceptance declaration the flow coordinator
-   * recorded on the issue's activity log for the A-node that fed this gate
+   * `pr_exists:<repo>#<head>` acceptance declaration the agent step that fed
+   * this gate recorded on the issue's activity log
    * (same parsing agent-step.ts's evaluator uses — not duplicated here),
    * then asks apex-core's github_repo.get_pull_request for the current
    * file list. Every failure mode (no PR target found, apex CLI missing,
@@ -762,7 +722,7 @@ export function approvalRoutes(
     }
     assertCompanyAccess(req, approval.companyId);
 
-    if (approval.type !== FLOW_GATE_APPROVAL_TYPE) {
+    if (approval.type !== PIPELINE_GATE_APPROVAL_TYPE) {
       res.json({ available: false, reason: "not_a_flow_gate_approval" });
       return;
     }
@@ -788,23 +748,23 @@ export function approvalRoutes(
   });
 
   /**
-   * DECISION BRIEF for a flow_gate approval — the founder-facing answer to
+   * DECISION BRIEF for a gate approval — the founder-facing answer to
    * "what am I deciding, what was already verified, what should I look at,
    * what happens if I approve or reject, and who did the work".
    *
-   * Why a brief and not the log (founder critique): a flow-gated ticket today
+   * Why a brief and not the log (founder critique): a gated ticket today
    * reads as agent slop — instruction comments, wake fences, status
    * transitions and raw acceptance strings — and "I don't know what to
    * interpret, where to start and where to end." Machine strings are still
    * returned, but only under `verified.machine` / `machine`, never as a
    * headline.
    *
-   * "What happens next" is DERIVED: the flow definition is loaded through
-   * `apex flows show` and the node(s) AFTER this gate are described, so the
-   * sentence tracks the flow YAML instead of a hardcoded string.
+   * "What happens next" is DERIVED: the process definition is projected from
+   * the case's pipeline stages and the step(s) AFTER this gate are described,
+   * so the sentence tracks the live definition rather than a hardcoded string.
    *
    * Failure-isolated exactly like the pr-diff route it shares helpers with:
-   * a missing apex CLI, a gh failure, an unloadable flow definition or a
+   * a missing apex CLI, a gh failure, an unloadable process definition or a
    * failed provenance lookup each degrade a section — never a 500.
    */
   router.get("/approvals/:id/brief", async (req, res) => {
@@ -817,7 +777,7 @@ export function approvalRoutes(
     assertCompanyAccess(req, approval.companyId);
     if (!(await assertApprovalAccessAllowed(req, res, approval.companyId))) return;
 
-    if (approval.type !== FLOW_GATE_APPROVAL_TYPE) {
+    if (approval.type !== PIPELINE_GATE_APPROVAL_TYPE) {
       res.json({ available: false, reason: "not_a_flow_gate_approval" });
       return;
     }

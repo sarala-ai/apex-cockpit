@@ -39,15 +39,16 @@ export const companies = pgTable(
     feedbackDataSharingConsentByUserId: text("feedback_data_sharing_consent_by_user_id"),
     feedbackDataSharingTermsVersion: text("feedback_data_sharing_terms_version"),
     brandColor: text("brand_color"),
-    // GitHub projection (work-loop doctrine): mirror flow lifecycle onto GitHub
-    // issues — GitHub is the canonical conversation/audit surface, the board
-    // stays the canonical execution store. Opt-in per company, off by default.
-    // `githubProjectionRepo` ("owner/name") is a FALLBACK ONLY: mirror targeting
-    // is primarily an ordered cascade off the ticket's project workspace repo
-    // (issues.projectWorkspaceId / the project's primary workspace); this column
-    // is used only for tickets with no repo-bearing project binding. See
-    // server/src/apex/flow/projection-repo-resolver.ts and
-    // server/src/apex/flow/github-projection.ts.
+    // GitHub projection (work-loop doctrine): mirror process lifecycle onto
+    // GitHub issues — GitHub is the canonical conversation/audit surface, the
+    // board stays the canonical execution store. Opt-in per company, off by
+    // default.
+    //
+    // DORMANT since 0173: the projection implementation belonged to the flow
+    // front-end and was deleted with it (nothing reads these columns today).
+    // They are kept because the setting is the right one and a projection
+    // re-hosted on the pipeline step host wants exactly this shape — but
+    // nothing is projected until that exists.
     githubProjectionEnabled: boolean("github_projection_enabled").notNull().default(false),
     githubProjectionRepo: text("github_projection_repo"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

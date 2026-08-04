@@ -1,14 +1,14 @@
 /**
  * ARTIFACT-RENDERER REGISTRY — the seam.
  *
- * Founder critique this answers: every approval renders the same way. A flow
+ * Founder critique this answers: every approval renders the same way. A gate
  * gate shows a flat list of changed files, so a DESIGN change shows exactly
  * one row — a binary `.penpot` file — and the founder cannot see what they are
  * approving. A code change shows filenames and +/- counts but never the diff.
  *
  * The fix is not "add a special case for .penpot to ArtifactBlock". It is a
  * seam: an artifact declares its KIND (classified once, server-side, in
- * `server/src/apex/flow/brief.ts`), and this registry maps kind → renderer.
+ * `server/src/apex/steps/brief.ts`), and this registry maps kind → renderer.
  * Adding a renderer for a new artifact type requires ZERO changes to
  * FlowGatePayload or ArtifactBlock — you register an entry, and it renders.
  *

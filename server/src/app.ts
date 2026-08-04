@@ -27,7 +27,6 @@ import { apexWorkflowsRoutes } from "./routes/apex-workflows.js";
 import { apexCapabilitiesRoutes } from "./routes/apex-capabilities.js";
 import { apexDesignRoutes } from "./routes/apex-design.js";
 import { apexPipelineRoutes } from "./routes/apex-pipeline.js";
-import { apexFlowRoutes } from "./routes/apex-flows.js";
 import { issueRoutes } from "./routes/issues.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
 import { caseRoutes } from "./routes/cases.js";
@@ -265,7 +264,6 @@ export async function createApp(
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(pipelineRoutes(db));
   api.use(apexPipelineRoutes(db));
-  api.use(apexFlowRoutes(db));
   api.use(environmentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(executionWorkspaceRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(goalRoutes(db));

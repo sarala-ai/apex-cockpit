@@ -14,7 +14,7 @@ import {
   nodeReversibility,
   type PrDiffSummary,
 } from "../apex/steps/brief.js";
-import type { FlowDefinition, FlowNode } from "../apex/flow/definition.js";
+import type { ProcessDefinition, ProcessStep } from "../apex/steps/process-definition.js";
 
 const files = (...paths: string[]) => paths.map((path) => ({ path }));
 
@@ -69,17 +69,17 @@ describe("classifyArtifactKind", () => {
   });
 });
 
-const gate: FlowNode = { id: "g", kind: "gate", gate: { mode: "approve" }, on_fail: "pause" } as FlowNode;
-const workflowNode = (name: string): FlowNode =>
+const gate: ProcessStep = { id: "g", kind: "gate", gate: { mode: "approve" }, on_fail: "pause" } as ProcessStep;
+const workflowNode = (name: string): ProcessStep =>
   ({
     id: name,
     kind: "run",
     run: { target: { type: "workflow", workflow: name, params: {} } },
     on_fail: "pause",
-  }) as FlowNode;
+  }) as ProcessStep;
 
-function flowOf(...steps: FlowNode[]): FlowDefinition {
-  return { name: "f", version: "1.0", description: "", ticket_type: "t", steps } as FlowDefinition;
+function flowOf(...steps: ProcessStep[]): ProcessDefinition {
+  return { name: "f", version: "1.0", description: "", ticket_type: "t", steps } as ProcessDefinition;
 }
 
 describe("nodeReversibility", () => {
@@ -112,7 +112,7 @@ describe("nodeReversibility", () => {
         kind: "run",
         run: { target: { type: "command", tool: "pytest", args: [] } },
         on_fail: "pause",
-      } as FlowNode),
+      } as ProcessStep),
     ).toBe("unknown");
   });
 });
