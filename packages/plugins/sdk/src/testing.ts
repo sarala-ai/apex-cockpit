@@ -1565,6 +1565,9 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           title: input.title,
           description: input.description ?? null,
           status: input.status ?? "todo",
+          // A plugin-created ticket declares no type. Not "chore" — an
+          // undeclared type is its own honest state (see TICKET_TYPES).
+          ticketType: null,
           workMode: "standard",
           priority: input.priority ?? "medium",
           assigneeAgentId: input.assigneeAgentId ?? null,

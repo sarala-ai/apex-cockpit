@@ -21,6 +21,7 @@ import type {
   IssueRecoveryActionOwnerType,
   IssueRecoveryActionStatus,
   IssueWorkMode,
+  TicketType,
   ModelProfileKey,
   IssueThreadInteractionContinuationPolicy,
   IssueThreadInteractionKind,
@@ -714,6 +715,9 @@ export interface Issue {
    *  Rendered collapsed for humans; delivered to agents in full. */
   agentBrief?: string | null;
   status: IssueStatus;
+  /** What kind of work this is, and therefore which lifecycle it runs.
+   *  `null` means UNDECLARED — see TICKET_TYPES in ../constants.js. */
+  ticketType: TicketType | null;
   workMode: IssueWorkMode;
   priority: IssuePriority;
   assigneeAgentId: string | null;
@@ -798,6 +802,7 @@ export type CompactIssue = Pick<
   | "title"
   | "description"
   | "status"
+  | "ticketType"
   | "workMode"
   | "priority"
   | "assigneeAgentId"

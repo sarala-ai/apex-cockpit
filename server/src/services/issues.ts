@@ -2438,6 +2438,7 @@ const issueListSelect = {
   // Selected as a constant NULL so the row shape stays whole.
   agentBrief: sql<string | null>`NULL::text`,
   status: issues.status,
+  ticketType: issues.ticketType,
   workMode: issues.workMode,
   harnessKind: issues.harnessKind,
   priority: issues.priority,
