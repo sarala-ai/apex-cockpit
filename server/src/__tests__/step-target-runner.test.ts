@@ -90,6 +90,57 @@ describe("CliStepTargetRunner.runWorkflow", () => {
   });
 });
 
+describe("CliStepTargetRunner with dispatch context", () => {
+  beforeEach(() => mockRun.mockReset());
+
+  it("injects APEX_CASE_ID, APEX_STEP_KEY and APEX_RUN_ID into the child env for workflow targets", async () => {
+    mockRun.mockResolvedValue({
+      status: "ok",
+      stdout: cliEnvelope({ status: "success", steps_completed: [] }),
+    });
+
+    const ctx = { caseId: "case-1", stepKey: "build", runId: "run-42" };
+    const ctxRunner = new CliStepTargetRunner("apex", "/launch", undefined, undefined, ctx);
+    await ctxRunner.runWorkflow({ workflow: "w", params: {} });
+
+    expect(mockRun).toHaveBeenCalledWith(
+      "apex",
+      expect.any(Array),
+      expect.any(Number),
+      "/launch",
+      expect.objectContaining({
+        APEX_CASE_ID: "case-1",
+        APEX_STEP_KEY: "build",
+        APEX_RUN_ID: "run-42",
+      }),
+    );
+  });
+
+  it("merges dispatch context with command-specific env for command targets", async () => {
+    mockRun.mockResolvedValue({
+      status: "ok",
+      stdout: JSON.stringify({ status: "success", result: {} }),
+    });
+
+    const ctx = { caseId: "case-2", stepKey: "check", runId: "run-99" };
+    const ctxRunner = new CliStepTargetRunner("apex", "/launch", undefined, undefined, ctx);
+    await ctxRunner.runCommand({ tool: "health report", args: [] });
+
+    expect(mockRun).toHaveBeenCalledWith(
+      "apex",
+      expect.any(Array),
+      expect.any(Number),
+      "/launch",
+      expect.objectContaining({
+        APEX_CASE_ID: "case-2",
+        APEX_STEP_KEY: "check",
+        APEX_RUN_ID: "run-99",
+        APEX_EXECUTION_MODE: "apply",
+      }),
+    );
+  });
+});
+
 describe("CliStepTargetRunner.runCommand", () => {
   beforeEach(() => mockRun.mockReset());
 

@@ -64,6 +64,14 @@ export interface StepTargetRunner {
   runCommand(config: { tool: string; args: string[] }): Promise<NodeExecutionResult>;
 }
 
+/** Tracing identifiers forwarded into each CLI child's environment so
+ *  core-side telemetry and audit entries join back to the dispatching step. */
+export interface StepDispatchContext {
+  caseId: string;
+  stepKey: string;
+  runId: string;
+}
+
 const toDash = (s: string): string => s.replace(/_/g, "-");
 
 export class CliStepTargetRunner implements StepTargetRunner {
@@ -73,6 +81,7 @@ export class CliStepTargetRunner implements StepTargetRunner {
     /** Workflow nodes run real deploys — give them room. */
     private readonly workflowTimeoutMs: number = 15 * 60_000,
     private readonly checkTimeoutMs: number = 5 * 60_000,
+    private readonly dispatchContext?: StepDispatchContext,
   ) {}
 
   async runWorkflow(config: { workflow: string; params: Record<string, unknown> }): Promise<NodeExecutionResult> {
@@ -116,6 +125,15 @@ export class CliStepTargetRunner implements StepTargetRunner {
     return this.execute(args, `command ${server} ${tool}`, { APEX_EXECUTION_MODE: "apply" });
   }
 
+  private contextEnv(): NodeJS.ProcessEnv {
+    if (!this.dispatchContext) return {};
+    return {
+      APEX_CASE_ID: this.dispatchContext.caseId,
+      APEX_STEP_KEY: this.dispatchContext.stepKey,
+      APEX_RUN_ID: this.dispatchContext.runId,
+    };
+  }
+
   private async execute(
     args: string[],
     what: string,
@@ -123,7 +141,8 @@ export class CliStepTargetRunner implements StepTargetRunner {
     options: { requireInnerRunSuccess?: boolean } = {},
   ): Promise<NodeExecutionResult> {
     const timeoutMs = what.startsWith("workflow") ? this.workflowTimeoutMs : this.checkTimeoutMs;
-    const res = await run(this.bin, args, timeoutMs, this.cwd, env);
+    const merged = { ...this.contextEnv(), ...(env ?? {}) };
+    const res = await run(this.bin, args, timeoutMs, this.cwd, Object.keys(merged).length > 0 ? merged : undefined);
     if (res.status === "missing") {
       throw new ApexUnavailableError(`apex CLI not found (bin: ${this.bin})`);
     }

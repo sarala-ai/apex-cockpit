@@ -3963,8 +3963,12 @@ export function pipelineService(
     }
 
     const variables = buildPipelineCaseVariables(detail);
+    const runner = deps.stepRunner ?? new CliStepTargetRunner(
+      undefined, undefined, undefined, undefined,
+      { caseId: execution.caseId, stepKey: detail.stage.key, runId: execution.id },
+    );
     const outcome = await stepExecutor({
-      runner: workflowRunner,
+      runner,
       render: (template) => renderTemplate(template, variables),
     }).execute({
       kind: "run",
