@@ -22,13 +22,16 @@
  * vocabulary (`StepSpec` in ./step-executor.ts). One vocabulary, one place.
  */
 import { STEP_ON_FAIL_RE, type RunTarget, type StepKind } from "./step-executor.js";
+import type { ContractRunTarget } from "../pipeline/contract-targets.js";
 
 export const PROCESS_ON_FAIL_RE = STEP_ON_FAIL_RE;
 
 /** A `run` step, as a definition states it. The target is the pluggable half;
- *  the criteria it is judged by live in `acceptance`, not here. */
+ *  the criteria it is judged by live in `acceptance`, not here. A definition
+ *  may also state a CONTRACT (`checks_pass` / `deployed`) whose concrete tool
+ *  resolves at dispatch from project workspace config (APEX-38). */
 export type RunStepDefinition = {
-  target: RunTarget;
+  target: RunTarget | ContractRunTarget;
 };
 
 export type AgentStepDefinition = {

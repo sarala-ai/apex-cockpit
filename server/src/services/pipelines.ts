@@ -49,6 +49,11 @@ import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { CliStepTargetRunner, type StepTargetRunner } from "../apex/steps/runner.js";
 import { renderTemplate, stepExecutor, type RunTarget } from "../apex/steps/step-executor.js";
+import {
+  isRunContract,
+  resolveContractRunTarget,
+  type ContractRunTarget,
+} from "../apex/pipeline/contract-targets.js";
 import type { ProcessDefinition, ProcessStep } from "../apex/steps/process-definition.js";
 import { isMachineEvaluableAcceptance } from "../apex/steps/agent-step.js";
 import { validateReviewPassIds } from "../apex/steps/review-passes.js";
@@ -237,13 +242,17 @@ export type PipelineStageConfig = Record<string, unknown> & {
     id?: string;
     /** `run` only — what to execute. */
     target?: {
-      type?: "workflow" | "command";
+      type?: "workflow" | "command" | "contract";
       /** `workflow` target. */
       workflow?: string;
       params?: Record<string, unknown>;
       /** `command` target. */
       tool?: string;
       args?: string[];
+      /** `contract` target — names WHAT must be true (`checks_pass` /
+       *  `deployed`); the concrete tool resolves at dispatch time from the
+       *  pipeline's project workspace config (apex/pipeline/contract-targets.ts). */
+      contract?: string;
     };
     /** `agent` only — the instruction, `{{case_key}}`-interpolated. */
     promptTemplate?: string;
@@ -1334,9 +1343,16 @@ function stageEntryStep(stage: typeof pipelineStages.$inferSelect): StageEntrySt
   return null;
 }
 
+/** What a stage may DECLARE: a concrete target, or a contract that resolves
+ *  to one at dispatch time from project workspace config. */
+type DeclaredRunTarget = RunTarget | ContractRunTarget;
+
 /** Parse a declared run target into the executor's union, or null. */
-function readRunTarget(raw: NonNullable<PipelineStageConfig["onEnter"]>["target"]): RunTarget | null {
+function readRunTarget(raw: NonNullable<PipelineStageConfig["onEnter"]>["target"]): DeclaredRunTarget | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  if (raw.type === "contract") {
+    return isRunContract(raw.contract) ? { type: "contract", contract: raw.contract } : null;
+  }
   if (raw.type === "command") {
     const tool = typeof raw.tool === "string" ? raw.tool.trim() : "";
     if (!tool) return null;
@@ -3198,9 +3214,13 @@ export function pipelineService(
    */
   async function assertRunTargetAuthorized(
     companyId: string,
-    target: RunTarget,
+    target: DeclaredRunTarget,
     actor?: PipelineActor,
   ) {
+    // A `contract` target names no tool at all — WHAT runs resolves at
+    // dispatch time from project workspace config, whose editors already
+    // control host-executed commands (`setupCommand`). Authoring one grants
+    // nothing the workspace surface does not already govern.
     if (target.type !== "command") return;
     if (!actor || actor.type === "system") return;
     if (actor.type === "user" && (await accessSvc.isInstanceAdmin(actor.userId))) return;
@@ -3967,14 +3987,31 @@ export function pipelineService(
       undefined, undefined, undefined, undefined,
       { caseId: execution.caseId, stepKey: detail.stage.key, runId: execution.id },
     );
-    const outcome = await stepExecutor({
-      runner,
-      render: (template) => renderTemplate(template, variables),
-    }).execute({
-      kind: "run",
-      key: detail.stage.key,
-      config: { target: entry.target },
-    });
+    // A `contract` target resolves to the project's own tool FIRST — and a
+    // project that declares nothing yields a classified failure that rides
+    // the ordinary failure path below: an honest hold (or failure route),
+    // never an invocation of a tool the project never declared.
+    const resolved =
+      entry.target.type === "contract"
+        ? await resolveContractRunTarget(db, {
+            companyId: execution.companyId,
+            projectId: detail.pipeline.projectId ?? null,
+            contract: entry.target.contract,
+          })
+        : { ok: true as const, target: entry.target };
+    const outcome = resolved.ok
+      ? await stepExecutor({
+          runner,
+          render: (template) => renderTemplate(template, variables),
+        }).execute({
+          kind: "run",
+          key: detail.stage.key,
+          config: { target: resolved.target },
+        })
+      : {
+          status: "failed" as const,
+          failure: { errorType: resolved.errorType, message: resolved.message },
+        };
 
     if (outcome.status === "succeeded") {
       const [updated] = await db

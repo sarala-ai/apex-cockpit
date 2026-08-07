@@ -50,6 +50,8 @@ const projectWorkspaceFields = {
   visibility: projectWorkspaceVisibilitySchema.optional(),
   setupCommand: z.string().optional().nullable(),
   cleanupCommand: z.string().optional().nullable(),
+  checkCommand: z.string().optional().nullable(),
+  deployWorkflow: z.string().optional().nullable(),
   remoteProvider: z.string().optional().nullable(),
   remoteWorkspaceRef: z.string().optional().nullable(),
   sharedWorkspaceKey: z.string().optional().nullable(),
