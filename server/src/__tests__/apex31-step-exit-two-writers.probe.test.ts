@@ -1,38 +1,55 @@
 /**
- * APEX-31 FAILING PROBE — an agent step's successful exit, and the two writers
- * that disagree about what it meant.
+ * APEX-31 FAILING PROBE, take two — the wiring seam and the real second writer.
  *
- * This suite is COMMISSIONED RED. It asserts the contract the coordinator is
- * supposed to honour; today's code fails both tests, reproducing what was
- * observed live on APEX-14 (runs f0c78e92 / 90f1b0ed / 1471b4a5, Aug 7) and
- * APEX-27 (run c433deb4). Do not "fix" the assertions — fix the coordinator.
+ * The first take (7ce94e3b0) was rejected: it entered one seam too low and was
+ * GREEN on unfixed code. Both tests here enter where the live failures enter,
+ * verified against the live instance database (Aug 7):
  *
- * Defect (a) — the success path never clears the step's active hold.
+ * Defect (a) — the terminal notification outruns the linkage, every time.
  *
- *   `executeRunEntryLedger` (the `run` kind) clears the stage's hold on a
- *   successful exit (`clearStepHold(run_exit_success)`, pipelines.ts ~4005)
- *   before re-evaluating acceptance and moving the case. The AGENT kind's
- *   completion — `processAgentStepCompletion` — does not. When the stage's
- *   declared acceptance is `disabled` (as every seeded lifecycle's uncheckable
- *   criteria are), `evaluateStageAcceptance` returns `none` without writing an
- *   event or clearing anything, and the exit transition then runs straight
- *   into the STALE hold from the previous failed attempt:
- *   `assertStageTransitionGates` throws `stage_held`, the coordinator records
- *   a NEW hold (`step_exit_transition_blocked`) wrapping the old message —
- *   observed live as "Pipeline stage is held: Pipeline stage is held: ..." —
- *   and the hold is immortal: every successful rerun re-wraps it and the case
- *   never advances.
+ *   When the stage's declared executor is not the ticket's assignee (the
+ *   ticket is non-null — carried over from a previous stage — so the
+ *   fill-a-vacuum rule correctly refuses to re-route), the commission's
+ *   `enqueueWakeup` creates the queued step run and the claim gate cancels it
+ *   INSIDE the same call chain: `issue_assignee_changed`, "the new owner will
+ *   be woken instead". The cancel goes through `setRunStatus` →
+ *   `notifyStepHostOfTerminalRun`, which looks the case up by
+ *   `pipelineCases.stepRunId = run.id` — but `recordCommissioned` has not run
+ *   yet, so nothing maps run→case-step and the hook returns without firing.
+ *   Only afterwards does the coordinator write `stepRunId`, now pointing at a
+ *   run that is already terminal and will never be notified again. The
+ *   substitute wake for the assignee carries none of the step's context
+ *   markers, so its terminal status is invisible to the coordinator too.
  *
- * Defect (b) — the ticket has a second writer that ignores the case.
+ *   Live forensics (APEX-27, case d9a968fa, Aug 7 06:41:00): queued step run
+ *   f48378dd created .148, cancelled .163 (`issue_assignee_changed`), the
+ *   ledger's `automation_executed` written .167 — strictly after the terminal
+ *   notification. The case got its `agent_run_cancelled` hold only from the
+ *   staleness SWEEP nine minutes later, the ledger says `succeeded`,
+ *   `step_run_id` is null, the case is non-terminal at `tasks` — and the
+ *   ISSUE is `done`.
  *
- *   While the case sits mid-pipeline, the issue-side machinery (liveness
- *   continuations and disposition-handoff wakes, which carry none of the
- *   step's context markers) tells the assignee to give the ISSUE a final
- *   disposition, and the agent marks it `done` through the ordinary issue
- *   update path. The server accepts it. Result observed three times: ticket
- *   `done`, case non-terminal on the same screen. The case is the single
- *   writer for "this work is finished"; an agent-driven `done` on an issue
- *   that is the conversation of a live pipeline case must be refused.
+ *   The probe drives `rerunCurrentStageAutomation` through the REAL
+ *   dispatch/commission/claim path to the real terminal notification. No
+ *   caseId/runId is hand-delivered to the coordinator. The contract asserted:
+ *   the coordinator observes the commissioned run's terminal status without
+ *   waiting for the sweep. Today it never does.
+ *
+ * Defect (b) — the ticket's second writer, in its real shape.
+ *
+ *   Live forensics for the APEX-14 done-flip (issue 732422af, Aug 7): the
+ *   `finish_successful_run_handoff` run c13a76bd wrote `issue.updated` +
+ *   `issue.successful_run_handoff_resolved` at 05:55:23 with an AGENT actor —
+ *   the ordinary issueService.update path the routes call. The case link for
+ *   that issue has role `work`, NOT `conversation` (the live lifecycles link
+ *   the ticket as the case's work item). Any guard that only inspects
+ *   `role = 'conversation'` links never fires on the live topology, and the
+ *   ticket flips `done` while the case is held mid-pipeline. The probe writes
+ *   through the same seam with the same link role and asserts the pipeline
+ *   stays the single writer for terminal ticket status.
+ *
+ * This suite is COMMISSIONED RED. Do not "fix" the assertions — fix the
+ * wiring.
  */
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
@@ -78,18 +95,32 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
+async function poll<T>(
+  fn: () => Promise<T | null | undefined | false>,
+  { timeoutMs = 30_000, intervalMs = 250 }: { timeoutMs?: number; intervalMs?: number } = {},
+): Promise<T | null> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const value = await fn();
+    if (value) return value as T;
+    if (Date.now() >= deadline) return null;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
+
 describeEmbeddedPostgres("APEX-31 probe: agent step exit vs the ticket", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof pipelineService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   const userActor: PipelineActor = { type: "user", userId: "board-user" };
-  const noopHeartbeat = { wakeup: async () => null };
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-apex31-probe-");
     db = createDb(tempDb.connectionString);
-    svc = pipelineService(db, { heartbeat: noopHeartbeat });
+    // No stubbed heartbeat anywhere: the commission path lazy-imports the real
+    // heartbeatService, and this suite is ABOUT that wiring.
+    svc = pipelineService(db);
   }, 20_000);
 
   afterEach(async () => {
@@ -154,13 +185,26 @@ describeEmbeddedPostgres("APEX-31 probe: agent step exit vs the ticket", () => {
     return agent!;
   }
 
-  /**
-   * The APEX-14 shape, minimally: an agent stage whose declared acceptance is
-   * DISABLED (the criteria are prose the v1 grammar cannot check, which is
-   * exactly what every seeded lifecycle stage carries), routing to `done` on
-   * success.
-   */
-  async function seedSpecPipeline(companyId: string) {
+  async function seedRosterAgent(companyId: string, key: string, name: string) {
+    const [agent] = await db
+      .insert(agents)
+      .values({
+        companyId,
+        name,
+        role: "engineering",
+        adapterType: "codex_local",
+        adapterConfig: { model: "gpt-5.4" },
+        runtimeConfig: {},
+        permissions: { profile: apexAgentPermissionProfile(key) },
+        metadata: withBuiltInAgentMarker(null, { key, featureKeys: [key] }),
+      })
+      .returning();
+    return agent!;
+  }
+
+  /** The APEX-14 shape: an agent stage whose declared acceptance is prose the
+   *  v1 grammar cannot check, routing to `done` on success. */
+  async function seedSpecPipeline(companyId: string, agentKey: string = APEX_AGENT_KEYS.specifier) {
     return svc.createPipeline({
       companyId,
       key: `probe-${randomUUID().slice(0, 8)}`,
@@ -177,8 +221,8 @@ describeEmbeddedPostgres("APEX-31 probe: agent step exit vs the ticket", () => {
             onEnter: {
               type: "agent",
               promptTemplate: "Draft the spec for {{case_key}}.",
-              agentKey: APEX_AGENT_KEYS.specifier,
-              permissions: { profile: apexAgentPermissionProfile(APEX_AGENT_KEYS.specifier) },
+              agentKey,
+              permissions: { profile: apexAgentPermissionProfile(agentKey) },
               onSuccessToStageKey: "done",
             },
             acceptance: {
@@ -193,7 +237,12 @@ describeEmbeddedPostgres("APEX-31 probe: agent step exit vs the ticket", () => {
     });
   }
 
-  async function seedCaseWithConversation(companyId: string, pipelineId: string) {
+  /** The LIVE link topology, verified in the instance database: the ticket is
+   *  linked to the case with role `work` (APEX-14 case 45ff15d4, APEX-27 case
+   *  d9a968fa both carry role `work`, and NO `conversation` link exists). A
+   *  probe that seeds `conversation` instead exercises a topology the live
+   *  system does not have. */
+  async function seedCaseWithWorkTicket(companyId: string, pipelineId: string) {
     const created = await svc.ingestCase({
       companyId,
       pipelineId,
@@ -203,13 +252,13 @@ describeEmbeddedPostgres("APEX-31 probe: agent step exit vs the ticket", () => {
     });
     const [issue] = await db
       .insert(issues)
-      .values({ companyId, title: "Conversation", status: "todo", priority: "medium" })
+      .values({ companyId, title: "Ticket", status: "todo", priority: "medium" })
       .returning();
     await db.insert(pipelineCaseIssueLinks).values({
       companyId,
       caseId: created.case.id,
       issueId: issue!.id,
-      role: "conversation",
+      role: "work",
     });
     return { case: created.case, issue: issue! };
   }
@@ -231,105 +280,129 @@ describeEmbeddedPostgres("APEX-31 probe: agent step exit vs the ticket", () => {
     return row!;
   }
 
-  /**
-   * Drive the case into the spec stage (which parks it `waiting_agent` and
-   * commissions for real), then record the first attempt's run terminating the
-   * way APEX-14's did on Aug 4 — cancelled under the queued-run assignee
-   * guard — which writes the `agent_run_cancelled` hold.
-   */
-  async function seedHeldSpecCase(companyId: string, pipelineId: string) {
-    const seeded = await seedCaseWithConversation(companyId, pipelineId);
-    await svc.transitionCase({
-      companyId,
-      caseId: seeded.case.id,
-      toStageKey: "spec",
-      expectedVersion: seeded.case.version,
-      actor: userActor,
-    });
-    const completed = await svc.processAgentStepCompletion(companyId, seeded.case.id, {
-      runId: randomUUID(),
-      runStatus: "cancelled",
-      error:
-        "Cancelled because issue assignee changed before the queued run could start; the new owner will be woken instead",
-    });
-    expect(completed).toBe(true);
-    const holds = await caseEvents(seeded.case.id, "step_held");
-    expect(holds.length).toBeGreaterThan(0);
-    return seeded;
-  }
-
   it(
-    "a successful rerun of a held agent step clears the hold and advances the case " +
-      "(observed live: the hold is immortal and the exit is re-blocked forever)",
-    async () => {
-      const company = await seedCompany();
-      await seedSpecifier(company.id);
-      const pipeline = await seedSpecPipeline(company.id);
-      const seeded = await seedHeldSpecCase(company.id, pipeline.id);
-
-      // The operator's recovery affordance: re-run the stage's entry step.
-      // This re-parks the case and commissions a fresh bounded run.
-      await svc.rerunCurrentStageAutomation({
-        companyId: company.id,
-        caseId: seeded.case.id,
-        actor: userActor,
-      });
-      const reparked = await caseDetail(company.id, seeded.case.id);
-      expect(reparked.case.stepStatus).toBe("waiting_agent");
-
-      // The rerun's bounded run reaches `succeeded` — the agent-step
-      // completion hook hands it to the coordinator, exactly as
-      // notifyStepHostOfTerminalRun does.
-      const completed = await svc.processAgentStepCompletion(company.id, seeded.case.id, {
-        runId: reparked.case.stepRunId ?? randomUUID(),
-        runStatus: "succeeded",
-        error: null,
-      });
-      expect(completed).toBe(true);
-
-      // THE CONTRACT — soft assertions so one probe run reports every
-      // divergence. A successful exit supersedes the previous attempt's
-      // failure hold — the same rule the `run` kind already honours
-      // (`clearStepHold(run_exit_success)`). The stale hold must be cleared...
-      const clears = await caseEvents(seeded.case.id, "step_hold_cleared");
-      expect.soft(clears.length, "step_hold_cleared events after successful exit").toBeGreaterThan(0);
-
-      // ...the exit must not be re-blocked by the hold the success just
-      // superseded (observed live: `step_exit_transition_blocked` wrapping
-      // "Pipeline stage is held: Pipeline stage is held: ...")...
-      const holds = await caseEvents(seeded.case.id, "step_held");
-      const exitBlocked = holds.filter(
-        (event) =>
-          (event.payload as { reason?: string }).reason === "step_exit_transition_blocked",
-      );
-      expect.soft(exitBlocked, "step_exit_transition_blocked holds").toHaveLength(0);
-
-      // ...and the case must actually move where the step routes on success.
-      const after = await caseDetail(company.id, seeded.case.id);
-      expect.soft(after.stage.key, "stage after successful exit").toBe("done");
-    },
-    60_000,
-  );
-
-  it(
-    "an agent cannot mark the ticket done while its pipeline case is non-terminal " +
-      "(observed live: liveness/handoff runs flip the ticket while the case is held)",
+    "a commissioned step run cancelled at the claim gate is still observed by the coordinator " +
+      "(observed live: the terminal notification outruns recordCommissioned, the hook never fires, " +
+      "and only the sweep — minutes later — notices)",
     async () => {
       const company = await seedCompany();
       const specifier = await seedSpecifier(company.id);
-      const pipeline = await seedSpecPipeline(company.id);
-      const seeded = await seedHeldSpecCase(company.id, pipeline.id);
-
-      // The ticket is the case's conversation, mid-flight, owned by the agent.
+      await seedRosterAgent(company.id, APEX_AGENT_KEYS.implementer, "Implementer");
+      // The stage names the IMPLEMENTER as executor while the ticket belongs
+      // to the SPECIFIER — the live APEX-27 shape at the `tasks` stage: the
+      // assignee carried over from the previous stage, the fill-a-vacuum rule
+      // correctly refuses to re-route a non-null assignee, and the claim gate
+      // then cancels every run commissioned for the executor.
+      const pipeline = await seedSpecPipeline(company.id, APEX_AGENT_KEYS.implementer);
+      const seeded = await seedCaseWithWorkTicket(company.id, pipeline.id);
       await db
         .update(issues)
         .set({ assigneeAgentId: specifier.id, status: "in_progress" })
         .where(eq(issues.id, seeded.issue.id));
 
-      // The second writer: a continuation/handoff run's disposition write —
-      // the ordinary agent-actor issue update the routes call. The case is
-      // still at `spec` and held; the pipeline owns ticket completion, so this
-      // write must be refused (or left un-applied), never accepted.
+      // Enter the stage through the pipeline's own transition — the entry
+      // step enqueues its ledger and commissions for real.
+      await svc.transitionCase({
+        companyId: company.id,
+        caseId: seeded.case.id,
+        toStageKey: "spec",
+        expectedVersion: seeded.case.version,
+        actor: userActor,
+      });
+
+      // The operator's recovery affordance, the seam under test: re-run the
+      // stage's entry automation. Everything downstream is the REAL wiring —
+      // `enqueueWakeup` creates the queued run, the claim gate cancels it
+      // (`issue_assignee_changed`) through `setRunStatus`, which calls
+      // `notifyStepHostOfTerminalRun`. Nothing here hands the coordinator a
+      // caseId or runId.
+      await svc.rerunCurrentStageAutomation({
+        companyId: company.id,
+        caseId: seeded.case.id,
+        actor: userActor,
+      });
+
+      // Ground truth of the defect, not the contract: the commissioned step
+      // runs exist, carry the step's context markers, and are ALREADY
+      // terminal — cancelled by the claim gate before they could start.
+      const stepRuns = await poll(async () => {
+        const rows = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, company.id),
+              sql`${heartbeatRuns.contextSnapshot} ->> 'flowAgentStep' = 'true'`,
+              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${seeded.issue.id}`,
+            ),
+          );
+        return rows.length > 0 && rows.every((row) => row.status === "cancelled") ? rows : null;
+      }, { timeoutMs: 30_000 });
+      expect(
+        stepRuns,
+        "the commissioned step runs were cancelled at the claim gate (issue_assignee_changed)",
+      ).not.toBeNull();
+      expect(stepRuns!.every((row) => row.errorCode === "issue_assignee_changed")).toBe(true);
+
+      // The ledger recorded the commission as a clean success, and the case is
+      // parked waiting for an agent that can never arrive.
+      const ledgers = await db
+        .select()
+        .from(pipelineAutomationExecutions)
+        .where(eq(pipelineAutomationExecutions.caseId, seeded.case.id));
+      expect(ledgers.some((row) => row.kind === "agent" && row.status === "succeeded")).toBe(true);
+      const parked = await caseDetail(company.id, seeded.case.id);
+      expect(parked.case.stepStatus).toBe("waiting_agent");
+
+      // THE CONTRACT: the coordinator observes the commissioned run's terminal
+      // status — it records the exit on the case (the `agent_run_cancelled`
+      // hold, a re-commission, anything) without waiting for the staleness
+      // sweep. Live: the terminal notification fired before `stepRunId` was
+      // written, found no case, and the case sat invisible for nine minutes
+      // until the sweep; in this probe no sweep runs, so nothing ever comes.
+      const observed = await poll(async () => {
+        const holds = await caseEvents(seeded.case.id, "step_held");
+        const detail = await caseDetail(company.id, seeded.case.id);
+        const settled = detail.case.stepStatus !== "waiting_agent";
+        return holds.length > 0 || settled ? true : null;
+      }, { timeoutMs: 15_000 });
+      expect(
+        observed,
+        "the coordinator recorded the cancelled step run's terminal outcome on the case",
+      ).toBe(true);
+    },
+    120_000,
+  );
+
+  it(
+    "an agent-actor disposition write cannot mark the ticket done while its pipeline case is live " +
+      "(observed live: the finish_successful_run_handoff run flips a work-linked ticket while the case is held)",
+    async () => {
+      const company = await seedCompany();
+      const specifier = await seedSpecifier(company.id);
+      const pipeline = await seedSpecPipeline(company.id);
+      const seeded = await seedCaseWithWorkTicket(company.id, pipeline.id);
+
+      // Mid-flight, owned by the agent — the exact state APEX-14's ticket was
+      // in when handoff run c13a76bd wrote `done` at 05:55:23 (agent actor,
+      // `issue.successful_run_handoff_resolved` in the activity log) while
+      // the case sat held at `spec`.
+      await svc.transitionCase({
+        companyId: company.id,
+        caseId: seeded.case.id,
+        toStageKey: "spec",
+        expectedVersion: seeded.case.version,
+        actor: userActor,
+      });
+      await db
+        .update(issues)
+        .set({ assigneeAgentId: specifier.id, status: "in_progress" })
+        .where(eq(issues.id, seeded.issue.id));
+
+      // The second writer, in its real shape: the disposition write the
+      // handoff/liveness run performs through the ordinary agent-actor issue
+      // update the routes call. The live link topology is role `work` — a
+      // guard that only looks for `conversation` links never sees this issue.
       await issueService(db)
         .update(seeded.issue.id, { status: "done", actorAgentId: specifier.id })
         .catch(() => null);
@@ -340,9 +413,15 @@ describeEmbeddedPostgres("APEX-31 probe: agent step exit vs the ticket", () => {
         .where(eq(issues.id, seeded.issue.id));
       const after = await caseDetail(company.id, seeded.case.id);
 
+      // THE CONTRACT: the pipeline case is the single writer for "this work
+      // is finished". While the case is non-terminal, an agent-driven `done`
+      // on its ticket must be refused or left un-applied — whatever link role
+      // carries the relationship.
       expect(after.case.terminalKind).toBeNull();
-      expect(ticket!.status).not.toBe("done");
+      expect(ticket!.status, "ticket status after agent disposition write on a live case").not.toBe(
+        "done",
+      );
     },
-    60_000,
+    120_000,
   );
 });
