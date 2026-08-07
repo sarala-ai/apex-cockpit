@@ -765,6 +765,12 @@ export type FlowGateBrief =
   | { available: false; reason: string }
   | {
       available: true;
+      /** Which brief shape this is. A PIPELINE gate — every gate a seeded
+       *  lifecycle opens — is served by ./gate-brief.ts instead; this one
+       *  remains for approvals from before the collapse, whose payload carries
+       *  no case to read records from. One route, two shapes, discriminated
+       *  here rather than by the consumer sniffing fields. */
+      kind: "flow_gate";
       decision: DecisionSection;
       verified: VerifiedSection;
       artifact: PrDiffSummary;
@@ -916,6 +922,7 @@ export async function assembleFlowGateBrief(input: {
   const kind = titleCaseTicketType(ticketType ?? definition?.ticket_type ?? null);
   return {
     available: true,
+    kind: "flow_gate",
     decision: {
       headline: `Approve a ${kind}`,
       subject: issueTitle,
