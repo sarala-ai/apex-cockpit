@@ -41,6 +41,7 @@ import {
   type PipelineStageAutomation,
   PIPELINE_AUTOMATION_DEFAULT_TITLE_TEMPLATE,
   PIPELINE_CASE_BODY_DOCUMENT_KEY,
+  stageEntryStepRef,
   type RoutineVariable,
   type RoutineRevisionSnapshotV1,
 } from "@paperclipai/shared";
@@ -3398,7 +3399,12 @@ export function pipelineService(
     for (const { stage } of rows) {
       if (seenStageIds.has(stage.id)) continue;
       seenStageIds.add(stage.id);
-      if (stageAutomation(stage)) stages.push(stage);
+      // "Has this step got anything to re-run?", not "is this step a routine?".
+      // `stageAutomation` answers the second, so "Retry previous step…" only
+      // ever offered routine stages and silently skipped every `run` and
+      // `agent` step the case had actually been through — including, usually,
+      // the one that went wrong.
+      if (stageEntryStep(stage)) stages.push(stage);
     }
     return stages;
   }
@@ -3699,7 +3705,18 @@ export function pipelineService(
       actor: PipelineActor;
     },
   ): Promise<PipelineStageConfig> {
+    // "No assignee" means "this stage has no ROUTINE", and the only entry step
+    // that has an assignee is a routine — so this must clear a routine entry
+    // step and leave every other kind alone.
+    //
+    // It used to drop `onEnter` unconditionally, which meant any save routed
+    // through the legacy automation block silently deleted a `run` or `agent`
+    // step off the stage. Silently is the operative word: the accessors fail
+    // closed and return null, so the automation would not error, it would
+    // simply stop happening — the exact failure migration 0170 warned about
+    // when it rewrote the discriminator in the data.
     if (!input.assigneeAgentId) {
+      if (input.config.onEnter && input.config.onEnter.type !== "routine") return input.config;
       const { onEnter: _onEnter, ...rest } = input.config;
       return rest as PipelineStageConfig;
     }
@@ -6731,7 +6748,15 @@ export function pipelineService(
           scope: input.scope,
           targetStageId: input.targetStageId,
         });
-        if (!plan.allowed || !plan.targetStageRow || !plan.automationId || !plan.automationRoutineId) {
+        // `automationRoutineId` is deliberately NOT required. It is populated
+        // only for a routine step, so requiring it rejected every `run` and
+        // `agent` target here — after `buildAutomationRetryPlan` had already
+        // been taught all three kinds and had said the retry was allowed. The
+        // plan's own verdict (`allowed`) and the step's id are what this needs;
+        // whether that step happens to have a routine behind it is the
+        // enqueue's business, and `enqueueStageAutomationLedger` below already
+        // handles all three.
+        if (!plan.allowed || !plan.targetStageRow || !plan.automationId) {
           throw unprocessable("Pipeline automation retry is not currently allowed", {
             code: "automation_retry_not_allowed",
             blockers: plan.blockers,
@@ -7407,10 +7432,17 @@ export function pipelineService(
       const issuesById = new Map(issueRowsForEvents.map((issue) => [issue.id, issue]));
       const stagesByAutomationId = new Map<string, typeof pipelineStages.$inferSelect>();
       const stagesByRoutineId = new Map<string, typeof pipelineStages.$inferSelect>();
+      // Two maps, two questions. `stagesByAutomationId` resolves ANY entry
+      // step's execution back to its stage — a `run` and an `agent` write
+      // ledger rows exactly as a routine does, and keying this off
+      // `stageAutomation` meant their events showed no stage at all on the
+      // timeline. `stagesByRoutineId` is a genuinely routine-only lookup (the
+      // event carries a routineId) and stays that way.
       for (const stage of pipelineStageRows) {
+        const entry = stageEntryStepRef(stage.config, stage.id);
+        if (entry) stagesByAutomationId.set(entry.id, stage);
         const automation = stageAutomation(stage);
         if (!automation) continue;
-        stagesByAutomationId.set(automation.id, stage);
         stagesByRoutineId.set(automation.routineId, stage);
       }
       const items = pageRows.map((row) => {

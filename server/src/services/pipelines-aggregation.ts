@@ -11,6 +11,7 @@ import {
   pipelines,
   routines,
 } from "@paperclipai/db";
+import { stageEntryStepRef } from "@paperclipai/shared";
 import { notFound } from "../errors.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 
@@ -354,10 +355,13 @@ export async function listCompanyCaseEvents(
   const issuesById = new Map(issueRowsForEvents.map((issue) => [issue.id, issue]));
   const stagesByAutomationId = new Map<string, typeof pipelineStages.$inferSelect>();
   const stagesByRoutineId = new Map<string, typeof pipelineStages.$inferSelect>();
+  // See the same pair in services/pipelines.ts: the automation-id map must
+  // answer for every entry-step kind, the routine-id map only for routines.
   for (const stage of pipelineStageRows) {
+    const entry = stageEntryStepRef(stage.config, stage.id);
+    if (entry) stagesByAutomationId.set(entry.id, stage);
     const automation = stageAutomationFromConfig(stage);
     if (!automation) continue;
-    stagesByAutomationId.set(automation.id, stage);
     stagesByRoutineId.set(automation.routineId, stage);
   }
   const items = pageRows.map((row) => {

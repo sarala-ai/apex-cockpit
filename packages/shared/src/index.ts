@@ -41,6 +41,13 @@ export {
   type PipelineHealthWarningCode,
 } from "./pipeline-health.js";
 export {
+  stageEntryRoutineId,
+  stageEntryStepRef,
+  stageHasEntryStep,
+  type StageEntryStepKind,
+  type StageEntryStepRef,
+} from "./pipeline-stage-entry.js";
+export {
   caseTypeMatchesPipeline,
   deriveCaseType,
   type CaseTypePipelineRef,

@@ -66,6 +66,7 @@ import {
   PIPELINE_CASE_BODY_DOCUMENT_KEY,
   pipelineAutomationRetryRequestSchema,
   pipelineAutomationRetryScopeSchema,
+  stageEntryStepRef,
   type PipelineStageAutomation,
   type PipelineCaseLiveness,
   type PipelineHealthFailedAutomationInput,
@@ -2423,13 +2424,16 @@ async function getCaseDetail(db: Db, companyId: string, caseId: string) {
   };
 }
 
+/**
+ * The ledger id of this stage's entry step, whatever kind it is.
+ *
+ * Used to resolve an execution row back to the stage that produced it. Reading
+ * routines only meant a `run` or `agent` execution could never be matched to
+ * its stage, so the surface that reports where a case came from reported
+ * nothing about two thirds of the step kinds.
+ */
 function stageAutomationId(stage: typeof pipelineStages.$inferSelect) {
-  const config = stage.config && typeof stage.config === "object" && !Array.isArray(stage.config)
-    ? stage.config as PipelineStageConfig
-    : null;
-  const onEnter = config?.onEnter;
-  if (!onEnter || onEnter.type !== "routine" || !onEnter.routineId) return null;
-  return typeof onEnter.id === "string" ? onEnter.id : `${stage.id}:on_enter`;
+  return stageEntryStepRef(stage.config, stage.id)?.id ?? null;
 }
 
 async function loadBuiltFromAutomation(
@@ -2542,17 +2546,21 @@ function stageHasChildrenTerminalGate(config: unknown) {
     (typeof record.autoAdvanceOnChildrenTerminal === "string" && record.autoAdvanceOnChildrenTerminal.trim().length > 0);
 }
 
+/** Second spelling of the same question, kept only because two call sites
+ *  below read it; both now get the same three-kind answer. */
 function readStageAutomationId(stage: typeof pipelineStages.$inferSelect) {
-  if (!stage.config || typeof stage.config !== "object" || Array.isArray(stage.config)) return null;
-  const onEnterValue = (stage.config as Record<string, unknown>).onEnter;
-  if (!onEnterValue || typeof onEnterValue !== "object" || Array.isArray(onEnterValue)) return null;
-  const onEnter = onEnterValue as Record<string, unknown>;
-  const rawId = typeof onEnter.id === "string" ? onEnter.id.trim() : "";
-  const routineId = typeof onEnter.routineId === "string" ? onEnter.routineId.trim() : "";
-  if (onEnter.type !== "routine" || routineId.length === 0) return null;
-  return rawId.length > 0 ? rawId : `${stage.id}:on_enter`;
+  return stageEntryStepRef(stage.config, stage.id)?.id ?? null;
 }
 
+/**
+ * The pipeline a stage's entry step will WRITE INTO, when it declares one.
+ *
+ * This guards a cross-pipeline write: if a step breaks work down into another
+ * pipeline, the caller must have write access to that pipeline too. Gating it
+ * on "is this a routine?" meant a `run` or `agent` step with a breakdown
+ * target returned null here, the assertion below returned early, and the check
+ * was skipped — an authorization hole rather than a cosmetic one.
+ */
 function readStageAutomationTargetPipelineId(stage: typeof pipelineStages.$inferSelect) {
   if (!readStageAutomationId(stage)) return null;
   const breakdown = readStageBreakdownConfig(stage.config);
