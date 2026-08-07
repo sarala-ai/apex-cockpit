@@ -9,6 +9,7 @@ import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   MODEL_PROFILE_KEYS,
+  agentWritesRepositories,
   envBindingSchema,
   isEnvironmentDriverSupportedForAdapter,
   type BillingType,
@@ -1452,10 +1453,29 @@ export function assertRunDispatchPreconditions(input: {
     });
   };
 
-  // 1. No codebase. Scoped to issue-bound runs on adapters that exist to change
-  //    code: a run with no ticket has nowhere to report the refusal, and a
-  //    non-code adapter has no repo to miss.
-  if (input.issue && GIT_SENSITIVE_LOCAL_ADAPTER_TYPES.has(input.agent.adapterType)) {
+  // 1. No codebase. Scoped to issue-bound runs THAT WILL WRITE CODE — not to
+  //    runs on a coding adapter. Those are different questions, and the refusal
+  //    message states the sharper one ("none of the code it was asked to
+  //    change"). Adapter type alone refuses a read-only agent whose whole job is
+  //    reading several repositories' history rather than modifying one project's
+  //    checkout; it was never asked to change anything, so a missing project
+  //    workspace is not a missing precondition for it.
+  //
+  //    `agentWritesRepositories` reads the EFFECTIVE grant the run will launch
+  //    with (packages/shared), which is the same answer the composer preflight
+  //    gives before the ticket exists. It still returns true for a local coding
+  //    adapter carrying NO grant, because there absence means full bypass rather
+  //    than restriction — a misconfigured agent stays refused.
+  //
+  //    A run with no ticket is still exempt: there is nowhere to report the
+  //    refusal.
+  if (
+    input.issue &&
+    agentWritesRepositories({
+      adapterType: input.agent.adapterType,
+      adapterConfig: input.effectiveAdapterConfig,
+    })
+  ) {
     const hasRepoBinding = Boolean(readNonEmptyString(input.resolvedWorkspace.repoUrl));
     const hasProjectBinding = Boolean(
       readNonEmptyString(input.issue.projectId) ??

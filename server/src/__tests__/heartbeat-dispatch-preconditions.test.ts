@@ -188,6 +188,58 @@ describe("dispatch precondition: no codebase", () => {
     ).toEqual({ dangerouslySkipPermissions: false });
   });
 
+  it("dispatches a read-only agent with no project at all", () => {
+    // Product Assistant, on codex_local, with the `read-repos` grant: read-only
+    // native tools plus read-only VCS verbs, no bare Bash, no Write, no Edit.
+    // Its reconstruction routine reads several repositories' history and emits a
+    // proposal; it was never asked to change code, so a missing project
+    // workspace is not a missing precondition. Refusing it here is what left
+    // APEX-15 `blocked`.
+    expect(
+      assertRunDispatchPreconditions(
+        buildInput({
+          agent: { id: "agent-9", name: "Product Assistant", adapterType: "codex_local" },
+          issue: { id: "issue-15", identifier: "APEX-15", projectId: null },
+          effectiveAdapterConfig: {
+            dangerouslySkipPermissions: false,
+            allowedTools: "Read Grep Glob Bash(git log:*) Bash(gh pr view:*)",
+          },
+        }),
+      ),
+    ).toEqual({ dangerouslySkipPermissions: false });
+  });
+
+  it("still refuses a repo-writing agent with no codebase, with the same message", () => {
+    // The grant is what moved, not the guard. An agent whose grant carries a
+    // write verb gets the identical refusal it always got.
+    expect(() =>
+      assertRunDispatchPreconditions(
+        buildInput({
+          agent: { id: "agent-9", name: "Implementer", adapterType: "codex_local" },
+          effectiveAdapterConfig: {
+            dangerouslySkipPermissions: false,
+            allowedTools: "Read Grep Edit Write Bash",
+          },
+        }),
+      ),
+    ).toThrowError(
+      /Implementer has no codebase: assign this task to a project with a repository, or set a repo on the project\./,
+    );
+  });
+
+  it("still refuses a coding adapter that expresses no grant at all", () => {
+    // Absence is not restriction on these adapters — it is full bypass. The
+    // ungoverned agent is the most capable one, so it must stay refused.
+    expect(() =>
+      assertRunDispatchPreconditions(
+        buildInput({
+          agent: { id: "agent-9", name: "Implementer", adapterType: "codex_local" },
+          effectiveAdapterConfig: { dangerouslySkipPermissions: false },
+        }),
+      ),
+    ).toThrowError(/has no codebase/);
+  });
+
   it("does not refuse an adapter that is not a git-sensitive local coding agent", () => {
     expect(
       assertRunDispatchPreconditions(
