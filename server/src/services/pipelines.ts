@@ -4169,22 +4169,35 @@ export function pipelineService(
            * a correct guard, because a human reassigning a ticket must not
            * leave the previous owner's run to start behind their back.
            *
-           * A stage-declared agent has no assignment behind it: the resolver
-           * returns `autoAssigned: true` for a roster key, the payload records
-           * it, and nothing ever wrote it to the issue. So every lifecycle
-           * agent step queued a run for an agent the ticket did not belong to,
-           * and the heartbeat cancelled it seconds later. The case then sat at
-           * `waiting_agent` until the staleness sweep, with no comment and no
-           * visible owner — observed live on APEX-14 at the `spec` stage.
+           * The rule has TWO tiers, split by why the executor was chosen
+           * (`resolveStepExecutorAgent`):
            *
-           * The rule is the flow coordinator's, and it is deliberately narrow
-           * (see `resolveExecutorAgent`): FILL A VACUUM, NEVER RE-ROUTE. The
-           * `assigneeAgentId` column has a second writer — the per-issue
-           * execution policy reassigns it to the REVIEWER on a done-transition,
-           * excluding the executor so review stays independent. Overwriting a
-           * non-null assignee here would silently defeat that.
+           * DECLARED (the stage names a roster key): RE-ROUTE. The lifecycle's
+           * role assignment is a governance decision — the roster is cut by
+           * permission surface, and a feature ticket crossing spec→tasks MUST
+           * change hands from the Specifier to the Implementer. Filling only a
+           * vacuum here was APEX-34: the tasks stage resolved the Implementer,
+           * but the ticket still belonged to the Specifier from the previous
+           * stage, so `claimQueuedRun` cancelled every commissioned run
+           * (`issue_assignee_changed`) and recovery woke the Specifier — an
+           * agent with the wrong permission profile doing the stage's work.
+           * The reviewer reassignment the execution policy performs on a
+           * done-transition is not defeated by this: a declared step OWNS its
+           * executor by construction, and steps that declare nothing never
+           * reach this write at all.
+           *
+           * SOLE-ASSIGNABLE FALLBACK: FILL A VACUUM, NEVER RE-ROUTE. That
+           * branch is only reached when the assignee was null at resolution,
+           * and the null guard keeps a human's concurrent reassignment from
+           * being silently undone — observed live on APEX-14 at the `spec`
+           * stage when nothing wrote the assignee at all.
            */
-          if (input.agentAutoAssigned) {
+          if (executorAgentId.declared) {
+            await db
+              .update(issues)
+              .set({ assigneeAgentId: input.agentId, updatedAt: nowDate() })
+              .where(eq(issues.id, issueId));
+          } else if (input.agentAutoAssigned) {
             await db
               .update(issues)
               .set({ assigneeAgentId: input.agentId, updatedAt: nowDate() })
@@ -4379,11 +4392,23 @@ export function pipelineService(
   async function resolveStepExecutorAgent(
     detail: Awaited<ReturnType<typeof getCaseWithStageOrThrow>>,
     issue: typeof issues.$inferSelect,
-  ): Promise<{ ok: true; agentId: string; autoAssigned: boolean } | { ok: false; message: string }> {
+  ): Promise<
+    | {
+        ok: true;
+        agentId: string;
+        autoAssigned: boolean;
+        /** True ONLY for (1): the step named its executor. A declared executor
+         *  RE-ROUTES the ticket at commission time (APEX-34); the other
+         *  auto-assigned path — the sole-assignable fallback — only ever fills
+         *  a null assignee. */
+        declared: boolean;
+      }
+    | { ok: false; message: string }
+  > {
     const declaredKey = stageAgentStep(detail.stage)?.agentKey ?? null;
     if (declaredKey) {
       const declared = await findBuiltInAgentByKey(detail.case.companyId, declaredKey);
-      if (declared) return { ok: true, agentId: declared, autoAssigned: true };
+      if (declared) return { ok: true, agentId: declared, autoAssigned: true, declared: true };
       return {
         ok: false,
         message:
@@ -4393,14 +4418,18 @@ export function pipelineService(
       };
     }
     const sticky = detail.case.stepExecutorAgentId;
-    if (sticky) return { ok: true, agentId: sticky, autoAssigned: false };
-    if (issue.assigneeAgentId) return { ok: true, agentId: issue.assigneeAgentId, autoAssigned: false };
+    if (sticky) return { ok: true, agentId: sticky, autoAssigned: false, declared: false };
+    if (issue.assigneeAgentId) {
+      return { ok: true, agentId: issue.assigneeAgentId, autoAssigned: false, declared: false };
+    }
     const assignable = await db
       .select({ id: agents.id })
       .from(agents)
       .where(and(eq(agents.companyId, detail.case.companyId), ne(agents.status, "archived")))
       .limit(2);
-    if (assignable.length === 1) return { ok: true, agentId: assignable[0]!.id, autoAssigned: true };
+    if (assignable.length === 1) {
+      return { ok: true, agentId: assignable[0]!.id, autoAssigned: true, declared: false };
+    }
     return {
       ok: false,
       message:
