@@ -38,6 +38,8 @@ export interface ProjectWorkspace {
   visibility: ProjectWorkspaceVisibility;
   setupCommand: string | null;
   cleanupCommand: string | null;
+  checkCommand: string | null;
+  deployWorkflow: string | null;
   remoteProvider: string | null;
   remoteWorkspaceRef: string | null;
   sharedWorkspaceKey: string | null;

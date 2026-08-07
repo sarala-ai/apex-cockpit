@@ -451,9 +451,18 @@ export type NextSection = {
 function describeNode(node: ProcessStep): string {
   if (node.kind === "run" && node.run) {
     const target = node.run.target;
-    return target.type === "workflow"
-      ? `workflow \`${target.workflow}\` runs`
-      : `the automatic check \`${target.tool}\` runs`;
+    switch (target.type) {
+      case "workflow":
+        return `workflow \`${target.workflow}\` runs`;
+      case "contract":
+        return target.contract === "checks_pass"
+          ? "the project's declared check command runs"
+          : "the project's declared deploy workflow runs";
+      case "shell":
+        return `the project's check command \`${target.command}\` runs`;
+      default:
+        return `the automatic check \`${target.tool}\` runs`;
+    }
   }
   if (node.kind === "agent") {
     return `a bounded agent step (\`${node.id}\`) is commissioned`;

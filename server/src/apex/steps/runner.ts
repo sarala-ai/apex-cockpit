@@ -62,6 +62,13 @@ export type NodeExecutionResult =
 export interface StepTargetRunner {
   runWorkflow(config: { workflow: string; params: Record<string, unknown> }): Promise<NodeExecutionResult>;
   runCommand(config: { tool: string; args: string[] }): Promise<NodeExecutionResult>;
+  /** A project-declared check command, run in that project's workspace. Only
+   *  ever reached through contract resolution (contract-targets.ts) — the
+   *  command string comes from `project_workspaces.check_command`, the same
+   *  trust surface as the workspace's `setup_command`, never from a stage an
+   *  operator typed a tool into. Exit 0 is the whole verdict: there is no CLI
+   *  envelope here, just the project's own suite meaning what it says. */
+  runShell(config: { command: string; cwd?: string | null }): Promise<NodeExecutionResult>;
 }
 
 /** Tracing identifiers forwarded into each CLI child's environment so
@@ -123,6 +130,35 @@ export class CliStepTargetRunner implements StepTargetRunner {
     // A command step must be REAL to mean anything: opt this invocation into
     // apply so the tool executes instead of returning a dry-run simulation.
     return this.execute(args, `command ${server} ${tool}`, { APEX_EXECUTION_MODE: "apply" });
+  }
+
+  async runShell(config: { command: string; cwd?: string | null }): Promise<NodeExecutionResult> {
+    const command = config.command.trim();
+    if (!command) {
+      return { ok: false, errorType: "check_command_empty", message: "the resolved check command is empty" };
+    }
+    const cwd = config.cwd?.trim();
+    if (!cwd) {
+      return {
+        ok: false,
+        errorType: "check_workspace_has_no_local_path",
+        message: "the project workspace declares a check command but no local path to run it in",
+      };
+    }
+    const res = await run("bash", ["-lc", command], this.checkTimeoutMs, cwd, this.contextEnv());
+    if (res.status === "missing") {
+      return { ok: false, errorType: "check_command_failed", message: "bash not found on host" };
+    }
+    if (res.status === "failed") {
+      return {
+        ok: false,
+        errorType: "check_command_failed",
+        message:
+          `check command ${JSON.stringify(command)} exited with code ${res.code}: ` +
+          `${(res.stderr || res.stdout).slice(0, 500)}`,
+      };
+    }
+    return { ok: true, detail: { command, exit_code: 0 } };
   }
 
   private contextEnv(): NodeJS.ProcessEnv {

@@ -106,18 +106,32 @@ import {
   apexAgentPermissionProfile,
   type ApexAgentKey,
 } from "../../services/apex-agent-roster.js";
+import type { RunContract } from "./contract-targets.js";
 
-/** One YAML flow node, in the shape apex-core's flow YAML already used. */
+/** One YAML flow node, in the shape apex-core's flow YAML already used —
+ *  except where APEX-38 replaced a hardcoded tool with a CONTRACT.
+ *
+ *  A `check` node may name a concrete `{tool, args}` (the YAML shape) or a
+ *  `{contract: "checks_pass"}`; a `workflow` node may name a concrete
+ *  `{workflow, params}` or a `{contract: "deployed"}`. A contract target
+ *  resolves at DISPATCH time from the pipeline's project workspace config
+ *  (`checkCommand` / `deployWorkflow` — see ./contract-targets.ts), because
+ *  the tool is a fact about the PROJECT's stack, not about the process: the
+ *  seeded `pytest tests/unit` and `cloud_run_deploy` were wrong for every
+ *  non-Python, non-Cloud-Run project, and a case failed its checks on tool
+ *  mismatch rather than on the work. */
 type LifecycleNode =
   | {
       id: string;
       kind: "workflow";
-      workflow: { workflow: string; params: Record<string, unknown> };
+      workflow: { workflow: string; params: Record<string, unknown> } | { contract: RunContract };
     }
   | {
       id: string;
       kind: "check";
-      check: { tool: string; args: string[]; pass_criteria: string };
+      check:
+        | { tool: string; args: string[]; pass_criteria: string }
+        | { contract: RunContract; pass_criteria: string };
     }
   | {
       id: string;
@@ -220,7 +234,10 @@ function buildStagesAndTransitions(nodes: LifecycleNode[]): {
         config: {
           onEnter: {
             type: "run",
-            target: { type: "workflow", workflow: node.workflow.workflow, params: node.workflow.params },
+            target:
+              "contract" in node.workflow
+                ? { type: "contract", contract: node.workflow.contract }
+                : { type: "workflow", workflow: node.workflow.workflow, params: node.workflow.params },
             onSuccessToStageKey: next,
             // on_fail: pause -> no onFailureToStageKey. See file header.
           } as unknown as PipelineStageConfig["onEnter"],
@@ -238,7 +255,10 @@ function buildStagesAndTransitions(nodes: LifecycleNode[]): {
         config: {
           onEnter: {
             type: "run",
-            target: { type: "command", tool: node.check.tool, args: node.check.args },
+            target:
+              "contract" in node.check
+                ? { type: "contract", contract: node.check.contract }
+                : { type: "command", tool: node.check.tool, args: node.check.args },
             onSuccessToStageKey: next,
           } as unknown as PipelineStageConfig["onEnter"],
           acceptance: acceptanceFor(node.check.pass_criteria),
@@ -311,7 +331,10 @@ function buildStagesAndTransitions(nodes: LifecycleNode[]): {
 }
 
 // ---------------------------------------------------------------------------
-// The four lifecycles, transcribed VERBATIM from apex/core/flows/*.yml.
+// The four lifecycles, transcribed VERBATIM from apex/core/flows/*.yml —
+// with ONE deliberate departure (APEX-38): the check/deploy nodes that
+// hardcoded `pytest` / `cloud_run_deploy` now declare contracts instead;
+// each is marked inline where it happens.
 // Prompt templates, acceptance strings, gate prompts, tool args, and
 // pass_criteria are copied exactly, including `{{identifier}}` / `{{title}}`
 // / `{{acceptance}}` tokens — those are interpolated downstream by whatever
@@ -353,7 +376,9 @@ const BUG_NODES: LifecycleNode[] = [
   {
     id: "tests",
     kind: "check",
-    check: { tool: "pytest", args: ["tests/unit", "-q"], pass_criteria: "exit_code == 0" },
+    // Formerly `pytest tests/unit -q`, hardcoded (APEX-38). The contract is
+    // "checks pass"; WHICH suite proves it is the project's own declaration.
+    check: { contract: "checks_pass", pass_criteria: "exit_code == 0" },
   },
   {
     id: "diff_review",
@@ -364,7 +389,9 @@ const BUG_NODES: LifecycleNode[] = [
       requires: ["system_compatibility"],
     },
   },
-  { id: "deploy", kind: "workflow", workflow: { workflow: "cloud_run_deploy", params: {} } },
+  // Formerly the `cloud_run_deploy` workflow, hardcoded (APEX-38). A project
+  // that declares no deploy workflow HOLDS here with an honest message.
+  { id: "deploy", kind: "workflow", workflow: { contract: "deployed" } },
 ];
 
 const DESIGN_CHANGE_NODES: LifecycleNode[] = [
@@ -459,9 +486,10 @@ const FEATURE_NODES: LifecycleNode[] = [
   {
     id: "task_checks",
     kind: "check",
+    // Formerly `pytest tests/unit -q`, hardcoded (APEX-38) — a feature ticket
+    // on a Node project failed checks on tool mismatch, not on the work.
     check: {
-      tool: "pytest",
-      args: ["tests/unit", "-q"],
+      contract: "checks_pass",
       pass_criteria: "exit_code == 0 for every task's diff",
     },
   },
@@ -475,7 +503,8 @@ const FEATURE_NODES: LifecycleNode[] = [
       requires: ["naming"],
     },
   },
-  { id: "deploy", kind: "workflow", workflow: { workflow: "cloud_run_deploy", params: {} } },
+  // Formerly the `cloud_run_deploy` workflow, hardcoded (APEX-38).
+  { id: "deploy", kind: "workflow", workflow: { contract: "deployed" } },
 ];
 
 function lifecycle(input: {

@@ -88,7 +88,14 @@ export type StepFailure = { errorType: string; message: string };
  *  step kind. */
 export type RunTarget =
   | { type: "workflow"; workflow: string; params?: Record<string, unknown> }
-  | { type: "command"; tool: string; args?: string[] };
+  | { type: "command"; tool: string; args?: string[] }
+  /** A project-declared shell command run in that project's workspace — the
+   *  RESOLVED form of a `checks_pass` contract target. Never authored on a
+   *  stage directly: it exists only as the output of contract resolution
+   *  (server/src/apex/pipeline/contract-targets.ts), so the command always
+   *  comes from project workspace config, the same trust surface as a
+   *  workspace's `setupCommand`. */
+  | { type: "shell"; command: string; cwd?: string | null };
 
 export type RunStepConfig = { target: RunTarget };
 export type AgentStepConfig = {
@@ -241,17 +248,26 @@ export function stepExecutor(ports: StepExecutorPorts) {
             workflow: target.workflow,
             params: renderParams(target.params ?? {}, render),
           })
-        : await ports.runner.runCommand({
-            tool: target.tool,
-            args: (target.args ?? []).map((arg) => render(arg)),
-          });
+        : target.type === "shell"
+          ? await ports.runner.runShell({
+              command: render(target.command),
+              cwd: target.cwd ?? null,
+            })
+          : await ports.runner.runCommand({
+              tool: target.tool,
+              args: (target.args ?? []).map((arg) => render(arg)),
+            });
     return result.ok
       ? {
           status: "succeeded",
           detail: {
             kind: "run",
             target: target.type,
-            ...(target.type === "workflow" ? { workflow: target.workflow } : { tool: target.tool }),
+            ...(target.type === "workflow"
+              ? { workflow: target.workflow }
+              : target.type === "shell"
+                ? { command: target.command }
+                : { tool: target.tool }),
             ...result.detail,
           },
         }

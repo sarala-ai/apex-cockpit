@@ -75,6 +75,7 @@ describeEmbeddedPostgres("pipeline stage step config — the run step and its ac
         commandCalls.push(config.tool);
         return result;
       },
+      runShell: async () => result,
     };
     return { runner, workflowCalls, commandCalls };
   }
@@ -398,6 +399,7 @@ describeEmbeddedPostgres("pipeline stage step config — the run step and its ac
         ? { ok: true, detail: {} }
         : { ok: false, errorType: "workflow_failed", message: "step 2 failed" }),
       runCommand: async () => ({ ok: true, detail: {} }),
+      runShell: async () => ({ ok: true, detail: {} }),
     };
     const svc = serviceWith(runner);
     const { company, pipeline, byKey } = await seedPipeline(svc);

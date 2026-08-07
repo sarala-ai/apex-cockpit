@@ -23,6 +23,10 @@ function runnerStub(
       calls.push(`command:${config.tool}`);
       return ok;
     },
+    runShell: async (config) => {
+      calls.push(`shell:${config.command}`);
+      return ok;
+    },
     ...overrides,
   } as StepTargetRunner & { calls: string[] };
 }
