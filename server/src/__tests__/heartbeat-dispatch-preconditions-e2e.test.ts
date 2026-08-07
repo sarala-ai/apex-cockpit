@@ -209,8 +209,11 @@ describeEmbeddedPostgres("dispatch preconditions (end to end)", () => {
   }
 
   it("refuses a task with no project, and says so on the ticket", async () => {
+    // A grant that WRITES: since the precondition is scoped by
+    // agentWritesRepositories, a read-only grant no longer trips it (that is
+    // the fix), so the refusal case must be an agent that would change code.
     const { issueId, runId } = await seedDispatch({
-      adapterConfig: { dangerouslySkipPermissions: false, allowedTools: "Read,Grep" },
+      adapterConfig: { dangerouslySkipPermissions: false, allowedTools: "Read Grep Edit Write Bash" },
     });
 
     const run = await runAndSettle(runId);
@@ -232,6 +235,32 @@ describeEmbeddedPostgres("dispatch preconditions (end to end)", () => {
     const commentText = await waitForCommentContaining(issueId, "no codebase was bound to it");
     expect(commentText).toContain("no codebase was bound to it");
     expect(commentText).toContain("Recovery action:");
+  }, 120_000);
+
+  it("dispatches a read-only agent with no project past the codebase precondition", async () => {
+    // The APEX-15 shape: an agent whose effective grant carries no write verb
+    // (Product Assistant's read-repos profile) assigned a ticket with no
+    // project. It reads history, it was never asked to change code, so the
+    // no-codebase refusal must not fire. Run through the real path so this
+    // also proves the effective adapter config carries the grant at the guard.
+    const { issueId, runId } = await seedDispatch({
+      adapterConfig: {
+        dangerouslySkipPermissions: false,
+        allowedTools: "Read Grep Glob Bash(git log:*) Bash(gh pr view:*)",
+      },
+    });
+
+    const run = await runAndSettle(runId);
+
+    expect(run?.errorCode).not.toBe("configuration_incomplete");
+    expect(run?.error ?? "").not.toContain("has no codebase");
+    // And the ticket was not escalated to blocked by a precondition refusal.
+    const issueStatus = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]?.status ?? null);
+    expect(issueStatus).not.toBe("blocked");
   }, 120_000);
 
   it("refuses a run whose config carries no permission decision, even with a codebase", async () => {

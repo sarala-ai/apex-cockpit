@@ -67,9 +67,16 @@ export const REPO_CAPABLE_LOCAL_ADAPTER_TYPES: readonly string[] = [
  */
 const REPO_WRITE_TOOL_NAMES = ["Write", "Edit", "NotebookEdit", "Bash"];
 
-/** Whether an `--allowedTools` grant string permits changing files. */
+/** Whether an `--allowedTools` grant string permits changing files.
+ *
+ * Tokenized on whitespace AND commas: the adapter passes the string verbatim
+ * to `--allowedTools`, and the CLI accepts both separators. Splitting on
+ * whitespace alone would read `"Read,Grep,Edit"` as one unrecognized token
+ * and call a writing grant read-only — a fail-open, so both forms are split.
+ * Scoped tokens like `Bash(git log:*)` contain neither a bare comma-separated
+ * `Bash` nor survive as one token, and correctly stay non-write either way. */
 export function allowedToolsGrantRepositoryWrite(allowedTools: string): boolean {
-  const tokens = allowedTools.split(/\s+/).filter((token) => token.length > 0);
+  const tokens = allowedTools.split(/[\s,]+/).filter((token) => token.length > 0);
   return tokens.some((token) => REPO_WRITE_TOOL_NAMES.includes(token));
 }
 

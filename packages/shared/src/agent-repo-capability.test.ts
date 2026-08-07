@@ -35,6 +35,14 @@ describe("allowedToolsGrantRepositoryWrite", () => {
   it("says yes for a bare Bash token, which is a shell", () => {
     expect(allowedToolsGrantRepositoryWrite("Read Glob Bash")).toBe(true);
   });
+
+  it("recognizes a comma-separated grant — the CLI accepts both separators", () => {
+    // The adapter passes the string verbatim to --allowedTools, and the CLI
+    // splits on commas as well as spaces. Reading "Read,Grep,Edit" as one
+    // unrecognized token would call a writing grant read-only — fail-open.
+    expect(allowedToolsGrantRepositoryWrite("Read,Grep,Edit")).toBe(true);
+    expect(allowedToolsGrantRepositoryWrite("Read,Grep")).toBe(false);
+  });
 });
 
 describe("agentWritesRepositories", () => {
