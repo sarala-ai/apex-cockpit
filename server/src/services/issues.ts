@@ -34,6 +34,8 @@ import {
   projectWorkspaces,
   projects,
   workspaceOperations,
+  pipelineCaseIssueLinks,
+  pipelineCases,
 } from "@paperclipai/db";
 import type {
   AcceptedPlanDecomposition,
@@ -6228,6 +6230,38 @@ export function issueService(db: Db) {
 
       if (issueData.status) {
         assertTransition(existing.status, issueData.status);
+      }
+
+      // The pipeline case is the single writer for "this work is finished".
+      // An agent-driven terminal write on a ticket that belongs to a LIVE
+      // (non-terminal) case must be refused, whatever link role carries the
+      // relationship: the live lifecycles link the ticket as the case's WORK
+      // item, not its conversation (verified in the instance DB — APEX-14 and
+      // APEX-27 both carry role `work` and no `conversation` link exists), so
+      // a conversation-only guard never fires on the live topology. Only
+      // `origin`/`automation` links are exempt — those record provenance, not
+      // ownership. Observed live: the finish_successful_run_handoff run flips
+      // a work-linked ticket `done` while the case is held mid-pipeline
+      // (APEX-31, APEX-14 Aug 7).
+      if (issueData.status && (issueData.status === "done" || issueData.status === "cancelled") && actorAgentId) {
+        const liveLink = await dbOrTx
+          .select({ caseId: pipelineCaseIssueLinks.caseId, terminalKind: pipelineCases.terminalKind })
+          .from(pipelineCaseIssueLinks)
+          .innerJoin(pipelineCases, eq(pipelineCaseIssueLinks.caseId, pipelineCases.id))
+          .where(
+            and(
+              eq(pipelineCaseIssueLinks.issueId, id),
+              inArray(pipelineCaseIssueLinks.role, ["conversation", "work"]),
+              isNull(pipelineCases.terminalKind),
+            ),
+          )
+          .then((rows: Array<{ caseId: string; terminalKind: string | null }>) => rows[0] ?? null);
+        if (liveLink) {
+          throw unprocessable(
+            "This ticket belongs to a live pipeline case; the case is the single writer for terminal status — wait for the pipeline to complete",
+            { caseId: liveLink.caseId },
+          );
+        }
       }
 
       const patch: Partial<typeof issues.$inferInsert> = {
