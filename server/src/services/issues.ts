@@ -34,6 +34,8 @@ import {
   projectWorkspaces,
   projects,
   workspaceOperations,
+  pipelineCaseIssueLinks,
+  pipelineCases,
 } from "@paperclipai/db";
 import type {
   AcceptedPlanDecomposition,
@@ -6228,6 +6230,33 @@ export function issueService(db: Db) {
 
       if (issueData.status) {
         assertTransition(existing.status, issueData.status);
+      }
+
+      // The pipeline case is the single writer for "this work is finished".
+      // An agent-driven terminal write on a conversation issue that belongs to
+      // a live (non-terminal) case must be refused — the case side already
+      // carries the hold and will advance the ticket when acceptance is met.
+      // Observed live: liveness/handoff runs mark the ticket `done` while the
+      // case is held mid-pipeline (APEX-31, APEX-14 Aug 7).
+      if (issueData.status && (issueData.status === "done" || issueData.status === "cancelled") && actorAgentId) {
+        const liveLink = await dbOrTx
+          .select({ caseId: pipelineCaseIssueLinks.caseId, terminalKind: pipelineCases.terminalKind })
+          .from(pipelineCaseIssueLinks)
+          .innerJoin(pipelineCases, eq(pipelineCaseIssueLinks.caseId, pipelineCases.id))
+          .where(
+            and(
+              eq(pipelineCaseIssueLinks.issueId, id),
+              eq(pipelineCaseIssueLinks.role, "conversation"),
+              isNull(pipelineCases.terminalKind),
+            ),
+          )
+          .then((rows: Array<{ caseId: string; terminalKind: string | null }>) => rows[0] ?? null);
+        if (liveLink) {
+          throw unprocessable(
+            "This ticket is the conversation of a live pipeline case; the case is the single writer for terminal status — wait for the pipeline to complete",
+            { caseId: liveLink.caseId },
+          );
+        }
       }
 
       const patch: Partial<typeof issues.$inferInsert> = {

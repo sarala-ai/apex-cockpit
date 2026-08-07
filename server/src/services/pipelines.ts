@@ -4516,6 +4516,13 @@ export function pipelineService(
       return true;
     }
 
+    // A successful rerun supersedes any prior failure hold on this stage.
+    // Without this clear, the stale hold from the cancelled run blocks the
+    // exit transition every time (`assertStageTransitionGates` throws
+    // `stage_held`), producing immortal nested "Pipeline stage is held: ..."
+    // messages — observed live on APEX-14. Mirrors the `run` kind at ~4005.
+    await clearStepHold(companyId, caseId, detail.stage, { reason: "run_exit_success" });
+
     // The run succeeded. Now the SERVER looks.
     const verdict = await evaluateStageAcceptance({ companyId, caseId, actor });
     if (verdict.status === "held") {
