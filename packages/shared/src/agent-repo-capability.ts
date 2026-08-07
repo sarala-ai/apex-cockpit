@@ -39,8 +39,12 @@
  * Local coding adapters — the ones that launch a model inside a working
  * directory and can change what is in it. Kept in sync with
  * GIT_SENSITIVE_LOCAL_ADAPTER_TYPES in server/src/services/heartbeat.ts, which
- * is the set the dispatch precondition itself is scoped to; an adapter absent
- * from both has no checkout to miss.
+ * scopes the workspace-validation and push-capability checks (both about the
+ * checkout an adapter operates in); an adapter absent from both has no checkout
+ * to miss. The no-codebase dispatch precondition is scoped by THIS function
+ * instead, because "will this run write code?" is a narrower question than "is
+ * this a coding adapter?" — a read-only agent on a coding adapter needs
+ * repositories readable, not a project workspace to modify.
  */
 export const REPO_CAPABLE_LOCAL_ADAPTER_TYPES: readonly string[] = [
   "claude_local",
