@@ -54,6 +54,7 @@ import {
   type AttentionCaller,
 } from "../services/pipelines-aggregation.js";
 import { shapeStepHold } from "../apex/pipeline/step-hold.js";
+import { openGateApprovalIdsForCases } from "../apex/pipeline/gate-brief-facts.js";
 import { accessService } from "../services/access.js";
 import { authorizationService } from "../services/authorization.js";
 import { issueService } from "../services/issues.js";
@@ -2421,6 +2422,19 @@ async function getCaseDetail(db: Db, companyId: string, caseId: string) {
     builtFromAutomation,
     parentCase,
     pendingSuggestion: row.case.pendingSuggestion,
+    /**
+     * The OPEN decision's approval id, when this item is sitting at one.
+     *
+     * The item page's review panel used to offer three buttons and the stage
+     * name, with nothing about what was being decided. The DECISION BRIEF is
+     * served by approval id, and this is how the panel gets one — read the
+     * same way the ticket reads it, so the two surfaces cannot show two
+     * different briefs for the same decision.
+     */
+    gateApprovalId:
+      row.stage.kind === "review" && row.case.terminalKind === null
+        ? (await openGateApprovalIdsForCases(db, companyId, [caseId])).get(caseId) ?? null
+        : null,
   };
 }
 

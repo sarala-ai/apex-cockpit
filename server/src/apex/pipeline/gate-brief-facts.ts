@@ -21,9 +21,10 @@
  * reviewer with a partial brief can still decide; a reviewer with a 500
  * cannot.
  */
-import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import {
   agents,
+  approvals,
   documents,
   issueComments,
   issueDocuments,
@@ -152,6 +153,48 @@ function pullRequestFromAcceptance(
 function pullRequestUrlFromEvaluation(evaluation: string | null): string | null {
   const match = /(https:\/\/github\.com\/\S+?\/pull\/\d+)/.exec(evaluation ?? "");
   return match?.[1] ?? null;
+}
+
+/**
+ * The OPEN decision on each of these pieces of work, by id.
+ *
+ * Both surfaces that show a gate — the ticket and the item page — need this
+ * for the same reason: the brief is served by approval id, and neither
+ * surface knew one. They read it through this function rather than each
+ * writing the query, because "which approval is this decision" answered two
+ * ways is how the ticket and the item page start showing two different
+ * briefs for one decision.
+ *
+ * Both spellings a gate approval has ever had are matched (`flow_gate` from a
+ * stage gate, `pipeline_gate` from the review-stage bridge) — a decision is a
+ * decision regardless of which opened it.
+ */
+export async function openGateApprovalIdsForCases(
+  db: Db,
+  companyId: string,
+  caseIds: string[],
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (caseIds.length === 0) return out;
+  const rows = await db
+    .select({ id: approvals.id, payload: approvals.payload, createdAt: approvals.createdAt })
+    .from(approvals)
+    .where(
+      and(
+        eq(approvals.companyId, companyId),
+        inArray(approvals.type, ["flow_gate", "pipeline_gate"]),
+        or(eq(approvals.status, "pending"), eq(approvals.status, "revision_requested")),
+        sql`${approvals.payload} ->> 'caseId' = any(${caseIds})`,
+      ),
+    )
+    .orderBy(asc(approvals.createdAt));
+  for (const row of rows) {
+    const caseId = trimmed((row.payload as Record<string, unknown> | null)?.caseId);
+    // Newest wins: a re-opened decision supersedes one left pending by an
+    // earlier visit to the same step.
+    if (caseId) out.set(caseId, row.id);
+  }
+  return out;
 }
 
 export type GateBriefFactsInput = {

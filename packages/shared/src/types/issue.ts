@@ -732,6 +732,11 @@ export interface IssueLinkedCase {
     /** Stage key → the name that pipeline gave it, so a decision reads the
      *  same on the ticket as it does on the board. */
     stageNames: Record<string, string>;
+    /** The open approval this decision was recorded under, which is how the
+     *  DECISION BRIEF is fetched (GET /approvals/:id/brief). Null means the
+     *  ticket can still take the decision, just without the artifact behind
+     *  it — a gap the surface states rather than hides. */
+    approvalId: string | null;
   } | null;
   /**
    * Set when the step this ticket is sitting on STOPPED and the process will

@@ -39,6 +39,23 @@ function configString(config: Record<string, unknown> | null | undefined, key: s
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+/**
+ * The question a review stage asks, in the words whoever built the process
+ * wrote. Null when it declared none — the surface then says nothing rather
+ * than inventing a question that was never asked.
+ *
+ * Only ever a FALLBACK now: the decision brief carries the same question
+ * alongside the artifact it is about. This is what a person sees when no
+ * brief can be had, which is the state the product was in before the brief
+ * existed — reached deliberately instead of by an empty render.
+ */
+export function reviewStageQuestion(stage: Pick<PipelineStage, "config">): string | null {
+  const gate = (stage.config as Record<string, unknown> | null | undefined)?.gate;
+  if (!gate || typeof gate !== "object" || Array.isArray(gate)) return null;
+  const prompt = (gate as Record<string, unknown>).prompt;
+  return typeof prompt === "string" && prompt.trim().length > 0 ? prompt.trim() : null;
+}
+
 function stageKeyForKind(stages: PipelineStage[], kind: string) {
   return stages.find((stage) => stage.kind === kind)?.key ?? stages.find((stage) => stage.key === kind)?.key ?? null;
 }

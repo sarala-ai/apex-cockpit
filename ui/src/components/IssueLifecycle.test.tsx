@@ -106,7 +106,7 @@ describe("a ticket whose process is working", () => {
 
 describe("a ticket parked at a human gate", () => {
   const parked = {
-    linkedCases: [linkedCase({ review: { question: GATE_CONFIG.gate.prompt, config: GATE_CONFIG, stageNames: STAGE_NAMES } })],
+    linkedCases: [linkedCase({ review: { question: GATE_CONFIG.gate.prompt, config: GATE_CONFIG, stageNames: STAGE_NAMES, approvalId: null } })],
   };
 
   it("states the decision, the question the process asked, and who may answer", () => {
@@ -117,7 +117,11 @@ describe("a ticket parked at a human gate", () => {
     expect(gate!.textContent).toContain("Waiting for a decision before this goes any further");
     expect(gate!.textContent).toContain("The Feature process has stopped at Promote.");
     expect(gate!.textContent).toContain("Anyone on the board can decide this.");
-    expect(container.querySelector('[data-testid="issue-lifecycle-gate-question"]')?.textContent)
+    // No open approval on this fixture, so the DECISION BRIEF cannot be
+    // fetched and the gate falls back to the question the process asked —
+    // the state the ticket was in before the brief existed. Thinner, not
+    // broken: the decision is still stated and still answerable.
+    expect(container.querySelector('[data-testid="gate-brief-fallback"]')?.textContent)
       .toBe("Gate 1: Promote — is it worth doing. Seconds.");
   });
 
@@ -142,6 +146,7 @@ describe("a ticket parked at a human gate", () => {
                 question: null,
                 config: { ...GATE_CONFIG, requestChangesToStageKey: "spec" },
                 stageNames: STAGE_NAMES,
+                approvalId: null,
               },
             }),
           ],
@@ -209,7 +214,7 @@ describe("a ticket parked at a human gate", () => {
   it("keeps saying a decision is pending even when the stage config was too broken to derive buttons", () => {
     render(
       <IssueLifecycle
-        issue={{ linkedCases: [linkedCase({ review: { question: "Worth doing?", config: {}, stageNames: {} } })] }}
+        issue={{ linkedCases: [linkedCase({ review: { question: "Worth doing?", config: {}, stageNames: {}, approvalId: null } })] }}
         onDecide={() => {}}
       />,
     );
@@ -270,7 +275,7 @@ describe("a ticket whose step has stopped", () => {
         issue={{
           linkedCases: [linkedCase({
             hold: HOLD,
-            review: { question: GATE_CONFIG.gate.prompt, config: GATE_CONFIG, stageNames: STAGE_NAMES },
+            review: { question: GATE_CONFIG.gate.prompt, config: GATE_CONFIG, stageNames: STAGE_NAMES, approvalId: null },
           })],
         }}
       />,

@@ -196,6 +196,7 @@ import {
   shapeIssueLinkedCase,
   shouldLoadStepHold,
 } from "../apex/pipeline/issue-lifecycle.js";
+import { openGateApprovalIdsForCases } from "../apex/pipeline/gate-brief-facts.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -290,10 +291,21 @@ async function listIssueLinkedCases(db: Db, companyId: string, issueId: string) 
     if (hold) holdsByCaseId.set(row.case.id, hold);
   }));
 
+  // The OPEN decision's approval id, for the same links whose stage names
+  // were just loaded — and paid for on the same rare tickets, for the same
+  // reason. Without it the ticket can show a gate and nothing to decide it on.
+  const awaitingCaseIds = rows
+    .filter((row) => isAwaitingHumanDecision(row.case, row.stage))
+    .map((row) => row.case.id);
+  const gateApprovalIds = awaitingCaseIds.length > 0
+    ? await openGateApprovalIdsForCases(db, companyId, awaitingCaseIds)
+    : new Map<string, string>();
+
   return rows.map((row) =>
     shapeIssueLinkedCase({
       ...row,
       stageNames: stageNamesByPipeline.get(row.pipeline.id),
+      gateApprovalId: gateApprovalIds.get(row.case.id) ?? null,
       hold: holdsByCaseId.get(row.case.id) ?? null,
     })
   );
