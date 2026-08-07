@@ -1260,6 +1260,7 @@ export const storybookSidebarBadges: SidebarBadges = {
   approvals: 2,
   failedRuns: 1,
   joinRequests: 1,
+  stoppedSteps: 0,
 };
 
 export const storybookDashboardSummary: DashboardSummary = {
@@ -1282,6 +1283,7 @@ export const storybookDashboardSummary: DashboardSummary = {
     monthUtilizationPercent: 27,
   },
   pendingApprovals: 2,
+  stoppedSteps: 0,
   budgets: {
     activeIncidents: 1,
     pendingApprovals: 1,

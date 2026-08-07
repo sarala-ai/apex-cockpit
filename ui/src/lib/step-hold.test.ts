@@ -8,7 +8,12 @@
  */
 import { describe, expect, it } from "vitest";
 import type { PipelineStepHold } from "@paperclipai/shared";
-import { describeStepHold, STEP_HOLD_CONSEQUENCE } from "./step-hold";
+import {
+  describeStepHold,
+  STEP_HOLD_CONSEQUENCE,
+  stoppedStepSectionLabel,
+  summariseStepHold,
+} from "./step-hold";
 
 /** Every `reason` `writeStepHold` is called with today. */
 const REASONS = [
@@ -76,5 +81,55 @@ describe("describing a step that stopped", () => {
         expect(text, `${reason} leaked "${word}"`).not.toContain(word);
       }
     }
+  });
+});
+
+/**
+ * The one-line form the attention surfaces use.
+ *
+ * The bar here is different from the ticket's: this has to interrupt somebody
+ * who is looking at something else and be understood without a second line.
+ * The assertions are therefore about what a person can identify from it — the
+ * thing that stopped and the step it stopped at — and about the words the
+ * product does not use in front of people.
+ */
+describe("summariseStepHold", () => {
+  it("names the ticket and the step", () => {
+    expect(summariseStepHold({
+      stageName: "Spec",
+      issueIdentifier: "APEX-14",
+      issueTitle: "Make failure visible",
+    })).toBe("APEX-14 stopped at Spec");
+  });
+
+  it("falls back to the title when a ticket has no identifier yet", () => {
+    expect(summariseStepHold({
+      stageName: "Spec",
+      issueIdentifier: null,
+      issueTitle: "Make failure visible",
+    })).toBe("Make failure visible stopped at Spec");
+  });
+
+  it("still says something when nothing can be named", () => {
+    expect(summariseStepHold({ stageName: null, issueIdentifier: null, issueTitle: null }))
+      .toBe("Work stopped");
+  });
+
+  it("never leaks internal vocabulary", () => {
+    const line = summariseStepHold({
+      stageName: "Spec",
+      issueIdentifier: "APEX-14",
+      issueTitle: "t",
+    });
+    for (const word of ["step_held", "onEnter", "stage config", "case", "hold"]) {
+      expect(line.toLowerCase()).not.toContain(word.toLowerCase());
+    }
+  });
+});
+
+describe("stoppedStepSectionLabel", () => {
+  it("counts in plain language", () => {
+    expect(stoppedStepSectionLabel(1)).toBe("1 thing has stopped");
+    expect(stoppedStepSectionLabel(3)).toBe("3 things have stopped");
   });
 });

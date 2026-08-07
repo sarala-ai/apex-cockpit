@@ -30,6 +30,13 @@ export function sidebarBadgeService(db: Db) {
         dismissals?: ReadonlyMap<string, number>;
         joinRequests?: Array<{ id: string; updatedAt: Date | string | null; createdAt: Date | string }>;
         unreadTouchedIssues?: number;
+        /**
+         * Work that stopped and is waiting on the person asking. Passed in
+         * rather than queried here because only the route knows WHO is asking,
+         * and a stopped step is counted for the human answerable for it — not
+         * for everyone, and never for the agent that was running it.
+         */
+        stoppedSteps?: number;
       },
     ): Promise<SidebarBadges> => {
       const actionableApprovals = await db
@@ -75,11 +82,13 @@ export function sidebarBadgeService(db: Db) {
         )
       ).length;
       const unreadTouchedIssues = extra?.unreadTouchedIssues ?? 0;
+      const stoppedSteps = extra?.stoppedSteps ?? 0;
       return {
-        inbox: actionableApprovals + failedRuns + joinRequests + unreadTouchedIssues,
+        inbox: actionableApprovals + failedRuns + joinRequests + unreadTouchedIssues + stoppedSteps,
         approvals: actionableApprovals,
         failedRuns,
         joinRequests,
+        stoppedSteps,
       };
     },
   };

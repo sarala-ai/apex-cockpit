@@ -183,14 +183,17 @@ export function Sidebar() {
             );
           })()}
           <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
+          {/* Stopped work reads as danger for the same reason a failed run does:
+              it is not a queue of things to get to, it is a process that will
+              not continue until somebody acts. */}
           <SidebarNavItem
             to="/inbox"
             label="Inbox"
             icon={Inbox}
             badge={inboxBadge.inbox}
             badgeLabel="unread"
-            badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
-            alert={inboxBadge.failedRuns > 0}
+            badgeTone={inboxBadge.failedRuns > 0 || inboxBadge.stoppedSteps > 0 ? "danger" : "default"}
+            alert={inboxBadge.failedRuns > 0 || inboxBadge.stoppedSteps > 0}
           />
           {conferenceRoomChatEnabled ? (
             <SidebarNavItem to="/board-chat" label="Conference Room" icon={MessagesSquare} />

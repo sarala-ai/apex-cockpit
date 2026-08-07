@@ -300,7 +300,7 @@ export function registerPipelineCommands(program: Command): void {
   addPipelineOptions(
     pipelines
       .command("set-automation")
-      .description("Set a run_routine onEnter automation on a stage")
+      .description("Set a routine entry step on a stage")
       .argument("<pipeline>", "Pipeline ID or key")
       .requiredOption("--stage <key>", "Stage key")
       .requiredOption("--routine <id>", "Routine ID")
@@ -310,11 +310,18 @@ export function registerPipelineCommands(program: Command): void {
         const detail = await getPipeline(ctx, pipeline);
         const stage = detail.stages?.find((item) => item.key === opts.stage);
         if (!stage) throw new Error(`Stage not found on pipeline ${detail.key}: ${opts.stage}`);
+        // `routine` is the discriminator since migration 0170; this command
+        // still wrote the pre-rename `run_routine`, which the stage-config
+        // validator rejects — so the CLI's own set-automation could no longer
+        // set an automation. The replacement is also deliberately NOT a merge:
+        // spreading a previous `run`/`agent` step's fields under the new type
+        // would leave a routine step carrying a stray `target` or
+        // `promptTemplate`, which is how one step gets read as two different
+        // kinds by two different readers.
         const config = {
           ...(stage.config ?? {}),
           onEnter: {
-            ...(asOptionalObject(stage.config?.onEnter) ?? {}),
-            type: "run_routine",
+            type: "routine",
             routineId: opts.routine,
             ...(opts.note ? { note: opts.note } : {}),
           },

@@ -66,6 +66,35 @@ function nextStepFor(reason: string | null): string {
 }
 
 /**
+ * The one line a LIST gets.
+ *
+ * The ticket and the item page have room for three lines because you are
+ * already looking at the thing. The inbox, the sidebar and the dashboard do
+ * not: they have to interrupt somebody who is looking at something else, in
+ * about eight words, and then get out of the way. So this is the headline's
+ * job compressed — what stopped, and where — with the recorded reason and the
+ * advice left for the surface you land on.
+ *
+ * It lives beside `describeStepHold` rather than in the inbox because the
+ * failure mode is the same one that module was written for: two surfaces
+ * describing one hold in two vocabularies.
+ */
+export function summariseStepHold(input: {
+  stageName: string | null;
+  issueIdentifier: string | null;
+  issueTitle: string | null;
+}): string {
+  const at = input.stageName ? ` at ${input.stageName}` : "";
+  const subject = input.issueIdentifier ?? input.issueTitle;
+  return subject ? `${subject} stopped${at}` : `Work stopped${at}`;
+}
+
+/** The heading a list of stopped work sits under, and the count beside it. */
+export function stoppedStepSectionLabel(count: number): string {
+  return count === 1 ? "1 thing has stopped" : `${count} things have stopped`;
+}
+
+/**
  * Turn a recorded hold into the three lines a person reads.
  *
  * `stepName` is passed by the caller rather than taken from the hold because
