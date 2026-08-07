@@ -184,7 +184,7 @@ export async function openGateApprovalIdsForCases(
         eq(approvals.companyId, companyId),
         inArray(approvals.type, ["flow_gate", "pipeline_gate"]),
         or(eq(approvals.status, "pending"), eq(approvals.status, "revision_requested")),
-        sql`${approvals.payload} ->> 'caseId' = any(${caseIds})`,
+        inArray(sql`${approvals.payload} ->> 'caseId'`, caseIds),
       ),
     )
     .orderBy(asc(approvals.createdAt));
