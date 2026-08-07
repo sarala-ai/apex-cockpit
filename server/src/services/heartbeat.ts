@@ -7092,6 +7092,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
       publishRunLifecyclePluginEvent(updated);
+      // A queued step run can go terminal WITHOUT ever running — the claim
+      // gate cancels it right here through this path (`issue_assignee_changed`
+      // et al.), so the completion bridge must hang off every terminal
+      // transition, not only the running→terminal one. Observed live
+      // (APEX-31/APEX-27): the cancel took this function, the hook below never
+      // fired, and the case sat invisible at `waiting_agent` until the sweep.
+      notifyStepHostOfTerminalRun(updated);
     }
 
     return updated;
@@ -7163,18 +7170,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     void (async () => {
       const { pipelineService } = await import("./pipelines.js");
       const svc = pipelineService(db);
-      const caseRow = await db
-        .select({ id: pipelineCases.id, companyId: pipelineCases.companyId })
-        .from(pipelineCases)
-        .where(eq(pipelineCases.stepRunId, run.id))
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
-      if (!caseRow) return;
-      await svc.processAgentStepCompletion(caseRow.companyId, caseRow.id, {
-        runId: run.id,
-        runStatus: run.status,
-        error: run.error ?? null,
-      });
+      // The run can reach terminal BEFORE the commissioning bookkeeping links
+      // it: the claim gate cancels the queued run INSIDE the commission call
+      // chain, so at notify time `recordCommissioned` has not yet written
+      // `pipelineCases.stepRunId` and a single lookup finds nothing — the
+      // terminal outcome then stayed invisible until the staleness sweep,
+      // minutes later (observed live, APEX-31/APEX-27). The linkage write is
+      // milliseconds behind in the same process, so re-resolve over a bounded
+      // window instead of giving up; `processAgentStepCompletion` is a CAS on
+      // `waiting_agent`, so a duplicate resolution is a no-op and the sweep
+      // remains the at-least-once recovery beyond the window.
+      const deadline = Date.now() + 15_000;
+      for (;;) {
+        const caseRow = await db
+          .select({ id: pipelineCases.id, companyId: pipelineCases.companyId })
+          .from(pipelineCases)
+          .where(eq(pipelineCases.stepRunId, run.id))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (caseRow) {
+          await svc.processAgentStepCompletion(caseRow.companyId, caseRow.id, {
+            runId: run.id,
+            runStatus: run.status,
+            error: run.error ?? null,
+          });
+          return;
+        }
+        if (Date.now() >= deadline) return;
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
     })().catch((err) => {
       logger.warn(
         { err, runId: run.id, stepKey },
