@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { groupWarningsByStage, LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
+import { groupWarningsByStage, LOW_TRUST_REVIEW_PRESET, stageEntryStepRef } from "@paperclipai/shared";
 import type {
   Agent,
   AskUserQuestionsAnswer,
@@ -260,27 +260,16 @@ export type CurrentStageEntryStep =
   | { kind: "agent" };
 
 export function currentStageEntryStep(stage: PipelineStage): CurrentStageEntryStep | null {
-  const onEnter = stage.config?.onEnter;
-  if (!onEnter || typeof onEnter !== "object" || Array.isArray(onEnter)) return null;
-  const config = onEnter as Record<string, unknown>;
-  if (config.type === "routine") {
-    return typeof config.routineId === "string" && config.routineId.trim()
-      ? { kind: "routine", routineId: config.routineId }
-      : null;
-  }
-  // Mirrors the server's readers: a `run` step needs a target it can actually
-  // execute and an `agent` step needs a prompt, so a half-written stage does
-  // not offer a re-run the server would refuse.
-  if (config.type === "run") {
-    const target = config.target;
-    return target && typeof target === "object" && !Array.isArray(target) ? { kind: "run" } : null;
-  }
-  if (config.type === "agent") {
-    return typeof config.promptTemplate === "string" && config.promptTemplate.trim()
-      ? { kind: "agent" }
-      : null;
-  }
-  return null;
+  // Delegates to the ONE shared spelling of "does this step run anything?"
+  // (`@paperclipai/shared/pipeline-stage-entry`) rather than keeping a local
+  // copy of the predicate. A local copy is exactly how this bug class
+  // propagated: each layer's spelling was updated independently, and the ones
+  // that were missed failed silently.
+  const entry = stageEntryStepRef(stage.config, stage.id);
+  if (!entry) return null;
+  return entry.kind === "routine"
+    ? { kind: "routine", routineId: entry.routineId! }
+    : { kind: entry.kind };
 }
 
 function readNonEmptyConfigString(value: unknown) {
