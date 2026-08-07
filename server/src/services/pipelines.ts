@@ -3991,11 +3991,32 @@ export function pipelineService(
     // project that declares nothing yields a classified failure that rides
     // the ordinary failure path below: an honest hold (or failure route),
     // never an invocation of a tool the project never declared.
+    //
+    // WHICH project: the pipeline's own when it declares one, else the
+    // project of the case's live `work`-role issue. Seeded lifecycles are
+    // company-shared and carry no project — tickets from different projects
+    // flow through the same lifecycle, so the ticket is what names the stack
+    // being verified. Retired links are dead history and never consulted.
     const resolved =
       entry.target.type === "contract"
         ? await resolveContractRunTarget(db, {
             companyId: execution.companyId,
-            projectId: detail.pipeline.projectId ?? null,
+            projectId:
+              detail.pipeline.projectId ??
+              (await db
+                .select({ projectId: issues.projectId })
+                .from(pipelineCaseIssueLinks)
+                .innerJoin(issues, eq(issues.id, pipelineCaseIssueLinks.issueId))
+                .where(
+                  and(
+                    eq(pipelineCaseIssueLinks.caseId, execution.caseId),
+                    eq(pipelineCaseIssueLinks.role, "work"),
+                    isNull(pipelineCaseIssueLinks.retiredAt),
+                  ),
+                )
+                .orderBy(desc(pipelineCaseIssueLinks.createdAt))
+                .limit(1)
+                .then((rows) => rows[0]?.projectId ?? null)),
             contract: entry.target.contract,
           })
         : { ok: true as const, target: entry.target };
