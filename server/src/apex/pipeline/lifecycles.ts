@@ -91,7 +91,7 @@
  */
 
 import { and, eq } from "drizzle-orm";
-import { pipelines } from "@paperclipai/db";
+import { pipelineStages, pipelines } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
 import {
   pipelineService,
@@ -568,7 +568,10 @@ export const LIFECYCLE_DEFINITIONS: LifecycleDefinition[] = [
     description: `A failing signal (test/alert) triggers a bounded agent step to reproduce
       and fix, machine-verified by the test suite, then a single diff-review
       gate before deploy.`,
-    version: "1.0",
+    // 1.1: tests/deploy declare contract targets instead of pytest /
+    // cloud_run_deploy (APEX-38) — the bump is what carries the fix to
+    // instances that seeded 1.0.
+    version: "1.1",
     ticketType: "bug",
     nodes: BUG_NODES,
   }),
@@ -588,7 +591,9 @@ export const LIFECYCLE_DEFINITIONS: LifecycleDefinition[] = [
     description: `Promote gate, spec drafted by an agent and approved at a load-bearing
       gate (pre-approves all derived tasks), a batch of bounded agent tasks
       each machine-checked, a diff-review gate, then deploy.`,
-    version: "1.0",
+    // 1.1: task_checks/deploy declare contract targets instead of pytest /
+    // cloud_run_deploy (APEX-38) — see the bug lifecycle's bump note.
+    version: "1.1",
     ticketType: "feature",
     nodes: FEATURE_NODES,
   }),
@@ -626,25 +631,62 @@ export const LIFECYCLE_DEFINITIONS: LifecycleDefinition[] = [
  * these — so this file should be treated as leading that rename, not
  * following a contract that already landed.
  */
+/** Dotted-numeric version compare — is `stored` strictly older than `shipped`?
+ *  A row with no version at all predates versioning entirely, so: older. */
+function isOlderLifecycleVersion(stored: string | null, shipped: string): boolean {
+  if (stored === null) return true;
+  const a = stored.split(".").map(Number);
+  const b = shipped.split(".").map(Number);
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+    const left = a[i] ?? 0;
+    const right = b[i] ?? 0;
+    if (left !== right) return left < right;
+  }
+  return false;
+}
+
 export async function seedLifecyclePipelines(
   db: Db,
   input: { companyId: string; projectId?: string | null; actor?: PipelineActor },
-): Promise<{ seeded: string[]; existing: string[] }> {
+): Promise<{ seeded: string[]; existing: string[]; upgraded: string[] }> {
   const svc = pipelineService(db);
   const actor: PipelineActor = input.actor ?? { type: "system" };
 
   const seeded: string[] = [];
   const existing: string[] = [];
+  const upgraded: string[] = [];
 
   for (const definition of LIFECYCLE_DEFINITIONS) {
     const already = await db
-      .select({ id: pipelines.id })
+      .select({ id: pipelines.id, version: pipelines.version })
       .from(pipelines)
       .where(and(eq(pipelines.companyId, input.companyId), eq(pipelines.key, definition.key)))
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (already) {
-      existing.push(definition.key);
+      if (!isOlderLifecycleVersion(already.version, definition.version)) {
+        existing.push(definition.key);
+        continue;
+      }
+      // An older stored lifecycle takes the shipped definition IN PLACE:
+      // stage configs are rewritten by stage key (never re-created — live
+      // cases reference stage IDs), and version/ticketType come current.
+      // Without this, an instance seeded before a definition change keeps
+      // the old configs forever — how APEX-38's own case ended up held on
+      // a hardcoded `pytest` the fix had already removed from the seed.
+      for (const stage of definition.stages) {
+        await db
+          .update(pipelineStages)
+          .set({ name: stage.name, kind: stage.kind, config: stage.config })
+          .where(
+            and(eq(pipelineStages.pipelineId, already.id), eq(pipelineStages.key, stage.key)),
+          );
+      }
+      await db
+        .update(pipelines)
+        .set({ version: definition.version, ticketType: definition.ticketType })
+        .where(eq(pipelines.id, already.id));
+      upgraded.push(definition.key);
       continue;
     }
 
@@ -684,5 +726,5 @@ export async function seedLifecyclePipelines(
     seeded.push(definition.key);
   }
 
-  return { seeded, existing };
+  return { seeded, existing, upgraded };
 }
