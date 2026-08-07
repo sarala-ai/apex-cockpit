@@ -319,16 +319,23 @@ describeEmbeddedPostgres("agent step executor resolution", () => {
   }, 60_000);
 
   /*
-   * The other half of the rule, and the reason this is not just "always set the
-   * assignee": `assigneeAgentId` has a SECOND writer. The per-issue execution
-   * policy reassigns it to the REVIEWER on a done-transition, deliberately
-   * excluding the executor so review stays independent. Re-routing here would
-   * silently defeat that. Fill a vacuum; never overwrite.
+   * APEX-34, pinned. A step-DECLARED agent is a governance decision — the
+   * lifecycle names a permission surface, not a suggestion — and dispatch must
+   * REASSIGN the ticket to it, not defer to whoever held it after the previous
+   * stage. Observed live on APEX-27 crossing spec→tasks: the tasks stage
+   * resolved the Implementer correctly, but the vacuum-only claim left the
+   * ticket on the Specifier, so `claimQueuedRun` cancelled every Implementer
+   * run (`issue_assignee_changed`) and recovery woke the Specifier instead.
+   *
+   * The reviewer-independence concern that once said "never overwrite" is not
+   * violated here: the per-issue execution policy's reviewer reassignment is
+   * only at risk from steps that declare NO agent, and those never write the
+   * assignee at all (they resolve BY the ticket — see the test below).
    */
-  it("never re-routes a ticket that already has an assignee", async () => {
+  it("re-routes a ticket to the step-declared agent, even over a stale assignee", async () => {
     const company = await seedCompany();
     const other = await seedPlainAgent(company.id, "Existing Owner");
-    await seedRosterAgent(company.id, APEX_AGENT_KEYS.implementer, "Implementer");
+    const implementer = await seedRosterAgent(company.id, APEX_AGENT_KEYS.implementer, "Implementer");
     const pipeline = await seedAgentStagePipeline(company.id, APEX_AGENT_KEYS.implementer);
     const seeded = await seedCaseWithConversation(company.id, pipeline.id);
     await db.update(issues).set({ assigneeAgentId: other.id }).where(eq(issues.id, seeded.issue.id));
@@ -339,7 +346,7 @@ describeEmbeddedPostgres("agent step executor resolution", () => {
       .select({ assigneeAgentId: issues.assigneeAgentId })
       .from(issues)
       .where(eq(issues.id, seeded.issue.id));
-    expect(after!.assigneeAgentId).toBe(other.id);
+    expect(after!.assigneeAgentId).toBe(implementer.id);
   }, 60_000);
 
   /**
