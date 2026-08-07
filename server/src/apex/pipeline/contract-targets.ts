@@ -54,7 +54,8 @@ export async function resolveContractRunTarget(
       errorType: "contract_unresolvable",
       message:
         `the '${input.contract}' contract resolves from project workspace config, ` +
-        `but this pipeline is linked to no project — link one, or declare a concrete target on the stage`,
+        `but neither this pipeline nor the case's work issue names a project — ` +
+        `link one, or declare a concrete target on the stage`,
     };
   }
   const workspace = await db

@@ -297,6 +297,96 @@ describeEmbeddedPostgres("contract run targets resolve from project workspace co
     expect(String((failed[0]!.payload as { error?: unknown }).error)).toMatch(/declares no deploy workflow/i);
   });
 
+  it("resolves the contract from the case's linked work issue's project when the pipeline declares none", async () => {
+    const { runner, shellCalls, commandCalls } = stubRunner({ ok: true, detail: { status: "success" } });
+    const svc = pipelineService(db, { heartbeat: noopHeartbeat, stepRunner: runner });
+
+    // A seeded lifecycle is company-shared: it carries NO project of its own.
+    // Tickets from different projects flow through it, so the ticket — the
+    // case's `work`-role issue — is what names the project whose config the
+    // contract resolves from.
+    const [company] = await db.insert(companies).values({
+      name: "Shared Lifecycle Co",
+      issuePrefix: `S${randomUUID().replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
+    }).returning();
+    const [project] = await db.insert(projects).values({
+      companyId: company!.id,
+      name: "Cockpit",
+    }).returning();
+    await db.insert(projectWorkspaces).values({
+      companyId: company!.id,
+      projectId: project!.id,
+      name: "cockpit",
+      sourceType: "local_path",
+      cwd: "/srv/cockpit",
+      isPrimary: true,
+      checkCommand: "npx vitest run",
+    });
+    const pipeline = await svc.createPipeline({
+      companyId: company!.id,
+      key: `lifecycle-${randomUUID().slice(0, 8)}`,
+      name: "Shared Lifecycle",
+      actor: userActor,
+    });
+    const stages = await svc.listStages(company!.id, pipeline.id);
+    const byKey = new Map(stages.map((stage) => [stage.key, stage]));
+
+    await svc.updateStage({
+      companyId: company!.id,
+      pipelineId: pipeline.id,
+      stageId: byKey.get("in_progress")!.id,
+      patch: {
+        config: {
+          onEnter: {
+            type: "run",
+            target: seededTarget("bug", "tests"),
+            onSuccessToStageKey: "review",
+          },
+        },
+      },
+      actor: userActor,
+    });
+
+    const created = await svc.ingestCase({
+      companyId: company!.id,
+      pipelineId: pipeline.id,
+      caseKey: "TICKET-1",
+      title: "Ticket names the project",
+      actor: userActor,
+    });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId: company!.id,
+      projectId: project!.id,
+      title: "Ticket names the project",
+      description: "",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db.insert(pipelineCaseIssueLinks).values({
+      companyId: company!.id,
+      caseId: created.case.id,
+      issueId,
+      role: "work",
+    });
+
+    const result = await svc.transitionCase({
+      companyId: company!.id,
+      caseId: created.case.id,
+      toStageKey: "in_progress",
+      expectedVersion: created.case.version,
+      actor: userActor,
+    });
+
+    // The ticket's project supplied the tool; the project-less pipeline
+    // did not turn into a hold.
+    expect(result.automationExecution.status).toBe("succeeded");
+    expect(shellCalls).toEqual([{ command: "npx vitest run", cwd: "/srv/cockpit" }]);
+    expect(commandCalls).toEqual([]);
+  });
+
   it("runs the project's deploy workflow when the project DOES declare one", async () => {
     const { runner, workflowCalls } = stubRunner({ ok: true, detail: { status: "success" } });
     const svc = pipelineService(db, { heartbeat: noopHeartbeat, stepRunner: runner });
