@@ -68,6 +68,7 @@ import { heartbeatService } from "./heartbeat.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logActivity } from "./activity-log.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { usableResponsibleUserIdOrNull } from "./service-actor-markers.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
@@ -110,15 +111,21 @@ async function resolveCompanyDefaultResponsibleUserId(db: Db, companyId: string)
 }
 
 async function resolveRoutineResponsibleUserId(db: Db, companyId: string, actorUserId: string | null | undefined, parentIssueId?: string | null) {
-  if (actorUserId) return actorUserId;
+  // A non-human service marker (e.g. "built-in-bundles" from bundle seeding)
+  // is not an accountable user — never stamp it verbatim. Fall through to the
+  // rest of the ladder instead, same as if no actor were present.
+  const usableActorUserId = usableResponsibleUserIdOrNull(actorUserId);
+  if (usableActorUserId) return usableActorUserId;
   if (parentIssueId) {
     const parent = await db
       .select({ responsibleUserId: issues.responsibleUserId, createdByUserId: issues.createdByUserId })
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.id, parentIssueId)))
       .then((rows) => rows[0] ?? null);
-    if (parent?.responsibleUserId) return parent.responsibleUserId;
-    if (parent?.createdByUserId) return parent.createdByUserId;
+    const parentResponsibleUserId = usableResponsibleUserIdOrNull(parent?.responsibleUserId);
+    if (parentResponsibleUserId) return parentResponsibleUserId;
+    const parentCreatedByUserId = usableResponsibleUserIdOrNull(parent?.createdByUserId);
+    if (parentCreatedByUserId) return parentCreatedByUserId;
   }
   return resolveCompanyDefaultResponsibleUserId(db, companyId);
 }
@@ -1548,8 +1555,22 @@ export function routineService(
               return row?.responsibleUserId ?? snapshot?.routine.responsibleUserId ?? null;
             })
         : null;
+      // Any of these candidates can carry a non-human service marker forward
+      // verbatim (e.g. a bundle-seeded routine whose stored responsibleUserId
+      // is "built-in-bundles"). A stored value can also simply go stale.
+      // Sanitize each candidate and, if none survive, re-run the same ladder
+      // used at routine create/update time (live, not stored) so every
+      // dispatched run always resolves to a real accountable human.
       const responsibleUserId =
-        manualRunnerUserId ?? latestRevisionResponsibleUserId ?? input.routine.responsibleUserId ?? null;
+        usableResponsibleUserIdOrNull(manualRunnerUserId) ??
+        usableResponsibleUserIdOrNull(latestRevisionResponsibleUserId) ??
+        usableResponsibleUserIdOrNull(input.routine.responsibleUserId) ??
+        (await resolveRoutineResponsibleUserId(
+          txDb,
+          input.routine.companyId,
+          null,
+          input.routine.parentIssueId,
+        ));
       const [createdRun] = await txDb
         .insert(routineRuns)
         .values({

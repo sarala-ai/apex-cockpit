@@ -117,6 +117,7 @@ import {
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
+import { usableResponsibleUserIdOrNull } from "./service-actor-markers.js";
 import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
 } from "./issue-dependency-wakeups.js";
@@ -5553,7 +5554,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return {
           routineId: issueContext.originId,
           env: snapshot.routine.env ?? null,
-          responsibleUserId: revision?.responsibleUserId ?? snapshot.routine.responsibleUserId ?? null,
+          // A stored value here can be a non-human service marker (e.g. a
+          // bundle-seeded routine's stale "built-in-bundles"). Sanitize so the
+          // caller's ladder keeps looking (parent issue / company default)
+          // instead of treating the marker as an authoritative user.
+          responsibleUserId:
+            usableResponsibleUserIdOrNull(revision?.responsibleUserId) ??
+            usableResponsibleUserIdOrNull(snapshot.routine.responsibleUserId),
         };
       }
     }
@@ -5566,7 +5573,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return {
       routineId: issueContext.originId,
       env: routine?.env ?? null,
-      responsibleUserId: routineRun?.responsibleUserId ?? routine?.responsibleUserId ?? null,
+      responsibleUserId:
+        usableResponsibleUserIdOrNull(routineRun?.responsibleUserId) ??
+        usableResponsibleUserIdOrNull(routine?.responsibleUserId),
     };
   }
 
@@ -5621,7 +5630,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.id, parentId)))
       .then((rows) => rows[0] ?? null);
-    return parent?.responsibleUserId ?? null;
+    return usableResponsibleUserIdOrNull(parent?.responsibleUserId);
   }
 
   function isManualUserRun(input: {
@@ -5647,15 +5656,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     triggerDetail?: WakeupOptions["triggerDetail"] | null;
     existingRunResponsibleUserId?: string | null;
   }) {
-    const contextResponsibleUserId = readNonEmptyString(input.contextSnapshot.responsibleUserId);
+    // Every candidate below can, in principle, be a stored value that traces
+    // back to a non-human service marker (e.g. a bundle-seeded routine's
+    // "built-in-bundles") rather than a genuine user id. Sanitize each rung so
+    // a marker can never win the ladder — it falls through exactly as if that
+    // rung were empty, all the way to the live company-default rung.
+    const contextResponsibleUserId = usableResponsibleUserIdOrNull(
+      readNonEmptyString(input.contextSnapshot.responsibleUserId),
+    );
     const requestedUserId = input.requestedByActorType === "user"
       ? readNonEmptyString(input.requestedByActorId)
       : null;
     if (contextResponsibleUserId) return contextResponsibleUserId;
-    if (input.existingRunResponsibleUserId) return input.existingRunResponsibleUserId;
-    if (input.routineEnvContext.responsibleUserId) return input.routineEnvContext.responsibleUserId;
+    const existingRunResponsibleUserId = usableResponsibleUserIdOrNull(input.existingRunResponsibleUserId);
+    if (existingRunResponsibleUserId) return existingRunResponsibleUserId;
+    const routineResponsibleUserId = usableResponsibleUserIdOrNull(input.routineEnvContext.responsibleUserId);
+    if (routineResponsibleUserId) return routineResponsibleUserId;
     if (isManualUserRun(input) && requestedUserId) return requestedUserId;
-    if (input.issueContext?.responsibleUserId) return input.issueContext.responsibleUserId;
+    const issueResponsibleUserId = usableResponsibleUserIdOrNull(input.issueContext?.responsibleUserId);
+    if (issueResponsibleUserId) return issueResponsibleUserId;
     const parentResponsibleUserId = await resolveParentIssueResponsibleUserId(input.companyId, input.issueContext?.parentId);
     if (parentResponsibleUserId) return parentResponsibleUserId;
     if (input.issueContext) return resolveCompanyDefaultResponsibleUserId(input.companyId);
