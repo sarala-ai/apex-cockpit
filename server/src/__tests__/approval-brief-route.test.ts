@@ -29,38 +29,52 @@ function registerModuleMocks() {
   }));
 }
 
-/** The real `design-change` flow, as `apex flows show design-change --output
- *  json` emits it — an A-node, the gate under review, then the merge
- *  workflow. "What happens next" must be derived from THIS, never hardcoded. */
-const DESIGN_CHANGE_FLOW = {
-  path: "/flows/design-change.yml",
-  flow: {
-    name: "design-change",
-    version: "1.1",
-    description:
-      "A bounded agent step authors a design-board change and opens a .penpot pull request, a founder reviews it at a single gate, then the merge workflow lands it.",
-    ticket_type: "design-change",
-    nodes: [
-      {
-        id: "board_diff",
-        kind: "agent",
-        agent: { prompt_template: "do the thing", acceptance: "pr_exists:{{repo}}#{{head}}" },
-        on_fail: "pause",
-      },
-      { id: "design_gate", kind: "gate", gate: { mode: "approve", prompt: "Review." }, on_fail: "pause" },
-      {
-        id: "merge",
-        kind: "workflow",
-        workflow: { workflow: "design-pr-merge", params: { repo: "sarala-ai/apex-design" } },
-        on_fail: "pause",
-      },
-    ],
-  },
+/**
+ * The `design-change` process, in the ONE shape everything that reasons about
+ * a process now reads (`ProcessDefinition`) — an agent step, the gate under
+ * review, then the merge workflow. "What happens next" must be derived from
+ * THIS, never hardcoded.
+ *
+ * This fixture used to be the `apex flows show design-change --output json`
+ * envelope, and the injection point used to be called `loadFlowDefinition`.
+ * Both were retired when the definition became a database read
+ * (`loadProcessDefinitionByKey`); the fixture was not updated with them, so
+ * five tests in this file had been failing against a `{}` database ever since.
+ * They are the same tests, against the shape the route actually loads.
+ */
+const DESIGN_CHANGE_PROCESS = {
+  name: "design-change",
+  version: "1.1",
+  description:
+    "A bounded agent step authors a design-board change and opens a .penpot pull request, a founder reviews it at a single gate, then the merge workflow lands it.",
+  ticket_type: "design-change",
+  steps: [
+    {
+      id: "board_diff",
+      kind: "agent" as const,
+      agent: { prompt_template: "do the thing" },
+      acceptance: { criteria: "pr_exists:{{repo}}#{{head}}", enforced: true },
+      on_fail: "pause",
+    },
+    {
+      id: "design_gate",
+      kind: "gate" as const,
+      gate: { mode: "approve" as const, prompt: "Review." },
+      on_fail: "pause",
+    },
+    {
+      id: "merge",
+      kind: "run" as const,
+      run: { target: { type: "workflow" as const, workflow: "design-pr-merge", params: { repo: "sarala-ai/apex-design" } } },
+      on_fail: "pause",
+    },
+  ],
 };
 
 async function createApp(options: {
   invoke: ReturnType<typeof vi.fn>;
-  loadFlowDefinition?: ReturnType<typeof vi.fn>;
+  loadProcessDefinition?: ReturnType<typeof vi.fn>;
+  loadGateBriefFacts?: ReturnType<typeof vi.fn>;
   provenanceLookup?: ReturnType<typeof vi.fn>;
   fetchDesignArchive?: ReturnType<typeof vi.fn>;
 }) {
@@ -84,8 +98,12 @@ async function createApp(options: {
     "/api",
     approvalRoutes({} as any, {
       apexInvoker: { invoke: options.invoke } as any,
-      loadFlowDefinition: (options.loadFlowDefinition ??
-        vi.fn().mockResolvedValue(DESIGN_CHANGE_FLOW)) as any,
+      loadProcessDefinition: (options.loadProcessDefinition ??
+        vi.fn().mockResolvedValue(DESIGN_CHANGE_PROCESS)) as any,
+      // The FLOW-shaped brief is what this file exercises, so the pipeline
+      // reader is stubbed to "no work found" and the route falls through to it
+      // — the same fall-through a pre-collapse approval takes in production.
+      loadGateBriefFacts: (options.loadGateBriefFacts ?? vi.fn().mockResolvedValue(null)) as any,
       // Default to "no archive readable" so the suite never shells out to gh;
       // the design-preview test injects a real fixture explicitly.
       fetchDesignArchive: (options.fetchDesignArchive ?? vi.fn().mockResolvedValue(null)) as any,
@@ -209,7 +227,7 @@ describe("GET /approvals/:id/brief", () => {
     // 4 — what happens next, DERIVED from the flow's post-gate node.
     expect(res.body.next.derived).toBe(true);
     expect(res.body.next.approve).toContain("design-pr-merge");
-    expect(res.body.next.approve).toContain("the flow completes");
+    expect(res.body.next.approve).toContain("the process completes");
     expect(res.body.next.reject).toContain("stops at this gate");
     expect(res.body.next.reject).toContain("stays open for you to handle");
 
@@ -314,22 +332,24 @@ describe("GET /approvals/:id/brief", () => {
   it("classifies a pure code changeset as code and marks a deploy as going live", async () => {
     mockApprovalService.getById.mockResolvedValue(FLOW_GATE_APPROVAL);
     mockActivityService.forIssue.mockResolvedValue(ACTIVITY_ROWS);
-    const loadFlowDefinition = vi.fn().mockResolvedValue({
-      path: "/flows/bug.yml",
-      flow: {
-        ...DESIGN_CHANGE_FLOW.flow,
-        nodes: [
-          DESIGN_CHANGE_FLOW.flow.nodes[1],
-          { id: "deploy", kind: "workflow", workflow: { workflow: "cloud_run_deploy", params: {} }, on_fail: "pause" },
-        ],
-      },
+    const loadProcessDefinition = vi.fn().mockResolvedValue({
+      ...DESIGN_CHANGE_PROCESS,
+      steps: [
+        DESIGN_CHANGE_PROCESS.steps[1],
+        {
+          id: "deploy",
+          kind: "run",
+          run: { target: { type: "workflow", workflow: "cloud_run_deploy", params: {} } },
+          on_fail: "pause",
+        },
+      ],
     });
     const invoke = vi.fn().mockResolvedValue({
       ...PR_SUCCESS,
       files: [{ path: "server/src/a.ts", status: "modified", additions: 2, deletions: 1, patch: "@@\n+x" }],
     });
 
-    const res = await request(await createApp({ invoke, loadFlowDefinition }))
+    const res = await request(await createApp({ invoke, loadProcessDefinition }))
       .get("/api/approvals/approval-1/brief");
 
     expect(res.status).toBe(200);
@@ -341,20 +361,23 @@ describe("GET /approvals/:id/brief", () => {
   it("derives a different next-step sentence when the flow's post-gate node changes", async () => {
     mockApprovalService.getById.mockResolvedValue(FLOW_GATE_APPROVAL);
     mockActivityService.forIssue.mockResolvedValue(ACTIVITY_ROWS);
-    const loadFlowDefinition = vi.fn().mockResolvedValue({
-      path: "/flows/design-change.yml",
-      flow: {
-        ...DESIGN_CHANGE_FLOW.flow,
-        nodes: [
-          DESIGN_CHANGE_FLOW.flow.nodes[0],
-          DESIGN_CHANGE_FLOW.flow.nodes[1],
-          { id: "lint", kind: "check", check: { tool: "penpot-lint", args: [], pass_criteria: "ok" }, on_fail: "pause" },
-          DESIGN_CHANGE_FLOW.flow.nodes[2],
-        ],
-      },
+    const loadProcessDefinition = vi.fn().mockResolvedValue({
+      ...DESIGN_CHANGE_PROCESS,
+      steps: [
+        DESIGN_CHANGE_PROCESS.steps[0],
+        DESIGN_CHANGE_PROCESS.steps[1],
+        {
+          id: "lint",
+          kind: "run",
+          run: { target: { type: "command", tool: "penpot-lint", args: [] } },
+          acceptance: { criteria: "ok", enforced: false },
+          on_fail: "pause",
+        },
+        DESIGN_CHANGE_PROCESS.steps[2],
+      ],
     });
 
-    const res = await request(await createApp({ invoke: vi.fn().mockImplementation(async () => structuredClone(PR_SUCCESS)), loadFlowDefinition }))
+    const res = await request(await createApp({ invoke: vi.fn().mockImplementation(async () => structuredClone(PR_SUCCESS)), loadProcessDefinition }))
       .get("/api/approvals/approval-1/brief");
 
     expect(res.status).toBe(200);
@@ -368,17 +391,17 @@ describe("GET /approvals/:id/brief", () => {
     mockApprovalService.getById.mockResolvedValue(FLOW_GATE_APPROVAL);
     mockActivityService.forIssue.mockResolvedValue(ACTIVITY_ROWS);
     const { ApexUnavailableError } = await import("../apex/invoke.js");
-    const loadFlowDefinition = vi
+    const loadProcessDefinition = vi
       .fn()
-      .mockRejectedValue(new ApexUnavailableError("apex CLI not found (bin: apex)"));
+      .mockRejectedValue(new ApexUnavailableError("the process definition could not be read"));
 
-    const res = await request(await createApp({ invoke: vi.fn().mockImplementation(async () => structuredClone(PR_SUCCESS)), loadFlowDefinition }))
+    const res = await request(await createApp({ invoke: vi.fn().mockImplementation(async () => structuredClone(PR_SUCCESS)), loadProcessDefinition }))
       .get("/api/approvals/approval-1/brief");
 
     expect(res.status).toBe(200);
     expect(res.body.available).toBe(true);
     expect(res.body.next.derived).toBe(false);
-    expect(res.body.next.note).toContain("apex CLI not found");
+    expect(res.body.next.note).toContain("the process definition could not be read");
     // The rest of the brief still stands.
     expect(res.body.verified.ok).toBe(true);
     expect(res.body.artifact.degraded).toBe(false);
@@ -464,6 +487,106 @@ describe("GET /approvals/:id/brief", () => {
     expect(res.body.available).toBe(true);
     expect(res.body.provenance.agentName).toBeNull();
     expect(res.body.provenance.agentId).toBe("agent-1");
+  });
+
+  /**
+   * The route's own decision: a gate that HAS work behind it gets the
+   * pipeline brief assembled from records, and never falls through to the
+   * flow-shaped one — which would answer a real gate with a pull request it
+   * never had. This is the seam the founder critique landed on, so it is
+   * asserted at the route rather than only at the assembler.
+   */
+  describe("pipeline gates", () => {
+    const PIPELINE_FACTS = {
+      approvalId: "approval-1",
+      caseId: "case-1",
+      workVersion: 1,
+      pipeline: { key: "feature", name: "Feature" },
+      decision: {
+        stepKey: "promote",
+        stepName: "Promote",
+        question: "Gate 1: Promote — is it worth doing. Seconds.",
+        reviewPassIds: [],
+        approveToStepName: "Spec",
+        rejectToStepName: "Cancelled",
+        requestChangesToStepName: null,
+        openedAt: "2026-08-07T11:00:00.000Z",
+      },
+      ticket: {
+        id: "issue-1",
+        identifier: "APEX-14",
+        title: "Gate briefs hand over the artifact",
+        description: "The gate shows a seed-time prompt.",
+        acceptanceSection: null,
+        ticketType: "feature",
+        codebase: "sarala-ai/cockpit",
+      },
+      upstream: null,
+      acceptance: null,
+      rounds: [],
+      priorDecisions: [],
+      now: "2026-08-07T12:00:00.000Z",
+    };
+
+    it("serves the pipeline brief for a gate whose payload names the work", async () => {
+      mockApprovalService.getById.mockResolvedValue({
+        ...FLOW_GATE_APPROVAL,
+        payload: { caseId: "case-1", stepKey: "promote", prompt: "Gate 1: Promote." },
+      });
+      const loadGateBriefFacts = vi.fn().mockResolvedValue(PIPELINE_FACTS);
+      const invoke = vi.fn();
+
+      const res = await request(await createApp({ invoke, loadGateBriefFacts }))
+        .get("/api/approvals/approval-1/brief");
+
+      expect(res.status).toBe(200);
+      expect(res.body.kind).toBe("pipeline_gate");
+      expect(res.body.deciding.headline).toContain("Nothing has been built yet");
+      expect(res.body.lookAt.items[0].label).toBe("What was asked for");
+      // No PR fetch, no activity log read — this brief is records only.
+      expect(invoke).not.toHaveBeenCalled();
+      expect(mockActivityService.forIssue).not.toHaveBeenCalled();
+      expect(loadGateBriefFacts).toHaveBeenCalledWith({
+        approvalId: "approval-1",
+        companyId: "company-1",
+        caseId: "case-1",
+        stepKey: "promote",
+      });
+    });
+
+    it("answers a `pipeline_gate` row instead of refusing it on a type string", async () => {
+      mockApprovalService.getById.mockResolvedValue({
+        ...FLOW_GATE_APPROVAL,
+        type: "pipeline_gate",
+        payload: { caseId: "case-1", stageKey: "spec_review" },
+      });
+
+      const res = await request(
+        await createApp({ invoke: vi.fn(), loadGateBriefFacts: vi.fn().mockResolvedValue(PIPELINE_FACTS) }),
+      ).get("/api/approvals/approval-1/brief");
+
+      expect(res.status).toBe(200);
+      expect(res.body.kind).toBe("pipeline_gate");
+    });
+
+    it("falls through to the flow-shaped brief when the work cannot be read", async () => {
+      mockApprovalService.getById.mockResolvedValue({
+        ...FLOW_GATE_APPROVAL,
+        payload: { ...FLOW_GATE_APPROVAL.payload, caseId: "case-gone" },
+      });
+      mockActivityService.forIssue.mockResolvedValue(ACTIVITY_ROWS);
+
+      const res = await request(
+        await createApp({
+          invoke: vi.fn().mockImplementation(async () => structuredClone(PR_SUCCESS)),
+          loadGateBriefFacts: vi.fn().mockResolvedValue(null),
+        }),
+      ).get("/api/approvals/approval-1/brief");
+
+      expect(res.status).toBe(200);
+      expect(res.body.kind).toBe("flow_gate");
+      expect(res.body.available).toBe(true);
+    });
   });
 
   it("reports not-applicable for non-flow_gate approval types", async () => {
