@@ -6276,6 +6276,28 @@ export function pipelineService(
           });
         }
         if (blockedByCaseIds.length === 0) {
+          // A gate opens on ENTRY — and ARRIVING is entry, whether the case
+          // walked here or was ingested here. Only the transition path used to
+          // do this, which left exactly one lifecycle broken: the Feature
+          // lifecycle's FIRST step is the Promote decision, so every feature
+          // ticket landed on a gate that never opened. It was still decidable
+          // (`reviewCase` reads the stage's own config, not the approvals
+          // table), so nothing looked wrong — there was simply no approval
+          // row, and therefore no decision brief, on the first gate a real
+          // ticket ever hits. Same call, same transaction, same reason: "the
+          // case is at a review stage" and "there is a decision waiting" must
+          // be one fact, not two that can disagree.
+          //
+          // Mutually exclusive with the ledger below in practice: a review
+          // stage has no entry step, and a stage with an entry step is not a
+          // gate. Both are attempted rather than branched on, so neither has
+          // to encode that as an assumption.
+          await openStageGateInTransaction(tx, {
+            companyId: input.companyId,
+            caseId: inserted.id,
+            stage,
+            actor: input.actor,
+          });
           const ledger = await enqueueStageAutomationLedger(tx, {
             companyId: input.companyId,
             caseId: inserted.id,

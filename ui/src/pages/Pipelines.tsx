@@ -113,9 +113,11 @@ import {
   reviewDecisionActions,
   reviewDecisionConfig,
   reviewDecisionToastTitle,
+  reviewStageQuestion,
   type ReviewDecisionAction,
   type ReviewDecisionConfig,
 } from "../lib/review-decision";
+import { GateBrief } from "../components/GateBrief";
 import { extractWorkReferences, referenceFieldKeys } from "../lib/pipeline-references";
 import { pieceNounPlural, readStageBreakdown } from "../lib/pipeline-breakdown";
 import { hasBlockingShortcutDialog, isKeyboardShortcutTextInputTarget } from "../lib/keyboardShortcuts";
@@ -2841,6 +2843,8 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
       pendingDecision={decideReview.variables?.decision ?? null}
       pending={decideReview.isPending}
       nextItemTitle={nextReviewItem?.case.title ?? null}
+      gateApprovalId={detail.gateApprovalId ?? null}
+      gateQuestion={reviewStageQuestion(detail.stage)}
       onNoteChange={setReviewDecisionNote}
       onDecide={(decision) => decideReview.mutate({ decision })}
     />
@@ -3638,6 +3642,8 @@ function ReviewDecisionPanel({
   pending,
   pendingDecision,
   nextItemTitle,
+  gateApprovalId,
+  gateQuestion,
   onNoteChange,
   onDecide,
 }: {
@@ -3647,6 +3653,9 @@ function ReviewDecisionPanel({
   pending: boolean;
   pendingDecision: PipelineReviewDecision | null;
   nextItemTitle: string | null;
+  /** The open decision, which is how the brief is fetched. */
+  gateApprovalId: string | null;
+  gateQuestion: string | null;
   onNoteChange: (value: string) => void;
   onDecide: (decision: PipelineReviewDecision) => void;
 }) {
@@ -3666,6 +3675,15 @@ function ReviewDecisionPanel({
               </p>
             </div>
           </div>
+
+          {/*
+            WHAT is being decided. This panel used to offer three buttons and
+            a stage name, with nothing about the work behind them. The brief —
+            the SAME module the ticket renders, so one decision cannot read
+            two ways — hands over what the last step produced, what was
+            already checked, and what has happened here before.
+          */}
+          <GateBrief approvalId={gateApprovalId} fallbackQuestion={gateQuestion} />
 
           <label className="block space-y-1.5 text-sm font-medium">
             <span>Reason</span>

@@ -34,6 +34,8 @@ import {
   findAcceptanceTarget,
   type ProvenanceLookup,
 } from "../apex/steps/brief.js";
+import { assembleGateBrief, type GateBriefFacts } from "../apex/steps/gate-brief.js";
+import { loadGateBriefFacts, type GateBriefFactsInput } from "../apex/pipeline/gate-brief-facts.js";
 import type { DesignArchiveFetcher } from "../apex/steps/design-artifact.js";
 import { fetchDesignArchive } from "../design/design-files.js";
 import {
@@ -135,6 +137,9 @@ export function approvalRoutes(
      *  DB object now, not a git file behind a CLI. */
     loadProcessDefinition?: (companyId: string, name: string) => Promise<ProcessDefinition | null>;
     provenanceLookup?: ProvenanceLookup;
+    /** Injected by tests so the PIPELINE gate brief can be exercised against
+     *  hand-built records. Production reads them out of the database. */
+    loadGateBriefFacts?: (input: GateBriefFactsInput) => Promise<GateBriefFacts | null>;
     /** Injected by tests so the design preview can be exercised without gh.
      *  Defaults to the real `gh`-backed archive read. */
     fetchDesignArchive?: DesignArchiveFetcher;
@@ -154,6 +159,8 @@ export function approvalRoutes(
     options.loadProcessDefinition ??
     ((companyId: string, name: string) => loadProcessDefinitionByKey(db, companyId, name));
   const provenanceLookup: ProvenanceLookup = options.provenanceLookup ?? dbProvenanceLookup(db);
+  const gateBriefFactsLoader =
+    options.loadGateBriefFacts ?? ((input: GateBriefFactsInput) => loadGateBriefFacts(db, input));
 
 
   /**
@@ -777,11 +784,48 @@ export function approvalRoutes(
     assertCompanyAccess(req, approval.companyId);
     if (!(await assertApprovalAccessAllowed(req, res, approval.companyId))) return;
 
-    if (approval.type !== PIPELINE_GATE_APPROVAL_TYPE) {
+    // Both spellings a gate approval has ever had: `flow_gate` (what a stage
+    // gate opens) and `pipeline_gate` (the review-stage bridge). The brief is
+    // about the DECISION, and both are the same decision — refusing one on the
+    // strength of a type string is how the surface that answers "what am I
+    // deciding" ended up answering "not applicable".
+    if (approval.type !== PIPELINE_GATE_APPROVAL_TYPE && approval.type !== "pipeline_gate") {
       res.json({ available: false, reason: "not_a_flow_gate_approval" });
       return;
     }
     const payload = approval.payload as Record<string, unknown>;
+
+    // THE PIPELINE GATE BRIEF — what every gate a seeded lifecycle opens now
+    // gets. Founder critique this answers, verbatim: *"Why does the gate get a
+    // one-line brief? Why isn't it able to summarize or hand content from the
+    // previous task for review and approval in a humane fashion?"*
+    //
+    // The evidence was always there — the step that ran, the document it
+    // wrote, the verdict the server recorded, the rounds already spent — and
+    // nothing read it back, so a person approved on a label written at seed
+    // time, knowing nothing about the ticket. Records only, assembled
+    // deterministically; there is no model call on this path and none may be
+    // added to it.
+    //
+    // A gate whose work cannot be read falls through to the flow-shaped brief
+    // below (approvals from before the collapse, whose payload carries no
+    // case) rather than answering the reviewer with nothing.
+    const caseId = typeof payload.caseId === "string" ? payload.caseId : null;
+    if (caseId) {
+      const facts = await gateBriefFactsLoader({
+        approvalId: approval.id,
+        companyId: approval.companyId,
+        caseId,
+        stepKey:
+          (typeof payload.stepKey === "string" ? payload.stepKey : null) ??
+          (typeof payload.nodeId === "string" ? payload.nodeId : null),
+      });
+      if (facts) {
+        res.json(assembleGateBrief(facts));
+        return;
+      }
+    }
+
     const issueId = typeof payload.issueId === "string" ? payload.issueId : null;
     if (!issueId) {
       res.json({ available: false, reason: "approval payload missing issueId" });
@@ -789,7 +833,7 @@ export function approvalRoutes(
     }
 
     const activityRows = await activityService(db).forIssue(issueId);
-    const brief = await assembleFlowGateBrief({
+    const flowBrief = await assembleFlowGateBrief({
       approvalId: approval.id,
       payload,
       activityRows,
@@ -798,7 +842,7 @@ export function approvalRoutes(
       provenanceLookup,
       fetchDesignArchive: options.fetchDesignArchive ?? fetchDesignArchive,
     });
-    res.json(brief);
+    res.json(flowBrief);
   });
 
   return router;

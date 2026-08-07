@@ -107,10 +107,73 @@ export type ApprovalBriefProvenance = {
   verifiedAt: string | null;
   gateOpenedAt: string | null;
 };
-export type ApprovalBrief =
+/**
+ * THE PIPELINE GATE BRIEF (server: `apex/steps/gate-brief.ts`).
+ *
+ * What every gate a seeded lifecycle opens now answers, in place of the
+ * one-line `gate.prompt` written at seed time. Assembled deterministically
+ * from records that already exist — the step that ran, the document it wrote,
+ * the verdict the server recorded, the rounds already spent. No model call
+ * produced any of these sentences.
+ *
+ * The wording is SERVER-SIDE on purpose: three surfaces render this (the
+ * ticket, the item page, the approvals page) and a decision must not read
+ * three ways.
+ */
+export type GateBriefOutcome = {
+  decision: "approve" | "request_changes" | "reject";
+  line: string;
+};
+export type GateBriefLookAtItem = {
+  label: string;
+  /** The artifact's own text, cut honestly. Null when it has none (a link). */
+  excerpt: string | null;
+  truncated: boolean;
+  /** A document key on the ticket page — `#document-<anchor>`. */
+  anchor: string | null;
+  url: string | null;
+  meta: string | null;
+};
+export type PipelineGateBrief = {
+  available: true;
+  kind: "pipeline_gate";
+  deciding: {
+    headline: string;
+    question: string | null;
+    subject: string;
+    ticketIdentifier: string | null;
+    ticketId: string | null;
+    outcomes: GateBriefOutcome[];
+    waitingFor: string | null;
+  };
+  lookAt: {
+    headline: string;
+    items: GateBriefLookAtItem[];
+    /** Absence, stated. Null when there IS something to look at. */
+    nothingThere: string | null;
+  };
+  checked: {
+    headline: string;
+    ok: boolean | null;
+    detail: string | null;
+    machine: string[];
+  };
+  history: string[];
+  reviewPasses: ApprovalBriefReviewPass[];
+  machine: {
+    approvalId: string;
+    caseId: string;
+    pipelineKey: string;
+    stepKey: string;
+    workVersion: number;
+  };
+};
+
+export type FlowGateBrief =
   | { available: false; reason: string }
   | {
       available: true;
+      kind: "flow_gate";
       decision: {
         headline: string;
         subject: string | null;
@@ -133,6 +196,10 @@ export type ApprovalBrief =
         ticketType: string | null;
       };
     };
+
+/** One route, two shapes, discriminated by `kind`. A consumer that only
+ *  understands one must check it rather than sniff for fields. */
+export type ApprovalBrief = FlowGateBrief | PipelineGateBrief;
 
 export const approvalsApi = {
   list: (companyId: string, status?: string) =>

@@ -173,6 +173,10 @@ export interface PipelineCaseDetail {
   stage: PipelineStage;
   pipeline: PipelineDetail;
   allowedNextStages: PipelineStage[];
+  /** The OPEN decision on this item, when it is sitting at one — how the
+   *  review panel fetches its DECISION BRIEF (GET /approvals/:id/brief).
+   *  Null means the panel falls back to the gate's own question. */
+  gateApprovalId?: string | null;
   links: PipelineCaseIssueLink[];
   blockers: PipelineCaseBlocker[];
   blocks: PipelineCaseBlocker[];

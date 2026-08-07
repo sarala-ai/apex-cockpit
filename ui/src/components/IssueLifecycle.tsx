@@ -40,6 +40,7 @@ import {
 } from "../lib/issue-lifecycle";
 import { reviewDecisionActions, reviewDecisionConfigFromStageConfig } from "../lib/review-decision";
 import { describeStepHold } from "../lib/step-hold";
+import { GateBrief } from "./GateBrief";
 
 export function IssueLifecycle({
   issue,
@@ -199,11 +200,17 @@ function IssueLifecycleGate({
             </p>
           </div>
 
-          {review.question ? (
-            <p className="text-sm font-medium" data-testid="issue-lifecycle-gate-question">
-              {review.question}
-            </p>
-          ) : null}
+          {/*
+            WHAT is being decided — the artifact, not a label.
+            The ticket used to show `review.question` alone: the gate prompt
+            its process was seeded with, written before this ticket existed.
+            The brief carries the same question plus what the last step
+            produced, what was already checked, and what has happened here
+            before, so the decision is answerable without leaving the page.
+            Same module the item page renders, so it cannot read two ways.
+          */}
+          <GateBrief approvalId={review.approvalId} fallbackQuestion={review.question} />
+
 
           {canDecideHere ? (
             <div className="space-y-3">

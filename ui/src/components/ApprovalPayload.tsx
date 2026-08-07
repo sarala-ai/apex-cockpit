@@ -7,6 +7,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { formatWaitingFor } from "../lib/approval-waiting";
 import { resolveArtifactRenderer } from "./artifact-renderers";
 import { ReviewPassChecklist } from "./ReviewPassChecklist";
+import { GateBriefBody } from "./GateBrief";
 
 export const typeLabel: Record<string, string> = {
   hire_agent: "Hire Agent",
@@ -378,6 +379,23 @@ export function FlowGatePayload({
           No decision brief could be assembled for this gate
           {data && "reason" in data && data.reason ? ` (${data.reason})` : ""}.
         </p>
+      </div>
+    );
+  }
+
+  // A PIPELINE gate — every gate a seeded lifecycle opens — is a different
+  // brief with a different spine (the upstream step's own artifact, rather
+  // than a pull request reached through an acceptance declaration). It is
+  // rendered by the SAME module the ticket and the item page render, so one
+  // decision cannot read three ways depending on where you found it.
+  if (data.kind === "pipeline_gate") {
+    return (
+      <div className="mt-4">
+        <GateBriefBody
+          brief={data}
+          acknowledgedReviewPasses={acknowledgedReviewPasses}
+          onAcknowledgedReviewPassesChange={onAcknowledgedReviewPassesChange}
+        />
       </div>
     );
   }

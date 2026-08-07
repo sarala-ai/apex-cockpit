@@ -54,6 +54,10 @@ export function shapeIssueLinkedCase(row: {
   /** Every stage key → name in this case's pipeline. Only read for a pending
    *  review, so callers may skip the lookup when nothing is waiting. */
   stageNames?: Record<string, string>;
+  /** The open decision's approval id, when there is one. The DECISION BRIEF
+   *  is served by approval id (GET /approvals/:id/brief), so without this the
+   *  ticket can show a gate and nothing to decide it on. */
+  gateApprovalId?: string | null;
   /** The step that stopped, when one has. Passed in rather than queried here
    *  so this stays testable without a database, exactly as the review shaping
    *  is. */
@@ -95,6 +99,13 @@ export function shapeIssueLinkedCase(row: {
          * humaniser's is "Removed".
          */
         stageNames: row.stageNames ?? {},
+        /**
+         * What this decision is actually ABOUT — the brief, served by
+         * approval id. Null is honest and rendered as such: the decision is
+         * still answerable from the buttons, it just arrives without the
+         * artifact behind it.
+         */
+        approvalId: row.gateApprovalId ?? null,
       }
       : null,
     /**
