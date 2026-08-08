@@ -89,6 +89,8 @@ interface ClaudeExecutionInput {
   runtimeCommandSpec?: AdapterExecutionContext["runtimeCommandSpec"];
   executionTarget?: ReturnType<typeof readAdapterExecutionTarget>;
   authToken?: string;
+  /** Extra per-run environment variables injected by the server (e.g. PAPERCLIP_MCP_TOKEN). */
+  extraEnv?: Record<string, string>;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
 }
 
@@ -297,6 +299,14 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     }
   }
 
+  // Merge per-run server-injected vars (e.g. PAPERCLIP_MCP_TOKEN) after the
+  // adapter's own env-building so they are never silently overwritten.
+  if (input.extraEnv) {
+    for (const [k, v] of Object.entries(input.extraEnv)) {
+      env[k] = v;
+    }
+  }
+
   const runtimeEnv = Object.fromEntries(
     Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
@@ -405,7 +415,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     await ctx.onLog("stderr", formatClaudeAcpFallbackMessage(engineSelection.fallbackReason));
   }
 
-  const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
+  const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken, extraEnv } = ctx;
   const executionTarget = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
@@ -457,6 +467,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     runtimeCommandSpec: ctx.runtimeCommandSpec,
     executionTarget,
     authToken,
+    extraEnv,
     onLog,
   });
   const {
