@@ -30,13 +30,15 @@
  */
 import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { heartbeatRuns, issues } from "@paperclipai/db";
+import { agents, heartbeatRuns, issues } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import {
   applyGovernedAdapterConfigOverride,
   clearGovernedAdapterConfigOverride,
   derivePermissionPolicy,
 } from "./run-policy.js";
+import { readBuiltInAgentMarker } from "../../services/built-in-agent-metadata.js";
+import { APEX_CHARTER_VERSIONS } from "../../services/apex-agent-roster.js";
 
 /** The wake reason and context marker a commissioned step run carries.
  *
@@ -143,6 +145,43 @@ export async function commissionBoundedAgentRun(
       const { heartbeatService } = await import("../../services/heartbeat.js");
       return heartbeatService(db).wakeup(agentId, request as never);
     });
+  // Build the identity bundle for eval attribution (APEX-68 T5). Best-effort:
+  // a failure to fetch the agent record produces a null bundle, not a commission
+  // failure. The contextSnapshot is immutable after dispatch so this must happen
+  // before the wake call.
+  const identityBundle = await (async () => {
+    try {
+      const agentRow = await db
+        .select({ metadata: agents.metadata, adapterConfig: agents.adapterConfig })
+        .from(agents)
+        .where(eq(agents.id, commission.agentId))
+        .then((rows) => rows[0] ?? null);
+      if (!agentRow) return null;
+      const marker = readBuiltInAgentMarker(agentRow.metadata);
+      if (!marker) return null;
+      const charterVersion = APEX_CHARTER_VERSIONS[marker.key] ?? null;
+      if (!charterVersion) return null;
+      const config = agentRow.adapterConfig;
+      const rawDesiredSkills = (config as Record<string, unknown>)?.paperclipSkillSync;
+      const desiredSkills =
+        rawDesiredSkills &&
+        typeof rawDesiredSkills === "object" &&
+        !Array.isArray(rawDesiredSkills) &&
+        Array.isArray((rawDesiredSkills as Record<string, unknown>).desiredSkills)
+          ? ((rawDesiredSkills as Record<string, unknown>).desiredSkills as unknown[]).filter(
+              (s): s is string => typeof s === "string",
+            )
+          : [];
+      return {
+        charter: { name: `charter/${marker.key}`, version: charterVersion },
+        skills: desiredSkills.map((slug) => ({ slug })),
+      };
+    } catch (err) {
+      logger.warn({ err, agentId: commission.agentId }, "commission: failed to build identity bundle — omitting from contextSnapshot");
+      return null;
+    }
+  })();
+
   const run = await wake(commission.agentId, {
     source: "automation",
     triggerDetail: "system",
@@ -155,6 +194,7 @@ export async function commissionBoundedAgentRun(
       processName: commission.definitionName,
       stepKey: commission.stepKey,
       [STEP_AGENT_CONTEXT_KEY]: true,
+      ...(identityBundle ? { identityBundle } : {}),
     },
   });
   if (!run) return null;
