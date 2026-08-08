@@ -13,10 +13,12 @@ const JWT_ALGORITHM = "HS256";
 export const COCKPIT_MCP_AUDIENCE = "cockpit-mcp";
 
 export interface CockpitMcpJwtClaims {
-  sub: string; // agentId
+  sub: string; // agentId (run tokens) or userId (user tokens)
+  token_kind: "run" | "user";
   company_id: string;
-  run_id: string;
-  adapter_type: string;
+  run_id: string | null; // null for user-scoped (OAuth) tokens
+  user_id: string | null; // null for run-scoped tokens
+  adapter_type: string | null; // null for user-scoped tokens
   granted_capabilities: string[];
   issue_id?: string | null;
   case_id?: string | null;
@@ -90,8 +92,10 @@ export function mintCockpitMcpJwt(input: {
   const now = Math.floor(Date.now() / 1000);
   const claims: CockpitMcpJwtClaims = {
     sub: input.agentId,
+    token_kind: "run",
     company_id: input.companyId,
     run_id: input.runId,
+    user_id: null,
     adapter_type: input.adapterType,
     granted_capabilities: input.grantedCapabilities,
     issue_id: input.issueId ?? null,
@@ -104,10 +108,48 @@ export function mintCockpitMcpJwt(input: {
     instance_id: cfg.instanceId,
   };
 
+  return signClaims(cfg.secret, cfg.instanceId, claims);
+}
+
+/**
+ * Mint a user-scoped access token for the OAuth 2.1 external-host flow (T7).
+ * No run identity: run_id/adapter_type are null, audit rows carry user_id.
+ */
+export function mintCockpitMcpUserJwt(input: {
+  userId: string;
+  companyId: string;
+  grantedCapabilities: string[];
+}): string | null {
+  const cfg = jwtConfig();
+  if (!cfg) return null;
+
+  const now = Math.floor(Date.now() / 1000);
+  const claims: CockpitMcpJwtClaims = {
+    sub: input.userId,
+    token_kind: "user",
+    company_id: input.companyId,
+    run_id: null,
+    user_id: input.userId,
+    adapter_type: null,
+    granted_capabilities: input.grantedCapabilities,
+    issue_id: null,
+    case_id: null,
+    project_id: null,
+    iat: now,
+    exp: now + cfg.ttlSeconds,
+    iss: cfg.issuer,
+    aud: COCKPIT_MCP_AUDIENCE,
+    instance_id: cfg.instanceId,
+  };
+
+  return signClaims(cfg.secret, cfg.instanceId, claims);
+}
+
+function signClaims(masterSecret: string, instanceId: string, claims: CockpitMcpJwtClaims): string {
   const header = { alg: JWT_ALGORITHM, typ: "JWT" };
   const signingInput =
     `${base64UrlEncode(JSON.stringify(header))}.${base64UrlEncode(JSON.stringify(claims))}`;
-  const key = deriveSigningKey(cfg.secret, input.companyId, cfg.instanceId);
+  const key = deriveSigningKey(masterSecret, claims.company_id, instanceId);
   return `${signingInput}.${signPayload(key, signingInput)}`;
 }
 
@@ -146,8 +188,13 @@ export function verifyCockpitMcpJwt(token: string | null | undefined): CockpitMc
 
   const sub = typeof raw.sub === "string" ? raw.sub : null;
   const runId = typeof raw.run_id === "string" ? raw.run_id : null;
+  const userId = typeof raw.user_id === "string" ? raw.user_id : null;
   const adapterType = typeof raw.adapter_type === "string" ? raw.adapter_type : null;
-  if (!sub || !runId || !adapterType) return { ok: false, reason: "malformed" };
+  // token_kind was introduced with T7; run tokens minted before it lack the claim.
+  const tokenKind = raw.token_kind === "user" ? "user" : "run";
+  if (!sub) return { ok: false, reason: "malformed" };
+  if (tokenKind === "run" && (!runId || !adapterType)) return { ok: false, reason: "malformed" };
+  if (tokenKind === "user" && !userId) return { ok: false, reason: "malformed" };
 
   const caps = Array.isArray(raw.granted_capabilities)
     ? (raw.granted_capabilities as unknown[]).filter((c): c is string => typeof c === "string")
@@ -157,9 +204,11 @@ export function verifyCockpitMcpJwt(token: string | null | undefined): CockpitMc
     ok: true,
     claims: {
       sub,
+      token_kind: tokenKind,
       company_id: companyId,
-      run_id: runId,
-      adapter_type: adapterType,
+      run_id: tokenKind === "run" ? runId : null,
+      user_id: tokenKind === "user" ? userId : null,
+      adapter_type: tokenKind === "run" ? adapterType : null,
       granted_capabilities: caps,
       issue_id: typeof raw.issue_id === "string" ? raw.issue_id : null,
       case_id: typeof raw.case_id === "string" ? raw.case_id : null,

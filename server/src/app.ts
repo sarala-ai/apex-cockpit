@@ -64,6 +64,7 @@ import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { mcpRoutes, registerCockpitMcpWithGateway } from "./mcp/router.js";
+import { oauthRoutes } from "./mcp/oauth.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
@@ -373,6 +374,13 @@ export async function createApp(
 
   // Cockpit MCP server — streamable-HTTP transport (APEX-35)
   app.use(mcpRoutes(db));
+  // OAuth 2.1 + PKCE flow for external MCP hosts (APEX-35 T7)
+  app.use(
+    oauthRoutes(db, {
+      resolveUserId: async (req) => (await opts.resolveSession?.(req))?.user?.id ?? null,
+      expectedResource: process.env.PAPERCLIP_COCKPIT_MCP_URL?.trim() || undefined,
+    }),
+  );
   app.use(pluginUiStaticRoutes(db, {
     localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
   }));

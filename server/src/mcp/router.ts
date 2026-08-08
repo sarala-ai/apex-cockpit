@@ -4,7 +4,8 @@
  * Identity model:
  *   - Dispatched runs: bearer JWT with aud "cockpit-mcp", minted at dispatch.
  *   - Chat-panel: same JWT bearer, capability set restricted to draft:write.
- *   - External hosts: OAuth 2.1 + PKCE (T7, not yet implemented; endpoint returns 501).
+ *   - External hosts: OAuth 2.1 + PKCE (T7, see ./oauth.ts) — the access token
+ *     is a user-scoped cockpit-mcp JWT verified by the same middleware.
  *
  * Every request follows the pattern:
  *   1. Extract + verify JWT → 401 on failure.
@@ -45,21 +46,23 @@ async function writeAuditRow(
     errorMessage?: string;
   },
 ): Promise<void> {
+  const isUser = input.claims.token_kind === "user";
   try {
     await db.insert(activityLog).values({
       companyId: input.claims.company_id,
-      actorType: "agent",
+      actorType: isUser ? "user" : "agent",
       actorId: input.claims.sub,
       action: "mcp_tool_call",
       entityType: "mcp_tool",
       entityId: input.tool,
-      agentId: input.claims.sub,
+      agentId: isUser ? null : input.claims.sub,
       runId: input.claims.run_id,
       details: {
         tool: input.tool,
         requiredCapability: input.requiredCapability,
         outcome: input.outcome,
         runId: input.claims.run_id,
+        userId: input.claims.user_id,
         grantedCapabilities: input.claims.granted_capabilities,
         issueId: input.claims.issue_id ?? null,
         caseId: input.claims.case_id ?? null,
@@ -87,6 +90,21 @@ function requireCapability(claims: CockpitMcpJwtClaims, cap: string, tool: strin
   if (!claims.granted_capabilities.includes(cap)) {
     throw new CapabilityDeniedError(tool, cap);
   }
+}
+
+/**
+ * Board writes attribute to an agent + run (FK columns); user-scoped OAuth
+ * tokens carry neither, so writes stay denied even if such a token were ever
+ * minted with board:write.
+ */
+function requireRunIdentity(
+  claims: CockpitMcpJwtClaims,
+  tool: string,
+): { agentId: string; runId: string } {
+  if (claims.token_kind !== "run" || !claims.run_id) {
+    throw new CapabilityDeniedError(tool, "run-identity");
+  }
+  return { agentId: claims.sub, runId: claims.run_id };
 }
 
 // draft:write auto-attenuation: tools excluded from draft-write sessions
@@ -274,11 +292,8 @@ function buildMcpServer(db: Db, claims: CockpitMcpJwtClaims): McpServer {
     async ({ issueId, body }) => {
       return handleWithAudit(db, claims, "createComment", CAP_BOARD_WRITE, async () => {
         requireCapability(claims, CAP_BOARD_WRITE, "createComment");
-        const comment = await svc.addComment(
-          issueId,
-          body,
-          { agentId: claims.sub, runId: claims.run_id },
-        );
+        const runIdentity = requireRunIdentity(claims, "createComment");
+        const comment = await svc.addComment(issueId, body, runIdentity);
         if (!comment) {
           return {
             content: [{ type: "text" as const, text: JSON.stringify({ error: "Issue not found" }) }],
@@ -303,11 +318,12 @@ function buildMcpServer(db: Db, claims: CockpitMcpJwtClaims): McpServer {
     async ({ title, description, projectId }) => {
       return handleWithAudit(db, claims, "createIssue", CAP_BOARD_WRITE, async () => {
         requireCapability(claims, CAP_BOARD_WRITE, "createIssue");
+        const runIdentity = requireRunIdentity(claims, "createIssue");
         const issue = await svc.create(claims.company_id, {
           title,
           description: description ?? null,
           projectId: projectId ?? null,
-          actorRunId: claims.run_id,
+          actorRunId: runIdentity.runId,
         });
         return {
           content: [{ type: "text" as const, text: JSON.stringify({ issue }) }],
@@ -329,6 +345,7 @@ function buildMcpServer(db: Db, claims: CockpitMcpJwtClaims): McpServer {
       async ({ issueId, title, description, status }) => {
         return handleWithAudit(db, claims, "updateIssue", CAP_BOARD_WRITE, async () => {
           requireCapability(claims, CAP_BOARD_WRITE, "updateIssue");
+          const runIdentity = requireRunIdentity(claims, "updateIssue");
           const existing = await svc.getById(issueId);
           if (!existing || existing.companyId !== claims.company_id) {
             return {
@@ -336,7 +353,7 @@ function buildMcpServer(db: Db, claims: CockpitMcpJwtClaims): McpServer {
               isError: true,
             };
           }
-          const patch: Record<string, unknown> = { actorAgentId: claims.sub };
+          const patch: Record<string, unknown> = { actorAgentId: runIdentity.agentId };
           if (title !== undefined) patch.title = title;
           if (description !== undefined) patch.description = description;
           if (status !== undefined) patch.status = status;
@@ -412,6 +429,17 @@ export function mcpRoutes(db: Db): Router {
     try {
       await server.connect(transport);
       await transport.handleRequest(req, res, req.body);
+      // tools/list is served inside the SDK, so it can't go through
+      // handleWithAudit — audit it here to keep "every call writes a row".
+      const rpcMethod = (req.body as { method?: unknown } | undefined)?.method;
+      if (rpcMethod === "tools/list") {
+        await writeAuditRow(db, {
+          claims,
+          tool: "tools/list",
+          requiredCapability: "none",
+          outcome: "ok",
+        });
+      }
     } catch (err) {
       logger.error({ err, runId: claims.run_id }, "MCP request handling failed");
       if (!res.headersSent) {
