@@ -18,10 +18,12 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
-import { activityLog } from "@paperclipai/db";
+import { activityLog, issues } from "@paperclipai/db";
+import { and, asc, eq, ilike } from "drizzle-orm";
 import { verifyCockpitMcpJwt, type CockpitMcpJwtClaims } from "./cockpit-mcp-jwt.js";
 import { GatewayClient } from "../gateway/gateway-client.js";
 import { logger } from "../middleware/logger.js";
+import { issueService } from "../services/issues.js";
 
 // ─── Capabilities ────────────────────────────────────────────────────────────
 
@@ -143,6 +145,8 @@ function buildMcpServer(db: Db, claims: CockpitMcpJwtClaims): McpServer {
 
   // T4 — Board API read tools
 
+  const svc = issueService(db);
+
   server.tool(
     "listIssues",
     "List issues for the authenticated run's company",
@@ -154,15 +158,26 @@ function buildMcpServer(db: Db, claims: CockpitMcpJwtClaims): McpServer {
     async ({ projectId, status, limit }) => {
       return handleWithAudit(db, claims, "listIssues", CAP_BOARD_READ, async () => {
         requireCapability(claims, CAP_BOARD_READ, "listIssues");
-        // In-process service call (T4 implementation stub — returns empty list until
-        // the service layer integration is wired in a follow-up heartbeat).
+        const conditions = [eq(issues.companyId, claims.company_id)];
+        if (projectId) conditions.push(eq(issues.projectId, projectId));
+        if (status) conditions.push(eq(issues.status, status));
+        const rows = await db
+          .select({
+            id: issues.id,
+            identifier: issues.identifier,
+            title: issues.title,
+            status: issues.status,
+            projectId: issues.projectId,
+            assigneeAgentId: issues.assigneeAgentId,
+            createdAt: issues.createdAt,
+            updatedAt: issues.updatedAt,
+          })
+          .from(issues)
+          .where(and(...conditions))
+          .orderBy(asc(issues.createdAt))
+          .limit(limit ?? 50);
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({ issues: [], companyId: claims.company_id, projectId, status, limit }),
-            },
-          ],
+          content: [{ type: "text" as const, text: JSON.stringify({ issues: rows }) }],
         };
       });
     },
@@ -177,13 +192,15 @@ function buildMcpServer(db: Db, claims: CockpitMcpJwtClaims): McpServer {
     async ({ issueId }) => {
       return handleWithAudit(db, claims, "getIssue", CAP_BOARD_READ, async () => {
         requireCapability(claims, CAP_BOARD_READ, "getIssue");
+        const issue = await svc.getById(issueId);
+        if (!issue || issue.companyId !== claims.company_id) {
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({ error: "Issue not found" }) }],
+            isError: true,
+          };
+        }
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({ issue: null, issueId, companyId: claims.company_id }),
-            },
-          ],
+          content: [{ type: "text" as const, text: JSON.stringify({ issue }) }],
         };
       });
     },
@@ -194,17 +211,26 @@ function buildMcpServer(db: Db, claims: CockpitMcpJwtClaims): McpServer {
     "List comments on an issue",
     {
       issueId: z.string().uuid().describe("Issue ID"),
+      limit: z.number().int().min(1).max(200).optional().default(50),
     },
-    async ({ issueId }) => {
+    async ({ issueId, limit }) => {
       return handleWithAudit(db, claims, "listComments", CAP_BOARD_READ, async () => {
         requireCapability(claims, CAP_BOARD_READ, "listComments");
+        // verify issue belongs to this company
+        const issue = await db
+          .select({ companyId: issues.companyId })
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, claims.company_id)))
+          .then((rows) => rows[0] ?? null);
+        if (!issue) {
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({ error: "Issue not found" }) }],
+            isError: true,
+          };
+        }
+        const comments = await svc.listComments(issueId, { order: "asc", limit });
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({ comments: [], issueId, companyId: claims.company_id }),
-            },
-          ],
+          content: [{ type: "text" as const, text: JSON.stringify({ comments }) }],
         };
       });
     },
@@ -248,13 +274,19 @@ function buildMcpServer(db: Db, claims: CockpitMcpJwtClaims): McpServer {
     async ({ issueId, body }) => {
       return handleWithAudit(db, claims, "createComment", CAP_BOARD_WRITE, async () => {
         requireCapability(claims, CAP_BOARD_WRITE, "createComment");
+        const comment = await svc.addComment(
+          issueId,
+          body,
+          { agentId: claims.sub, runId: claims.run_id },
+        );
+        if (!comment) {
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({ error: "Issue not found" }) }],
+            isError: true,
+          };
+        }
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({ comment: null, issueId, body, companyId: claims.company_id }),
-            },
-          ],
+          content: [{ type: "text" as const, text: JSON.stringify({ comment }) }],
         };
       });
     },
@@ -271,13 +303,14 @@ function buildMcpServer(db: Db, claims: CockpitMcpJwtClaims): McpServer {
     async ({ title, description, projectId }) => {
       return handleWithAudit(db, claims, "createIssue", CAP_BOARD_WRITE, async () => {
         requireCapability(claims, CAP_BOARD_WRITE, "createIssue");
+        const issue = await svc.create(claims.company_id, {
+          title,
+          description: description ?? null,
+          projectId: projectId ?? null,
+          actorRunId: claims.run_id,
+        });
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({ issue: null, title, description, projectId, companyId: claims.company_id }),
-            },
-          ],
+          content: [{ type: "text" as const, text: JSON.stringify({ issue }) }],
         };
       });
     },
@@ -296,13 +329,20 @@ function buildMcpServer(db: Db, claims: CockpitMcpJwtClaims): McpServer {
       async ({ issueId, title, description, status }) => {
         return handleWithAudit(db, claims, "updateIssue", CAP_BOARD_WRITE, async () => {
           requireCapability(claims, CAP_BOARD_WRITE, "updateIssue");
+          const existing = await svc.getById(issueId);
+          if (!existing || existing.companyId !== claims.company_id) {
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({ error: "Issue not found" }) }],
+              isError: true,
+            };
+          }
+          const patch: Record<string, unknown> = { actorAgentId: claims.sub };
+          if (title !== undefined) patch.title = title;
+          if (description !== undefined) patch.description = description;
+          if (status !== undefined) patch.status = status;
+          const issue = await svc.update(issueId, patch);
           return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify({ issue: null, issueId, title, description, status }),
-              },
-            ],
+            content: [{ type: "text" as const, text: JSON.stringify({ issue }) }],
           };
         });
       },
