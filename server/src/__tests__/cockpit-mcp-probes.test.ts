@@ -5,11 +5,20 @@
  * Probe B: run JWT + board:read only → createComment denied + audit row "denied".
  * Probe C: headless OAuth 2.1 + PKCE flow → tools/list succeeds with a
  *          user-scoped identity (userId set, runId null) in the audit row.
+ * Probe D: T11 stdio shim — initialize + tools/list over stdio match a direct
+ *          streamable-HTTP session with the same token; token accepted only
+ *          from PAPERCLIP_MCP_TOKEN; audit identity identical to direct HTTP.
  *
  * These tests run against an in-process express server backed by an embedded
  * postgres database — no external services required.
  */
 import { createHash, randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+import { PassThrough } from "node:stream";
+import type { AddressInfo } from "node:net";
+import type { Server } from "node:http";
 import express from "express";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import request from "supertest";
@@ -30,6 +39,7 @@ import {
 import { mcpRoutes } from "../mcp/router.js";
 import { oauthRoutes } from "../mcp/oauth.js";
 import { mintCockpitMcpJwt } from "../mcp/cockpit-mcp-jwt.js";
+import { resolveShimConfig, runStdioShim } from "../mcp/stdio-shim.js";
 
 // ─── MCP protocol helpers ─────────────────────────────────────────────────────
 
@@ -458,4 +468,177 @@ describeEmbeddedPostgres("cockpit MCP e2e probes (APEX-35 T10)", () => {
     expect(retry.status).toBe(400);
     expect(retry.body.error).toBe("invalid_grant");
   }, 20_000);
+
+  // ─── Probe D (T11) ─────────────────────────────────────────────────────────
+
+  type ShimSession = {
+    send: (message: unknown) => void;
+    nextMessage: () => Promise<Record<string, unknown>>;
+  };
+
+  // Run the shim against a real listening socket (not supertest) so the probe
+  // exercises the same HTTP path an external stdio host would.
+  async function withShim(token: string, fn: (session: ShimSession) => Promise<void>) {
+    const httpServer: Server = app.listen(0);
+    await new Promise<void>((resolve) => httpServer.once("listening", resolve));
+    const port = (httpServer.address() as AddressInfo).port;
+
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const pendingLines: string[] = [];
+    const waiters: Array<(line: string) => void> = [];
+    let buffered = "";
+    output.on("data", (chunk: Buffer) => {
+      buffered += chunk.toString("utf8");
+      let newlineIdx: number;
+      while ((newlineIdx = buffered.indexOf("\n")) >= 0) {
+        const line = buffered.slice(0, newlineIdx);
+        buffered = buffered.slice(newlineIdx + 1);
+        const waiter = waiters.shift();
+        if (waiter) waiter(line);
+        else pendingLines.push(line);
+      }
+    });
+
+    const shimDone = runStdioShim({
+      input,
+      output,
+      token,
+      url: `http://127.0.0.1:${port}/mcp`,
+    });
+
+    const session: ShimSession = {
+      send: (message) => {
+        input.write(`${JSON.stringify(message)}\n`);
+      },
+      nextMessage: () =>
+        new Promise((resolve) => {
+          const queued = pendingLines.shift();
+          if (queued !== undefined) resolve(JSON.parse(queued) as Record<string, unknown>);
+          else waiters.push((line) => resolve(JSON.parse(line) as Record<string, unknown>));
+        }),
+    };
+
+    try {
+      await fn(session);
+    } finally {
+      input.end();
+      await shimDone;
+      await new Promise<void>((resolve, reject) =>
+        httpServer.close((err) => (err ? reject(err) : resolve())),
+      );
+    }
+  }
+
+  it("Probe D: stdio shim initialize + tools/list match direct HTTP; audit identity identical", async () => {
+    const runId = randomUUID();
+    await seed(runId);
+    const token = mintReadOnlyJwt(runId);
+    expect(token).toBeTruthy();
+
+    // Direct streamable-HTTP session with the same token, for comparison.
+    await request(app)
+      .post("/mcp")
+      .set("Authorization", `Bearer ${token}`)
+      .set("Content-Type", "application/json")
+      .set("Accept", "application/json, text/event-stream")
+      .send(mcpInitialize())
+      .expect((res) => expect(res.status).toBe(200));
+    const directListRes = await request(app)
+      .post("/mcp")
+      .set("Authorization", `Bearer ${token}`)
+      .set("Content-Type", "application/json")
+      .set("Accept", "application/json, text/event-stream")
+      .send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+    expect(directListRes.status).toBe(200);
+    const directList = parseSseJsonRpc(directListRes.text ?? "");
+    expect(directList.error).toBeUndefined();
+
+    await withShim(token, async (shim) => {
+      shim.send(mcpInitialize());
+      const initResponse = await shim.nextMessage();
+      expect(initResponse.error).toBeUndefined();
+      const initResult = initResponse.result as Record<string, unknown>;
+      expect(initResult.serverInfo).toMatchObject({ name: "cockpit-mcp" });
+
+      shim.send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+      const listResponse = await shim.nextMessage();
+      expect(listResponse.error).toBeUndefined();
+      // Byte-equivalent to the direct-HTTP session, modulo transport framing.
+      expect(JSON.stringify(listResponse.result)).toBe(JSON.stringify(directList.result));
+
+      shim.send(mcpToolCall(3, "listIssues", {}));
+      const toolResponse = await shim.nextMessage();
+      expect(toolResponse.error).toBeUndefined();
+      const result = toolResponse.result as Record<string, unknown>;
+      const text: string = (result.content as Array<{ text: string }>)?.[0]?.text ?? "";
+      expect(Array.isArray(JSON.parse(text).issues)).toBe(true);
+    });
+
+    // Audit rows via the shim carry identity identical to direct-HTTP calls.
+    const auditRows = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.runId, runId));
+    const listIssueRows = auditRows.filter(
+      (r) => (r.details as Record<string, unknown>)?.tool === "listIssues",
+    );
+    expect(listIssueRows.length).toBe(1); // only the shim called listIssues
+    const shimRow = listIssueRows[0]!;
+    expect(shimRow.runId).toBe(runId);
+    expect(shimRow.agentId).toBe(agentId);
+    expect((shimRow.details as Record<string, unknown>).outcome).toBe("ok");
+    // tools/list was called once directly and once via the shim; both rows
+    // must carry the same identity content.
+    const toolsListRows = auditRows.filter(
+      (r) => (r.details as Record<string, unknown>)?.tool === "tools/list",
+    );
+    expect(toolsListRows.length).toBe(2);
+    for (const row of toolsListRows) {
+      expect(row.runId).toBe(runId);
+      expect(row.agentId).toBe(agentId);
+      expect((row.details as Record<string, unknown>).outcome).toBe("ok");
+    }
+  }, 30_000);
+});
+
+// ─── T11 shim config guards (no DB needed) ────────────────────────────────────
+
+describe("stdio shim config guards (APEX-35 T11)", () => {
+  const SHIM_PATH = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../mcp/stdio-shim.ts",
+  );
+
+  function runShimCli(env: Record<string, string>, args: string[] = []) {
+    return spawnSync(process.execPath, ["--import", "tsx", SHIM_PATH, ...args], {
+      cwd: path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../.."),
+      env: { ...process.env, PAPERCLIP_MCP_TOKEN: "", PAPERCLIP_MCP_URL: "", ...env },
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+  }
+
+  it("rejects tokens passed via argv or flags", () => {
+    expect(resolveShimConfig({ PAPERCLIP_MCP_URL: "http://x/mcp" }, ["--token=abc"]).ok).toBe(false);
+    expect(resolveShimConfig({ PAPERCLIP_MCP_URL: "http://x/mcp" }, ["abc.def.ghi"]).ok).toBe(false);
+
+    const result = runShimCli(
+      { PAPERCLIP_MCP_TOKEN: "env-token", PAPERCLIP_MCP_URL: "http://127.0.0.1:9/mcp" },
+      ["--token=argv-token"],
+    );
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("no arguments");
+  }, 40_000);
+
+  it("exits nonzero without PAPERCLIP_MCP_TOKEN and never opens an anonymous session", () => {
+    const unset = resolveShimConfig({ PAPERCLIP_MCP_URL: "http://x/mcp" }, []);
+    expect(unset.ok).toBe(false);
+    if (!unset.ok) expect(unset.error).toContain("PAPERCLIP_MCP_TOKEN");
+
+    const result = runShimCli({ PAPERCLIP_MCP_URL: "http://127.0.0.1:9/mcp" });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("PAPERCLIP_MCP_TOKEN");
+    expect(result.stderr).toContain("anonymous");
+  }, 40_000);
 });
