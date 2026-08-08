@@ -896,7 +896,7 @@ async function buildRuntime(input: {
   ctx: AdapterExecutionContext;
   engine: AcpxEngineSettings;
 }): Promise<AcpxPreparedRuntime> {
-  const { runId, agent, config, context, authToken } = input.ctx;
+  const { runId, agent, config, context, authToken, extraEnv } = input.ctx;
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const secretsContext = parseObject(context.paperclipSecrets);
   const secretManifest = Array.isArray(secretsContext.manifest) ? secretsContext.manifest : [];
@@ -998,6 +998,11 @@ async function buildRuntime(input: {
     if (typeof value === "string") env[key] = value;
   }
   if (!hasExplicitApiKey && authToken) env.PAPERCLIP_API_KEY = authToken;
+  if (extraEnv) {
+    for (const [k, v] of Object.entries(extraEnv)) {
+      env[k] = v;
+    }
+  }
   // Close the observability loop (EMITTER side): when an OTLP endpoint is
   // configured (APEX_OTLP_ENDPOINT), stamp the spawned coding agent's env with
   // the OTel exporter endpoint + our correlation spine as resource attributes so

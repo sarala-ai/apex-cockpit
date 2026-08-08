@@ -63,6 +63,7 @@ import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
+import { mcpRoutes, registerCockpitMcpWithGateway } from "./mcp/router.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
@@ -369,6 +370,9 @@ export async function createApp(
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });
   });
+
+  // Cockpit MCP server — streamable-HTTP transport (APEX-35)
+  app.use(mcpRoutes(db));
   app.use(pluginUiStaticRoutes(db, {
     localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
   }));
@@ -573,6 +577,9 @@ export async function createApp(
       );
     }
   };
+  void registerCockpitMcpWithGateway(opts.serverPort).catch((err) => {
+    logger.error({ err }, "cockpit-mcp gateway self-registration failed (non-fatal)");
+  });
   void ensureBundledKubernetesPlugin()
     .then(() => loader.loadAll())
     .then((result) => {

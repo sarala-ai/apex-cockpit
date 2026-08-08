@@ -75,6 +75,7 @@ import type {
   UsageSummary,
 } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
+import { mintCockpitMcpJwt } from "../mcp/cockpit-mcp-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
@@ -12301,6 +12302,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
+      // Mint a cockpit-mcp-audience JWT so the run can reach board tools via MCP
+      // without a static API key (APEX-35/T8). Default capability set: full read
+      // + write for local_trusted runs (lifecycle run-policy attenuation is a
+      // follow-up once the policy schema exists). Never mint anonymously — the
+      // token always carries agentId + runId so audit rows have identity.
+      const mcpToken = adapter.supportsLocalAgentJwt
+        ? mintCockpitMcpJwt({
+          agentId: agent.id,
+          companyId: agent.companyId,
+          runId: run.id,
+          adapterType: agent.adapterType,
+          grantedCapabilities: ["board:read", "board:write"],
+          issueId: issueRef?.id ?? null,
+        })
+        : null;
+      const extraEnv: Record<string, string> | undefined = mcpToken
+        ? { PAPERCLIP_MCP_TOKEN: mcpToken }
+        : undefined;
       let adapterFinalizeOutcome: "succeeded" | "failed" | null = null;
       const inspectFinalizeWorkspaceBranch = async () => {
         const workspaceRecord = persistedExecutionWorkspace?.id
@@ -12508,6 +12527,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             });
           },
           authToken: authToken ?? undefined,
+          extraEnv,
         });
         // Adapter returned cleanly, which means its workspace-restore finally
         // block also ran without throwing. Record the workspace_finalize
