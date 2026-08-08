@@ -108,6 +108,18 @@ import type { BuiltInAgentDefinition } from "./built-in-agents.js";
 
 const BUILT_INS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../built-ins/agents");
 
+/**
+ * Semver versions for each agent's charter file (the AGENTS.md that lands as
+ * the system prompt via instructionsFilePath). Bump when the file's load-bearing
+ * rules change — the version is stamped into heartbeat_runs.contextSnapshot
+ * as part of the identity bundle so APEX-46 first-pass-yield is attributable
+ * per bundle version (APEX-68 T1/T5).
+ */
+export const APEX_CHARTER_VERSIONS: Record<string, string> = {
+  [/* implementer */ "implementer"]: "1.0",
+  [/* specifier  */ "specifier"]: "1.0",
+};
+
 function instructions(key: string): string {
   return readFileSync(path.join(BUILT_INS_DIR, key, "AGENTS.md"), "utf8");
 }
@@ -162,6 +174,16 @@ const RAW_APEX_AGENT_ROSTER: BuiltInAgentDefinition[] = [
     // and the only one that can change source code.
     defaultPermissionProfile: "bounded",
     defaultPermissions: { canCreateAgents: false, canCreateSkills: false },
+    // instructionsFilePath: charter mounts as the CLI system prompt (APEX-68 T1).
+    // paperclipSkillSync: craft skills synced into every run workspace (APEX-68 T3).
+    // Permission keys (dangerouslySkipPermissions, allowedTools) are injected by
+    // withGovernedAdapterConfig so they stay in sync with the profile above.
+    defaultAdapterConfig: {
+      instructionsFilePath: path.join(BUILT_INS_DIR, "implementer", "AGENTS.md"),
+      paperclipSkillSync: {
+        desiredSkills: ["pr-delivery", "review-response"],
+      },
+    },
     allowedAdapterTypes: ROSTER_ADAPTER_TYPES,
     defaultBudgetMonthlyCents: 0,
     autoProvision: true,
@@ -181,6 +203,14 @@ const RAW_APEX_AGENT_ROSTER: BuiltInAgentDefinition[] = [
     // surfaces, which this grant does not govern — see the module doc.
     defaultPermissionProfile: "read-only-broad",
     defaultPermissions: { canCreateAgents: false, canCreateSkills: false },
+    // instructionsFilePath: charter mounts as the CLI system prompt (APEX-68 T1).
+    // paperclipSkillSync: craft skills synced into every run workspace (APEX-68 T3).
+    defaultAdapterConfig: {
+      instructionsFilePath: path.join(BUILT_INS_DIR, "specifier", "AGENTS.md"),
+      paperclipSkillSync: {
+        desiredSkills: ["spec-writing", "review-response"],
+      },
+    },
     allowedAdapterTypes: ROSTER_ADAPTER_TYPES,
     defaultBudgetMonthlyCents: 0,
     autoProvision: true,
@@ -352,12 +382,16 @@ const RAW_APEX_AGENT_ROSTER: BuiltInAgentDefinition[] = [
  * An entry may still set `defaultAdapterConfig` explicitly; that wins.
  */
 function withGovernedAdapterConfig(definition: BuiltInAgentDefinition): BuiltInAgentDefinition {
-  if (definition.defaultAdapterConfig) return definition;
   const profile = definition.defaultPermissionProfile;
   if (!profile) return definition;
+  // Always stamp the permission keys on top — they must match the profile and
+  // must not be overrideable by hand-authored defaultAdapterConfig fields. Any
+  // other keys (instructionsFilePath, paperclipSkillSync, …) in the definition's
+  // defaultAdapterConfig are preserved; the two permission keys win last.
   return {
     ...definition,
     defaultAdapterConfig: {
+      ...(definition.defaultAdapterConfig ?? {}),
       dangerouslySkipPermissions: false,
       allowedTools: nativeToolsForProfile(profile),
     },

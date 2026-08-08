@@ -76,6 +76,7 @@ import type {
 } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { mintCockpitMcpJwt } from "../mcp/cockpit-mcp-jwt.js";
+import { DEFAULT_MCP_GRANTED_CAPABILITIES } from "../apex/steps/run-policy.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
@@ -12303,17 +12304,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         );
       }
       // Mint a cockpit-mcp-audience JWT so the run can reach board tools via MCP
-      // without a static API key (APEX-35/T8). Default capability set: full read
-      // + write for local_trusted runs (lifecycle run-policy attenuation is a
-      // follow-up once the policy schema exists). Never mint anonymously — the
-      // token always carries agentId + runId so audit rows have identity.
+      // without a static API key (APEX-35/T8). Capability grant: read from the
+      // issue's governed adapter override (set by applyStepRunPermissionOverride
+      // at commission time) when present; else DEFAULT_MCP_GRANTED_CAPABILITIES.
+      // Never mint anonymously — the token always carries agentId + runId so
+      // audit rows have identity.
+      const overrideAdapterConfig = issueAssigneeOverrides?.adapterConfig;
+      const rawOverrideGranted = Array.isArray(overrideAdapterConfig?.grantedCapabilities)
+        ? (overrideAdapterConfig.grantedCapabilities as unknown[]).filter((c): c is string => typeof c === "string")
+        : null;
+      const mcpGrantedCapabilities: string[] = rawOverrideGranted ?? [...DEFAULT_MCP_GRANTED_CAPABILITIES];
       const mcpToken = adapter.supportsLocalAgentJwt
         ? mintCockpitMcpJwt({
           agentId: agent.id,
           companyId: agent.companyId,
           runId: run.id,
           adapterType: agent.adapterType,
-          grantedCapabilities: ["board:read", "board:write"],
+          grantedCapabilities: mcpGrantedCapabilities,
           issueId: issueRef?.id ?? null,
         })
         : null;

@@ -113,6 +113,15 @@ export type PermissionProfile = (typeof PERMISSION_PROFILES)[number];
 
 export const DEFAULT_PERMISSION_PROFILE: PermissionProfile = "bounded";
 
+/**
+ * The MCP JWT capability grant a step-commissioned run receives by default —
+ * full board read + write. Lifecycle nodes that declare a narrower
+ * `grantedCapabilities` field in their run policy get that set instead
+ * (T4 of APEX-68). Lives here so heartbeat.ts can reference the same
+ * constant rather than an inline literal.
+ */
+export const DEFAULT_MCP_GRANTED_CAPABILITIES = ["board:read", "board:write"] as const;
+
 /** Broad native READ tools only — no Edit/Write/Bash, no WebFetch/WebSearch
  *  (zero write, zero network). Used for "read-only-broad" and (v1) aliased
  *  "read-repos". Kept local (not adapter-exported): unlike SANDBOX_ALLOWED_
@@ -178,6 +187,13 @@ export type RunPermissionPolicy = {
   /** Verbatim pass-through of the node's declared MCP tool identifiers.
    *  Empty means "no narrowing" — see module doc's broad-read default note. */
   mcpTools: string[];
+  /**
+   * Capabilities to mint into the run's PAPERCLIP_MCP_TOKEN JWT.
+   * Defaults to DEFAULT_MCP_GRANTED_CAPABILITIES when the node declares none.
+   * Carried through the override so heartbeat reads it back at token-mint time
+   * rather than hardcoding the default inline (APEX-68 T4).
+   */
+  grantedCapabilities: string[];
   /** Non-fatal notes about this policy derivation worth surfacing in logs —
    *  e.g. "unrecognized profile, fell back to bounded", or the read-repos
    *  aliasing notice. Never throws; garbage input degrades to a note plus
@@ -276,11 +292,20 @@ export function derivePermissionPolicy(rawPermissions: unknown): RunPermissionPo
     notes.push("node declared non-array permissions.mcpTools — ignored");
   }
 
+  const rawGrantedCapabilities = raw?.grantedCapabilities;
+  const grantedCapabilities = Array.isArray(rawGrantedCapabilities)
+    ? rawGrantedCapabilities.filter((c): c is string => typeof c === "string" && c.trim().length > 0)
+    : [...DEFAULT_MCP_GRANTED_CAPABILITIES];
+  if (rawGrantedCapabilities !== undefined && !Array.isArray(rawGrantedCapabilities)) {
+    notes.push("node declared non-array permissions.grantedCapabilities — ignored, using default");
+  }
+
   return {
     profile,
     permissionMode: "governed",
     nativeTools: nativeToolsForProfile(profile),
     mcpTools,
+    grantedCapabilities,
     notes,
   };
 }
@@ -304,6 +329,7 @@ export function applyGovernedAdapterConfigOverride(
     ...(existingAdapterConfig ?? {}),
     dangerouslySkipPermissions: false,
     allowedTools: policy.nativeTools,
+    grantedCapabilities: policy.grantedCapabilities,
   };
 }
 
@@ -326,8 +352,9 @@ export function clearGovernedAdapterConfigOverride(
   existingAdapterConfig: Record<string, unknown> | null | undefined,
 ): Record<string, unknown> | null {
   if (!existingAdapterConfig) return existingAdapterConfig ?? null;
-  const { dangerouslySkipPermissions, allowedTools, ...rest } = existingAdapterConfig;
+  const { dangerouslySkipPermissions, allowedTools, grantedCapabilities, ...rest } = existingAdapterConfig;
   void dangerouslySkipPermissions;
   void allowedTools;
+  void grantedCapabilities;
   return Object.keys(rest).length > 0 ? rest : null;
 }
