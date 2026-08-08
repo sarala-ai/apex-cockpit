@@ -96,12 +96,13 @@ describe("derivePermissionPolicy", () => {
 });
 
 describe("applyGovernedAdapterConfigOverride / clearGovernedAdapterConfigOverride", () => {
-  it("sets dangerouslySkipPermissions=false and the profile's allowedTools grant", () => {
+  it("sets dangerouslySkipPermissions=false, the profile's allowedTools grant, and default grantedCapabilities", () => {
     const policy = derivePermissionPolicy({ profile: "bounded" });
     const merged = applyGovernedAdapterConfigOverride(null, policy);
     expect(merged).toEqual({
       dangerouslySkipPermissions: false,
       allowedTools: SANDBOX_ALLOWED_TOOLS,
+      grantedCapabilities: ["board:read", "board:write"],
     });
   });
 
@@ -121,7 +122,7 @@ describe("applyGovernedAdapterConfigOverride / clearGovernedAdapterConfigOverrid
     expect(fresh.allowedTools).toBe(READ_ONLY_BROAD_ALLOWED_TOOLS);
   });
 
-  it("clears exactly the two governed keys, preserving anything else set", () => {
+  it("clears the three governed keys, preserving anything else set", () => {
     const policy = derivePermissionPolicy({ profile: "bounded" });
     const merged = applyGovernedAdapterConfigOverride({ model: "claude-opus-4-6" }, policy);
     const cleared = clearGovernedAdapterConfigOverride(merged);
