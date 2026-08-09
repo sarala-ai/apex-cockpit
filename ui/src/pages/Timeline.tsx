@@ -197,6 +197,16 @@ function TimelineLegend() {
         Cancelled
       </span>
       <span className="flex items-center gap-1.5">
+        <span
+          className="h-2.5 w-4 rounded-sm border"
+          style={{
+            borderColor: TIMELINE_COLORS.blocked,
+            background: `repeating-linear-gradient(45deg, transparent, transparent 2px, ${TIMELINE_COLORS.blocked}88 2px, ${TIMELINE_COLORS.blocked}88 4px)`,
+          }}
+        />
+        Blocked
+      </span>
+      <span className="flex items-center gap-1.5">
         <span className="h-3.5 w-0.5" style={{ backgroundColor: TIMELINE_COLORS.now }} />
         Now
       </span>

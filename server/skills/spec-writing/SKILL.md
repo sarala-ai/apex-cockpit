@@ -28,6 +28,24 @@ Where a task genuinely cannot carry a machine-checkable criterion, state that ga
 
 Read the code. A breakdown that names files that do not exist costs the Implementer a whole session to discover. State any open design decisions where the reviewer will see them — not buried inside a task.
 
+## Required: Dependencies section
+
+Every spec must include a `## Dependencies` section. This is a machine-read
+section — the gate parser extracts blocker edges from it at approval time.
+
+Grammar (exact):
+
+- Heading: `## Dependencies`
+- No blockers: write `None` as the entire body.
+- Each blocker on its own line: `- Blocked by: APEX-N` where `APEX-N` is a
+  ticket identifier matching the company pattern (e.g. `APEX-26`, `APEX-51`).
+
+On approval the gate resolves each `APEX-\d+` token in this section to a
+same-company issue and writes a `blocks` edge. Unknown identifiers are skipped
+(logged). An edge that would form a cycle is rejected; the approval still
+proceeds. Write only genuine blockers here — tickets that must be `done` before
+implementation can start. Related-but-non-blocking context belongs in spec prose.
+
 ## Sentinel
 
 The spec artifact destination is the ticket spec document, never the repo.

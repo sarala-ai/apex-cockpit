@@ -18,14 +18,21 @@
  * `edit` then `approve`, with no new document plumbing. See `resolveGateApproval`.
  */
 
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import {
   approvals,
+  documents,
+  issueDocuments,
+  issueRelations,
+  issues,
+  pipelineCaseIssueLinks,
   pipelineCases,
   pipelineStages,
   type Db,
 } from "@paperclipai/db";
 import { pipelineService, type PipelineActor } from "../../services/pipelines.js";
+import { detectSpecDependenciesMismatch, parseSpecDependencies } from "./spec-dependencies.js";
+import { logger } from "../../middleware/logger.js";
 
 /** Our review-stage keys, in gate order. Maps back to the `gate:*` Stage names. */
 export const GATE_STAGE_KEYS = ["spec_review", "plan_review", "pr_review"] as const;
@@ -73,6 +80,199 @@ async function loadCaseStage(db: Db, companyId: string, caseId: string): Promise
     .limit(1)
     .then((rows) => rows[0] ?? null);
   return row;
+}
+
+/**
+ * Load the spec document for the case (via case-issue link) and run the
+ * dependency mismatch check. If `editedBody` is provided (the reviewer is
+ * submitting a revised artifact), that body is checked instead of the stored
+ * document — the human-visible version at approval time is authoritative.
+ *
+ * Returns an error string on mismatch, null when valid.
+ */
+async function loadSpecMismatch(
+  db: Db,
+  companyId: string,
+  caseId: string,
+  editedBody: string | null | undefined,
+): Promise<string | null> {
+  if (editedBody != null) {
+    return detectSpecDependenciesMismatch(editedBody);
+  }
+
+  const link = await db
+    .select({ issueId: pipelineCaseIssueLinks.issueId })
+    .from(pipelineCaseIssueLinks)
+    .where(and(eq(pipelineCaseIssueLinks.companyId, companyId), eq(pipelineCaseIssueLinks.caseId, caseId)))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (!link) return null;
+
+  const docRow = await db
+    .select({ body: documents.latestBody })
+    .from(issueDocuments)
+    .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+    .where(
+      and(
+        eq(issueDocuments.companyId, companyId),
+        eq(issueDocuments.issueId, link.issueId),
+        eq(issueDocuments.key, "spec"),
+      ),
+    )
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (!docRow?.body) return null;
+
+  return detectSpecDependenciesMismatch(docRow.body);
+}
+
+/**
+ * Resolve and write blocker edges declared in the `dependencies` YAML front
+ * matter field of the spec document for the issue that owns `caseId`.
+ *
+ * Called after a `spec_review` gate is approved. Unknown identifiers are
+ * skipped (logged). A cycle-forming edge is dropped via the existing cycle
+ * guard; this does not fail the approval.
+ *
+ * Exported for integration testing.
+ */
+export async function writeSpecDependencyEdges(
+  db: Db,
+  companyId: string,
+  caseId: string,
+): Promise<void> {
+  // Resolve caseId → issueId via the case-issue link table.
+  const link = await db
+    .select({ issueId: pipelineCaseIssueLinks.issueId })
+    .from(pipelineCaseIssueLinks)
+    .where(
+      and(
+        eq(pipelineCaseIssueLinks.companyId, companyId),
+        eq(pipelineCaseIssueLinks.caseId, caseId),
+      ),
+    )
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (!link) return;
+  const issueId = link.issueId;
+
+  // Read the `spec` document for the issue.
+  const docRow = await db
+    .select({ body: documents.latestBody })
+    .from(issueDocuments)
+    .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+    .where(
+      and(
+        eq(issueDocuments.companyId, companyId),
+        eq(issueDocuments.issueId, issueId),
+        eq(issueDocuments.key, "spec"),
+      ),
+    )
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (!docRow?.body) return;
+
+  const identifiers = parseSpecDependencies(docRow.body);
+  if (identifiers.length === 0) return;
+
+  // Resolve identifiers to same-company issue ids.
+  const matchedRows = await db
+    .select({ id: issues.id, identifier: issues.identifier })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        inArray(issues.identifier, identifiers.map((id) => id.toUpperCase())),
+      ),
+    );
+
+  const knownIdentifiers = new Set(matchedRows.map((r) => r.identifier?.toUpperCase()));
+  for (const ident of identifiers) {
+    if (!knownIdentifiers.has(ident.toUpperCase())) {
+      logger.warn({ companyId, issueId, identifier: ident }, "spec-dependencies: unknown identifier skipped");
+    }
+  }
+
+  if (matchedRows.length === 0) return;
+
+  // Fetch the current blocked-by set so we can merge rather than overwrite.
+  const existing = await db
+    .select({ blockerIssueId: issueRelations.issueId })
+    .from(issueRelations)
+    .where(
+      and(
+        eq(issueRelations.companyId, companyId),
+        eq(issueRelations.relatedIssueId, issueId),
+        eq(issueRelations.type, "blocks"),
+      ),
+    );
+  const existingSet = new Set(existing.map((r) => r.blockerIssueId));
+
+  const toAdd = matchedRows.filter((r) => !existingSet.has(r.id) && r.id !== issueId);
+  if (toAdd.length === 0) return;
+
+  // Write new edges one at a time so a cycle-forming edge only skips itself.
+  for (const blocker of toAdd) {
+    try {
+      // Cycle-check: a simple DFS from the blocker — if it can reach issueId,
+      // inserting this edge would form a cycle.
+      const hasCycle = await wouldCreateCycle(db, companyId, blocker.id, issueId);
+      if (hasCycle) {
+        logger.warn(
+          { companyId, issueId, blockerId: blocker.id, identifier: blocker.identifier },
+          "spec-dependencies: cycle-forming edge skipped",
+        );
+        continue;
+      }
+      await db.insert(issueRelations).values({
+        companyId,
+        issueId: blocker.id,
+        relatedIssueId: issueId,
+        type: "blocks",
+      });
+    } catch (err) {
+      logger.warn(
+        { err, companyId, issueId, blockerId: blocker.id },
+        "spec-dependencies: failed to insert edge, skipping",
+      );
+    }
+  }
+}
+
+/**
+ * Returns true if inserting the edge `newBlockerId → dependentId` would create
+ * a cycle (i.e., `dependentId` already blocks `newBlockerId` directly or
+ * transitively).
+ */
+async function wouldCreateCycle(
+  db: Db,
+  companyId: string,
+  newBlockerId: string,
+  dependentId: string,
+): Promise<boolean> {
+  // BFS from dependentId through "blocks" edges; if we reach newBlockerId, there's a cycle.
+  const visited = new Set<string>();
+  const queue = [dependentId];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (current === newBlockerId) return true;
+    if (visited.has(current)) continue;
+    visited.add(current);
+    const downstream = await db
+      .select({ blockedId: issueRelations.relatedIssueId })
+      .from(issueRelations)
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.issueId, current),
+          eq(issueRelations.type, "blocks"),
+        ),
+      );
+    for (const row of downstream) {
+      if (!visited.has(row.blockedId)) queue.push(row.blockedId);
+    }
+  }
+  return false;
 }
 
 /**
@@ -157,6 +357,17 @@ export async function resolveGateApproval(
     return { transitioned: false, note: `case ${caseId} is at ${stage.stageKey}, not a gate` };
   }
 
+  // APEX-77: for spec_review approvals, validate that the front matter
+  // `dependencies` field and the ## Dependencies prose section agree before
+  // the case transitions. A mismatch is a hard gate error — the reviewer must
+  // fix the spec before re-approving.
+  if (input.decision === "approve" && stage.stageKey === "spec_review") {
+    const mismatch = await loadSpecMismatch(db, input.companyId, caseId, input.editedBody);
+    if (mismatch) {
+      return { transitioned: false, note: mismatch };
+    }
+  }
+
   const svc = pipelineService(db);
 
   // `edit` (approve + revised artifact): apply the revised body to the case
@@ -181,5 +392,17 @@ export async function resolveGateApproval(
   });
 
   const toStageKey = (result as { stage?: { key?: string } })?.stage?.key;
+
+  // APEX-77: on spec_review approval, wire blocker edges from the spec's
+  // `dependencies` front matter field. Run after the transition so the case is
+  // past the gate even if edge-writing fails.
+  if (input.decision === "approve" && stage.stageKey === "spec_review") {
+    try {
+      await writeSpecDependencyEdges(db, input.companyId, caseId);
+    } catch (err) {
+      logger.warn({ err, caseId, companyId: input.companyId }, "gate-bridge: spec-dependency edge write failed (non-fatal)");
+    }
+  }
+
   return { transitioned: true, toStageKey };
 }

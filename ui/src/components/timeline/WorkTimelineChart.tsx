@@ -502,6 +502,10 @@ export function WorkTimelineChart({
                 <stop offset="0%" stopColor="var(--color-foreground)" stopOpacity={0.28} />
                 <stop offset="100%" stopColor="var(--color-foreground)" stopOpacity={0} />
               </linearGradient>
+              {/* diagonal hatch for dependency-blocked cancelled runs */}
+              <pattern id="tl-blocked-hatch" patternUnits="userSpaceOnUse" width={6} height={6} patternTransform="rotate(45)">
+                <line x1={0} y1={0} x2={0} y2={6} stroke={TIMELINE_COLORS.blocked} strokeWidth={3} strokeOpacity={0.55} />
+              </pattern>
             </defs>
 
             {/* row backgrounds */}
@@ -600,6 +604,7 @@ export function WorkTimelineChart({
                   const yTop = bar.yTop + AXIS_H;
                   const w = bar.x2 - bar.x1;
                   const cancelled = isCancelledStatus(bar.span.status);
+                  const blocked = cancelled && bar.span.cancellationReason === "issue_dependencies_blocked";
                   const color = barColor(bar);
                   const connectedState =
                     connectedRunIds == null ? "idle" : connectedRunIds.has(bar.span.runId) ? "connected" : "faded";
@@ -627,17 +632,17 @@ export function WorkTimelineChart({
                       >
                         {/* "Signal" encoding: fill = how the run started (delegated /
                             automation); cancelled runs drop the fill and read as a
-                            hollow dashed bar. */}
+                            hollow dashed bar; blocked-dependency runs use a hatch fill. */}
                         <rect
                           x={bar.x1}
                           y={yTop}
                           width={w}
                           height={bar.height}
                           rx={3}
-                          fill={cancelled ? "transparent" : color}
-                          stroke={cancelled ? TIMELINE_COLORS.cancelled : "var(--color-foreground)"}
+                          fill={blocked ? "url(#tl-blocked-hatch)" : cancelled ? "transparent" : color}
+                          stroke={blocked ? TIMELINE_COLORS.blocked : cancelled ? TIMELINE_COLORS.cancelled : "var(--color-foreground)"}
                           strokeWidth={1.5}
-                          strokeDasharray={cancelled ? "4 3" : undefined}
+                          strokeDasharray={cancelled && !blocked ? "4 3" : undefined}
                           opacity={barOpacity}
                         />
                         {/* in-progress fade to "now" */}

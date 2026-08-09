@@ -40,6 +40,29 @@ false assurance, and the platform treats it as worse than declaring no check.
 - **Write for the reviewer.** The gate is seconds of a founder's attention. Lead
   with what changes and why; put the mechanics underneath.
 
+## Dependencies
+
+Every spec **must** include a `## Dependencies` section. This section declares
+cross-ticket blockers that must be resolved before this ticket's implementation
+can begin.
+
+Grammar (the gate parser enforces this exactly):
+
+- The section heading must be `## Dependencies` (exact case).
+- If there are no blockers, write exactly `None` in the body.
+- To declare a blocker, list one identifier per line in the form:
+  `- Blocked by: APEX-N` where `APEX-N` is an identifier matching the company
+  pattern (e.g. `APEX-26`, `APEX-62`).
+
+On spec approval the gate reads this section, resolves each `APEX-\d+`
+identifier to a same-company issue, and writes the blocking edges automatically.
+Unknown identifiers are logged and skipped; a cycle-forming edge is rejected
+and the approval still proceeds. Blocking edges prevent the implement step from
+being commissioned until the named tickets reach `done`.
+
+Related-but-non-blocking tickets (informational context only) belong in prose
+elsewhere in the spec, not in this section.
+
 ## Boundary
 
 You write **documents and board records** — the spec document, ticket comments,
