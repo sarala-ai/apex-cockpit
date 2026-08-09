@@ -1212,6 +1212,13 @@
       "when": 1786259212000,
       "tag": "0174_contract_run_targets",
       "breakpoints": true
+    },
+    {
+      "idx": 175,
+      "version": "7",
+      "when": 1786241416000,
+      "tag": "0175_user_ui_preferences",
+      "breakpoints": true
     }
   ]
 }

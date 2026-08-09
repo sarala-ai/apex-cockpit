@@ -4,12 +4,16 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
+import { useQuery } from "@tanstack/react-query";
+import type { ThemePreference } from "@paperclipai/shared";
+import { uiPreferencesApi } from "../api/uiPreferences";
+import { queryKeys } from "../lib/queryKeys";
 
 type Theme = "light" | "dark";
-type ThemePreference = "light" | "dark" | "system";
 
 interface ThemeContextValue {
   /** The resolved theme currently applied to the document. */
@@ -78,18 +82,41 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     () => readStoredPreference() !== null,
   );
   const [prefersDark, setPrefersDark] = useState<boolean>(() => systemPrefersDark());
+  // True once the user changes the theme in THIS session — after that the
+  // server value must not clobber their in-flight choice when the fetch lands.
+  const sessionChoiceRef = useRef(false);
 
   const theme = resolveTheme(preference, prefersDark);
 
   const setPreference = useCallback((next: ThemePreference) => {
+    sessionChoiceRef.current = true;
     setHasExplicitChoice(true);
     setPreferenceState(next);
+    // Best-effort per-user persistence; fails silently when signed out.
+    uiPreferencesApi.update({ theme: next }).catch(() => {});
   }, []);
 
   const cycleTheme = useCallback(() => {
+    setPreference(CYCLE_ORDER[preference]);
+  }, [preference, setPreference]);
+
+  // Adopt the server-side preference on session load. localStorage remains the
+  // pre-paint cache: a first load in a fresh browser paints the default (dark),
+  // then applies the server value here — accepted behavior per the spec.
+  const { data: serverPreferences } = useQuery({
+    queryKey: queryKeys.uiPreferences.me,
+    queryFn: () => uiPreferencesApi.get(),
+    retry: false,
+    refetchOnWindowFocus: false,
+    staleTime: Infinity,
+  });
+
+  useEffect(() => {
+    const serverTheme = serverPreferences?.theme;
+    if (!serverTheme || sessionChoiceRef.current) return;
     setHasExplicitChoice(true);
-    setPreferenceState((current) => CYCLE_ORDER[current]);
-  }, []);
+    setPreferenceState(serverTheme);
+  }, [serverPreferences]);
 
   useEffect(() => {
     applyTheme(theme);
