@@ -679,36 +679,38 @@ export async function seedLifecyclePipelines(
     if (already) {
       if (!isOlderLifecycleVersion(already.version, definition.version)) {
         existing.push(definition.key);
-        continue;
-      }
-      // An older stored lifecycle takes the shipped definition IN PLACE:
-      // stage configs are rewritten by stage key (never re-created — live
-      // cases reference stage IDs), and version/ticketType come current.
-      // Without this, an instance seeded before a definition change keeps
-      // the old configs forever — how APEX-38's own case ended up held on
-      // a hardcoded `pytest` the fix had already removed from the seed.
-      for (const stage of definition.stages) {
+      } else {
+        // An older stored lifecycle takes the shipped definition IN PLACE:
+        // stage configs are rewritten by stage key (never re-created — live
+        // cases reference stage IDs), and version/ticketType come current.
+        // Without this, an instance seeded before a definition change keeps
+        // the old configs forever — how APEX-38's own case ended up held on
+        // a hardcoded `pytest` the fix had already removed from the seed.
+        for (const stage of definition.stages) {
+          await db
+            .update(pipelineStages)
+            .set({ name: stage.name, kind: stage.kind, config: stage.config })
+            .where(
+              and(eq(pipelineStages.pipelineId, already.id), eq(pipelineStages.key, stage.key)),
+            );
+        }
         await db
-          .update(pipelineStages)
-          .set({ name: stage.name, kind: stage.kind, config: stage.config })
-          .where(
-            and(eq(pipelineStages.pipelineId, already.id), eq(pipelineStages.key, stage.key)),
-          );
+          .update(pipelines)
+          .set({ version: definition.version, ticketType: definition.ticketType })
+          .where(eq(pipelines.id, already.id));
+        upgraded.push(definition.key);
       }
-      await db
-        .update(pipelines)
-        .set({ version: definition.version, ticketType: definition.ticketType })
-        .where(eq(pipelines.id, already.id));
-      // Re-enter any case that reached a node whose kind changed to "gate"
-      // before the gate was configured. Those cases have step_status NULL
-      // instead of waiting_gate and carry a step_held from the old
-      // automation attempt — both block the operator from approving.
+      // Re-enter any case that reached a gate node with step_status NULL — runs
+      // on EVERY seed (both existing and upgraded paths). rematerializeStrandedGateCases
+      // is idempotent: its query targets only cases whose step_status IS DISTINCT FROM
+      // 'waiting_gate', so running it unconditionally on each seed is safe and makes
+      // the repair self-healing rather than a one-shot version-upgrade side-effect.
+      // (APEX-79 placed this call only inside the upgrade branch; APEX-81 moves it here.)
       await svc.rematerializeStrandedGateCases({
         pipelineId: already.id,
         companyId: input.companyId,
         actor,
       });
-      upgraded.push(definition.key);
       continue;
     }
 

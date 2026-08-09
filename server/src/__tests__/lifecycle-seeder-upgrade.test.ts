@@ -389,3 +389,161 @@ describeEmbeddedPostgres("APEX-79: upgrade re-materializes stranded gate cases",
     expect(count).toBe(0);
   });
 });
+
+/**
+ * APEX-81: re-materialization must run on EVERY seed, not only on version upgrades.
+ *
+ * APEX-79 placed `rematerializeStrandedGateCases` inside the version-upgrade branch.
+ * After APEX-78 bumped the bug lifecycle to v1.2, the stored and definition versions
+ * match, so the upgrade branch is skipped and `existing.push(); continue` fires —
+ * stranded cases never get fixed. The call must run unconditionally.
+ */
+describeEmbeddedPostgres("APEX-81: re-materialization runs even when pipeline is already current version", () => {
+  let db!: ReturnType<typeof createDb>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-lifecycle-apex81-");
+    db = createDb(tempDb.connectionString);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(approvals);
+    await db.delete(pipelineCaseEvents);
+    await db.delete(pipelineCases);
+    await db.delete(pipelineTransitions);
+    await db.delete(pipelineStages);
+    await db.delete(pipelines);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedCompany(): Promise<string> {
+    const [company] = await db
+      .insert(companies)
+      .values({ name: "Apex81 Co", issuePrefix: "A81" })
+      .returning({ id: companies.id });
+    return company!.id;
+  }
+
+  /**
+   * Insert a case stranded at failing_signal with NULL step_status on a pipeline
+   * already at the CURRENT version (1.2). This is the post-APEX-78 state:
+   * failing_signal is already kind="gate" in the definition, but some cases
+   * arrived at that node before the gate was wired up and have step_status NULL.
+   */
+  async function insertStrandedCaseAtCurrentVersion(companyId: string) {
+    const [pipeline] = await db
+      .select({ id: pipelines.id })
+      .from(pipelines)
+      .where(and(eq(pipelines.companyId, companyId), eq(pipelines.key, "bug")));
+    const pipelineId = pipeline!.id;
+
+    const [stage] = await db
+      .select({ id: pipelineStages.id })
+      .from(pipelineStages)
+      .where(and(eq(pipelineStages.pipelineId, pipelineId), eq(pipelineStages.key, "failing_signal")));
+    const stageId = stage!.id;
+
+    const [caseRow] = await db
+      .insert(pipelineCases)
+      .values({
+        companyId,
+        pipelineId,
+        stageId,
+        stepKey: "failing_signal",
+        stepStatus: null,
+        caseKey: "A81-1",
+        title: "Stranded at current-version gate",
+        definitionKind: "pipeline",
+        definitionRef: pipelineId,
+      })
+      .returning({ id: pipelineCases.id });
+    const caseId = caseRow!.id;
+
+    // Simulate the step_held event that the failed ci_failure_signal check left.
+    await db.insert(pipelineCaseEvents).values({
+      companyId,
+      caseId,
+      type: "step_held",
+      actorType: "system",
+      payload: {
+        stageId,
+        stageKey: "failing_signal",
+        reason: "command_tool_unresolvable",
+        errorType: "command_tool_unresolvable",
+        message: "No tool named ci_failure_signal",
+        stepKey: "failing_signal",
+      },
+    });
+
+    return { pipelineId, stageId, caseId };
+  }
+
+  it("fixes stranded cases on an existing pipeline already at the current version", async () => {
+    const companyId = await seedCompany();
+    // First seed: pipeline reaches current version.
+    await seedLifecyclePipelines(db, { companyId });
+
+    // Insert a stranded case. The pipeline is already at 1.2 — no version bump will happen.
+    const { caseId } = await insertStrandedCaseAtCurrentVersion(companyId);
+
+    // Verify the case is stranded (step_status NULL) before the fix.
+    const [before] = await db
+      .select({ stepStatus: pipelineCases.stepStatus })
+      .from(pipelineCases)
+      .where(eq(pipelineCases.id, caseId));
+    expect(before!.stepStatus).toBeNull();
+
+    // Second seed: same version, goes through the "existing" path.
+    const result = await seedLifecyclePipelines(db, { companyId });
+    expect(result.existing).toContain("bug");
+
+    // The case must now be at waiting_gate — re-materialization ran on the existing path.
+    const [after] = await db
+      .select({ stepStatus: pipelineCases.stepStatus })
+      .from(pipelineCases)
+      .where(eq(pipelineCases.id, caseId));
+    expect(after!.stepStatus).toBe("waiting_gate");
+  });
+
+  it("is idempotent on the existing path: two seeds in a row do not duplicate approvals", async () => {
+    const companyId = await seedCompany();
+    await seedLifecyclePipelines(db, { companyId });
+    const { caseId } = await insertStrandedCaseAtCurrentVersion(companyId);
+
+    // Two consecutive seeds on an already-current-version pipeline.
+    await seedLifecyclePipelines(db, { companyId });
+    await seedLifecyclePipelines(db, { companyId });
+
+    const allApprovals = await db
+      .select({ id: approvals.id })
+      .from(approvals)
+      .where(and(
+        eq(approvals.companyId, companyId),
+        sql`${approvals.payload} ->> 'caseId' = ${caseId}`,
+      ));
+    expect(allApprovals).toHaveLength(1);
+  });
+
+  it("acceptance query: no failing_signal cases with NULL step_status after seed at current version", async () => {
+    const companyId = await seedCompany();
+    await seedLifecyclePipelines(db, { companyId });
+    const { caseId: _caseId } = await insertStrandedCaseAtCurrentVersion(companyId);
+
+    // Seed once more — pipeline is already current, but re-materialization must still run.
+    await seedLifecyclePipelines(db, { companyId });
+
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(pipelineCases)
+      .where(and(
+        eq(pipelineCases.stepKey, "failing_signal"),
+        isNull(pipelineCases.stepStatus),
+      ));
+    expect(count).toBe(0);
+  });
+});
