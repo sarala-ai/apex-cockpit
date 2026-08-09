@@ -35,7 +35,7 @@ const HEALTH_DOT: Record<FleetHealth, string> = {
   degraded: "bg-amber-500",
   down: "bg-rose-500",
   dark: "bg-slate-400",
-  unknown: "bg-slate-300",
+  unknown: "bg-muted-foreground/40",
 };
 
 function HealthDot({ health }: { health: FleetHealth }) {
