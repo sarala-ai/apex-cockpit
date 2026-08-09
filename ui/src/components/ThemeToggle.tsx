@@ -1,4 +1,4 @@
-import { Moon, Sun } from "lucide-react";
+import { Monitor, Moon, Sun } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -18,27 +18,36 @@ interface ThemeToggleProps {
    */
   variant?: ThemeToggleVariant;
   /**
-   * Called after `toggleTheme` runs. Surfaces like a popover menu use
+   * Called after `cycleTheme` runs. Surfaces like a popover menu use
    * this to dismiss the menu once the user has acted.
    */
   onAfterToggle?: () => void;
 }
 
-const MENU_ACTION_DESCRIPTION = "Toggle the app appearance.";
+const PREFERENCE_META = {
+  light: { icon: Sun, name: "light", next: "dark" },
+  dark: { icon: Moon, name: "dark", next: "system" },
+  system: { icon: Monitor, name: "system", next: "light" },
+} as const;
 
 /**
  * Canonical theme-toggle widget. Both the signed-out `/auth` chrome and
  * the in-app account menu render through this component so the label,
- * icon, and toggle behaviour stay in sync as the theme model evolves.
+ * icon, and cycle behaviour stay in sync as the theme model evolves.
+ * Cycles light → dark → system.
  */
 export function ThemeToggle({ className, variant = "icon", onAfterToggle }: ThemeToggleProps) {
-  const { theme, toggleTheme } = useTheme();
-  const isDark = theme === "dark";
-  const label = isDark ? "Switch to light mode" : "Switch to dark mode";
-  const Icon = isDark ? Sun : Moon;
+  const { preference, cycleTheme } = useTheme();
+  const meta = PREFERENCE_META[preference];
+  const Icon = meta.icon;
+  const label = `Switch to ${meta.next} theme`;
+  const description =
+    preference === "system"
+      ? "Theme is following your OS."
+      : `Theme is ${meta.name}. System follows your OS.`;
 
   function handleClick() {
-    toggleTheme();
+    cycleTheme();
     onAfterToggle?.();
   }
 
@@ -58,7 +67,7 @@ export function ThemeToggle({ className, variant = "icon", onAfterToggle }: Them
         </span>
         <span className="min-w-0 flex-1">
           <span className="block text-sm font-medium text-foreground">{label}</span>
-          <span className="block text-xs text-muted-foreground">{MENU_ACTION_DESCRIPTION}</span>
+          <span className="block text-xs text-muted-foreground">{description}</span>
         </span>
       </button>
     );

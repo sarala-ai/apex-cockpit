@@ -22,13 +22,20 @@
         const darkThemeColor = "#18181b";
         const lightThemeColor = "#ffffff";
         try {
+          // Same resolution rules as ThemeContext: an explicit "light"/"dark"
+          // applies directly, "system" follows the OS, and nothing stored
+          // defaults to dark (APEX-75 product decision).
           const stored = window.localStorage.getItem(key);
-          const prefersDark =
-            typeof window.matchMedia === "function" &&
-            window.matchMedia("(prefers-color-scheme: dark)").matches;
-          const fallback = prefersDark ? "dark" : "light";
-          const theme = stored === "light" || stored === "dark" ? stored : fallback;
-          const isDark = theme === "dark";
+          let isDark;
+          if (stored === "light") {
+            isDark = false;
+          } else if (stored === "system") {
+            isDark =
+              typeof window.matchMedia !== "function" ||
+              window.matchMedia("(prefers-color-scheme: dark)").matches;
+          } else {
+            isDark = true;
+          }
           document.documentElement.classList.toggle("dark", isDark);
           document.documentElement.style.colorScheme = isDark ? "dark" : "light";
           const themeColorMeta = document.querySelector('meta[name="theme-color"]');

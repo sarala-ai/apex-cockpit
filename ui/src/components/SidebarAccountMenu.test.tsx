@@ -19,7 +19,7 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
 const mockApexSetupApi = vi.hoisted(() => ({
   auth: vi.fn(),
 }));
-const mockToggleTheme = vi.hoisted(() => vi.fn());
+const mockCycleTheme = vi.hoisted(() => vi.fn());
 const mockSetSidebarOpen = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/auth", () => ({
@@ -54,7 +54,8 @@ vi.mock("../context/SidebarContext", () => ({
 vi.mock("../context/ThemeContext", () => ({
   useTheme: () => ({
     theme: "dark",
-    toggleTheme: mockToggleTheme,
+    preference: "dark",
+    cycleTheme: mockCycleTheme,
   }),
 }));
 
