@@ -42,26 +42,40 @@ false assurance, and the platform treats it as worse than declaring no check.
 
 ## Dependencies
 
-Every spec **must** include a `## Dependencies` section. This section declares
-cross-ticket blockers that must be resolved before this ticket's implementation
-can begin.
+Every spec **must** declare its cross-ticket blockers in two places that agree:
 
-Grammar (the gate parser enforces this exactly):
+**Front matter (machine-authoritative):** Include a `dependencies` field in the
+YAML front matter at the top of the spec document:
 
-- The section heading must be `## Dependencies` (exact case).
-- If there are no blockers, write exactly `None` in the body.
-- To declare a blocker, list one identifier per line in the form:
-  `- Blocked by: APEX-N` where `APEX-N` is an identifier matching the company
-  pattern (e.g. `APEX-26`, `APEX-62`).
+```
+---
+dependencies: [APEX-26, APEX-62]
+---
+```
 
-On spec approval the gate reads this section, resolves each `APEX-\d+`
-identifier to a same-company issue, and writes the blocking edges automatically.
+For no blockers, omit the field or use `dependencies: []`. This field is the
+authoritative machine source — the gate reads blocker edges from here only.
+
+**`## Dependencies` prose section (human documentation):** Include a section
+that lists the same identifiers as the front matter, with brief rationale:
+
+- If there are no blockers: write exactly `None` in the body.
+- To document a blocker: `- Blocked by: APEX-N — <one-line reason>`.
+
+**Both sources must list the same identifiers.** A mismatch between the front
+matter field and the prose section is a gate validation error that blocks
+approval. The prose must not contain identifiers the front matter omits, and
+vice versa.
+
+On spec approval the gate resolves each identifier in the `dependencies` front
+matter field to a same-company issue and writes the blocking edges automatically.
 Unknown identifiers are logged and skipped; a cycle-forming edge is rejected
 and the approval still proceeds. Blocking edges prevent the implement step from
 being commissioned until the named tickets reach `done`.
 
 Related-but-non-blocking tickets (informational context only) belong in prose
-elsewhere in the spec, not in this section.
+elsewhere in the spec, never in the `dependencies` field or the `## Dependencies`
+section.
 
 ## Boundary
 

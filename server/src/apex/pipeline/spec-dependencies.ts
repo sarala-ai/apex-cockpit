@@ -1,47 +1,77 @@
 /**
- * Parser for the `## Dependencies` section of a spec document (APEX-77).
+ * Structured dependency declaration for spec documents (APEX-77).
  *
- * Grammar (from the Specifier charter):
- *   - Section heading: `## Dependencies`
- *   - No blockers: the body is the word `None` (case-insensitive, trimmed)
- *   - Each blocker line: `- Blocked by: APEX-N` (or any `PREFIX-\d+` token)
+ * Authoritative source: the `dependencies` YAML front matter field.
  *
- * The gate uses this to extract identifiers and wire blocking edges on approval.
+ *   ---
+ *   dependencies: [APEX-26, APEX-51]
+ *   ---
+ *
+ * The `## Dependencies` prose section is HUMAN documentation only. At the
+ * spec_review gate, the structured field and the prose section must agree;
+ * a mismatch is a validation error that blocks gate approval.
  */
+
+import { parseFrontmatterMarkdown } from "@paperclipai/shared";
+
+const IDENTIFIER_RE = /^[A-Z]+-\d+$/;
 
 /**
- * Extract ticket identifier tokens (e.g. `APEX-26`) from the `## Dependencies`
- * section of a markdown spec body.
+ * Parse the `dependencies` YAML front matter field from a spec document.
+ * Returns a deduped, uppercase-normalised array of identifiers.
  *
- * Rules:
- * - Returns `[]` when there is no `## Dependencies` section.
- * - Returns `[]` when the section body is `none` (case-insensitive).
- * - Returns a deduped, uppercase-normalised array of identifier strings otherwise.
- * - Identifiers must match the pattern `[A-Z]+-\d+` (one or more uppercase letters,
- *   a hyphen, one or more digits). Tokens that don't match are ignored.
- * - Only tokens found in the `## Dependencies` section are returned; tokens
- *   elsewhere in the document are not extracted.
+ * This is the AUTHORITATIVE source — do not use prose section parsing to
+ * produce machine state; use this function or `detectSpecDependenciesMismatch`.
  */
-export function parseSpecDependencies(body: string): string[] {
+export function parseSpecDependencies(rawDoc: string): string[] {
+  if (!rawDoc) return [];
+  const { frontmatter } = parseFrontmatterMarkdown(rawDoc);
+  const deps = frontmatter.dependencies;
+  if (!deps) return [];
+
+  // Block notation (`dependencies:\n  - APEX-26`) → Array.
+  // Inline flow sequence (`dependencies: [APEX-26]`) → the custom YAML parser
+  // returns a raw string when JSON.parse fails on non-JSON values.
+  let items: unknown[];
+  if (Array.isArray(deps)) {
+    items = deps;
+  } else if (typeof deps === "string" && deps.startsWith("[") && deps.endsWith("]")) {
+    items = deps.slice(1, -1).split(",").map((s) => s.trim()).filter(Boolean);
+  } else {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  const results: string[] = [];
+  for (const item of items) {
+    if (typeof item !== "string") continue;
+    const upper = item.trim().toUpperCase();
+    if (IDENTIFIER_RE.test(upper) && !seen.has(upper)) {
+      seen.add(upper);
+      results.push(upper);
+    }
+  }
+  return results;
+}
+
+/**
+ * Extract ticket identifiers from the `## Dependencies` prose section.
+ * Internal — used only for mismatch detection. Not authoritative.
+ */
+function parseProseSpecDependencies(body: string): string[] {
   if (!body) return [];
-
-  // Split on `## ` headings to isolate sections.
-  // We include the heading text so we can identify which split is "Dependencies".
   const sections = body.split(/^(?=##\s)/m);
-
   const depSection = sections.find((s) => /^##\s+Dependencies\b/i.test(s));
   if (!depSection) return [];
 
-  // Remove the heading line and work with the body of the section.
   const sectionBody = depSection.replace(/^##[^\n]*\n?/, "").trim();
-
   if (sectionBody.toLowerCase() === "none") return [];
 
-  const IDENTIFIER_PATTERN = /\b([A-Z]+-\d+)\b/gi;
+  const IDENT_RE = /\b([A-Z]+-\d+)\b/gi;
   const seen = new Set<string>();
   const results: string[] = [];
   let match: RegExpExecArray | null;
-  while ((match = IDENTIFIER_PATTERN.exec(sectionBody)) !== null) {
+  while ((match = IDENT_RE.exec(sectionBody)) !== null) {
     const token = match[1]!.toUpperCase();
     if (!seen.has(token)) {
       seen.add(token);
@@ -49,4 +79,41 @@ export function parseSpecDependencies(body: string): string[] {
     }
   }
   return results;
+}
+
+/**
+ * Returns an error message when the YAML front matter `dependencies` field and
+ * the `## Dependencies` prose section disagree; returns null when they agree.
+ *
+ * "Agree" means the set of identifiers is identical. If neither source
+ * declares any dependencies, they agree. If only one source declares
+ * dependencies, that is a mismatch.
+ *
+ * This must be called at the spec_review gate before the case transitions.
+ */
+export function detectSpecDependenciesMismatch(rawDoc: string): string | null {
+  const { body } = parseFrontmatterMarkdown(rawDoc);
+  const structured = parseSpecDependencies(rawDoc);
+  const prose = parseProseSpecDependencies(body);
+
+  const structuredSet = new Set(structured);
+  const proseSet = new Set(prose);
+
+  const missingFromProse = structured.filter((d) => !proseSet.has(d));
+  const extraInProse = prose.filter((d) => !structuredSet.has(d));
+
+  if (missingFromProse.length === 0 && extraInProse.length === 0) return null;
+
+  const parts: string[] = [];
+  if (missingFromProse.length > 0) {
+    parts.push(
+      `declared in front matter but absent from ## Dependencies prose: ${missingFromProse.join(", ")}`,
+    );
+  }
+  if (extraInProse.length > 0) {
+    parts.push(
+      `present in ## Dependencies prose but missing from front matter dependencies field: ${extraInProse.join(", ")}`,
+    );
+  }
+  return `spec dependencies mismatch — ${parts.join("; ")}`;
 }

@@ -1,6 +1,6 @@
 /**
  * APEX-77 — T2 integration test: gate approval writes blocker edges from
- * the spec's ## Dependencies section.
+ * the spec's `dependencies` YAML front matter field.
  *
  * Tests `writeSpecDependencyEdges` directly with an embedded Postgres database.
  */
@@ -148,8 +148,12 @@ describeEmbeddedPostgres("APEX-77: spec approval writes blocker edges", () => {
     return { companyId, specIssueId, blockerIssueId, caseId };
   }
 
-  it("inserts a blocks row when the spec names an existing ticket", async () => {
+  it("inserts a blocks row when the spec front matter names an existing ticket", async () => {
     const body = [
+      "---",
+      "dependencies: [APEX-26]",
+      "---",
+      "",
       "# My Spec",
       "",
       "## Dependencies",
@@ -179,8 +183,12 @@ describeEmbeddedPostgres("APEX-77: spec approval writes blocker edges", () => {
     expect(rows).toHaveLength(1);
   });
 
-  it("inserts no row when the spec names an unknown identifier", async () => {
+  it("inserts no row when the spec front matter names an unknown identifier", async () => {
     const body = [
+      "---",
+      "dependencies: [APEX-9999]",
+      "---",
+      "",
       "# My Spec",
       "",
       "## Dependencies",
@@ -205,8 +213,12 @@ describeEmbeddedPostgres("APEX-77: spec approval writes blocker edges", () => {
     expect(rows).toHaveLength(0);
   });
 
-  it("inserts no row when the spec says None", async () => {
+  it("inserts no row when front matter has no dependencies field", async () => {
     const body = [
+      "---",
+      "title: My Spec",
+      "---",
+      "",
       "# My Spec",
       "",
       "## Dependencies",
@@ -228,6 +240,10 @@ describeEmbeddedPostgres("APEX-77: spec approval writes blocker edges", () => {
 
   it("skips a dependency that would form a cycle", async () => {
     const body = [
+      "---",
+      "dependencies: [APEX-26]",
+      "---",
+      "",
       "# My Spec",
       "",
       "## Dependencies",

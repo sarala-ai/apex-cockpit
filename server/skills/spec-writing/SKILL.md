@@ -28,23 +28,36 @@ Where a task genuinely cannot carry a machine-checkable criterion, state that ga
 
 Read the code. A breakdown that names files that do not exist costs the Implementer a whole session to discover. State any open design decisions where the reviewer will see them — not buried inside a task.
 
-## Required: Dependencies section
+## Required: Dependencies declaration
 
-Every spec must include a `## Dependencies` section. This is a machine-read
-section — the gate parser extracts blocker edges from it at approval time.
+Every spec must declare its dependencies in two places that must agree:
 
-Grammar (exact):
+**1. YAML front matter field (machine-authoritative):**
+
+```
+---
+dependencies: [APEX-26, APEX-51]
+---
+```
+
+Use a comma-separated list inside `[...]`. For no blockers, omit the field or
+use `dependencies: []`.
+
+**2. `## Dependencies` prose section (human documentation):**
 
 - Heading: `## Dependencies`
 - No blockers: write `None` as the entire body.
-- Each blocker on its own line: `- Blocked by: APEX-N` where `APEX-N` is a
-  ticket identifier matching the company pattern (e.g. `APEX-26`, `APEX-51`).
+- Each blocker on its own line: `- Blocked by: APEX-N — <reason>` where
+  `APEX-N` is a ticket identifier.
 
-On approval the gate resolves each `APEX-\d+` token in this section to a
-same-company issue and writes a `blocks` edge. Unknown identifiers are skipped
-(logged). An edge that would form a cycle is rejected; the approval still
-proceeds. Write only genuine blockers here — tickets that must be `done` before
-implementation can start. Related-but-non-blocking context belongs in spec prose.
+The gate reads blocker edges from the front matter field — that is the only
+machine source. The prose section documents **why** each dependency exists for
+human reviewers. Both must list the same identifiers. A mismatch between the
+two is a gate validation error that blocks approval.
+
+Write only genuine blockers — tickets that must be `done` before implementation
+can start. Related-but-non-blocking context belongs in spec prose, not in the
+dependencies field.
 
 ## Sentinel
 
