@@ -27,7 +27,7 @@
  */
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { AlertTriangle, ArrowUpRight, Check, Loader2, X } from "lucide-react";
+import { AlertTriangle, ArrowUpRight, Check, Loader2, RefreshCw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import type { Issue, IssueLinkedCase } from "@paperclipai/shared";
@@ -67,6 +67,7 @@ export function IssueLifecycle({
       <IssueLifecycleGate
         row={row}
         review={row.review}
+        hold={row.hold ?? null}
         onDecide={onDecide}
         deciding={deciding ?? null}
         resolveUserLabel={resolveUserLabel}
@@ -191,17 +192,33 @@ function IssueLifecyclePosition({ row }: { row: IssueLinkedCase }) {
 function IssueLifecycleGate({
   row,
   review,
+  hold,
   onDecide,
   deciding,
   resolveUserLabel,
 }: {
   row: IssueLinkedCase;
   review: NonNullable<IssueLinkedCase["review"]>;
+  hold: NonNullable<IssueLinkedCase["hold"]> | null;
   onDecide?: (input: { row: IssueLinkedCase; decision: PipelineReviewDecision; reason: string | null }) => void;
   deciding: PipelineReviewDecision | null;
   resolveUserLabel?: (userId: string) => string | null;
 }) {
   const [reason, setReason] = useState("");
+  const [rerunning, setRerunning] = useState(false);
+  const [rerunError, setRerunError] = useState<string | null>(null);
+
+  async function handleRerun() {
+    setRerunning(true);
+    setRerunError(null);
+    try {
+      await pipelinesApi.rerunCurrentStageAutomation(row.id);
+    } catch {
+      setRerunError("Re-run request failed. Try again or open the case page.");
+    } finally {
+      setRerunning(false);
+    }
+  }
   // The pipeline's OWN names for the stages a decision moves to, so
   // "Reject → Cancelled" reads here exactly as it does on the board.
   const actions = reviewDecisionActions(
@@ -297,6 +314,30 @@ function IssueLifecycleGate({
               </Link>
             </p>
           )}
+
+          {hold ? (
+            <div className="space-y-1.5">
+              <p className="text-sm font-medium" data-testid="issue-lifecycle-gate-hold-message">
+                {hold.message ?? "This step has stopped and the gate cannot be decided until it is cleared."}
+              </p>
+              <div className="flex flex-wrap items-center gap-3">
+                <Button
+                  data-testid="issue-lifecycle-gate-rerun-btn"
+                  size="sm"
+                  variant="outline"
+                  className="border-amber-400 bg-amber-100 hover:bg-amber-200 dark:border-amber-700 dark:bg-amber-900/40 dark:hover:bg-amber-900/60"
+                  disabled={rerunning}
+                  onClick={handleRerun}
+                >
+                  {rerunning ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden /> : <RefreshCw className="mr-1.5 h-3.5 w-3.5" aria-hidden />}
+                  Re-run this step
+                </Button>
+              </div>
+              {rerunError ? (
+                <p className="text-sm text-red-700 dark:text-red-400">{rerunError}</p>
+              ) : null}
+            </div>
+          ) : null}
 
           <p className="text-xs opacity-75">
             <Link to={gateHref} className="inline-flex items-center gap-1 underline underline-offset-2">

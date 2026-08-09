@@ -2002,10 +2002,12 @@ export function IssueDetail() {
         tone: "success",
       });
     },
-    onError: () =>
+    onError: (error) =>
       pushToast({
         title: "Could not record that decision",
-        body: "The process may have moved on since this page loaded. Reload and try again.",
+        body: error instanceof ApiError && typeof (error.body as { error?: string } | null)?.error === "string"
+          ? (error.body as { error: string }).error
+          : "The process may have moved on since this page loaded. Reload and try again.",
         tone: "error",
       }),
   });
