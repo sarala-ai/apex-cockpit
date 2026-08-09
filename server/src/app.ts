@@ -48,6 +48,7 @@ import { userProfileRoutes } from "./routes/user-profiles.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { stoppedStepRoutes } from "./routes/stopped-steps.js";
 import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
+import { uiPreferenceRoutes } from "./routes/ui-preferences.js";
 import { resourceMembershipRoutes } from "./routes/resource-memberships.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
@@ -282,6 +283,7 @@ export async function createApp(
   api.use(sidebarBadgeRoutes(db));
   api.use(stoppedStepRoutes(db));
   api.use(sidebarPreferenceRoutes(db));
+  api.use(uiPreferenceRoutes(db));
   api.use(resourceMembershipRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db));

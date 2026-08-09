@@ -2,8 +2,22 @@
 
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider, useTheme } from "./ThemeContext";
+
+const mockUiPreferencesApi = vi.hoisted(() => ({
+  get: vi.fn(async (): Promise<{ theme: "light" | "dark" | "system" | null; updatedAt: null }> => ({
+    theme: null,
+    updatedAt: null,
+  })),
+  update: vi.fn(async (data: { theme: "light" | "dark" | "system" }) => ({
+    theme: data.theme,
+    updatedAt: null,
+  })),
+}));
+
+vi.mock("../api/uiPreferences", () => ({ uiPreferencesApi: mockUiPreferencesApi }));
 
 const THEME_STORAGE_KEY = "paperclip.theme";
 
@@ -67,18 +81,32 @@ describe("ThemeContext", () => {
   }
 
   function mount() {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
     const root = createRoot(container);
     act(() => {
       root.render(
-        <ThemeProvider>
-          <Probe />
-        </ThemeProvider>,
+        <QueryClientProvider client={queryClient}>
+          <ThemeProvider>
+            <Probe />
+          </ThemeProvider>
+        </QueryClientProvider>,
       );
     });
     return root;
   }
 
+  async function flushQueries() {
+    await act(async () => {
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
   beforeEach(() => {
+    vi.clearAllMocks();
+    mockUiPreferencesApi.get.mockResolvedValue({ theme: null, updatedAt: null });
     window.localStorage.clear();
     document.documentElement.className = "";
     document.documentElement.style.colorScheme = "";
@@ -188,6 +216,47 @@ describe("ThemeContext", () => {
     expect(observedTheme).toBe("light");
     expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe("light");
     expect(mql.listenerCount()).toBe(0);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("adopts the server-side preference on load and mirrors it into localStorage", async () => {
+    mockUiPreferencesApi.get.mockResolvedValue({ theme: "light", updatedAt: null });
+    installMatchMedia(true);
+    const root = mount();
+
+    expect(observedPreference).toBe("dark");
+    await flushQueries();
+
+    expect(observedPreference).toBe("light");
+    expect(observedTheme).toBe("light");
+    expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe("light");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("writes explicit changes to the server and does not let a late fetch clobber them", async () => {
+    let resolveGet: (value: { theme: "dark" | null; updatedAt: null }) => void = () => {};
+    mockUiPreferencesApi.get.mockReturnValue(
+      new Promise((resolve) => {
+        resolveGet = resolve;
+      }),
+    );
+    installMatchMedia(true);
+    const root = mount();
+
+    act(() => {
+      setPreference?.("light");
+    });
+    expect(mockUiPreferencesApi.update).toHaveBeenCalledWith({ theme: "light" });
+
+    resolveGet({ theme: "dark", updatedAt: null });
+    await flushQueries();
+    expect(observedPreference).toBe("light");
 
     act(() => {
       root.unmount();

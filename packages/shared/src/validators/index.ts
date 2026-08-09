@@ -85,6 +85,14 @@ export {
   type UpsertSidebarOrderPreference,
 } from "./sidebar-preferences.js";
 export {
+  themePreferenceSchema,
+  uiPreferencesSchema,
+  upsertUiPreferencesSchema,
+  type ThemePreference,
+  type UiPreferences,
+  type UpsertUiPreferences,
+} from "./ui-preferences.js";
+export {
   resourceMembershipStateSchema,
   updateResourceMembershipSchema,
   type UpdateResourceMembership,

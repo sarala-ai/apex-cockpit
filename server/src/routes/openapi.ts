@@ -86,6 +86,8 @@ import {
   resolveBudgetIncidentSchema,
   // Sidebar
   upsertSidebarOrderPreferenceSchema,
+  // UI preferences
+  upsertUiPreferencesSchema,
   // Execution workspaces
   reconcileExecutionWorkspaceBranchSchema,
   updateExecutionWorkspaceSchema,
@@ -3160,6 +3162,23 @@ registry.registerPath({
     params: z.object({ companyId: z.string() }),
     body: jsonBody(upsertSidebarOrderPreferenceSchema),
   },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/ui-preferences/me",
+  tags: ["sidebar"],
+  summary: "Get current user UI preferences (theme)",
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/ui-preferences/me",
+  tags: ["sidebar"],
+  summary: "Update current user UI preferences (theme)",
+  request: { body: jsonBody(upsertUiPreferencesSchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
