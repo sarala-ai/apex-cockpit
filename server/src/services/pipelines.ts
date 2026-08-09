@@ -7613,6 +7613,55 @@ export function pipelineService(
         .where(and(eq(pipelineCaseEvents.companyId, companyId), eq(pipelineCaseEvents.caseId, caseId)))
         .orderBy(asc(pipelineCaseEvents.createdAt));
     },
+
+    /**
+     * Re-enter every non-terminal case that is sitting at a review stage
+     * without `step_status = "waiting_gate"`.
+     *
+     * Called by the lifecycle upgrade path when a node changes from a
+     * non-gate kind (check/workflow/agent) to a gate kind. Those cases
+     * entered the stage before the gate was configured and therefore:
+     *   - never received a `gate_opened` event or a pending approval, and
+     *   - may carry a `step_held` event from the old automation attempt.
+     *
+     * Both block the operator from approving the gate. This clears the hold
+     * and opens the gate so the case is immediately approvable.
+     */
+    async rematerializeStrandedGateCases(input: {
+      pipelineId: string;
+      companyId: string;
+      actor: PipelineActor;
+    }) {
+      const reviewStages = await db
+        .select()
+        .from(pipelineStages)
+        .where(and(
+          eq(pipelineStages.pipelineId, input.pipelineId),
+          eq(pipelineStages.kind, "review"),
+        ));
+
+      for (const stage of reviewStages) {
+        const strandedCases = await db
+          .select()
+          .from(pipelineCases)
+          .where(and(
+            eq(pipelineCases.companyId, input.companyId),
+            eq(pipelineCases.stageId, stage.id),
+            isNull(pipelineCases.terminalKind),
+            sql`${pipelineCases.stepStatus} IS DISTINCT FROM 'waiting_gate'`,
+          ));
+
+        for (const caseRow of strandedCases) {
+          await clearStepHold(input.companyId, caseRow.id, stage, { reason: "lifecycle_upgrade" });
+          await openStageGateInTransaction(db, {
+            companyId: input.companyId,
+            caseId: caseRow.id,
+            stage,
+            actor: input.actor,
+          });
+        }
+      }
+    },
   };
 
   return service;

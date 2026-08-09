@@ -699,6 +699,15 @@ export async function seedLifecyclePipelines(
         .update(pipelines)
         .set({ version: definition.version, ticketType: definition.ticketType })
         .where(eq(pipelines.id, already.id));
+      // Re-enter any case that reached a node whose kind changed to "gate"
+      // before the gate was configured. Those cases have step_status NULL
+      // instead of waiting_gate and carry a step_held from the old
+      // automation attempt — both block the operator from approving.
+      await svc.rematerializeStrandedGateCases({
+        pipelineId: already.id,
+        companyId: input.companyId,
+        actor,
+      });
       upgraded.push(definition.key);
       continue;
     }
