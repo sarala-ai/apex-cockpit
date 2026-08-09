@@ -356,9 +356,19 @@ export const CHORE_NODES: LifecycleNode[] = [
 
 const BUG_NODES: LifecycleNode[] = [
   {
+    // APEX-78: operator-filed bugs carry their signal in the ticket body; a
+    // machine check for ci_failure_signal never resolved (no such resource tool
+    // in v1) and deadlocked every Bug ticket before any agent step. Gate on
+    // approve so the reporter confirms the symptom/repro, which unblocks the
+    // fix agent immediately without extra tooling.
     id: "failing_signal",
-    kind: "check",
-    check: { tool: "ci_failure_signal", args: [], pass_criteria: "failure_detected == true" },
+    kind: "gate",
+    gate: {
+      mode: "approve",
+      prompt:
+        "Confirm the failing signal: describe the symptom, reproduction steps, and expected behaviour. Approving here unblocks the fix agent.",
+      requires: [],
+    },
   },
   {
     id: "repro_fix",
@@ -571,7 +581,10 @@ export const LIFECYCLE_DEFINITIONS: LifecycleDefinition[] = [
     // 1.1: tests/deploy declare contract targets instead of pytest /
     // cloud_run_deploy (APEX-38) — the bump is what carries the fix to
     // instances that seeded 1.0.
-    version: "1.1",
+    // 1.2: failing_signal replaced broken ci_failure_signal check with a gate
+    // (APEX-78) — bump moves the 28 stranded pipeline cases to the repaired
+    // node set on next server startup via seedLifecycles upgrade path.
+    version: "1.2",
     ticketType: "bug",
     nodes: BUG_NODES,
   }),

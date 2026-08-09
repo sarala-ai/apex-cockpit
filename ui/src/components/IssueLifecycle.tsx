@@ -32,6 +32,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import type { Issue, IssueLinkedCase } from "@paperclipai/shared";
 import type { PipelineReviewDecision } from "../api/pipelines";
+import { pipelinesApi } from "../api/pipelines";
 import {
   describeGateApprover,
   describeIssueLifecyclePosition,
@@ -98,9 +99,24 @@ function IssueLifecycleHold({
   row: IssueLinkedCase;
   hold: NonNullable<IssueLinkedCase["hold"]>;
 }) {
+  const [rerunning, setRerunning] = useState(false);
+  const [rerunError, setRerunError] = useState<string | null>(null);
+
   const copy = describeStepHold(hold, { stepName: row.stage.name });
   if (!copy) return null;
   const itemHref = issueLifecycleCaseHref(row);
+
+  async function handleRerun() {
+    setRerunning(true);
+    setRerunError(null);
+    try {
+      await pipelinesApi.rerunCurrentStageAutomation(row.id);
+    } catch {
+      setRerunError("Re-run request failed. Try again or open the case page.");
+    } finally {
+      setRerunning(false);
+    }
+  }
 
   return (
     <section
@@ -129,12 +145,27 @@ function IssueLifecycleHold({
             {copy.nextStep}
           </p>
 
-          <p className="text-sm">
-            <Link to={itemHref} className="inline-flex items-center gap-1 font-medium underline underline-offset-2">
-              Open {row.stage.name} to re-run it
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              data-testid="issue-lifecycle-rerun-btn"
+              size="sm"
+              variant="outline"
+              className="border-amber-400 bg-amber-100 hover:bg-amber-200 dark:border-amber-700 dark:bg-amber-900/40 dark:hover:bg-amber-900/60"
+              disabled={rerunning}
+              onClick={handleRerun}
+            >
+              {rerunning ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden /> : null}
+              Re-run this step
+            </Button>
+            <Link to={itemHref} className="inline-flex items-center gap-1 text-sm font-medium underline underline-offset-2">
+              Open {row.stage.name}
               <ArrowUpRight className="h-3 w-3" aria-hidden />
             </Link>
-          </p>
+          </div>
+
+          {rerunError ? (
+            <p className="text-sm text-red-700 dark:text-red-400">{rerunError}</p>
+          ) : null}
         </div>
       </div>
     </section>

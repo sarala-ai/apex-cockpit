@@ -20,6 +20,13 @@ vi.mock("react-router-dom", () => ({
   ),
 }));
 
+const mockRerunCurrentStageAutomation = vi.fn();
+vi.mock("../api/pipelines", () => ({
+  pipelinesApi: {
+    rerunCurrentStageAutomation: (...args: unknown[]) => mockRerunCurrentStageAutomation(...args),
+  },
+}));
+
 import { IssueLifecycle } from "./IssueLifecycle";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -30,6 +37,7 @@ let container: HTMLDivElement;
 let root: any;
 
 beforeEach(() => {
+  mockRerunCurrentStageAutomation.mockReset();
   container = document.createElement("div");
   document.body.appendChild(container);
   act(() => {
@@ -267,6 +275,36 @@ describe("a ticket whose step has stopped", () => {
       .toContain("re-run this step");
     expect([...container.querySelectorAll("a")].map((el) => el.getAttribute("href")))
       .toContain("/pipelines/pipeline-1/items/case-1");
+  });
+
+  it("renders a re-run button when the step has stopped", () => {
+    render(<IssueLifecycle issue={held} />);
+    const btn = container.querySelector('[data-testid="issue-lifecycle-rerun-btn"]');
+    expect(btn).not.toBeNull();
+  });
+
+  it("calls rerunCurrentStageAutomation with the caseId when the re-run button is clicked", async () => {
+    mockRerunCurrentStageAutomation.mockResolvedValue(undefined);
+    render(<IssueLifecycle issue={held} />);
+
+    const btn = container.querySelector('[data-testid="issue-lifecycle-rerun-btn"]') as HTMLButtonElement;
+    await act(async () => {
+      btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(mockRerunCurrentStageAutomation).toHaveBeenCalledWith("case-1");
+  });
+
+  it("shows an error message when re-run fails", async () => {
+    mockRerunCurrentStageAutomation.mockRejectedValue(new Error("network error"));
+    render(<IssueLifecycle issue={held} />);
+
+    const btn = container.querySelector('[data-testid="issue-lifecycle-rerun-btn"]') as HTMLButtonElement;
+    await act(async () => {
+      btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("Re-run request failed");
   });
 
   it("gives a pending decision the floor when a ticket somehow has both", () => {
