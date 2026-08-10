@@ -2645,13 +2645,33 @@ export async function realizeExecutionWorkspace(input: {
   const rawStrategy = parseObject(input.config.workspaceStrategy);
   const strategyType = asString(rawStrategy.type, "project_primary");
   if (strategyType !== "git_worktree") {
+    const warnings: string[] = [];
+    const baseRef = input.base.repoRef?.trim();
+    if (baseRef && await isGitCheckout(input.base.baseCwd)) {
+      // Guard: refuse to run when the shared checkout's HEAD is not a descendant of the configured
+      // base ref. This catches the "wandering HEAD" bug where previous runs left the shared checkout
+      // on an upstream or unrelated commit, and the agent silently inherits that stale base.
+      const headSha = await runGit(["rev-parse", "HEAD"], input.base.baseCwd).catch(() => null);
+      const isAncestor = headSha
+        ? await runGit(["merge-base", "--is-ancestor", baseRef, "HEAD"], input.base.baseCwd)
+            .then(() => true)
+            .catch(() => false)
+        : null;
+      if (isAncestor === false) {
+        const baseRefSha = await resolveBaseRefSha(input.base.baseCwd, baseRef);
+        throw new Error(
+          `Shared checkout HEAD (${formatShortSha(headSha)}) is not a descendant of configured base ref "${baseRef}" (${formatShortSha(baseRefSha)}). ` +
+          `The checkout may have wandered to an unrelated commit. Reset the checkout to a descendant of ${baseRef} before retrying.`,
+        );
+      }
+    }
     return {
       ...input.base,
       strategy: "project_primary",
       cwd: input.base.baseCwd,
       branchName: null,
       worktreePath: null,
-      warnings: [],
+      warnings,
       created: false,
       baseRefSha: null,
     };

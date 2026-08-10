@@ -6867,7 +6867,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             projectId: resolvedProjectId,
             workspaceId: workspace.id,
             repoUrl: workspace.repoUrl,
-            repoRef: workspace.repoRef,
+            repoRef: workspace.defaultRef ?? workspace.repoRef,
             workspaceHints,
             warnings: [preferredWorkspaceWarning, managedWorkspaceWarning].filter(
               (value): value is string => Boolean(value),
@@ -6906,7 +6906,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         projectId: resolvedProjectId,
         workspaceId: projectWorkspaceRows[0]?.id ?? null,
         repoUrl: projectWorkspaceRows[0]?.repoUrl ?? null,
-        repoRef: projectWorkspaceRows[0]?.repoRef ?? null,
+        repoRef: projectWorkspaceRows[0]?.defaultRef ?? projectWorkspaceRows[0]?.repoRef ?? null,
         workspaceHints,
         warnings,
       };

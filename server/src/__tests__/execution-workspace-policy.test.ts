@@ -127,14 +127,14 @@ describe("execution workspace policy helpers", () => {
     ).toBe(false);
   });
 
-  it("mirrors runtime default (project_primary) when pinned settings omit strategy type", () => {
-    // Mode-only pin without explicit workspaceStrategy.type → same project_primary default as runtime.
+  it("mirrors runtime default (git_worktree for isolated, project_primary for shared) when pinned settings omit strategy type", () => {
+    // isolated_workspace without explicit strategy → git_worktree (runtime default since APEX-82).
     expect(
       resolvePinnedIssueWorkspaceStrategyType({
         mode: "isolated_workspace",
         issueSettings: { mode: "isolated_workspace" },
       }),
-    ).toBe("project_primary");
+    ).toBe("git_worktree");
     // Explicit strategy type is always respected.
     expect(
       resolvePinnedIssueWorkspaceStrategyType({

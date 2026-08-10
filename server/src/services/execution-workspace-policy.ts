@@ -54,9 +54,12 @@ export function resolveEffectiveWorkspaceStrategyType(
   if (type === "project_primary" || type === "git_worktree" || type === "adapter_managed" || type === "cloud_sandbox") {
     return type;
   }
-  // Default mirrors workspace-runtime.ts realizeExecutionWorkspace: missing type -> "project_primary".
+  // Default mirrors workspace-runtime.ts realizeExecutionWorkspace: missing type -> "git_worktree"
+  // for isolated/operator modes, "project_primary" for shared.
   // agent_default is a metadata-only mode that never creates a worktree, so it keeps "adapter_managed".
-  return mode === "agent_default" ? "adapter_managed" : "project_primary";
+  if (mode === "agent_default") return "adapter_managed";
+  if (mode === "isolated_workspace" || mode === "operator_branch") return "git_worktree";
+  return "project_primary";
 }
 
 export function resolvePinnedIssueWorkspaceStrategyType(input: {
@@ -72,9 +75,11 @@ export function resolvePinnedIssueWorkspaceStrategyType(input: {
   ) {
     return strategyType;
   }
-  // When no explicit strategy type is set, mirror the runtime default (project_primary for most
-  // modes; adapter_managed for agent_default). Mode alone never implies git_worktree.
-  return input.mode === "agent_default" ? "adapter_managed" : "project_primary";
+  // When no explicit strategy type is set, mirror the runtime default:
+  // isolated/operator modes default to git_worktree; shared → project_primary; agent_default → adapter_managed.
+  if (input.mode === "agent_default") return "adapter_managed";
+  if (input.mode === "isolated_workspace" || input.mode === "operator_branch") return "git_worktree";
+  return "project_primary";
 }
 
 export function hasReusableExecutionWorkspaceBinding(issue: UnrunnableWorktreeIssueRef): boolean {
@@ -273,7 +278,10 @@ export function resolveExecutionWorkspaceMode(input: {
     if (input.projectPolicy.defaultMode === "isolated_workspace") return "isolated_workspace";
     if (input.projectPolicy.defaultMode === "operator_branch") return "operator_branch";
     if (input.projectPolicy.defaultMode === "adapter_default") return "agent_default";
-    return "shared_workspace";
+    if (input.projectPolicy.defaultMode === "shared_workspace") return "shared_workspace";
+    // No explicit defaultMode: new project workspaces default to isolated_workspace + git_worktree
+    // rather than sharing the checkout at whatever HEAD the previous run left behind.
+    return "isolated_workspace";
   }
   if (input.legacyUseProjectWorkspace === false) {
     return "agent_default";
