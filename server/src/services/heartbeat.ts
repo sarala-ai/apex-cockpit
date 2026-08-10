@@ -4911,6 +4911,23 @@ function normalizeAgentNameKey(value: string | null | undefined) {
   return normalized.length > 0 ? normalized : null;
 }
 
+/**
+ * `agents.role` values that mean "this agent writes to product repositories".
+ * Used to decide which runs must be serialized against each other (APEX-77 T4).
+ *
+ * Keyed on role rather than display name so that renaming an agent in the
+ * Configuration UI cannot silently disable a safety guard.
+ *
+ * CAVEAT, stated rather than hidden: `agents.role` is free text with no enum
+ * and no validation, and the codebase is not internally consistent about it —
+ * "engineer" appears ~355 times in fixtures and seeds while our live roster
+ * rows carry "engineering". Both are accepted here. This is a strictly better
+ * key than the display name, not a good one; the real fix is a stable agent
+ * role/key on the registry (APEX-32 territory), after which this set should
+ * collapse to a single canonical value.
+ */
+const REPO_WRITING_AGENT_ROLES = ["engineer", "engineering"] as const;
+
 const defaultSessionCodec: AdapterSessionCodec = {
   deserialize(raw: unknown) {
     const asObj = parseObject(raw);
@@ -9648,6 +9665,50 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  /**
+   * PER-PROJECT serialization (APEX-77 T4): returns true when a repo-writing
+   * run is already running for the same project, so the current run should
+   * stay queued rather than be claimed.
+   *
+   * SCOPE IS THE PROJECT, NOT THE REPO. A project can carry several
+   * workspaces, and two projects can point at one repo, so this is an
+   * approximation of the real collision boundary. It is deliberate and
+   * temporary: APEX-82 moves execution onto per-branch git worktrees, which
+   * removes the shared working tree these runs actually collide over and
+   * makes this guard largely redundant. Do not rename this to "per-repo"
+   * without also changing what it keys on.
+   *
+   * Repo-writing is determined by the agent's `role`, never by its display
+   * name — renaming an agent in the Configuration UI must not silently
+   * disable a safety guard. See REPO_WRITING_AGENT_ROLES for why that key is
+   * better but still imperfect. Specifier (role "product") and Design
+   * Engineer (role "design") are read-only with respect to product
+   * repositories and are correctly exempt.
+   */
+  async function isBlockedByPerProjectSerialisation(
+    run: typeof heartbeatRuns.$inferSelect,
+    agentRole: string | null,
+    projectId: string | null,
+  ): Promise<boolean> {
+    const roleKey = normalizeAgentNameKey(agentRole);
+    if (!roleKey || !REPO_WRITING_AGENT_ROLES.includes(roleKey as never)) return false;
+    if (!projectId) return false;
+
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, run.companyId),
+          eq(heartbeatRuns.status, "running"),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'projectId' = ${projectId}`,
+          inArray(sql`lower(trim(${agents.role}))`, [...REPO_WRITING_AGENT_ROLES]),
+        ),
+      );
+    return Number(count ?? 0) > 0;
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect, companyAgents?: AgentOrgRow[]) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -9736,6 +9797,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
+    // APEX-77 T4: per-PROJECT serialization — one repo-writing run per project
+    // at a time (see isBlockedByPerProjectSerialisation for why project, not
+    // repo, and why APEX-82 supersedes this).
+    // Leave the run queued (do not cancel) so the next cycle picks it up.
+    const projectId = readNonEmptyString(context.projectId);
+    if (await isBlockedByPerProjectSerialisation(run, agent.role, projectId)) {
+      logger.info(
+        { runId: run.id, agentId: run.agentId, agentRole: agent.role, projectId },
+        "claimQueuedRun: per-project serialization — leaving queued while another repo-writing run is active",
+      );
+      return null;
+    }
+
     const claimedAt = new Date();
     const responsibleUserId = await resolveResponsibleUserIdForRun({
       run,
@@ -9811,8 +9885,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     unresolvedBlockerIssueIds: string[],
   ) {
     const now = new Date();
+
+    // Resolve blocker UUIDs to human-readable identifiers for the run event message.
+    const blockerIdentifiers: string[] = [];
+    if (unresolvedBlockerIssueIds.length > 0) {
+      const blockerRows = await db
+        .select({ id: issues.id, identifier: issues.identifier })
+        .from(issues)
+        .where(inArray(issues.id, unresolvedBlockerIssueIds));
+      const idToIdentifier = new Map(blockerRows.map((r) => [r.id, r.identifier]));
+      for (const id of unresolvedBlockerIssueIds) {
+        const ident = idToIdentifier.get(id);
+        blockerIdentifiers.push(ident ?? id);
+      }
+    }
+
+    const blockerSummary = blockerIdentifiers.length > 0
+      ? ` (blocked by ${blockerIdentifiers.join(", ")})`
+      : "";
     const reason =
-      "Cancelled because issue dependencies are still blocked; Paperclip will wake the assignee when blockers resolve";
+      `Cancelled because issue dependencies are still blocked${blockerSummary}; Paperclip will wake the assignee when blockers resolve`;
     const cancelled = await setRunStatus(run.id, "cancelled", {
       finishedAt: now,
       error: reason,
@@ -9857,6 +9949,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       payload: {
         issueId,
         unresolvedBlockerIssueIds,
+        unresolvedBlockerIdentifiers: blockerIdentifiers,
       },
     });
 

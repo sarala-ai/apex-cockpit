@@ -28,6 +28,37 @@ Where a task genuinely cannot carry a machine-checkable criterion, state that ga
 
 Read the code. A breakdown that names files that do not exist costs the Implementer a whole session to discover. State any open design decisions where the reviewer will see them — not buried inside a task.
 
+## Required: Dependencies declaration
+
+Every spec must declare its dependencies in two places that must agree:
+
+**1. YAML front matter field (machine-authoritative):**
+
+```
+---
+dependencies: [APEX-26, APEX-51]
+---
+```
+
+Use a comma-separated list inside `[...]`. For no blockers, omit the field or
+use `dependencies: []`.
+
+**2. `## Dependencies` prose section (human documentation):**
+
+- Heading: `## Dependencies`
+- No blockers: write `None` as the entire body.
+- Each blocker on its own line: `- Blocked by: APEX-N — <reason>` where
+  `APEX-N` is a ticket identifier.
+
+The gate reads blocker edges from the front matter field — that is the only
+machine source. The prose section documents **why** each dependency exists for
+human reviewers. Both must list the same identifiers. A mismatch between the
+two is a gate validation error that blocks approval.
+
+Write only genuine blockers — tickets that must be `done` before implementation
+can start. Related-but-non-blocking context belongs in spec prose, not in the
+dependencies field.
+
 ## Sentinel
 
 The spec artifact destination is the ticket spec document, never the repo.
