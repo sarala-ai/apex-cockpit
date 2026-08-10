@@ -24,7 +24,10 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { writeSpecDependencyEdges } from "../apex/pipeline/gate-bridge.js";
+import {
+  loadSpecDependencyValidationError,
+  writeSpecDependencyEdges,
+} from "../apex/pipeline/gate-bridge.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -183,7 +186,11 @@ describeEmbeddedPostgres("APEX-77: spec approval writes blocker edges", () => {
     expect(rows).toHaveLength(1);
   });
 
-  it("inserts no row when the spec front matter names an unknown identifier", async () => {
+  // A declared dependency that cannot become an edge is a FALSE ASSURANCE: the
+  // ticket reads as blocked while dispatch treats it as runnable. The gate
+  // validator rejects these before approval; if one somehow reaches the writer,
+  // it must fail loudly rather than write a partial blocker set.
+  it("refuses to write when the spec front matter names an unknown identifier", async () => {
     const body = [
       "---",
       "dependencies: [APEX-9999]",
@@ -199,7 +206,9 @@ describeEmbeddedPostgres("APEX-77: spec approval writes blocker edges", () => {
 
     const { companyId, caseId } = await makeFixture(body);
 
-    await writeSpecDependencyEdges(db, companyId, caseId);
+    await expect(writeSpecDependencyEdges(db, companyId, caseId)).rejects.toThrow(
+      /do not resolve to issues \(APEX-9999\)/,
+    );
 
     const rows = await db
       .select()
@@ -238,7 +247,7 @@ describeEmbeddedPostgres("APEX-77: spec approval writes blocker edges", () => {
     expect(rows).toHaveLength(0);
   });
 
-  it("skips a dependency that would form a cycle", async () => {
+  it("refuses to write a dependency that would form a cycle", async () => {
     const body = [
       "---",
       "dependencies: [APEX-26]",
@@ -262,8 +271,11 @@ describeEmbeddedPostgres("APEX-77: spec approval writes blocker edges", () => {
       type: "blocks",
     });
 
-    // writeSpecDependencyEdges should detect the cycle and not insert the edge
-    await writeSpecDependencyEdges(db, companyId, caseId);
+    // A cycle-forming edge cannot be written, so the declaration would silently
+    // not exist. Fail loudly instead of dropping it.
+    await expect(writeSpecDependencyEdges(db, companyId, caseId)).rejects.toThrow(
+      /would form a blocker cycle/,
+    );
 
     const rows = await db
       .select()
@@ -276,7 +288,81 @@ describeEmbeddedPostgres("APEX-77: spec approval writes blocker edges", () => {
           eq(issueRelations.relatedIssueId, specIssueId),
         ),
       );
-    // Should still be 0 — the cycle-forming edge was skipped
+    // Still 0 — nothing was written, and the caller was told.
     expect(rows).toHaveLength(0);
+  });
+
+  // The gate validator is the mechanism that stops any of the above from ever
+  // reaching the writer: a spec whose declared dependencies cannot all become
+  // edges must not pass spec_review.
+  describe("gate validation blocks approval before any edge is written", () => {
+    it("rejects an unknown identifier with an operator-facing reason", async () => {
+      const body = [
+        "---",
+        "dependencies: [APEX-9999]",
+        "---",
+        "",
+        "# My Spec",
+        "",
+        "## Dependencies",
+        "",
+        "- Blocked by: APEX-9999",
+        "",
+      ].join("\n");
+
+      const { companyId, caseId } = await makeFixture(body);
+
+      const error = await loadSpecDependencyValidationError(db, companyId, caseId);
+      expect(error).toMatch(/APEX-9999/);
+      expect(error).toMatch(/do not exist|does not exist/);
+    });
+
+    it("rejects a dependency that would form a cycle", async () => {
+      const body = [
+        "---",
+        "dependencies: [APEX-26]",
+        "---",
+        "",
+        "# My Spec",
+        "",
+        "## Dependencies",
+        "",
+        "- Blocked by: APEX-26",
+        "",
+      ].join("\n");
+
+      const { companyId, specIssueId, blockerIssueId, caseId } = await makeFixture(body);
+      await db.insert(issueRelations).values({
+        companyId,
+        issueId: specIssueId,
+        relatedIssueId: blockerIssueId,
+        type: "blocks",
+      });
+
+      const error = await loadSpecDependencyValidationError(db, companyId, caseId);
+      expect(error).toMatch(/blocker cycle/);
+      expect(error).toMatch(/APEX-26/);
+    });
+
+    it("passes a spec whose declared dependency resolves cleanly", async () => {
+      const body = [
+        "---",
+        "dependencies: [APEX-26]",
+        "---",
+        "",
+        "# My Spec",
+        "",
+        "## Dependencies",
+        "",
+        "- Blocked by: APEX-26",
+        "",
+      ].join("\n");
+
+      const { companyId, caseId } = await makeFixture(body);
+
+      await expect(
+        loadSpecDependencyValidationError(db, companyId, caseId),
+      ).resolves.toBeNull();
+    });
   });
 });

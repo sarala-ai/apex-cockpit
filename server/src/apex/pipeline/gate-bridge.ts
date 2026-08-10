@@ -127,12 +127,132 @@ async function loadSpecMismatch(
 }
 
 /**
+ * Resolve the issue id and declared dependency identifiers for a case's spec.
+ * Returns null when there is no linked issue, no spec document, or no
+ * declared dependencies.
+ */
+async function loadSpecDependencyContext(
+  db: Db,
+  companyId: string,
+  caseId: string,
+  editedBody?: string | null,
+): Promise<{ issueId: string; identifiers: string[] } | null> {
+  const link = await db
+    .select({ issueId: pipelineCaseIssueLinks.issueId })
+    .from(pipelineCaseIssueLinks)
+    .where(
+      and(
+        eq(pipelineCaseIssueLinks.companyId, companyId),
+        eq(pipelineCaseIssueLinks.caseId, caseId),
+      ),
+    )
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (!link) return null;
+
+  let body = editedBody ?? null;
+  if (body == null) {
+    const docRow = await db
+      .select({ body: documents.latestBody })
+      .from(issueDocuments)
+      .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+      .where(
+        and(
+          eq(issueDocuments.companyId, companyId),
+          eq(issueDocuments.issueId, link.issueId),
+          eq(issueDocuments.key, "spec"),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    body = docRow?.body ?? null;
+  }
+  if (!body) return null;
+
+  const identifiers = parseSpecDependencies(body);
+  if (identifiers.length === 0) return null;
+  return { issueId: link.issueId, identifiers };
+}
+
+/**
+ * APEX-77 gate validation: every dependency the spec declares must be able to
+ * become a real blocker edge. A declared dependency that cannot be written is
+ * a FALSE ASSURANCE — the ticket would read as blocked while dispatch treats
+ * it as runnable — so each failure mode below blocks gate approval rather than
+ * being logged and dropped.
+ *
+ * Returns an operator-facing error string, or null when every declared
+ * dependency is writable.
+ */
+export async function loadSpecDependencyValidationError(
+  db: Db,
+  companyId: string,
+  caseId: string,
+  editedBody?: string | null,
+): Promise<string | null> {
+  const ctx = await loadSpecDependencyContext(db, companyId, caseId, editedBody);
+  if (!ctx) return null;
+  const { issueId, identifiers } = ctx;
+
+  const matchedRows = await db
+    .select({ id: issues.id, identifier: issues.identifier })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        inArray(issues.identifier, identifiers.map((id) => id.toUpperCase())),
+      ),
+    );
+  const byIdentifier = new Map(
+    matchedRows.map((r) => [r.identifier?.toUpperCase() ?? "", r.id]),
+  );
+
+  const unknown = identifiers.filter((ident) => !byIdentifier.has(ident.toUpperCase()));
+  if (unknown.length > 0) {
+    return (
+      `Spec declares ${unknown.length === 1 ? "a dependency" : "dependencies"} that ` +
+      `${unknown.length === 1 ? "does" : "do"} not exist in this company: ${unknown.join(", ")}. ` +
+      `A declared blocker that cannot be resolved would leave this ticket looking blocked ` +
+      `while dispatch treats it as runnable. Correct the identifier in the spec's ` +
+      `\`dependencies\` front matter (and the ## Dependencies section) and approve again.`
+    );
+  }
+
+  const selfRef = identifiers.filter((ident) => byIdentifier.get(ident.toUpperCase()) === issueId);
+  if (selfRef.length > 0) {
+    return (
+      `Spec declares this ticket as its own dependency (${selfRef.join(", ")}). ` +
+      `Remove it from the \`dependencies\` front matter and approve again.`
+    );
+  }
+
+  const cycles: string[] = [];
+  for (const ident of identifiers) {
+    const blockerId = byIdentifier.get(ident.toUpperCase());
+    if (!blockerId) continue;
+    if (await wouldCreateCycle(db, companyId, blockerId, issueId)) cycles.push(ident);
+  }
+  if (cycles.length > 0) {
+    return (
+      `Spec declares ${cycles.length === 1 ? "a dependency" : "dependencies"} that would ` +
+      `form a blocker cycle: ${cycles.join(", ")}. That edge cannot be written, so the ` +
+      `dependency would silently not exist. Break the cycle — or drop the declaration — ` +
+      `and approve again.`
+    );
+  }
+
+  return null;
+}
+
+/**
  * Resolve and write blocker edges declared in the `dependencies` YAML front
  * matter field of the spec document for the issue that owns `caseId`.
  *
- * Called after a `spec_review` gate is approved. Unknown identifiers are
- * skipped (logged). A cycle-forming edge is dropped via the existing cycle
- * guard; this does not fail the approval.
+ * Called after a `spec_review` gate is approved. By that point
+ * `loadSpecDependencyValidationError` has already rejected unknown
+ * identifiers, self-references and cycle-forming edges, so anything that
+ * still fails here is unexpected and THROWS rather than being swallowed — a
+ * declared dependency must never silently fail to become an edge.
  *
  * Exported for integration testing.
  */
@@ -187,10 +307,13 @@ export async function writeSpecDependencyEdges(
     );
 
   const knownIdentifiers = new Set(matchedRows.map((r) => r.identifier?.toUpperCase()));
-  for (const ident of identifiers) {
-    if (!knownIdentifiers.has(ident.toUpperCase())) {
-      logger.warn({ companyId, issueId, identifier: ident }, "spec-dependencies: unknown identifier skipped");
-    }
+  const unknown = identifiers.filter((ident) => !knownIdentifiers.has(ident.toUpperCase()));
+  if (unknown.length > 0) {
+    // Should be unreachable: the gate validator rejects these before approval.
+    throw new Error(
+      `spec-dependencies: declared dependencies do not resolve to issues (${unknown.join(", ")}) ` +
+        `for issue ${issueId}; refusing to write a partial blocker set`,
+    );
   }
 
   if (matchedRows.length === 0) return;
@@ -211,19 +334,21 @@ export async function writeSpecDependencyEdges(
   const toAdd = matchedRows.filter((r) => !existingSet.has(r.id) && r.id !== issueId);
   if (toAdd.length === 0) return;
 
-  // Write new edges one at a time so a cycle-forming edge only skips itself.
+  // Write the edges. Every failure below is loud: a declared dependency that
+  // does not become an edge is a false assurance, so we would rather fail the
+  // write than leave the ticket looking blocked when it is not.
   for (const blocker of toAdd) {
+    // Cycle-check: a simple DFS from the blocker — if it can reach issueId,
+    // inserting this edge would form a cycle. The gate validator rejects these
+    // before approval, so reaching here means the graph changed underneath us.
+    const hasCycle = await wouldCreateCycle(db, companyId, blocker.id, issueId);
+    if (hasCycle) {
+      throw new Error(
+        `spec-dependencies: declared dependency ${blocker.identifier ?? blocker.id} would form ` +
+          `a blocker cycle with issue ${issueId}; refusing to write a partial blocker set`,
+      );
+    }
     try {
-      // Cycle-check: a simple DFS from the blocker — if it can reach issueId,
-      // inserting this edge would form a cycle.
-      const hasCycle = await wouldCreateCycle(db, companyId, blocker.id, issueId);
-      if (hasCycle) {
-        logger.warn(
-          { companyId, issueId, blockerId: blocker.id, identifier: blocker.identifier },
-          "spec-dependencies: cycle-forming edge skipped",
-        );
-        continue;
-      }
       await db.insert(issueRelations).values({
         companyId,
         issueId: blocker.id,
@@ -231,10 +356,11 @@ export async function writeSpecDependencyEdges(
         type: "blocks",
       });
     } catch (err) {
-      logger.warn(
-        { err, companyId, issueId, blockerId: blocker.id },
-        "spec-dependencies: failed to insert edge, skipping",
+      logger.error(
+        { err, companyId, issueId, blockerId: blocker.id, identifier: blocker.identifier },
+        "spec-dependencies: failed to insert declared blocker edge",
       );
+      throw err;
     }
   }
 }
@@ -365,6 +491,16 @@ export async function resolveGateApproval(
     const mismatch = await loadSpecMismatch(db, input.companyId, caseId, input.editedBody);
     if (mismatch) {
       return { transitioned: false, note: mismatch };
+    }
+    // Every declared dependency must be writable as a real blocker edge.
+    const unwritable = await loadSpecDependencyValidationError(
+      db,
+      input.companyId,
+      caseId,
+      input.editedBody,
+    );
+    if (unwritable) {
+      return { transitioned: false, note: unwritable };
     }
   }
 
