@@ -1722,4 +1722,158 @@ describe("NewIssueDialog", () => {
       act(() => root.unmount());
     });
   });
+
+  // -------------------------------------------------------------------------
+  // APEX-71 — controlled inputs survive re-layout / init re-run
+  // The root cause: IssueDescriptionEditor kept a local draftValue and a
+  // useEffect that re-synced it from the parent prop.  When the initialization
+  // effect re-ran (new initializationKey) it called setIssueText("...", ""),
+  // changing the description prop from the draft text back to "".  The sync
+  // effect then cleared draftValue, so the textarea went visually blank even
+  // though descriptionRef still held the user's text.
+  // -------------------------------------------------------------------------
+  it("preserves user-typed description visually after a dialog context re-initialization", async () => {
+    // Pre-load a draft so the description editor starts with non-empty text.
+    localStorage.setItem(
+      "paperclip:issue-draft",
+      JSON.stringify({
+        title: "Saved draft title",
+        description: "Saved draft description",
+        status: "todo",
+        priority: "",
+        assigneeValue: "",
+        reviewerValue: "",
+        approverValue: "",
+        projectId: "",
+        assigneeModelOverride: "",
+        assigneeThinkingEffort: "",
+        assigneeChrome: false,
+        workMode: "standard",
+      }),
+    );
+
+    const { root, queryClient } = renderDialog(container);
+    await flush();
+
+    const descriptionInput = container.querySelector(
+      'textarea[aria-label="Add description..."]',
+    ) as HTMLTextAreaElement | null;
+    expect(descriptionInput).not.toBeNull();
+
+    // The draft description should appear in the editor on open.
+    await waitForAssertion(() => {
+      expect(descriptionInput!.value).toBe("Saved draft description");
+    });
+
+    // User edits the description.
+    await typeTextareaValue(descriptionInput!, "User edited the description");
+
+    // User types a long title — simulating the title-wrap scenario that triggers
+    // re-renders in the real browser.
+    const titleInput = container.querySelector(
+      'textarea[placeholder="Task title"]',
+    ) as HTMLTextAreaElement | null;
+    await typeTextareaValue(
+      titleInput!,
+      "A title long enough that it would wrap across two lines in the modal",
+    );
+
+    // Simulate a dialog-context update that changes the initialization key
+    // (e.g. anchor scroll in the real app can push new newIssueDefaults).
+    // This causes the initialization effect to re-run and call setIssueText
+    // with a fresh empty description, which previously cleared the editor.
+    dialogState.newIssueDefaults = { title: "New task title from context" };
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <NewIssueDialog />
+        </QueryClientProvider>,
+      );
+      await Promise.resolve();
+    });
+    // Flush multiple times: the init effect sets description="", which queues a re-render
+    // of IssueDescriptionEditor, which then runs the sync useEffect setting draftValue="".
+    // Each flush() handles one round; we need several to let all second-order effects settle.
+    for (let i = 0; i < 5; i++) await flush();
+
+    // The user's edited description must survive the re-initialization.
+    // Before the fix: the sync useEffect in IssueDescriptionEditor cleared draftValue
+    // when the description prop was reset to "" by the init effect, so this was "".
+    expect(descriptionInput!.value).toBe("User edited the description");
+
+    act(() => root.unmount());
+    // Restore defaults for subsequent tests.
+    dialogState.newIssueDefaults = {};
+  });
+
+  it("shows an empty editor after discard-draft + close + reopen, even though hasInteracted was true", async () => {
+    const { root, queryClient } = renderDialog(container);
+    await flush();
+
+    // Type a title so canDiscardDraft becomes true.
+    const titleInput = container.querySelector(
+      'textarea[placeholder="Task title"]',
+    ) as HTMLTextAreaElement | null;
+    expect(titleInput).not.toBeNull();
+    await typeTextareaValue(titleInput!, "Draft title");
+
+    // Type into description — this sets hasInteracted.current = true inside
+    // IssueDescriptionEditor, permanently disabling the prop-sync effect.
+    const descriptionInput = container.querySelector(
+      'textarea[aria-label="Add description..."]',
+    ) as HTMLTextAreaElement | null;
+    expect(descriptionInput).not.toBeNull();
+    await typeTextareaValue(descriptionInput!, "Draft body");
+    expect(descriptionInput!.value).toBe("Draft body");
+
+    // Click "Discard Draft" — calls reset() which sets description = "" via
+    // setIssueText("", ""), then closeNewIssue() (our mock, so newIssueOpen
+    // stays true here; we simulate the close below).
+    const discardButton = Array.from(container.querySelectorAll("button"))
+      .find((b) => b.textContent?.includes("Discard Draft"));
+    expect(discardButton).not.toBeUndefined();
+    await act(async () => {
+      discardButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    // Simulate closeNewIssue: the real handler toggles newIssueOpen = false.
+    // Our mock Dialog renders null when open=false, so the sub-tree (including
+    // IssueDescriptionEditor and its hasInteracted ref) unmounts.
+    dialogState.newIssueOpen = false;
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <NewIssueDialog />
+        </QueryClientProvider>,
+      );
+      await Promise.resolve();
+    });
+    await flush();
+
+    // Reopen.
+    dialogState.newIssueOpen = true;
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <NewIssueDialog />
+        </QueryClientProvider>,
+      );
+      await Promise.resolve();
+    });
+    await flush();
+
+    // After unmount/remount, IssueDescriptionEditor starts with
+    // hasInteracted = false, so the sync effect fires and picks up the
+    // parent's description = "" (set by reset() above). The textarea must
+    // be empty — not show the discarded draft.
+    const reopenedDescription = container.querySelector(
+      'textarea[aria-label="Add description..."]',
+    ) as HTMLTextAreaElement | null;
+    expect(reopenedDescription).not.toBeNull();
+    expect(reopenedDescription!.value).toBe("");
+
+    act(() => root.unmount());
+    dialogState.newIssueOpen = true;
+  });
 });

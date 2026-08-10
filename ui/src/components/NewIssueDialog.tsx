@@ -337,9 +337,15 @@ const IssueTitleTextarea = memo(function IssueTitleTextarea({
   onChange: (value: string) => void;
 }) {
   const [draftValue, setDraftValue] = useState(value);
+  const hasInteracted = useRef(false);
 
+  // Only sync the prop into local state before the user types; after interaction
+  // the user's draft is the source of truth and must survive parent re-renders
+  // (e.g. when newIssueDefaults changes and the init effect resets description).
   useEffect(() => {
-    setDraftValue(value);
+    if (!hasInteracted.current) {
+      setDraftValue(value);
+    }
   }, [value]);
 
   return (
@@ -350,6 +356,7 @@ const IssueTitleTextarea = memo(function IssueTitleTextarea({
       value={draftValue}
       onChange={(e) => {
         const nextValue = e.target.value;
+        hasInteracted.current = true;
         setDraftValue(nextValue);
         onChange(nextValue);
         e.target.style.height = "auto";
@@ -400,9 +407,12 @@ const IssueDescriptionEditor = memo(function IssueDescriptionEditor({
   onChange: (value: string) => void;
 }) {
   const [draftValue, setDraftValue] = useState(value);
+  const hasInteracted = useRef(false);
 
   useEffect(() => {
-    setDraftValue(value);
+    if (!hasInteracted.current) {
+      setDraftValue(value);
+    }
   }, [value]);
 
   return (
@@ -410,6 +420,7 @@ const IssueDescriptionEditor = memo(function IssueDescriptionEditor({
       ref={descriptionEditorRef}
       value={draftValue}
       onChange={(nextValue) => {
+        hasInteracted.current = true;
         setDraftValue(nextValue);
         onChange(nextValue);
       }}
