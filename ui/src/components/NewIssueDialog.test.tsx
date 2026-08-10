@@ -1805,4 +1805,75 @@ describe("NewIssueDialog", () => {
     // Restore defaults for subsequent tests.
     dialogState.newIssueDefaults = {};
   });
+
+  it("shows an empty editor after discard-draft + close + reopen, even though hasInteracted was true", async () => {
+    const { root, queryClient } = renderDialog(container);
+    await flush();
+
+    // Type a title so canDiscardDraft becomes true.
+    const titleInput = container.querySelector(
+      'textarea[placeholder="Task title"]',
+    ) as HTMLTextAreaElement | null;
+    expect(titleInput).not.toBeNull();
+    await typeTextareaValue(titleInput!, "Draft title");
+
+    // Type into description — this sets hasInteracted.current = true inside
+    // IssueDescriptionEditor, permanently disabling the prop-sync effect.
+    const descriptionInput = container.querySelector(
+      'textarea[aria-label="Add description..."]',
+    ) as HTMLTextAreaElement | null;
+    expect(descriptionInput).not.toBeNull();
+    await typeTextareaValue(descriptionInput!, "Draft body");
+    expect(descriptionInput!.value).toBe("Draft body");
+
+    // Click "Discard Draft" — calls reset() which sets description = "" via
+    // setIssueText("", ""), then closeNewIssue() (our mock, so newIssueOpen
+    // stays true here; we simulate the close below).
+    const discardButton = Array.from(container.querySelectorAll("button"))
+      .find((b) => b.textContent?.includes("Discard Draft"));
+    expect(discardButton).not.toBeUndefined();
+    await act(async () => {
+      discardButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    // Simulate closeNewIssue: the real handler toggles newIssueOpen = false.
+    // Our mock Dialog renders null when open=false, so the sub-tree (including
+    // IssueDescriptionEditor and its hasInteracted ref) unmounts.
+    dialogState.newIssueOpen = false;
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <NewIssueDialog />
+        </QueryClientProvider>,
+      );
+      await Promise.resolve();
+    });
+    await flush();
+
+    // Reopen.
+    dialogState.newIssueOpen = true;
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <NewIssueDialog />
+        </QueryClientProvider>,
+      );
+      await Promise.resolve();
+    });
+    await flush();
+
+    // After unmount/remount, IssueDescriptionEditor starts with
+    // hasInteracted = false, so the sync effect fires and picks up the
+    // parent's description = "" (set by reset() above). The textarea must
+    // be empty — not show the discarded draft.
+    const reopenedDescription = container.querySelector(
+      'textarea[aria-label="Add description..."]',
+    ) as HTMLTextAreaElement | null;
+    expect(reopenedDescription).not.toBeNull();
+    expect(reopenedDescription!.value).toBe("");
+
+    act(() => root.unmount());
+    dialogState.newIssueOpen = true;
+  });
 });
