@@ -33,8 +33,10 @@ function formatRecoveryState(state: string) {
   return state.replace(/_/g, " ");
 }
 
-// PAP-11233: keep Conference Room code intact, but hide the user-facing opt-in for now.
-const SHOW_CONFERENCE_ROOM_EXPERIMENTAL_SETTING = false;
+// PAP-11233 (upstream) hid this opt-in while keeping the Conference Room code.
+// Re-exposed in this fork: we drive the cockpit's development from the cockpit,
+// and the only other route in is a hand-written API call.
+const SHOW_CONFERENCE_ROOM_EXPERIMENTAL_SETTING = true;
 
 function RecoveryPreviewDialog({
   preview,
