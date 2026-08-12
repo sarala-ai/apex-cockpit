@@ -232,6 +232,40 @@ export function renderTemplate(
   );
 }
 
+const TEMPLATE_TOKEN_RE = /\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g;
+
+/**
+ * Tokens still unresolved after rendering — the host's variable map had no
+ * entry for them, so `renderTemplate` left them verbatim.
+ *
+ * Verbatim is right for PROSE (an unknown token in a prompt is visible to
+ * whoever reads it) and wrong for anything the MACHINE then consumes. A
+ * seeded lifecycle declares `pr_exists:sarala-ai/apex-design#design/{{identifier}}`;
+ * when nothing supplies `identifier`, the literal string `design/{{identifier}}`
+ * became the branch the agent was told to push and the branch acceptance then
+ * looked for — a check that could never pass, reported as "pull request not
+ * found" rather than as the configuration fault it was. Callers use this to
+ * fail at the seam where the token is still recognisable as a token.
+ */
+export function unresolvedTemplateTokens(rendered: string): string[] {
+  return [...new Set([...rendered.matchAll(TEMPLATE_TOKEN_RE)].map((match) => match[1]))];
+}
+
+function unresolvedTokenFailure(
+  where: string,
+  rendered: string,
+): { errorType: string; message: string } | null {
+  const tokens = unresolvedTemplateTokens(rendered);
+  if (tokens.length === 0) return null;
+  return {
+    errorType: "step_template_unresolved",
+    message:
+      `${where} still contains unresolved template token(s) ` +
+      `${tokens.map((token) => `{{${token}}}`).join(", ")} after rendering — ` +
+      `the host's variable map supplies no value for them. Rendered as: ${rendered.slice(0, 200)}`,
+  };
+}
+
 export function stepExecutor(ports: StepExecutorPorts) {
   const render = ports.render ?? ((template: string) => template);
   const evaluateAcceptance = ports.evaluateAcceptance ?? ((acceptance: string) => evaluateAcceptanceV1(acceptance));
@@ -242,20 +276,39 @@ export function stepExecutor(ports: StepExecutorPorts) {
    *  (`on_fail`, default `pause`, which is what "hold the step" means). */
   async function executeRun(spec: Extract<StepSpec, { kind: "run" }>): Promise<StepOutcome> {
     const target = spec.config.target;
+    const renderedParams = target.type === "workflow" ? renderParams(target.params ?? {}, render) : null;
+    const renderedCommand = target.type === "shell" ? render(target.command) : null;
+    const renderedArgs = target.type === "command" ? (target.args ?? []).map((arg) => render(arg)) : null;
+
+    // Every rendered string here is handed straight to a tool. A leftover
+    // token would be passed through as a literal — a repo ref, a path, a
+    // command argument that names a token instead of a thing.
+    const renderedStrings: [string, string][] = [
+      ...Object.entries(renderedParams ?? {}).flatMap(([key, value]): [string, string][] =>
+        typeof value === "string" ? [[`step '${spec.key}' workflow param '${key}'`, value]] : [],
+      ),
+      ...(renderedCommand === null ? [] : ([[`step '${spec.key}' shell command`, renderedCommand]] as [string, string][])),
+      ...(renderedArgs ?? []).map((arg, index): [string, string] => [`step '${spec.key}' tool arg [${index}]`, arg]),
+    ];
+    for (const [where, value] of renderedStrings) {
+      const failure = unresolvedTokenFailure(where, value);
+      if (failure) return { status: "failed", failure };
+    }
+
     const result =
       target.type === "workflow"
         ? await ports.runner.runWorkflow({
             workflow: target.workflow,
-            params: renderParams(target.params ?? {}, render),
+            params: renderedParams ?? {},
           })
         : target.type === "shell"
           ? await ports.runner.runShell({
-              command: render(target.command),
+              command: renderedCommand ?? "",
               cwd: target.cwd ?? null,
             })
           : await ports.runner.runCommand({
               tool: target.tool,
-              args: (target.args ?? []).map((arg) => render(arg)),
+              args: renderedArgs ?? [],
             });
     return result.ok
       ? {
@@ -291,6 +344,13 @@ export function stepExecutor(ports: StepExecutorPorts) {
     if (!executor.ok) return { status: "failed", failure: executor.failure };
 
     const acceptance = port.renderAcceptance(spec.acceptance ?? spec.config.acceptance);
+    // Before anything is parked, commissioned or spent. Acceptance and the
+    // prompt render against the SAME variable map, so an unresolved token here
+    // is also in the instruction the agent would have been given — catching it
+    // at the acceptance means no run is commissioned against a broken brief.
+    const acceptanceFailure = unresolvedTokenFailure(`step '${spec.key}' acceptance`, acceptance);
+    if (acceptanceFailure) return { status: "failed", failure: acceptanceFailure };
+
     const renderedPrompt = port.renderPrompt(spec.config.prompt_template, acceptance);
     // Rework feedback rides the SAME channel the instruction already uses.
     const changeRequestRounds = await port.readChangeRequestRounds(spec.key);
