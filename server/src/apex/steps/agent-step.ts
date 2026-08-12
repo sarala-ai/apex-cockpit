@@ -104,6 +104,9 @@ export type AcceptanceEvaluation =
 
 const FILE_EXISTS_RE = /^file_exists:\s*(.+)$/;
 const PR_EXISTS_RE = /^pr_exists:\s*([^#\s]+)#(\S+)$/;
+/** `scan_clean:<kind>` — the kind is closed, not free text, so a typo is a
+ *  refusal at authoring time rather than an un-evaluable contract at runtime. */
+const SCAN_CLEAN_RE = /^scan_clean:\s*(secrets|code|dependencies|iac)$/;
 
 export type PullRequestCheck =
   | { exists: true; url: string; number: number | null }
@@ -165,6 +168,86 @@ export async function checkPullRequestViaCli(
   };
 }
 
+export type ScanCheck =
+  | { clean: true; scanMode: string }
+  | { clean: false; message: string };
+
+/**
+ * Run a security scan through the apex CLI and report whether it came back
+ * clean. Read-path, like `checkPullRequestViaCli` — a scan mutates nothing, so
+ * no execution-mode escalation is involved.
+ *
+ * THE VERDICT COMES FROM THE REPORT, NOT THE EXIT CODE. The resource server
+ * computes `passed` from the findings it parsed; reading that (rather than
+ * re-deriving a verdict here) is what makes this gate and the CI job agree by
+ * construction — both consume the same field of the same report.
+ *
+ * AN ERRORED SCAN IS NOT A PASS. A missing scanner, a timeout, or a crash all
+ * come back `status: "error"`, and every one of them means the contract was
+ * not checked. Reporting that as clean would be the precise failure this whole
+ * subsystem exists to prevent: assurance nobody earned.
+ */
+export async function checkScanViaCli(
+  kind: string,
+  options: { bin?: string; cwd?: string; timeoutMs?: number } = {},
+): Promise<ScanCheck> {
+  const bin = options.bin ?? process.env.APEX_BIN ?? "apex";
+  const cwd = options.cwd ?? process.env.APEX_LAUNCH_DIR ?? join(homedir(), ".apex-cockpit");
+  const res = await run(
+    bin,
+    ["--output", "json", "run", "security", `scan-${kind}`, "--path", "."],
+    options.timeoutMs ?? 900_000,
+    cwd,
+  );
+  if (res.status === "missing") {
+    throw new ApexUnavailableError(`apex CLI not found (bin: ${bin})`);
+  }
+  // The CLI prints startup chatter before the JSON envelope; the report is the
+  // last line, same as every other apex --output json consumer.
+  const lastLine = res.stdout.trimEnd().split("\n").pop() ?? "";
+  let envelope: { status?: string; error?: string; result?: Record<string, unknown> };
+  try {
+    envelope = JSON.parse(lastLine);
+  } catch {
+    return {
+      clean: false,
+      message:
+        res.status === "failed"
+          ? `apex security scan-${kind} failed (code ${res.code}): ${res.stderr.slice(0, 300)}`
+          : `apex security scan-${kind} returned unparseable output`,
+    };
+  }
+  const result = (envelope.result ?? {}) as {
+    passed?: boolean;
+    finding_count?: number;
+    scan_mode?: string;
+    error?: string;
+  };
+  if (envelope.status !== "success") {
+    return {
+      clean: false,
+      message:
+        `the ${kind} scan did not complete, so this contract was NOT checked — ` +
+        `inconclusive, not clean: ${envelope.error ?? result.error ?? "unknown error"}`,
+    };
+  }
+  if (result.passed === true) {
+    return { clean: true, scanMode: result.scan_mode ?? "unknown" };
+  }
+  return {
+    clean: false,
+    message:
+      `${result.finding_count ?? "some"} ${kind} finding(s). Values are redacted by ` +
+      `design — run \`apex run security scan-${kind}\` to see the files and lines.`,
+  };
+}
+
+/** Parse a `scan_clean:<kind>` acceptance declaration, or null. */
+export function acceptanceScanKind(acceptance: string): string | null {
+  const match = SCAN_CLEAN_RE.exec(acceptance.trim());
+  return match ? match[1] : null;
+}
+
 export function acceptanceArtifactPath(
   acceptance: string,
   launchDir: string = process.env.APEX_LAUNCH_DIR ?? join(homedir(), ".apex-cockpit"),
@@ -202,7 +285,7 @@ export function acceptancePullRequestTarget(
 export function isMachineEvaluableAcceptance(criteria: string): boolean {
   const trimmed = criteria.trim();
   if (!trimmed) return false;
-  return FILE_EXISTS_RE.test(trimmed) || PR_EXISTS_RE.test(trimmed);
+  return FILE_EXISTS_RE.test(trimmed) || PR_EXISTS_RE.test(trimmed) || SCAN_CLEAN_RE.test(trimmed);
 }
 
 /** v1 acceptance evaluation — see module doc for exactly what is checked. */
@@ -211,8 +294,26 @@ export async function evaluateAcceptanceV1(
   options: {
     launchDir?: string;
     checkPullRequest?: (repo: string, head: string) => Promise<PullRequestCheck>;
+    checkScan?: (kind: string) => Promise<ScanCheck>;
   } = {},
 ): Promise<AcceptanceEvaluation> {
+  const scanKind = acceptanceScanKind(acceptance);
+  if (scanKind !== null) {
+    const check = options.checkScan ?? ((kind: string) => checkScanViaCli(kind, { cwd: options.launchDir }));
+    const outcome = await check(scanKind);
+    if (outcome.clean) {
+      return {
+        ok: true,
+        evaluation: `v1: run success + scan_clean verified (${scanKind}, ${outcome.scanMode})`,
+      };
+    }
+    return {
+      ok: false,
+      evaluation: `v1: run success + scan_clean check FAILED (${scanKind})`,
+      message: `acceptance security scan not clean: ${outcome.message}`,
+    };
+  }
+
   const prTarget = acceptancePullRequestTarget(acceptance);
   if (prTarget !== null) {
     const check = options.checkPullRequest ?? checkPullRequestViaCli;

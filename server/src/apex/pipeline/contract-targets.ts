@@ -26,7 +26,7 @@ import { projectWorkspaces } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
 import type { RunTarget } from "../steps/step-executor.js";
 
-export const RUN_CONTRACTS = ["checks_pass", "deployed"] as const;
+export const RUN_CONTRACTS = ["checks_pass", "deployed", "security_clean"] as const;
 export type RunContract = (typeof RUN_CONTRACTS)[number];
 
 export type ContractRunTarget = { type: "contract"; contract: RunContract };
@@ -98,6 +98,29 @@ export async function resolveContractRunTarget(
       };
     }
     return { ok: true, target: { type: "shell", command, cwd: workspace.cwd ?? null } };
+  }
+
+  if (input.contract === "security_clean") {
+    // The ONE contract that needs no per-project declaration, and the reason
+    // is worth stating: "check that this stack passes its tests" and "ship
+    // this stack" are stack-specific, so the project has to name the tool.
+    // "look for committed secrets" is not — it is the same operation for a
+    // Python repo, a Node repo and a Terraform module, with the same rules,
+    // because the rules ship inside apex rather than per repo.
+    //
+    // So this resolves to a COMMAND target, not a shell one. checks_pass
+    // resolves to shell because the project's own check command is arbitrary
+    // by design; here an arbitrary shell string would let a project define its
+    // own idea of "clean" and defeat the gate. A command target pins both the
+    // tool and the report shape the gate reads.
+    return {
+      ok: true,
+      target: {
+        type: "command",
+        tool: "security scan-secrets",
+        args: ["--path", workspace.cwd ?? "."],
+      },
+    };
   }
 
   const workflow = workspace.deployWorkflow?.trim();

@@ -1,0 +1,105 @@
+name: Security
+
+# The cockpit is a Node repo, and this job still installs Python to reach
+# `apex run security`. That is deliberate. The allowlist config ships INSIDE
+# the apex package, so calling gitleaks directly here would mean vendoring a
+# copy of it — and a copy drifts. Drift between CI and the lifecycle gate shows
+# up as a green pull request beside a red gate, with nothing to say which is
+# right. ~40s of install buys one definition of "a secret scan" across the
+# laptop, this job, and the cockpit's own security_clean contract.
+
+on:
+  pull_request:
+    branches:
+      - master
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+    inputs:
+      full_history:
+        description: 'Scan all of git history instead of the PR range'
+        type: boolean
+        default: false
+
+concurrency:
+  group: security-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          # A commit range against a shallow clone silently walks a truncated
+          # history and passes. Full depth, or this is not the scan we think.
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: 8.30.1
+        run: |
+          curl -sSfL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      # apex-platform is published to Artifact Registry; the cockpit has no
+      # Python project of its own, so install the tool standalone.
+      - name: Install apex
+        run: uv tool install apex-platform
+
+      - name: Scan
+        env:
+          COMMIT_RANGE: >-
+            ${{ github.event_name == 'pull_request' && !inputs.full_history
+                && format('{0}...{1}', github.event.pull_request.base.sha, github.event.pull_request.head.sha)
+                || '' }}
+        run: |
+          set -o pipefail
+          if [ -n "$COMMIT_RANGE" ]; then
+            apex --output json run security scan-secrets \
+              --path . --commit-range "$COMMIT_RANGE" | tail -1 > scan.json
+          else
+            apex --output json run security scan-secrets \
+              --path . --scan-history | tail -1 > scan.json
+          fi
+          cat scan.json
+
+      - name: Enforce
+        run: |
+          # Inconclusive is not clean: a scan that errored (scanner missing,
+          # timed out, crashed) fails here rather than passing quietly.
+          if [ "$(jq -r '.status' scan.json)" != "success" ]; then
+            echo "::error::scan did not complete: $(jq -r '.error' scan.json)"
+            exit 1
+          fi
+          jq -r '.result.findings[]? | "::error file=\(.file),line=\(.line)::\(.rule): \(.description)"' scan.json
+          if [ "$(jq -r '.result.passed' scan.json)" != "true" ]; then
+            echo "::error::$(jq -r '.result.finding_count' scan.json) secret finding(s). Values are redacted by design — open each file at the line shown."
+            exit 1
+          fi
+          echo "clean ($(jq -r '.result.scan_mode' scan.json))"
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: secret-scan-report
+          path: scan.json
+          if-no-files-found: ignore
