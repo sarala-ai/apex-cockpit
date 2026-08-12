@@ -90,8 +90,8 @@
  * field is omitted rather than pointed at nothing.
  */
 
-import { and, eq } from "drizzle-orm";
-import { pipelineStages, pipelines } from "@paperclipai/db";
+import { and, asc, eq } from "drizzle-orm";
+import { pipelineStages, pipelineTransitions, pipelines } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
 import {
   pipelineService,
@@ -748,6 +748,82 @@ function isOlderLifecycleVersion(stored: string | null, shipped: string): boolea
   return false;
 }
 
+/**
+ * Bring an already-seeded pipeline's SHAPE up to the definition: insert stages
+ * the definition has and the board does not, then add any transition the
+ * definition declares between two stages that now both exist.
+ *
+ * Deliberately additive. Stages the board has and the definition does not are
+ * left in place — an operator may have added them, and a seeder that deletes
+ * board columns on startup is a seeder nobody can trust with their board.
+ */
+async function materializeMissingStagesAndTransitions(
+  db: Db,
+  input: {
+    companyId: string;
+    pipelineId: string;
+    definition: LifecycleDefinition;
+    actor: PipelineActor;
+  },
+): Promise<void> {
+  const svc = pipelineService(db);
+  const current = async () =>
+    db
+      .select({ id: pipelineStages.id, key: pipelineStages.key, position: pipelineStages.position })
+      .from(pipelineStages)
+      .where(eq(pipelineStages.pipelineId, input.pipelineId))
+      .orderBy(asc(pipelineStages.position));
+
+  let stages = await current();
+  const defIndex = new Map(input.definition.stages.map((s, i) => [s.key, i]));
+
+  for (const [i, stage] of input.definition.stages.entries()) {
+    if (stages.some((s) => s.key === stage.key)) continue;
+
+    // Insert AT the position of the nearest already-present stage that the
+    // definition orders after this one; createStage shifts that stage and
+    // everything below it down, which preserves the declared order without
+    // renumbering rows nobody asked us to touch. No such successor (the new
+    // stage belongs at the end) -> append past the last position.
+    const successor = stages.find((s) => (defIndex.get(s.key) ?? -1) > i);
+    const position = successor
+      ? successor.position
+      : (stages.at(-1)?.position ?? 0) + 100;
+
+    await svc.createStage({
+      companyId: input.companyId,
+      pipelineId: input.pipelineId,
+      key: stage.key,
+      name: stage.name,
+      kind: stage.kind,
+      position,
+      config: stage.config,
+      actor: input.actor,
+    });
+    stages = await current();
+  }
+
+  const idByKey = new Map(stages.map((s) => [s.key, s.id]));
+  const existingEdges = await db
+    .select({ from: pipelineTransitions.fromStageId, to: pipelineTransitions.toStageId })
+    .from(pipelineTransitions)
+    .where(eq(pipelineTransitions.pipelineId, input.pipelineId));
+  const seen = new Set(existingEdges.map((e) => `${e.from}->${e.to}`));
+
+  for (const edge of input.definition.transitions) {
+    const from = idByKey.get(edge.from);
+    const to = idByKey.get(edge.to);
+    if (!from || !to || seen.has(`${from}->${to}`)) continue;
+    await svc.createTransition({
+      companyId: input.companyId,
+      pipelineId: input.pipelineId,
+      fromStageId: from,
+      toStageId: to,
+    });
+    seen.add(`${from}->${to}`);
+  }
+}
+
 export async function seedLifecyclePipelines(
   db: Db,
   input: { companyId: string; projectId?: string | null; actor?: PipelineActor },
@@ -784,12 +860,39 @@ export async function seedLifecyclePipelines(
               and(eq(pipelineStages.pipelineId, already.id), eq(pipelineStages.key, stage.key)),
             );
         }
+
         await db
           .update(pipelines)
           .set({ version: definition.version, ticketType: definition.ticketType })
           .where(eq(pipelines.id, already.id));
         upgraded.push(definition.key);
       }
+      // STRUCTURAL drift, on EVERY seed rather than only the upgrade path.
+      //
+      // The config rewrite above updates BY KEY, so a definition that grows a
+      // NEW node matches nothing and is skipped in silence — the pipeline keeps
+      // its old shape while reporting itself upgraded. That is exactly how
+      // design-change 1.4 delivered a board_diff prompt reading "your branch
+      // already exists" to a board where nothing created it: strictly worse
+      // than not upgrading at all.
+      //
+      // It runs unconditionally for the same reason APEX-81 moved the stranded
+      // gate repair out of the upgrade branch: reconciliation is idempotent, so
+      // making it self-healing beats making it depend on version bookkeeping
+      // being right. An instance whose version was already stamped current by a
+      // partially-applied upgrade would otherwise never converge.
+      //
+      // Missing stages are INSERTED — never re-created, since live cases
+      // reference stage ids. Extra stages an operator added are left alone:
+      // this reconciles what the definition declares, it does not claim
+      // ownership of the whole board.
+      await materializeMissingStagesAndTransitions(db, {
+        companyId: input.companyId,
+        pipelineId: already.id,
+        definition,
+        actor,
+      });
+
       // Re-enter any case that reached a gate node with step_status NULL — runs
       // on EVERY seed (both existing and upgraded paths). rematerializeStrandedGateCases
       // is idempotent: its query targets only cases whose step_status IS DISTINCT FROM
