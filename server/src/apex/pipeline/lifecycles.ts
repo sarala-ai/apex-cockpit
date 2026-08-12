@@ -134,6 +134,24 @@ type LifecycleNode =
         | { contract: RunContract; pass_criteria: string };
     }
   | {
+      /**
+       * A deterministic MUTATION run through one apex tool — distinct from
+       * `check`, which also runs a tool but exists to ASSERT and therefore
+       * carries a pass_criteria. A command node changes something and its
+       * verdict is simply whether the tool succeeded, so it declares no
+       * acceptance: there is nothing to check beyond "it did the thing".
+       *
+       * This is the node kind for work that has no judgement content. Naming a
+       * branch is the founding example: the name is derivable from the ticket,
+       * every other node in the lifecycle already keys on it, and leaving it to
+       * an agent is what let APEX-88 mint a second pull request on a second
+       * branch that acceptance could never match.
+       */
+      id: string;
+      kind: "command";
+      command: { tool: string; args: string[] };
+    }
+  | {
       id: string;
       kind: "agent";
       agent: {
@@ -262,6 +280,26 @@ function buildStagesAndTransitions(nodes: LifecycleNode[]): {
             onSuccessToStageKey: next,
           } as unknown as PipelineStageConfig["onEnter"],
           acceptance: acceptanceFor(node.check.pass_criteria),
+        },
+      });
+      transitions.push({ from: node.id, to: next });
+      return;
+    }
+
+    if (node.kind === "command") {
+      stages.push({
+        key: node.id,
+        name,
+        kind: "working",
+        config: {
+          onEnter: {
+            type: "run",
+            target: { type: "command", tool: node.command.tool, args: node.command.args },
+            onSuccessToStageKey: next,
+            // on_fail: pause -> no onFailureToStageKey. See file header.
+          } as unknown as PipelineStageConfig["onEnter"],
+          // No acceptance: the tool's own success IS the verdict. Adding a
+          // pass_criteria here would re-check what the runner already told us.
         },
       });
       transitions.push({ from: node.id, to: next });
@@ -404,7 +442,32 @@ const BUG_NODES: LifecycleNode[] = [
   { id: "deploy", kind: "workflow", workflow: { contract: "deployed" } },
 ];
 
+// ONE definition of the design-change coordinates. Four nodes key on the
+// branch name — the command that creates it, the prompt that hands it over,
+// the acceptance that looks for a pull request on it, and the merge that lands
+// it. Before this, the name was written out four times and an agent was free
+// to pick a fifth; it did, and the lifecycle deadlocked (APEX-88).
+const DESIGN_REPO = "sarala-ai/apex-design";
+const DESIGN_BRANCH = "design/{{identifier}}";
+
 const DESIGN_CHANGE_NODES: LifecycleNode[] = [
+  {
+    // Deterministic, zero tokens, and idempotent — `github_repo create-branch`
+    // treats an existing branch as success and leaves it alone, so a second
+    // dispatch lands on the same branch rather than failing at move one or
+    // rewinding a round a reviewer is reading.
+    //
+    // A branch name is derivable from the ticket and has no judgement content,
+    // which makes it machinery, not work. Handing the agent a branch that
+    // already exists removes the only coordinate it was previously free to
+    // invent.
+    id: "create_branch",
+    kind: "command",
+    command: {
+      tool: "github_repo create-branch",
+      args: ["--repo", DESIGN_REPO, "--branch", DESIGN_BRANCH],
+    },
+  },
   {
     id: "board_diff",
     kind: "agent",
@@ -412,19 +475,26 @@ const DESIGN_CHANGE_NODES: LifecycleNode[] = [
       prompt_template:
         'Author the design-board change requested by ticket {{identifier}} ("{{title}}") and open a pull request carrying the updated .penpot artifact. The ticket\'s agent brief specifies the target Penpot file, page/board, design repo, artifact path, and the exact change to make; the ticket body says what the change is for.\n\n\n' +
         "Work ONLY through the apex CLI so every step rides the audited tool path (prefix each write invocation with APEX_EXECUTION_MODE=apply and always pass --output json):\n\n" +
+        "YOUR BRANCH ALREADY EXISTS. It is `" + DESIGN_BRANCH + "` on `" + DESIGN_REPO + "`, " +
+        "created for you by a deterministic step before you were commissioned. Commit to it and " +
+        "open your pull request from it. Do NOT create a branch, do not pick a different name, and " +
+        "do not open a second pull request if one is already open for this branch — add a commit to " +
+        "the existing one instead. The branch name is the coordinate every later step keys on: the " +
+        "acceptance check, the review gate and the merge all look for exactly this branch, so a " +
+        "different name means your work is never found.\n\n" +
         "1. Apply the change to the live Penpot file:\n" +
         "`apex run penpot update-file` with the file id and a JSON array of Penpot update-file change operations (e.g. add-obj).\n\n" +
         "2. Export the updated file: `apex run penpot export-file` to a temporary local .penpot path.\n\n" +
-        "3. Create branch `design/{{identifier}}` on the design repo:\n" +
-        "`apex run github_repo create-branch`.\n\n" +
-        "4. Commit the export to that branch at the ticket's artifact path:\n" +
+        "3. Commit the export to `" + DESIGN_BRANCH + "` at the ticket's artifact path:\n" +
         "`apex run github_repo put-file` with content_file pointing at the exported .penpot (binary-safe).\n\n" +
-        "5. Open the pull request: `apex run github_repo\n" +
-        "open-pull-request` with head `design/{{identifier}}`, titled for the ticket, body linking back to {{identifier}}.\n\n\n" +
+        "4. Open the pull request: `apex run github_repo\n" +
+        "open-pull-request` with head `" + DESIGN_BRANCH + "`, titled for the ticket, body linking back to {{identifier}}. " +
+        "The pull request is your MERGE REQUEST — the moment you ask for the change to land — which is " +
+        "why it stays yours to open and word, while the branch does not.\n\n\n" +
         "Acceptance (machine-checked when this run completes):\n" +
         "{{acceptance}}\n",
       budget: { max_turns: 25, timeout_seconds: 1800 },
-      acceptance: "pr_exists:sarala-ai/apex-design#design/{{identifier}}",
+      acceptance: `pr_exists:${DESIGN_REPO}#${DESIGN_BRANCH}`,
       agent_key: APEX_AGENT_KEYS.designEngineer,
     },
   },
@@ -442,7 +512,7 @@ const DESIGN_CHANGE_NODES: LifecycleNode[] = [
     kind: "workflow",
     workflow: {
       workflow: "design-pr-merge",
-      params: { repo: "sarala-ai/apex-design", head: "design/{{identifier}}" },
+      params: { repo: DESIGN_REPO, head: DESIGN_BRANCH },
     },
   },
 ];
@@ -594,7 +664,12 @@ export const LIFECYCLE_DEFINITIONS: LifecycleDefinition[] = [
     description: `A bounded agent step authors a design-board change and opens a .penpot
       pull request on the design repo, a founder reviews it at a single gate,
       then the merge workflow lands it.`,
-    version: "1.2",
+    // 1.3: branch creation moved OUT of the agent step into a deterministic
+    // `command` node, and the branch name is handed to the agent rather than
+    // invented by it (APEX-88). The bump is what carries the fix to instances
+    // that seeded 1.2 — including the stranded case that opened two pull
+    // requests on two branches, neither matching the acceptance contract.
+    version: "1.3",
     ticketType: "design-change",
     nodes: DESIGN_CHANGE_NODES,
   }),
