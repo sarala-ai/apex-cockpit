@@ -58,7 +58,9 @@ import type { AcceptanceEvaluation } from "../apex/steps/agent-step.js";
 import {
   isRunContract,
   resolveContractRunTarget,
+  resolveDesignCoordinates,
   type ContractRunTarget,
+  type DesignCoordinates,
 } from "../apex/pipeline/contract-targets.js";
 import type { ProcessDefinition, ProcessStep } from "../apex/steps/process-definition.js";
 import { isMachineEvaluableAcceptance } from "../apex/steps/agent-step.js";
@@ -1973,6 +1975,7 @@ function buildPipelineCaseVariables(input: {
   case: typeof pipelineCases.$inferSelect;
   stage: typeof pipelineStages.$inferSelect;
   issue?: typeof issues.$inferSelect | null;
+  design?: DesignCoordinates | null;
 }) {
   const fields = input.case.fields && typeof input.case.fields === "object" && !Array.isArray(input.case.fields)
     ? input.case.fields
@@ -2001,6 +2004,15 @@ function buildPipelineCaseVariables(input: {
   if (input.issue) {
     variables.issue_id = input.issue.id;
     variables.issue_title = input.issue.title;
+  }
+  // Only when the project actually declares where its design lives. Leaving
+  // the tokens unset is deliberate: `unresolvedTemplateTokens` then refuses
+  // the step, which is the right outcome — the alternative default is "the
+  // repo we always used", and on a company-shared lifecycle that pushes one
+  // company's design into another's repository.
+  if (input.design) {
+    variables.design_repo = input.design.repo;
+    variables.design_path = input.design.path;
   }
   for (const [key, value] of Object.entries(fields)) {
     variables[key] = primitivePipelineVariableValue(value);
@@ -4019,7 +4031,11 @@ export function pipelineService(
     // named, instead of running against a literal.
     const runIssue = (await resolvePipelineCaseConversationSource(db, execution.companyId, execution.caseId))
       ?.issue ?? null;
-    const variables = buildPipelineCaseVariables({ ...detail, issue: runIssue });
+    const variables = buildPipelineCaseVariables({
+      ...detail,
+      issue: runIssue,
+      design: await resolveDesignForCase(execution.companyId, detail, runIssue),
+    });
     const runner = deps.stepRunner ?? new CliStepTargetRunner(
       undefined, undefined, undefined, undefined,
       { caseId: execution.caseId, stepKey: detail.stage.key, runId: execution.id },
@@ -4196,7 +4212,11 @@ export function pipelineService(
     }
     const issueId = conversation.issue.id;
 
-    const variables = buildPipelineCaseVariables({ ...detail, issue: conversation.issue });
+    const variables = buildPipelineCaseVariables({
+      ...detail,
+      issue: conversation.issue,
+      design: await resolveDesignForCase(execution.companyId, detail, conversation.issue),
+    });
     const declared = stageDeclaredAcceptance(detail.stage);
     const acceptance = declared ? renderTemplate(declared.criteria, variables) : "";
     const rounds = await readCaseChangeRequestRounds(execution.companyId, execution.caseId, detail.stage);
@@ -4952,6 +4972,30 @@ export function pipelineService(
    * transaction — the same evidence-plus-version shape a review approval
    * already uses, and the reason a stale pass cannot let changed work out.
    */
+  /**
+   * Design coordinates for this case, or null if the project declares none.
+   *
+   * Null rather than a throw: most lifecycles never mention design, and a
+   * missing declaration must not break a bug or feature case. The design
+   * lifecycle's own templates carry `{{design_repo}}`, so an unresolved
+   * coordinate surfaces there — as `step_template_unresolved` naming the
+   * token — rather than as a silent push to a default repository.
+   *
+   * WHICH project: the pipeline's own when it declares one, else the ticket's.
+   * Same rule as contract targets, for the same reason — seeded lifecycles are
+   * company-shared and carry no project, so the ticket names the stack.
+   */
+  async function resolveDesignForCase(
+    companyId: string,
+    detail: { pipeline: typeof pipelines.$inferSelect },
+    issue: typeof issues.$inferSelect | null,
+  ): Promise<DesignCoordinates | null> {
+    const projectId = detail.pipeline.projectId ?? issue?.projectId ?? null;
+    if (!projectId) return null;
+    const resolved = await resolveDesignCoordinates(db, { companyId, projectId });
+    return resolved.ok ? resolved.coordinates : null;
+  }
+
   async function evaluateStageAcceptance(input: {
     companyId: string;
     caseId: string;
@@ -4962,7 +5006,14 @@ export function pipelineService(
     if (!acceptance) return { status: "none" as const };
     const acceptanceIssue = (await resolvePipelineCaseConversationSource(db, input.companyId, input.caseId))
       ?.issue ?? null;
-    const criteria = renderTemplate(acceptance.criteria, buildPipelineCaseVariables({ ...detail, issue: acceptanceIssue }));
+    const criteria = renderTemplate(
+      acceptance.criteria,
+      buildPipelineCaseVariables({
+        ...detail,
+        issue: acceptanceIssue,
+        design: await resolveDesignForCase(input.companyId, detail, acceptanceIssue),
+      }),
+    );
     // A contract that still names a token checked NOTHING it claims to check
     // — `pr_exists:...#design/{{identifier}}` looks for a branch nobody will
     // ever push. Reporting that as a failed check blames the work for a

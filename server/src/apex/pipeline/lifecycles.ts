@@ -52,7 +52,7 @@
  * to read, and the seeder says out loud that nothing enforces it, rather
  * than smuggling prose past the same guard that would reject it if a person
  * typed it into the editor. Only `design_change`'s `board_diff` node
- * (`pr_exists:sarala-ai/apex-design#design/{{identifier}}`) is a REAL
+ * (`pr_exists:{{design_repo}}#design/{{identifier}}`) is a REAL
  * enforcing contract as a result — every other agent/former-check node's
  * acceptance is descriptive only. This asymmetry is the honest state of the
  * v1 grammar, not an oversight, and it is computed here, not hand-picked, so
@@ -447,7 +447,18 @@ const BUG_NODES: LifecycleNode[] = [
 // the acceptance that looks for a pull request on it, and the merge that lands
 // it. Before this, the name was written out four times and an agent was free
 // to pick a fifth; it did, and the lifecycle deadlocked (APEX-88).
-const DESIGN_REPO = "sarala-ai/apex-design";
+//
+// The REPOSITORY is a token, not a literal, for the reason APEX-38 established
+// for checks and deploys: seeded lifecycles are company-shared and carry no
+// project, so a hardcoded repo means one company's design gets pushed into
+// another's. `{{design_repo}}` resolves at dispatch from the project's own
+// workspace config — a declared design repo, or the project's own repo when
+// design lives in a folder of a monorepo. A project that declares neither
+// leaves the token unresolved, and the step refuses rather than guessing.
+//
+// The BRANCH pattern stays a literal: it is this lifecycle's naming
+// convention, not a per-project fact.
+const DESIGN_REPO = "{{design_repo}}";
 const DESIGN_BRANCH = "design/{{identifier}}";
 
 const DESIGN_CHANGE_NODES: LifecycleNode[] = [
@@ -669,7 +680,11 @@ export const LIFECYCLE_DEFINITIONS: LifecycleDefinition[] = [
     // invented by it (APEX-88). The bump is what carries the fix to instances
     // that seeded 1.2 — including the stranded case that opened two pull
     // requests on two branches, neither matching the acceptance contract.
-    version: "1.3",
+    // 1.4: the design REPOSITORY is a `{{design_repo}}` token resolved from
+    // project workspace config instead of one company's hardcoded repo — the
+    // same generalisation APEX-38 made for checks and deploys. Supports both
+    // shapes: a dedicated design repo, and a design folder inside a monorepo.
+    version: "1.4",
     ticketType: "design-change",
     nodes: DESIGN_CHANGE_NODES,
   }),

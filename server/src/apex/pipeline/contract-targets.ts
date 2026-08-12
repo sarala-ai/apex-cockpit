@@ -35,6 +35,129 @@ export function isRunContract(value: unknown): value is RunContract {
   return typeof value === "string" && (RUN_CONTRACTS as readonly string[]).includes(value);
 }
 
+/**
+ * WHERE A PROJECT'S DESIGN LIVES, as `owner/name` plus an optional folder.
+ *
+ * Two shapes, because both are real: a dedicated design repository, and a
+ * folder inside the project's own monorepo. `designRepo` decides which — set,
+ * it wins; unset, design lives in this project's own repo and the coordinate
+ * is derived from `repoUrl`.
+ */
+export type DesignCoordinates = { repo: string; path: string };
+
+// Deliberately excludes ':' and '@' rather than "anything without a slash".
+// `git@github.com-ck:sarala-ai/apex-cockpit.git` contains exactly one slash, so
+// a looser pattern accepts the whole SSH URL as if it were already a slug and
+// hands a garbage repo to the GitHub API.
+const OWNER_NAME_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+
+/**
+ * `owner/name` from a git remote, or null. Accepts the three forms a workspace
+ * actually stores — ssh, ssh-with-host-alias (`git@github.com-ck:o/n.git`, the
+ * form this instance uses) and https — because a coordinate that only works
+ * for one of them fails at dispatch on somebody else's machine.
+ */
+export function ownerNameFromRepoUrl(repoUrl: string | null | undefined): string | null {
+  const value = (repoUrl ?? "").trim();
+  if (!value) return null;
+  if (OWNER_NAME_RE.test(value)) return value.replace(/\.git$/, "");
+  const match =
+    /^git@[^:]+:(.+?)(?:\.git)?$/.exec(value) ??
+    /^(?:https?|ssh):\/\/[^/]+\/(.+?)(?:\.git)?$/.exec(value);
+  const slug = match?.[1]?.replace(/^\/+|\/+$/g, "");
+  return slug && OWNER_NAME_RE.test(slug) ? slug : null;
+}
+
+export type DesignResolution =
+  | { ok: true; coordinates: DesignCoordinates }
+  | { ok: false; errorType: string; message: string };
+
+/**
+ * Resolve design coordinates from the project's primary workspace, or refuse
+ * with a message naming what to declare and where.
+ *
+ * Refusing matters more here than for most config: the fallback anyone would
+ * reach for is "the repo we always used", and on a company-shared lifecycle
+ * that means pushing one company's design into another's repository. There is
+ * no safe default, so there is no default.
+ */
+export async function resolveDesignCoordinates(
+  db: Db,
+  input: { companyId: string; projectId: string | null },
+): Promise<DesignResolution> {
+  if (!input.projectId) {
+    return {
+      ok: false,
+      errorType: "design_source_unresolvable",
+      message:
+        `the design lifecycle resolves its repository from project workspace config, ` +
+        `but neither this pipeline nor the case's work issue names a project — link one`,
+    };
+  }
+  const workspace = await db
+    .select({
+      name: projectWorkspaces.name,
+      repoUrl: projectWorkspaces.repoUrl,
+      designRepo: projectWorkspaces.designRepo,
+      designPath: projectWorkspaces.designPath,
+    })
+    .from(projectWorkspaces)
+    .where(
+      and(
+        eq(projectWorkspaces.companyId, input.companyId),
+        eq(projectWorkspaces.projectId, input.projectId),
+      ),
+    )
+    .orderBy(desc(projectWorkspaces.isPrimary), asc(projectWorkspaces.createdAt))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (!workspace) {
+    return {
+      ok: false,
+      errorType: "design_source_unresolvable",
+      message:
+        `the design lifecycle resolves its repository from project workspace config, ` +
+        `but this project has no workspace`,
+    };
+  }
+
+  const declared = workspace.designRepo?.trim();
+  // Declared design repo wins; otherwise design lives in this project's own
+  // repo — the monorepo case, where only a folder was declared.
+  const repo = declared || ownerNameFromRepoUrl(workspace.repoUrl);
+  if (!repo) {
+    return {
+      ok: false,
+      errorType: "design_repo_not_configured",
+      message:
+        `project workspace "${workspace.name}" declares no designRepo, and its repoUrl ` +
+        `(${workspace.repoUrl ?? "unset"}) does not yield an owner/name to fall back on. ` +
+        `Holding the design stage rather than pushing to a repository this project never ` +
+        `named. Declare designRepo for a separate design repo, or repoUrl + designPath ` +
+        `for a design folder inside this project's own repo.`,
+    };
+  }
+  if (!OWNER_NAME_RE.test(repo)) {
+    return {
+      ok: false,
+      errorType: "design_repo_not_configured",
+      message:
+        `project workspace "${workspace.name}" declares designRepo "${repo}", which is not ` +
+        `in owner/name form (e.g. "sarala-ai/apex-design")`,
+    };
+  }
+
+  return {
+    ok: true,
+    coordinates: {
+      repo,
+      // Normalised to no leading/trailing slash so templates can join it with
+      // a filename without caring which side carried the separator.
+      path: (workspace.designPath ?? "").trim().replace(/^\/+|\/+$/g, ""),
+    },
+  };
+}
+
 export type ContractResolution =
   | { ok: true; target: RunTarget }
   | { ok: false; errorType: string; message: string };

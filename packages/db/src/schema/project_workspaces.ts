@@ -32,6 +32,13 @@ export const projectWorkspaces = pgTable(
     // (pytest, cloud_run_deploy) that is wrong for every other stack.
     checkCommand: text("check_command"),
     deployWorkflow: text("deploy_workflow"),
+    // WHERE THIS PROJECT'S DESIGN LIVES — read at dispatch time so the design
+    // lifecycle can name the coordinate without hardcoding one company's
+    // repository. `designRepo` null means design lives in this project's own
+    // repo (the monorepo case), derived from `repoUrl`; `designPath` is the
+    // folder within whichever repo won, null meaning the root.
+    designRepo: text("design_repo"),
+    designPath: text("design_path"),
     remoteProvider: text("remote_provider"),
     remoteWorkspaceRef: text("remote_workspace_ref"),
     sharedWorkspaceKey: text("shared_workspace_key"),
