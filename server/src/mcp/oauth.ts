@@ -18,7 +18,8 @@
  *     resource + challenge.
  *   - Resulting tokens are user-scoped: no run_id, populated user_id, read-only
  *     capability set (writes stay with run identity; gateway attenuation is the
- *     path to more).
+ *     path to more). The single exception is secrets:write, which is off by
+ *     default and opt-in per deployment — see SECRETS_WRITE_ENV_FLAG below.
  *
  * The code store is in-memory: the cockpit is a single-process server and codes
  * live for two minutes. Validation errors return direct 400 JSON (not error
@@ -31,10 +32,33 @@ import type { Db } from "@paperclipai/db";
 import { companyMemberships } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { mintCockpitMcpUserJwt } from "./cockpit-mcp-jwt.js";
-import { CAP_BOARD_READ } from "./router.js";
+import { CAP_BOARD_READ, CAP_SECRETS_WRITE } from "./capabilities.js";
 
 const CODE_TTL_MS = 2 * 60 * 1000;
 const ACCESS_TOKEN_TTL_SECONDS = 60 * 60; // informational; the JWT carries exp
+
+/**
+ * Opt-in env flag that adds secrets:write to the capability set of a
+ * user-scoped MCP session.
+ *
+ * Why an env flag and not a role check: this flow has no consent screen (see
+ * the module doc — an authenticated session implies consent), so there is no
+ * point at which a human is shown "this host is asking to mint credentials"
+ * and can decline. Until there is one, the decision is made out-of-band by the
+ * person who runs the process, on the machine where the Penpot/GCP credentials
+ * already live. Default OFF: an external MCP host that merely completes the
+ * OAuth flow gets exactly what it got before this change.
+ *
+ * Runs never reach here at all — mintCockpitMcpJwt strips secrets:write from
+ * every run token regardless of this flag.
+ */
+const SECRETS_WRITE_ENV_FLAG = "PAPERCLIP_MCP_ALLOW_SECRETS_WRITE";
+
+function userSessionCapabilities(): string[] {
+  const flag = process.env[SECRETS_WRITE_ENV_FLAG]?.trim().toLowerCase();
+  const allowSecretsWrite = flag === "1" || flag === "true";
+  return allowSecretsWrite ? [CAP_BOARD_READ, CAP_SECRETS_WRITE] : [CAP_BOARD_READ];
+}
 
 interface PendingAuthorization {
   userId: string;
@@ -230,10 +254,11 @@ export function oauthRoutes(db: Db, opts: OauthRoutesOptions): Router {
         return oauthError(res, 400, "invalid_grant", "PKCE verification failed");
       }
 
+      const grantedCapabilities = userSessionCapabilities();
       const accessToken = mintCockpitMcpUserJwt({
         userId: pending.userId,
         companyId: pending.companyId,
-        grantedCapabilities: [CAP_BOARD_READ],
+        grantedCapabilities,
       });
       if (!accessToken) {
         return oauthError(res, 500, "server_error", "token signing is not configured");
@@ -243,7 +268,7 @@ export function oauthRoutes(db: Db, opts: OauthRoutesOptions): Router {
         access_token: accessToken,
         token_type: "Bearer",
         expires_in: ACCESS_TOKEN_TTL_SECONDS,
-        scope: CAP_BOARD_READ,
+        scope: grantedCapabilities.join(" "),
       });
     })().catch(next);
   });

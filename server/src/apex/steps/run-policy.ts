@@ -107,6 +107,7 @@
  * because a permission declaration nobody can parse must never fail OPEN.
  */
 import { SANDBOX_ALLOWED_TOOLS } from "@paperclipai/adapter-claude-local/server";
+import { RUN_TOKEN_FORBIDDEN_CAPABILITIES } from "../../mcp/capabilities.js";
 
 export const PERMISSION_PROFILES = ["bounded", "read-only-broad", "read-repos"] as const;
 export type PermissionProfile = (typeof PERMISSION_PROFILES)[number];
@@ -293,11 +294,27 @@ export function derivePermissionPolicy(rawPermissions: unknown): RunPermissionPo
   }
 
   const rawGrantedCapabilities = raw?.grantedCapabilities;
-  const grantedCapabilities = Array.isArray(rawGrantedCapabilities)
+  const declaredCapabilities = Array.isArray(rawGrantedCapabilities)
     ? rawGrantedCapabilities.filter((c): c is string => typeof c === "string" && c.trim().length > 0)
     : [...DEFAULT_MCP_GRANTED_CAPABILITIES];
   if (rawGrantedCapabilities !== undefined && !Array.isArray(rawGrantedCapabilities)) {
     notes.push("node declared non-array permissions.grantedCapabilities — ignored, using default");
+  }
+  // A node can ASK for a run-forbidden capability (secrets:write); it never
+  // gets one. mintCockpitMcpJwt strips these unconditionally — filtering again
+  // here is not the enforcement, it is so the operator reading a preflight sees
+  // the refusal at commission time instead of wondering later why the run's
+  // token was narrower than the YAML it was derived from.
+  const grantedCapabilities = declaredCapabilities.filter(
+    (cap) => !RUN_TOKEN_FORBIDDEN_CAPABILITIES.includes(cap),
+  );
+  for (const cap of declaredCapabilities) {
+    if (RUN_TOKEN_FORBIDDEN_CAPABILITIES.includes(cap)) {
+      notes.push(
+        `node declared capability '${cap}', which a dispatched run may never hold — dropped ` +
+          `(it is granted only to a human operator session)`,
+      );
+    }
   }
 
   return {

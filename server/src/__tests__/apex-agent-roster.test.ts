@@ -161,12 +161,25 @@ describe("the APEX agent roster", () => {
     }
   });
 
-  it("requires the Design Engineer's Penpot and gateway credentials by reference", () => {
+  /**
+   * The Design Engineer holds exactly ONE credential, and it is a Penpot
+   * access token rather than the account password: apex-core's Penpot provider
+   * prefers `Authorization: Token <token>`, and a token revokes and rotates
+   * without touching the account.
+   *
+   * APEX_GATEWAY_TOKEN is asserted absent on purpose. It is the cockpit
+   * server's own credential for calling apex-gateway and nothing in apex/core
+   * — the CLI this agent shells — reads it. Binding it here handed an agent a
+   * credential it had no call for, and because an unbound declaration is a
+   * hard dispatch precondition, it also blocked every Design Engineer run.
+   */
+  it("gives the Design Engineer only its Penpot access token, by reference", () => {
     const designEngineer = APEX_AGENT_ROSTER.find((d) => d.key === APEX_AGENT_KEYS.designEngineer)!;
     expect(Object.keys(designEngineer.defaultAdapterEnv ?? {}).sort()).toEqual([
-      "APEX_GATEWAY_TOKEN",
-      "PENPOT_PASSWORD",
+      "PENPOT_ACCESS_TOKEN",
     ]);
+    expect(designEngineer.defaultAdapterEnv).not.toHaveProperty("APEX_GATEWAY_TOKEN");
+    expect(designEngineer.defaultAdapterEnv).not.toHaveProperty("PENPOT_PASSWORD");
     for (const binding of Object.values(designEngineer.defaultAdapterEnv ?? {})) {
       expect(binding).toMatchObject({ type: "user_secret_ref", required: true });
     }

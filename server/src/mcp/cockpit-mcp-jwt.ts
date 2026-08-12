@@ -8,6 +8,7 @@
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { resolvePaperclipInstanceId } from "../home-paths.js";
+import { RUN_TOKEN_FORBIDDEN_CAPABILITIES } from "./capabilities.js";
 
 const JWT_ALGORITHM = "HS256";
 export const COCKPIT_MCP_AUDIENCE = "cockpit-mcp";
@@ -90,6 +91,14 @@ export function mintCockpitMcpJwt(input: {
   if (!cfg) return null;
 
   const now = Math.floor(Date.now() / 1000);
+  // Privileged capabilities are stripped HERE rather than at each dispatch
+  // site: the grant reaching this function has already flowed through a
+  // lifecycle node's YAML, an issue-level adapter override and a default, and
+  // any one of those could grow a way to name secrets:write. One mint, one
+  // filter — a run token cannot carry it however it was asked for.
+  const grantedCapabilities = input.grantedCapabilities.filter(
+    (cap) => !RUN_TOKEN_FORBIDDEN_CAPABILITIES.includes(cap),
+  );
   const claims: CockpitMcpJwtClaims = {
     sub: input.agentId,
     token_kind: "run",
@@ -97,7 +106,7 @@ export function mintCockpitMcpJwt(input: {
     run_id: input.runId,
     user_id: null,
     adapter_type: input.adapterType,
-    granted_capabilities: input.grantedCapabilities,
+    granted_capabilities: grantedCapabilities,
     issue_id: input.issueId ?? null,
     case_id: input.caseId ?? null,
     project_id: input.projectId ?? null,
