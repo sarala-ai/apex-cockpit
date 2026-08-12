@@ -13,6 +13,7 @@ import { ExternalLink, FileJson } from "lucide-react";
 import { designApi } from "@/api/design";
 import { useCompany } from "@/context/CompanyContext";
 import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 import type { DesignFileEntry } from "@paperclipai/shared";
 
 function formatBytes(n: number | null): string {
@@ -22,10 +23,12 @@ function formatBytes(n: number | null): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function DocumentPreview({ file }: { file: DesignFileEntry }) {
+function DocumentPreview({ file, gitRef }: { file: DesignFileEntry; gitRef?: string }) {
   const doc = useQuery({
-    queryKey: ["design", "file", file.repo, file.path],
-    queryFn: () => designApi.file(file.repo, file.path),
+    // gitRef is part of the key: a draft and the shipped document are
+    // different documents that happen to share a path.
+    queryKey: ["design", "file", file.repo, file.path, gitRef ?? ""],
+    queryFn: () => designApi.file(file.repo, file.path, gitRef),
     staleTime: 60_000,
     placeholderData: (prev) => prev,
   });
@@ -44,7 +47,7 @@ function DocumentPreview({ file }: { file: DesignFileEntry }) {
   const d = doc.data.document;
   const isPenpot =
     d != null && typeof d === "object" && (d as { format?: unknown }).format === "penpot";
-  if (isPenpot) return <PenpotPreview doc={d as PenpotSummaryDoc} file={file} />;
+  if (isPenpot) return <PenpotPreview doc={d as PenpotSummaryDoc} file={file} gitRef={gitRef} />;
   const topKeys = d && typeof d === "object" && !Array.isArray(d) ? Object.keys(d as object) : [];
   return (
     <div className="space-y-2">
@@ -78,7 +81,7 @@ interface PenpotSummaryDoc {
  *  cockpit inlines it and drives click-through from the archive's interaction
  *  map. No iframe, no share link, no Penpot session — viewing is ours, and
  *  editing stays governed (MCP, or a ticket that updates the file). */
-function PenpotPreview({ doc, file }: { doc: PenpotSummaryDoc; file: DesignFileEntry }) {
+function PenpotPreview({ doc, file, gitRef }: { doc: PenpotSummaryDoc; file: DesignFileEntry; gitRef?: string }) {
   const boards = doc.boards ?? [];
   const nav = doc.nav ?? {};
 
@@ -180,6 +183,7 @@ function PenpotPreview({ doc, file }: { doc: PenpotSummaryDoc; file: DesignFileE
         {active && (
           <BoardCanvas
             file={file}
+            gitRef={gitRef}
             board={active}
             nav={nav}
             onNavigate={(dest) => {
@@ -196,11 +200,13 @@ function PenpotPreview({ doc, file }: { doc: PenpotSummaryDoc; file: DesignFileE
  *  real click targets using the archive's nav map. */
 function BoardCanvas({
   file,
+  gitRef,
   board,
   nav,
   onNavigate,
 }: {
   file: DesignFileEntry;
+  gitRef?: string;
   board: { id: string; name: string; pageId: string };
   nav: Record<string, string>;
   onNavigate: (destination: string) => void;
@@ -214,7 +220,8 @@ function BoardCanvas({
     setSvg(null);
     setError(null);
     fetch(
-      `/api/design/board.svg?repo=${encodeURIComponent(file.repo)}&path=${encodeURIComponent(file.path)}&boardId=${board.id}`,
+      `/api/design/board.svg?repo=${encodeURIComponent(file.repo)}&path=${encodeURIComponent(file.path)}&boardId=${board.id}` +
+        (gitRef ? `&ref=${encodeURIComponent(gitRef)}` : ""),
     )
       .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`render failed (${r.status})`))))
       .then((t) => !cancelled && setSvg(t))
@@ -222,7 +229,7 @@ function BoardCanvas({
     return () => {
       cancelled = true;
     };
-  }, [file.repo, file.path, board.id]);
+  }, [file.repo, file.path, board.id, gitRef]);
 
   // Mark linked shapes so they look clickable; the click itself is delegated.
   useEffect(() => {
@@ -277,6 +284,9 @@ function BoardCanvas({
 export function Design() {
   const { selectedCompanyId } = useCompany();
   const [selected, setSelected] = useState<DesignFileEntry | null>(null);
+  // Which VERSION of the selected document is on screen: null = what shipped
+  // on the default branch, otherwise an open pull request's number.
+  const [draftNumber, setDraftNumber] = useState<number | null>(null);
 
   const listings = useQuery({
     queryKey: ["design", "files", selectedCompanyId],
@@ -300,6 +310,21 @@ export function Design() {
 
   const rows = listings.data ?? [];
   const totalFiles = rows.reduce((n, r) => n + r.files.length, 0);
+
+  // Drafts for the document on screen: an open PR in the same repo that
+  // touches this same path. A PR against another document is not a version of
+  // this one and must not appear as one.
+  const draftsForSelected = selected
+    ? (rows.find((r) => r.repo === selected.repo)?.drafts ?? []).filter((d) =>
+        d.files.some((f) => f.path === selected.path),
+      )
+    : [];
+  const activeDraft = draftsForSelected.find((d) => d.number === draftNumber) ?? null;
+  // A draft that disappeared (merged, closed) must not leave the surface
+  // silently rendering the shipped document while still labelled Draft.
+  const draftMissing = draftNumber !== null && !activeDraft;
+  const draftFile =
+    activeDraft?.files.find((f) => f.path === selected?.path) ?? selected;
   // Declutter: only repos with documents (or errors worth surfacing) get a
   // row; empty scans collapse into one summary line.
   const shownRows = rows.filter((r) => r.files.length > 0 || r.error);
@@ -369,6 +394,73 @@ export function Design() {
         </span>
       </div>
 
+      {/* WHICH VERSION. The design gate's premise is seconds of board review,
+          and the boards under review are by definition the unmerged ones —
+          so the proposed version has to be reachable here, not on GitHub as a
+          2.6 MB binary diff. Shipped stays the default: a surface that opens
+          on an unmerged draft would misreport what the product looks like. */}
+      {selected && draftsForSelected.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-muted-foreground">Version</span>
+          <div className="flex flex-wrap items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setDraftNumber(null)}
+              aria-pressed={draftNumber === null}
+              className={cn(
+                "rounded-md border px-2 py-1 transition-colors",
+                draftNumber === null
+                  ? "border-border bg-muted font-medium text-foreground"
+                  : "border-transparent text-muted-foreground hover:bg-muted/60",
+              )}
+            >
+              Shipped
+            </button>
+            {draftsForSelected.map((d) => (
+              <button
+                key={d.number}
+                type="button"
+                onClick={() => setDraftNumber(d.number)}
+                aria-pressed={draftNumber === d.number}
+                title={d.title}
+                className={cn(
+                  "rounded-md border px-2 py-1 transition-colors",
+                  draftNumber === d.number
+                    ? "border-amber-500/60 bg-amber-500/10 font-medium text-amber-700 dark:text-amber-300"
+                    : "border-transparent text-muted-foreground hover:bg-muted/60",
+                )}
+              >
+                Draft · #{d.number}
+              </button>
+            ))}
+          </div>
+          {activeDraft && (
+            <>
+              <span className="max-w-[28rem] truncate text-muted-foreground">
+                {activeDraft.title}
+              </span>
+              <a
+                href={activeDraft.url}
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center gap-1 text-primary underline-offset-2 hover:underline"
+              >
+                Pull request <ExternalLink className="h-3 w-3" />
+              </a>
+              <span className="text-muted-foreground">
+                {activeDraft.headRef} · not merged
+              </span>
+            </>
+          )}
+        </div>
+      )}
+
+      {draftMissing && (
+        <p className="text-xs text-amber-700 dark:text-amber-400">
+          That draft is no longer open — it was merged or closed. Showing the shipped document.
+        </p>
+      )}
+
       {rows
         .filter((r) => r.error)
         .map((r) => (
@@ -385,7 +477,7 @@ export function Design() {
           product's design space (see the design repo's conventions: product/, explorations/).
         </p>
       ) : selected ? (
-        <DocumentPreview file={selected} />
+        <DocumentPreview file={draftFile ?? selected} gitRef={activeDraft?.headRef} />
       ) : null}
     </div>
   );

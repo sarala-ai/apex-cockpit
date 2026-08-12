@@ -9,7 +9,7 @@
  * classified and surfaced, never swallowed.
  */
 import type { Db } from "@paperclipai/db";
-import type { DesignRepoListing, DesignFileEntry, DesignFileContent } from "@paperclipai/shared";
+import type { DesignRepoListing, DesignFileEntry, DesignFileContent, DesignDraft } from "@paperclipai/shared";
 import { companyGithubRepos } from "../observe/company-projects.js";
 import { run } from "../apex/exec.js";
 import { summarizePenpotArchive, renderBoardSvgFromArchive } from "./penpot-archive.js";
@@ -42,53 +42,126 @@ interface TreeEntry {
   sha?: string;
 }
 
+/** Design files in a repo tree at `ref`, as listing entries. */
+async function designFilesAtRef(
+  repo: string,
+  ref: string,
+): Promise<{ files: DesignFileEntry[]; truncated: boolean; error: string | null }> {
+  const tree = await run(
+    "gh",
+    ["api", `repos/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`],
+    GH_TIMEOUT_MS,
+  );
+  if (tree.status !== "ok") {
+    const stderr = tree.status === "failed" ? tree.stderr : "gh unavailable";
+    return { files: [], truncated: false, error: classifyGhFailure(stderr) };
+  }
+  let parsed: { tree?: TreeEntry[]; truncated?: boolean };
+  try {
+    parsed = JSON.parse(tree.stdout);
+  } catch {
+    return { files: [], truncated: false, error: "could not parse gh tree output" };
+  }
+  const files: DesignFileEntry[] = (parsed.tree ?? [])
+    .filter((e): e is TreeEntry & { path: string } =>
+      e.type === "blob" && typeof e.path === "string" && DESIGN_EXT_RE.test(e.path))
+    .map((e) => ({
+      repo,
+      path: e.path,
+      name: e.path.split("/").pop()!.replace(DESIGN_EXT_RE, ""),
+      url: `https://github.com/${repo}/blob/${ref}/${e.path}`,
+      sizeBytes: typeof e.size === "number" ? e.size : null,
+      sha: e.sha ?? null,
+    }));
+  return { files, truncated: parsed.truncated === true, error: null };
+}
+
+/**
+ * Open pull requests that touch a design file — the DRAFTS.
+ *
+ * Failure-isolated like everything else here: a repo whose PRs cannot be
+ * listed reports no drafts rather than failing the whole listing, because a
+ * missing draft must never hide the boards that DID land.
+ *
+ * Only PRs whose changed files include a design file are kept; a repo's
+ * ordinary code PRs are not design drafts and would bury the one that is.
+ */
+async function listRepoDesignDrafts(repo: string): Promise<DesignDraft[]> {
+  const prs = await run(
+    "gh",
+    [
+      "pr", "list", "--repo", repo, "--state", "open", "--limit", "20",
+      "--json", "number,title,url,headRefName,files",
+    ],
+    GH_TIMEOUT_MS,
+  );
+  if (prs.status !== "ok") return [];
+
+  let parsed: Array<{
+    number?: number;
+    title?: string;
+    url?: string;
+    headRefName?: string;
+    files?: Array<{ path?: string }>;
+  }>;
+  try {
+    parsed = JSON.parse(prs.stdout);
+  } catch {
+    return [];
+  }
+
+  const candidates = parsed.filter(
+    (pr) =>
+      typeof pr.number === "number" &&
+      typeof pr.headRefName === "string" &&
+      (pr.files ?? []).some((f) => typeof f.path === "string" && DESIGN_EXT_RE.test(f.path)),
+  );
+
+  const drafts = await Promise.all(
+    candidates.map(async (pr) => {
+      const at = await designFilesAtRef(repo, pr.headRefName!);
+      if (at.error || at.files.length === 0) return null;
+      return {
+        number: pr.number!,
+        title: pr.title ?? `#${pr.number}`,
+        url: pr.url ?? `https://github.com/${repo}/pull/${pr.number}`,
+        headRef: pr.headRefName!,
+        files: at.files,
+      } satisfies DesignDraft;
+    }),
+  );
+  return drafts.filter((d): d is DesignDraft => d !== null);
+}
+
 async function listRepoDesignFiles(repo: string): Promise<DesignRepoListing> {
   if (!REPO_RE.test(repo)) {
-    return { repo, files: [], truncated: false, error: "invalid repo binding (expected owner/name)" };
+    return { repo, files: [], drafts: [], truncated: false, error: "invalid repo binding (expected owner/name)" };
   }
   // Resolve the default branch first (robust against non-main defaults), then
   // one recursive tree read. Two gh calls per repo, both read-only.
   const meta = await run("gh", ["api", `repos/${repo}`, "--jq", ".default_branch"], GH_TIMEOUT_MS);
   if (meta.status === "missing") {
-    return { repo, files: [], truncated: false, error: "GitHub CLI (gh) is not installed or not on PATH." };
+    return { repo, files: [], drafts: [], truncated: false, error: "GitHub CLI (gh) is not installed or not on PATH." };
   }
   if (meta.status === "failed") {
-    return { repo, files: [], truncated: false, error: classifyGhFailure(meta.stderr) };
+    return { repo, files: [], drafts: [], truncated: false, error: classifyGhFailure(meta.stderr) };
   }
   const branch = meta.stdout.trim();
   if (!branch) {
-    return { repo, files: [], truncated: false, error: "could not resolve default branch" };
+    return { repo, files: [], drafts: [], truncated: false, error: "could not resolve default branch" };
   }
 
-  const tree = await run(
-    "gh",
-    ["api", `repos/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`],
-    GH_TIMEOUT_MS,
-  );
-  if (tree.status !== "ok") {
-    const stderr = tree.status === "failed" ? tree.stderr : "gh unavailable";
-    return { repo, files: [], truncated: false, error: classifyGhFailure(stderr) };
+  // Landed and proposed, concurrently — the drafts are the point of the gate,
+  // so they are not a second round-trip a reviewer waits for.
+  const [landed, drafts] = await Promise.all([
+    designFilesAtRef(repo, branch),
+    listRepoDesignDrafts(repo),
+  ]);
+  if (landed.error) {
+    return { repo, files: [], drafts, truncated: false, error: landed.error };
   }
 
-  let parsed: { tree?: TreeEntry[]; truncated?: boolean };
-  try {
-    parsed = JSON.parse(tree.stdout);
-  } catch {
-    return { repo, files: [], truncated: false, error: "could not parse gh tree output" };
-  }
-
-  const files: DesignFileEntry[] = (parsed.tree ?? [])
-    .filter((e): e is TreeEntry & { path: string } => e.type === "blob" && typeof e.path === "string" && DESIGN_EXT_RE.test(e.path))
-    .map((e) => ({
-      repo,
-      path: e.path,
-      name: e.path.split("/").pop()!.replace(DESIGN_EXT_RE, ""),
-      url: `https://github.com/${repo}/blob/${branch}/${e.path}`,
-      sizeBytes: typeof e.size === "number" ? e.size : null,
-      sha: e.sha ?? null,
-    }));
-
-  return { repo, files, truncated: parsed.truncated === true, error: null };
+  return { repo, files: landed.files, drafts, truncated: landed.truncated, error: null };
 }
 
 // Every visit to the Design tab was re-paying ~2.4s of GitHub round-trips for
@@ -154,18 +227,32 @@ export function renderArchiveBoard(buf: Buffer, boardId: string): string {
   return renderBoardSvgFromArchive(buf, boardId);
 }
 
-export async function fetchDesignFile(repo: string, path: string): Promise<DesignFileContent | null> {
+/**
+ * @param ref Optional git ref. Omitted = the default branch (what shipped).
+ *   A DRAFT passes the pull request's head branch, because the document a
+ *   gate reviews is the proposed one, not the landed one.
+ */
+export async function fetchDesignFile(
+  repo: string,
+  path: string,
+  ref?: string,
+): Promise<DesignFileContent | null> {
   if (!REPO_RE.test(repo) || !DESIGN_EXT_RE.test(path) || path.includes("..")) return null;
+  if (ref !== undefined && !/^[\w./-]{1,255}$/.test(ref)) return null;
   // contents API returns base64; decode locally. Size-guarded.
   const res = await run(
     "gh",
-    ["api", `repos/${repo}/contents/${path.split("/").map(encodeURIComponent).join("/")}`],
+    [
+      "api",
+      `repos/${repo}/contents/${path.split("/").map(encodeURIComponent).join("/")}` +
+        (ref ? `?ref=${encodeURIComponent(ref)}` : ""),
+    ],
     GH_TIMEOUT_MS,
   );
   if (res.status !== "ok") return null;
   try {
     const body = JSON.parse(res.stdout) as { content?: string; size?: number; encoding?: string; sha?: string };
-    const cacheKey = `${repo}:${path}`;
+    const cacheKey = `${repo}:${ref ?? ""}:${path}`;
     if (body.sha) {
       const cached = fileCache.get(cacheKey);
       if (cached && cached.sha === body.sha) return cached.content;

@@ -9,8 +9,11 @@ export const designApi = {
     api.get<DesignRepoListing[]>(
       `/design/files${companyId ? `?companyId=${encodeURIComponent(companyId)}` : ""}`,
     ),
-  file: (repo: string, path: string) =>
+  /** `ref` reads the document as it exists on a DRAFT (a pull request's head
+   *  branch). Omitted = what shipped on the default branch. */
+  file: (repo: string, path: string, ref?: string) =>
     api.get<DesignFileContent>(
-      `/design/file?repo=${encodeURIComponent(repo)}&path=${encodeURIComponent(path)}`,
+      `/design/file?repo=${encodeURIComponent(repo)}&path=${encodeURIComponent(path)}` +
+        (ref ? `&ref=${encodeURIComponent(ref)}` : ""),
     ),
 };
