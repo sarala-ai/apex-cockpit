@@ -1219,6 +1219,13 @@
       "when": 1786241416000,
       "tag": "0175_user_ui_preferences",
       "breakpoints": true
+    },
+    {
+      "idx": 176,
+      "version": "7",
+      "when": 1786597073000,
+      "tag": "0176_design_source_coordinates",
+      "breakpoints": true
     }
   ]
 }
