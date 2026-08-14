@@ -52,9 +52,12 @@ const SHOTS = [
   { label: "releases", route: "/releases", settleMs: 2000 },
   // Observe panes discover live GCP inventory; cold scans take ~30s, so the
   // ready text is the surface's own header and the settle is generous.
-  { label: "observe-apex", route: "/APEX/observe", settleMs: 8000 },
-  { label: "observe-bloom", route: "/Bloom/observe", settleMs: 8000 },
-  { label: "observe-finpilot", route: "/FinPilot/observe", settleMs: 8000 },
+  // Company segment resolves by ISSUE PREFIX (uppercased), not name or
+  // slug — FinPilot is FINP. readyText is the Observe subtitle so a
+  // company-not-found page fails instead of being captured.
+  { label: "observe-apex", route: "/APEX/observe", readyText: "Real observability", settleMs: 8000 },
+  { label: "observe-bloom", route: "/BLOOM/observe", readyText: "Real observability", settleMs: 8000 },
+  { label: "observe-finpilot", route: "/FINP/observe", readyText: "Real observability", settleMs: 8000 },
   { label: "design-index", route: "/APEX/design", readyText: "Shipped" },
   {
     label: "design-observe-current",
