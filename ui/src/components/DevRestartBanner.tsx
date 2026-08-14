@@ -66,7 +66,10 @@ export function DevRestartBanner({ devServer }: { devServer?: DevServerHealthSta
   }
 
   return (
-    <div className="border-b border-amber-300/60 bg-amber-50 text-amber-950 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-100">
+    <div
+      data-testid="dev-restart-banner"
+      className="border-b border-amber-300/60 bg-amber-50 text-amber-950 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-100"
+    >
       <div className="flex flex-col gap-3 px-3 py-2.5 md:flex-row md:items-center md:justify-between">
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-(--tracking-caps)">
