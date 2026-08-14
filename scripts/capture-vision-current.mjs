@@ -84,6 +84,37 @@ const SHOTS = [
   },
   { label: "timeline", route: "/APEX/timeline", settleMs: 2000 },
   { label: "costs", route: "/APEX/costs", settleMs: 2000 },
+  // Target boards for the juxtaposition deck: the Design tab renders each
+  // facet's TARGET state in-product (self-referential by design). The
+  // Target toggle is optional because the pure-vision boards are
+  // target-only and don't offer it.
+  ...[
+    ["home", "Home"],
+    ["onboarding", "Onboarding"],
+    ["tasks", "Tasks"],
+    ["design", "Design"],
+    ["eval", "Eval"],
+    ["gateway", "Gateway"],
+    ["registry", "Registry"],
+    ["pipelines", "Pipelines"],
+    ["deploy", "Deploy"],
+    ["costs", "Costs"],
+    ["journey", "Journey"],
+    ["flows-gates", "Flows & gates (typed lifecycles, target)"],
+    ["initiatives", "Initiatives — assumptions, budget, stop conditions (target)"],
+    ["learning-loop", "The learning loop (what compounds, target)"],
+    ["small-team-loop", "The Loop (small-team acceleration, target)"],
+    ["product-loop", "The product loop (idea to evaluated, target)"],
+  ].map(([slug, board]) => ({
+    label: `target-${slug}`,
+    route: "/APEX/design",
+    clicks: [
+      { role: "button", name: board, exact: true },
+      { role: "button", name: "Target", exact: true, optional: true },
+    ],
+    readyText: "Shipped",
+    settleMs: 2000,
+  })),
 ];
 
 function gitProvenance() {
@@ -114,10 +145,11 @@ async function captureShot(page, shot) {
       '[data-testid="dev-restart-banner"], [data-testid="setup-startup-prompt"] { display: none !important; }',
   });
   for (const click of shot.clicks ?? []) {
-    await page
+    const target = page
       .getByRole(click.role, { name: click.name, exact: click.exact ?? false })
-      .first()
-      .click({ timeout: 15_000 });
+      .first();
+    if (click.optional && !(await target.isVisible().catch(() => false))) continue;
+    await target.click({ timeout: 15_000 });
   }
   if (shot.readyText) {
     await page.getByText(shot.readyText).first().waitFor({ timeout: 60_000 });
