@@ -123,10 +123,20 @@ const BEATS = [
       },
       {
         say:
-          "APEX starts from a simpler observation: real deployment " +
+          "And I didn't need the surveys. I run three products alone — " +
+          "with agents on every one. I assembled that dozen tool layer " +
+          "by hand, twice. When I instrumented my own agent work before " +
+          "gates existed, improvised actions outnumbered governed ones " +
+          "eighteen to one. And releases shipped by hand, at night. " +
+          "APEX is what that experience demanded.",
+        do: [{ goto: titleCards }, { scroll: { to: 2, ms: 1200 } }],
+      },
+      {
+        say:
+          "It starts from a simple observation: real deployment " +
           "patterns are finite. They can be enumerated, encoded, and " +
           "made repeatable. Everything from here is the answer.",
-        do: [{ scroll: { to: 6, ms: 2000 } }],
+        do: [{ goto: visionDeck }, { scroll: { to: 6, ms: 2000 } }],
       },
     ],
   },
@@ -387,7 +397,7 @@ const BEATS = [
         say:
           "What does a software company look like when finding out is " +
           "cheap? That's the question this product exists to answer.",
-        do: [{ goto: titleCards }, { scroll: { to: 3, ms: 1200 } }],
+        do: [{ goto: titleCards }, { scroll: { to: 4, ms: 1200 } }],
       },
     ],
   },
