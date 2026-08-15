@@ -37,169 +37,195 @@ const visionDeck = `file://${path.join(docsRoot, "vision", "apex-product-vision-
 // One beat = one narration paragraph + one recorded shot. Actions run
 // while the recorder rolls; after they finish, the last frame holds
 // until the clip covers the narration.
+const titleCards = `file://${path.join(docsRoot, "vision", "v4", "titlecards.html")}`;
+
+// The v3 story spine, compressed to ~5 minutes: the sentence is planted
+// in the cold open, travels through the machine, and returns as evidence
+// before the close. Wording preserved from the v3 narration where it
+// still holds; numbers updated to today's verified surfaces; coined
+// compounds written speakably (the "evalvertex" class).
 const BEATS = [
   {
-    id: "01-claim",
+    id: "01-cold-open",
     say:
-      "Every company is about to run on A.I. agents doing real engineering " +
-      "work. The unsolved problem is not making agents smart. It is making " +
-      "their work inspectable, governed, and repeatable. This is APEX. " +
-      "The real thing first — then where it goes.",
-    shot: [
-      { goto: juxDeck },
-      { pause: 2500 },
-      { scroll: { to: 1, ms: 2500 } },
-    ],
+      "Every product begins as a sentence. Here is one of ours: tell a " +
+      "household what's due this week. Hold on to it — you're going to " +
+      "watch it travel. Product engineering means the complete lifecycle. " +
+      "With agents, that should have become simple. It didn't. In a " +
+      "controlled trial, experienced developers were nineteen percent " +
+      "slower with A.I. — while believing they were twenty percent " +
+      "faster. Oversight became a job. This is the story of the machine " +
+      "that gives the discipline back. It's called APEX.",
+    shot: [{ goto: titleCards }, { pause: 4000 }],
   },
   {
     id: "02-condition",
     say:
-      "The condition, from primary research. Ninety percent of developers " +
-      "use A.I. daily, yet ninety six percent do not fully trust its " +
-      "output. Delivery stability is still negative. Adoption won; " +
-      "discipline lost. The operating layer arrived as a dozen separate " +
-      "tools — skills, prompts, M.C.P. servers, observability, evals, " +
-      "pipelines, infrastructure — assembled by hand, and needed twice: " +
-      "once to build the product, and once inside the product being " +
-      "shipped. Creative prices are paid for clerk work. Deployment " +
-      "patterns are finite. Finite means enumerable. Enumerable means " +
-      "deterministic.",
+      "The condition, in evidence. Ninety percent of developers use A.I. " +
+      "daily. Ninety six percent don't fully trust the output. Delivery " +
+      "stability is still negative. Adoption won; discipline lost. Why? " +
+      "Because the operating layer arrived as a dozen separate tools — " +
+      "and when a sprawled layer fails, it fails with real credentials. " +
+      "An agent violated an explicit freeze, deleted a production " +
+      "database, then claimed recovery was impossible. The lie is the " +
+      "scarier half. And the sprawl is worse than it looks, because every " +
+      "layer exists twice: once for the agents that build your product, " +
+      "and once for the agents that are your product. Two planes, one " +
+      "spine, wins. And the economics: real deployment patterns are " +
+      "finite. Enumerate them, encode them, and they run free. Spend the " +
+      "best model only where the work is genuinely creative. That's the " +
+      "condition, whole. Everything from here is APEX's answer.",
     shot: [
       { goto: visionDeck },
-      { scroll: { to: 1, ms: 3000 } },
+      { scroll: { to: 1, ms: 3500 } },
+      { pause: 3500 },
+      { scroll: { to: 2, ms: 3500 } },
       { pause: 3000 },
-      { scroll: { to: 2, ms: 3000 } },
+      { scroll: { to: 3, ms: 3500 } },
       { pause: 3000 },
-      { scroll: { to: 4, ms: 4000 } },
-      { pause: 2500 },
+      { scroll: { to: 4, ms: 3500 } },
+      { pause: 3000 },
       { scroll: { to: 5, ms: 3500 } },
     ],
   },
   {
-    id: "03-bloom-plane",
+    id: "03-protocol",
     say:
-      "Here is a real product's entire plane. Bloom — an ed tech product " +
-      "in development. Nine cloud run services, all healthy. The inventory " +
-      "reads two thousand and one resources across forty three types — " +
-      "discovered live, not curated. It read twelve hundred twenty nine in " +
-      "July; the number moved because Bloom moved. Switch company: " +
-      "FinPilot. Three services, one hundred and fifty three resources. " +
-      "Multi-product from day one. The same surface — and nobody logged " +
-      "into anything.",
+      "First, the sprawl. Not a dozen tools — facets of one surface, on " +
+      "one shared spine. The eval facet knows your infrastructure; the " +
+      "infra facet knows your provenance. Then, the discipline. Every " +
+      "change runs the same protocol: simulate, preview, gate, apply, " +
+      "promote. Trying is free, and surprises are structurally " +
+      "impossible, because the plan is previewed before it runs. Our own " +
+      "instrumented history of agent work without this protocol reads " +
+      "eighteen to one. When the story reaches a gate, motion stops — " +
+      "one human decision, with the proof attached. Motion resumes. " +
+      "Gates govern the change as it happens. Provenance remembers it " +
+      "afterwards — and it can't be retrofitted. It has to be a birth " +
+      "property: idea to ticket, ticket to change, change to release, " +
+      "release to verdict.",
     shot: [
-      { goto: `${BASE_URL}/BLOOM/observe`, ready: "Real observability" },
-      { pause: 3500 },
-      { wheel: { dy: 900, ms: 3000 } },
-      { pause: 2000 },
-      { wheel: { dy: 1400, ms: 3500 } },
-      { pause: 3500 },
-      { goto: `${BASE_URL}/FINP/observe`, ready: "Real observability" },
+      { goto: `${BASE_URL}/pipelines` },
+      { pause: 5000 },
+      { wheel: { dy: 500, ms: 2500 } },
       { pause: 2500 },
-      { wheel: { dy: 1000, ms: 3000 } },
-    ],
-  },
-  {
-    id: "04-self-host",
-    say:
-      "APEX observes itself. Version zero point nine is public on the " +
-      "Python package index — released through its own workflow engine, " +
-      "with its own C.I. observed here. We eat the discipline we sell. " +
-      "Even the errors are honest.",
-    shot: [
-      { goto: `${BASE_URL}/APEX/observe`, ready: "Real observability" },
-      { pause: 3000 },
-      { wheel: { dy: 900, ms: 3000 } },
-    ],
-  },
-  {
-    id: "05-dev-loop",
-    say:
-      "The development loop. A ticket becomes a spec, a design, a plan, an " +
-      "implementation — agents do the work, humans approve at gates. The " +
-      "cheapest gate is the design gate: a board reviewed in seconds, " +
-      "before any implementation tokens burn. Last month, an agent took a " +
-      "real issue end to end — repaired its own environment, wrote passing " +
-      "tests, and closed the ticket — with zero human intervention after " +
-      "the assignment. And this product's own design shipped through the " +
-      "same loop — forty six boards across ten planes, every surface with " +
-      "a current state and a target state, rendered by the cockpit itself " +
-      "from the committed file.",
-    shot: [
       { goto: `${BASE_URL}/APEX/issues` },
       { pause: 5000 },
-      { goto: `${BASE_URL}/APEX/design`, ready: "Shipped" },
-      { pause: 1500 },
-      { click: { name: "Observe", exact: true } },
-      { pause: 3000 },
-      { click: { name: "Target", exact: true } },
-      { pause: 3000 },
-      { click: { name: "Current", exact: true } },
     ],
   },
   {
-    id: "06-gateway",
+    id: "04-design-and-product-half",
     say:
-      "Every tool an agent touches routes through a governed gateway. The " +
-      "design tool's own M.C.P. server is federated here — four tools, " +
-      "every call audited. We govern inside the execution path, at the " +
-      "moment of the call.",
+      "Here is the part I'm proudest of. The design tab holds the " +
+      "product's complete conception — forty six boards now, every " +
+      "surface with a current and a target state, rendered by the " +
+      "cockpit itself, offline, from a file committed in git. A draft is " +
+      "an open pull request; approved means merged. The screen you're " +
+      "looking at was designed through the loop it's part of — and that " +
+      "loop has now closed, governed, twice. That was the engineering " +
+      "half: can I trust the change? The product half answers the more " +
+      "expensive question: was this worth building? Same primitives, one " +
+      "level up. You bring one sentence. An agent shapes it into an " +
+      "initiative that carries its assumptions, its budget, and its stop " +
+      "condition — written before any work is funded, so stopping is a " +
+      "decision made in advance.",
+    // One board per page visit: the board render iframe goes blank in the
+    // screencast after successive in-page board switches (verified by
+    // probe), so each view gets a fresh goto + a single click.
+    // Single design view for the whole beat: board renders are flaky under
+    // screencast (only clicks followed by a waitText render reliably), and
+    // the Initiatives target board carries the product-half narration while
+    // the sidebar + header show the 46-board conception. The wheel pans the
+    // board so the long hold reads as a live surface, not a still.
     shot: [
+      { goto: `${BASE_URL}/APEX/design`, ready: "Shipped" },
+      { click: { name: "Initiatives — assumptions, budget, stop conditions (target)", exact: true } },
+      { waitText: "Initiatives, before the work starts" },
+      { pause: 8000 },
+      { wheel: { dy: 500, ms: 6000 } },
+      { pause: 4000 },
+    ],
+  },
+  {
+    id: "05-finhh01-payoff",
+    say:
+      "Now run the machine once, for real, on that same sentence. Before " +
+      "any work was funded, the shaping agent answered one assumption " +
+      "from our own records: documents arrive nine days early. The " +
+      "initiative was approved to milestone one only — two days " +
+      "committed, not two weeks. The extraction ticket ran over two " +
+      "hundred and fourteen real documents, with throwaway code that " +
+      "never merges. And the finding that mattered wasn't the error " +
+      "rate. It was a consent term that blocked the whole proactive " +
+      "premise — and an evaluator proposed the rescope. Not a person. " +
+      "Then, weeks of silence. No interruptions, because nothing needed " +
+      "a decision. Silence is the system working. Week five: engagement " +
+      "twenty two percent, against the thirty percent line written on " +
+      "day one. The stop condition fires — the first interruption in " +
+      "five weeks, carrying evidence and a proposal. You choose change, " +
+      "not stop. An assumption tested once is never paid for twice.",
+    shot: [
+      { goto: `${BASE_URL}/FINP/observe`, ready: "Real observability" },
+      { pause: 4000 },
+      { wheel: { dy: 900, ms: 3000 } },
+      { pause: 3000 },
+      { goto: titleCards },
+      { scroll: { to: 1, ms: 1500 } },
+    ],
+  },
+  {
+    id: "06-acceptance-test",
+    say:
+      "Which brings us to the honest part. This is Bloom — a live ed " +
+      "tech product, seen through APEX. Nine services, all healthy. Two " +
+      "thousand and one cloud resources across forty three types, " +
+      "discovered live. In July, that number was twelve hundred and " +
+      "twenty nine. It moved because the product moved. Nothing staged — " +
+      "and nobody logged into anything. Switch companies: FinPilot. " +
+      "Three services, one hundred and fifty three resources. Same " +
+      "surface; zero extra setup beyond a binding. And notice what you " +
+      "never did in this walkthrough: leave. Agents here are not just " +
+      "observed — they're judged. Every run is traced, and evals score " +
+      "the output, so trust is a measurement, not a feeling. That's why " +
+      "we called it the cockpit: it controls your product plane, and " +
+      "makes it soar.",
+    shot: [
+      { goto: `${BASE_URL}/BLOOM/observe`, ready: "Real observability" },
+      { pause: 4000 },
+      { wheel: { dy: 900, ms: 3000 } },
+      { pause: 2500 },
+      { wheel: { dy: 1400, ms: 3500 } },
+      { pause: 4000 },
+      { goto: `${BASE_URL}/FINP/observe`, ready: "Real observability" },
+      { pause: 3500 },
       { goto: `${BASE_URL}/APEX/gateway`, ready: "Gateways" },
       { pause: 3000 },
     ],
   },
   {
-    id: "07-ladder",
+    id: "07-close",
     say:
-      "Determinism is not a mode. It is a ladder. Encoded up front, in the " +
-      "workflows that already deploy three products. Enforced by " +
-      "composition. Imposed on intelligence — agent steps run inside " +
-      "approved specs, with machine checked acceptance. And accreted over " +
-      "time, as successful improvisation is promoted into permanent " +
-      "workflows. And because those workflows are battle tested: point " +
-      "them at an empty cloud project and a repository, and a new " +
-      "company's foundation bootstraps in a day, not a quarter.",
-    shot: [
-      { goto: `${BASE_URL}/pipelines` },
-      { pause: 4000 },
-      { wheel: { dy: 500, ms: 2000 } },
-    ],
-  },
-  {
-    id: "08-cockpit",
-    say:
-      "Notice what you never did in this walkthrough: leave. Tickets, " +
-      "boards, designs, docs, pipelines, resource planes, capabilities, " +
-      "costs — one traceable loop, one surface. No story points, no " +
-      "standups; two budgets instead — dollars for runs, and my attention " +
-      "at gates. That is why we call it the cockpit: it controls your " +
-      "product plane, and makes it soar.",
-    shot: [
-      { goto: `${BASE_URL}/APEX/design`, ready: "Shipped" },
-      { pause: 1500 },
-      { click: { name: "Registry", exact: true } },
-      { pause: 3000 },
-    ],
-  },
-  {
-    id: "09-honesty",
-    say:
-      "One last thing — the honesty metric. This film's companion deck " +
-      "puts every facet's live screenshot beside its target board. Today " +
-      "the score is eight live, to eight target. The evaluation verdicts. " +
-      "The capability registry, with its amendment gate and its cascade. " +
-      "One screen onboarding. Still boards — and each one carries its " +
-      "ticket. That ratio is restated in every film, because its movement " +
-      "is the proof. Everything you saw is running today, built by one " +
-      "person, with the loop you just watched. What is not running yet is " +
-      "marked. That is the pitch.",
+      "The vision is falsifiable on one sentence: pick a company, see " +
+      "its entire plane, launch a ticket, and governed agents ship the " +
+      "change — traceable at every hop. Here is exactly where that " +
+      "stands. The companion deck to this film puts every facet's live " +
+      "screenshot beside its target board. Today it reads eight live, " +
+      "eight target — and that ratio is restated in every film, because " +
+      "its movement is the proof. Since the last film, the design loop " +
+      "closed governed twice, and the platform went public on the " +
+      "Python package index. And the sentence you followed through this " +
+      "film? It went in as an idea. It came back as evidence. Everything " +
+      "you saw was built by one person, inside the loop you just " +
+      "watched. What does a software company look like when finding out " +
+      "is cheap? That's the question I want us to answer together.",
     shot: [
       { goto: juxDeck },
-      { scroll: { to: 9, ms: 4000 } },
-      { pause: 3000 },
-      { scroll: { to: 10, ms: 3000 } },
+      { scroll: { to: 9, ms: 3500 } },
       { pause: 3000 },
       { scroll: { to: 17, ms: 4000 } },
+      { pause: 5000 },
+      { goto: titleCards },
+      { scroll: { to: 2, ms: 1500 } },
     ],
   },
 ];
@@ -230,6 +256,10 @@ async function runShot(page, beat) {
       if (step.ready) await page.getByText(step.ready).first().waitFor({ timeout: 60_000 });
     } else if (step.pause) {
       await page.waitForTimeout(step.pause);
+    } else if (step.waitText) {
+      // Heavy Penpot board renders can outlast a fixed pause — block the
+      // hold until the board's own content is on screen.
+      await page.getByText(step.waitText).first().waitFor({ timeout: 90_000 });
     } else if (step.click) {
       await page.getByRole("button", { name: step.click.name, exact: step.click.exact ?? false })
         .first().click({ timeout: 15_000 });
@@ -250,7 +280,12 @@ async function runShot(page, beat) {
 }
 
 async function record(durations) {
-  const browser = await chromium.launch();
+  // Site isolation must be off for recording: the Design tab's board render
+  // is a cross-origin iframe, and CDP screencast records OOPIFs as blank
+  // (page.screenshot composites them, which is why captures never showed it).
+  const browser = await chromium.launch({
+    args: ["--disable-site-isolation-trials", "--disable-features=IsolateOrigins,site-per-process"],
+  });
   const clips = {};
   for (const beat of BEATS) {
     const ctx = await browser.newContext({
@@ -323,6 +358,14 @@ async function main() {
     }
     console.log(`pre-warmed ${co}/observe`);
   }
+  // Warm the Design tab's Penpot render too — the Initiatives board can
+  // take >30s cold under recording load.
+  await wp.goto(`${BASE_URL}/APEX/design`, { waitUntil: "load", timeout: 60_000 });
+  await wp.getByText("Shipped").first().waitFor({ timeout: 60_000 });
+  await wp.getByRole("button", { name: "Initiatives — assumptions, budget, stop conditions (target)", exact: true })
+    .first().click({ timeout: 15_000 });
+  await wp.getByText("Initiatives, before the work starts").first().waitFor({ timeout: 120_000 });
+  console.log("pre-warmed design render");
   await warm.close();
 
   const durations = await synthesize();
