@@ -418,8 +418,11 @@ const BEATS = [
       },
       {
         say:
-          "What does a software company look like when finding out is " +
-          "cheap? That's the question this product exists to answer.",
+          "So the real question of the agentic era is not whether agents " +
+          "can write code. It's what product engineering discipline " +
+          "should look like now. This machine is our answer — and its " +
+          "test is simple: finding out gets cheap. That's what I want us " +
+          "to build together.",
         do: [{ goto: titleCards }, { scroll: { to: 6, ms: 1200 } }],
       },
     ],
