@@ -90,13 +90,13 @@ const BEATS = [
           "First, the context, briefly. Ninety percent of developers use " +
           "A.I. daily, and ninety six percent don't fully trust what it " +
           "produces.",
-        do: [{ goto: visionDeck }, { scroll: { to: 1, ms: 2000 } }],
+        do: [{ goto: visionDeck }, { press: { key: "ArrowRight", times: 1 } }],
       },
       {
         say:
           "The tooling that grew around this is a dozen separate " +
           "products, assembled by hand.",
-        do: [{ scroll: { to: 2, ms: 2000 } }],
+        do: [{ press: { key: "ArrowRight", times: 1 } }],
       },
       {
         fullOnly: true,
@@ -105,21 +105,21 @@ const BEATS = [
           "credentials. An agent violated an explicit freeze, deleted a " +
           "production database, then claimed recovery was impossible — " +
           "the lie is the scarier half.",
-        do: [{ scroll: { to: 3, ms: 2000 } }],
+        do: [{ press: { key: "ArrowRight", times: 1 } }],
       },
       {
         say:
           "And a team needs that stack twice: once for the agents " +
           "building the product, and once for the agents inside the " +
           "product.",
-        do: [{ scroll: { to: 4, ms: 2000 } }],
+        do: [{ press: { key: "ArrowRight", times: 1 } }],
       },
       {
         say:
           "And creative prices are being paid for clerk work — the " +
           "expensive model belongs only where the work is actually " +
           "creative.",
-        do: [{ scroll: { to: 5, ms: 2000 } }],
+        do: [{ press: { key: "ArrowRight", times: 1 } }],
       },
       {
         say:
@@ -136,7 +136,7 @@ const BEATS = [
           "It starts from a simple observation: real deployment " +
           "patterns are finite. They can be enumerated, encoded, and " +
           "made repeatable. Everything from here is the answer.",
-        do: [{ goto: visionDeck }, { scroll: { to: 6, ms: 2000 } }],
+        do: [{ goto: visionDeck }, { press: { key: "ArrowRight", times: 6 } }],
       },
     ],
   },
@@ -482,6 +482,11 @@ async function runSteps(page, steps, segStart, segDurationMs) {
         document.querySelectorAll("section")[to]?.scrollIntoView({ behavior: "smooth" });
       }, step.scroll);
       await page.waitForTimeout(step.scroll.ms);
+    } else if (step.press) {
+      for (let k = 0; k < (step.press.times ?? 1); k++) {
+        await page.keyboard.press(step.press.key);
+        await page.waitForTimeout(500);
+      }
     } else if (step.caption) {
       await page.evaluate((text) => {
         let el = document.getElementById("film-caption");
@@ -509,20 +514,25 @@ async function runSteps(page, steps, segStart, segDurationMs) {
 }
 
 async function record() {
-  // Site isolation off: the Design tab's board render is a cross-origin
-  // iframe and CDP screencast records OOPIFs as blank. Also: at most one
+  // Site isolation off: board-render iframes record blank otherwise; one
   // board click per page visit survives recording.
   const browser = await chromium.launch({
     args: ["--disable-site-isolation-trials", "--disable-features=IsolateOrigins,site-per-process"],
   });
-  const clips = {};
+  // One context per BEAT (page state carries across segments); within the
+  // beat, each segment runs its positioning steps FIRST, then holds for
+  // its narration duration. assemble() cuts each segment's window out of
+  // the beat clip at its measured ready-timestamp — navigation time never
+  // appears in the film, and frame one of every window is the segment's
+  // visual. Timed steps (cue/wheel) play inside the window.
+  const clips = [];
   for (const beat of BEATS) {
     const ctx = await browser.newContext({
       viewport: SIZE,
       deviceScaleFactor: 1,
+      colorScheme: "dark",
       recordVideo: { dir: workDir, size: SIZE },
     });
-    // Hide dev-harness chrome only; the surfaces stay live and unstaged.
     await ctx.addInitScript(() => {
       const style = document.createElement("style");
       style.textContent =
@@ -530,24 +540,27 @@ async function record() {
       document.addEventListener("DOMContentLoaded", () => document.head.appendChild(style));
     });
     const page = await ctx.newPage();
-    // Segment-locked pacing: each segment's steps start on its narration
-    // cue; the frame then holds until that segment's audio would end.
     const t0 = Date.now();
-    let cue = 0;
+    const windows = [];
     for (const seg of beat.segments) {
-      const behind = cue - (Date.now() - t0);
-      if (behind > 0) await page.waitForTimeout(behind);
-      await runSteps(page, seg.do, t0 + cue, seg.durationMs);
-      cue += seg.durationMs;
+      const firstLive = seg.do.findIndex((s) => s.cue !== undefined || s.wheel);
+      const pre = firstLive === -1 ? seg.do : seg.do.slice(0, firstLive);
+      const live = firstLive === -1 ? [] : seg.do.slice(firstLive);
+      await runSteps(page, pre, Date.now(), 0);
+      await page.waitForTimeout(1200); // paint settle — screencast frames lag under load
+      const readyMs = Date.now() - t0;
+      const liveStart = Date.now();
+      await runSteps(page, live, liveStart, seg.durationMs);
+      const elapsed = Date.now() - liveStart;
+      if (elapsed < seg.durationMs + 400) await page.waitForTimeout(seg.durationMs + 400 - elapsed);
+      windows.push({ seg, readyMs });
     }
-    const remaining = cue + 600 - (Date.now() - t0);
-    if (remaining > 0) await page.waitForTimeout(remaining);
     const video = page.video();
     await ctx.close();
     const dest = path.join(workDir, `${beat.id}.webm`);
     await fs.rename(await video.path(), dest);
-    clips[beat.id] = dest;
-    console.log(`clip ${beat.id}: recorded`);
+    windows.forEach((w, i) => clips.push({ beat, i, seg: w.seg, file: dest, headMs: w.readyMs }));
+    console.log(`beat ${beat.id}: ${windows.length} segment windows recorded`);
   }
   await browser.close();
   return clips;
@@ -555,21 +568,34 @@ async function record() {
 
 function assemble(clips) {
   const parts = [];
-  for (const beat of BEATS) {
-    const seg = path.join(workDir, `${beat.id}.mp4`);
+  for (const c of clips) {
+    const seg = path.join(workDir, `${c.beat.id}.${c.i}.mp4`);
     sh("ffmpeg", ["-y", "-v", "error",
-      "-i", clips[beat.id], "-i", path.join(workDir, `${beat.id}.m4a`),
-      "-map", "0:v:0", "-map", "1:a:0", "-t", (beat.durationMs / 1000).toFixed(3),
-      "-vf", "scale=1920:1080,fps=30,format=yuv420p",
+      "-i", c.file,
+      "-i", path.join(workDir, `${c.beat.id}.${c.i}.m4a`),
+      "-map", "0:v:0", "-map", "1:a:0",
+      "-t", (c.seg.durationMs / 1000).toFixed(3),
+      // video-only head trim (audio starts at 0): decode-accurate, and the
+      // hold guarantees painted frames exist past the trim point
+      "-vf", `trim=start=${(c.headMs / 1000).toFixed(3)},setpts=PTS-STARTPTS,scale=1920:1080,fps=30,format=yuv420p`,
       "-c:v", "libx264", "-preset", "medium", "-crf", "20",
       "-c:a", "aac", "-b:a", "160k", "-ar", "44100", seg]);
     parts.push(seg);
-    console.log(`segment ${beat.id}: muxed`);
   }
   const list = path.join(workDir, "concat.txt");
   writeFileSync(list, parts.map((p) => `file '${p}'\n`).join(""));
   const final = path.join(outDir, FILM_CUT === "short" ? "apex-vision-v4-short.mp4" : "apex-vision-v4.mp4");
   sh("ffmpeg", ["-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", list, "-c", "copy", final]);
+  // Contact sheet: frame 0.5s into every segment — cue alignment is
+  // verified by eye in one image, not by sampled spot checks.
+  const sheetDir = path.join(workDir, "sheet");
+  sh("mkdir", ["-p", sheetDir]);
+  parts.forEach((p, idx) => {
+    sh("ffmpeg", ["-y", "-v", "error", "-ss", "0.5", "-i", p, "-frames:v", "1",
+      "-vf", "scale=480:270", path.join(sheetDir, `s${String(idx).padStart(2, "0")}.png`)]);
+  });
+  sh("bash", ["-c",
+    `cd "${sheetDir}" && ffmpeg -y -v error -pattern_type glob -i 's*.png' -filter_complex tile=6x7:padding=4:color=black "${path.join(outDir, "contact-sheet.png")}"`]);
   return final;
 }
 
