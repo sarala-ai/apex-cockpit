@@ -113,9 +113,21 @@ const BEATS = [
       },
       {
         say:
-          "The tooling that grew around this is a dozen separate " +
-          "products, assembled by hand.",
+          "And look at what A.I. brought with it. The operating layer " +
+          "arrived as a dozen separate products, assembled by hand. " +
+          "Context files for every assistant. Skill and prompt " +
+          "libraries. M.C.P. servers for tools. One framework for the " +
+          "agents that build your product, and another for the agents " +
+          "that are your product.",
         do: [{ press: { key: "ArrowRight", times: 1 } }],
+      },
+      {
+        say:
+          "Then observability, evals, C.I., infrastructure as code, " +
+          "containers, hosting, provenance — each one its own product, " +
+          "with its own auth, its own config, its own dashboard. Every " +
+          "seam between them is yours to hold.",
+        do: [],
       },
       {
         fullOnly: true,
@@ -157,9 +169,18 @@ const BEATS = [
           "got cheap; shipping reliably did not. APEX starts from a " +
           "simpler observation: real deployment patterns are finite — " +
           "enumerate them, encode them, and the whole path gets cheap. " +
-          "Everything from here is the answer, and the goal has a name: " +
-          "make finding out cheap.",
+          "Everything from here is the answer, and the goal is plain: " +
+          "build the product engineering discipline that makes finding " +
+          "out cheap.",
         do: [{ goto: visionDeck }, { press: { key: "ArrowRight", times: 6 } }],
+      },
+      {
+        say:
+          "The shape of the answer: one surface, two planes, one spine. " +
+          "The build plane and the product plane each carry their " +
+          "prompts, skills, M.C.P. servers, agents, traces, and evals — " +
+          "governed the same way, joined by one correlation spine.",
+        do: [{ press: { key: "ArrowRight", times: 1 } }],
       },
     ],
   },
@@ -202,9 +223,17 @@ const BEATS = [
       },
       {
         say:
+          "And you don't operate it alone. The conference room is a " +
+          "chat with your company: ask which tasks are blocked on you " +
+          "rather than on work, and it answers from the live board — " +
+          "seventy nine approvals waiting, one truly blocked task.",
+        do: [{ goto: `${BASE_URL}/APEX/board-chat` }],
+      },
+      {
+        say:
           "Observe is Bloom's live plane: the whole service fleet with " +
           "health per service, evals, and recent runs on one page.",
-        do: [{ scroll: { to: 4, ms: 900 } }],
+        do: [{ goto: filmStrip }, { scroll: { to: 4, ms: 900 } }],
       },
       {
         say:
@@ -238,8 +267,26 @@ const BEATS = [
       {
         say:
           "Its target grows that registry into the full capability " +
-          "plane an agent can be granted.",
+          "plane an agent can be granted — and the rest of that plane " +
+          "is already live.",
         do: [{ scroll: { to: 9, ms: 900 } }],
+      },
+      {
+        say:
+          "Skills: twenty one in this company's store — versioned " +
+          "capabilities that agents are granted, not prompts pasted " +
+          "around.",
+        do: [{ goto: `${BASE_URL}/APEX/skills` }],
+      },
+      {
+        say:
+          "And workflows: seventy seven in the catalog, by layer — " +
+          "deterministic steps codified once and run at zero tokens. " +
+          "Release, C.I., and deploy ship built in — and the catalog " +
+          "layers: a company shadows and extends it with its own " +
+          "patterns. Deployment, testing, quality — codified the same " +
+          "way, once.",
+        do: [{ goto: `${BASE_URL}/APEX/workflows` }],
       },
       {
         say:
@@ -247,7 +294,7 @@ const BEATS = [
           "lifecycle, bug, design change, and feature — each with its " +
           "own gates and a live review queue; thirty four waiting in " +
           "bug alone.",
-        do: [{ scroll: { to: 10, ms: 900 } }],
+        do: [{ goto: filmStrip }, { scroll: { to: 10, ms: 900 } }],
       },
       {
         say:
@@ -266,6 +313,37 @@ const BEATS = [
           "from it. Twenty tasks unattended is the design — an " +
           "interruption that carries no decision is spam.",
         do: [{ scroll: { to: 12, ms: 900 } }],
+      },
+      {
+        say:
+          "And who carries the mechanics? Deployment intricacy — " +
+          "projects, billing, identity, C.I. wiring, containers — is " +
+          "solved once, encoded as workflow, and inherited. A new " +
+          "product bootstraps born observable and born governed, in one " +
+          "run.",
+        do: [{ goto: visionDeck }, { press: { key: "ArrowRight", times: 12 } }],
+      },
+      {
+        say:
+          "And the work itself is carried by the coding agent you " +
+          "already use. APEX runs on top of it — agent steps bounded and " +
+          "governed, inside approved specs, judged at gates. It runs " +
+          "local on this laptop today, and it is designed to run the " +
+          "same way remotely, in your own cloud.",
+        do: [{ goto: titleCards }, { scroll: { to: 7, ms: 1200 } }],
+      },
+      {
+        say:
+          "And cheap is engineered, not hoped for. Assembly: every flow " +
+          "composes four node kinds, and what's deterministic runs at " +
+          "zero tokens. Context, controlled: an agent step is bounded — " +
+          "approved spec in, diff out. Memory, attached: closed tickets " +
+          "deposit their lessons back into the registry. And the model " +
+          "tier follows the step: design, implement, and review each " +
+          "pay their own rate. In one line: we built workflows, made " +
+          "them reliable, and cut the loops — so A.I. runs only where " +
+          "it should.",
+        do: [{ scroll: { to: 8, ms: 1200 } }],
       },
     ],
   },
@@ -412,8 +490,13 @@ const BEATS = [
           "measure. The sentence you followed is the ambition in " +
           "miniature: it goes in as an idea, and this machine is being " +
           "built so that it comes back as an engineered product, with " +
-          "evidence attached. And as the card says: everything you saw " +
-          "is real, built by one person, inside this loop.",
+          "evidence attached. And none of this is a thesis written for " +
+          "a deck. It is an attempt to actually engineer product " +
+          "building — practiced on itself. The platform ships itself. " +
+          "Its design shipped through its own loop. Even this film was " +
+          "produced under the discipline it describes: a written " +
+          "script, a claims register with sources, and every frame " +
+          "verified before it reached you.",
         do: [{ goto: filmStrip }, { scroll: { to: 19, ms: 1500 } }],
       },
       {
@@ -621,7 +704,7 @@ function assemble(clips) {
       "-vf", "scale=480:270", path.join(sheetDir, `s${String(idx).padStart(2, "0")}.png`)]);
   });
   sh("bash", ["-c",
-    `cd "${sheetDir}" && ffmpeg -y -v error -pattern_type glob -i 's*.png' -filter_complex tile=6x7:padding=4:color=black "${path.join(outDir, "contact-sheet.png")}"`]);
+    `cd "${sheetDir}" && ffmpeg -y -v error -pattern_type glob -i 's*.png' -filter_complex tile=7x7:padding=4:color=black "${path.join(outDir, "contact-sheet.png")}"`]);
   return final;
 }
 
