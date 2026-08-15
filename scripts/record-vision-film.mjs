@@ -35,8 +35,8 @@ const docsRoot = path.resolve(repoRoot, "..", "docs");
 const outDir = process.argv[2] ? path.resolve(process.argv[2]) : path.join(docsRoot, "vision", "v4");
 const workDir = path.join(outDir, "build");
 const BASE_URL = process.env.COCKPIT_URL ?? "http://localhost:3100";
-const VOICE = process.env.VOICE ?? "en-US-Chirp3-HD-Charon";
-const SPEAKING_RATE = Number(process.env.SPEAKING_RATE ?? "0.95");
+const VOICE = process.env.VOICE ?? "en-US-Chirp3-HD-Fenrir";
+const SPEAKING_RATE = Number(process.env.SPEAKING_RATE ?? "1.0");
 const TTS_PROJECT = process.env.TTS_PROJECT ?? "sarala-bloom-dev";
 // FILM_CUT=full (default) renders the master with every segment;
 // FILM_CUT=short derives the trim by skipping fullOnly segments.
@@ -78,7 +78,7 @@ const BEATS = [
           "This is APEX: the surface where a company's engineering runs. " +
           "Agents do the work, humans decide at gates, and every change " +
           "is traceable.",
-        do: [],
+        do: [{ goto: visionDeck }],
       },
     ],
   },
@@ -87,9 +87,28 @@ const BEATS = [
     segments: [
       {
         say:
-          "First, the context, briefly. Ninety percent of developers use " +
-          "A.I. daily, and ninety six percent don't fully trust what it " +
-          "produces.",
+          "Most products don't fail because building is hard. Forty two " +
+          "percent of startup post mortems say it plainly: no market " +
+          "need. The cash running out is the symptom — it ran out " +
+          "chasing demand that was never there. And in almost every " +
+          "case, the disproving information existed before the build. " +
+          "Finding out was just more expensive than believing.",
+        do: [{ goto: titleCards }, { scroll: { to: 2, ms: 1200 } }],
+      },
+      {
+        say:
+          "Then A.I. arrived, and generation got easy. A working " +
+          "prototype in an afternoon. It looked like the whole problem " +
+          "was solved. But — is it really easy?",
+        do: [{ scroll: { to: 3, ms: 1200 } }],
+      },
+      {
+        say:
+          "Everyone believed it: ninety percent of developers now use " +
+          "A.I. daily. But ninety six percent don't fully trust what it " +
+          "produces — and delivery stability went backwards. Generating " +
+          "code is easy now. Trusting it, shipping it, and running it " +
+          "is not.",
         do: [{ goto: visionDeck }, { press: { key: "ArrowRight", times: 1 } }],
       },
       {
@@ -129,13 +148,17 @@ const BEATS = [
           "gates existed, improvised actions outnumbered governed ones " +
           "eighteen to one. And releases shipped by hand, at night. " +
           "APEX is what that experience demanded.",
-        do: [{ goto: titleCards }, { scroll: { to: 2, ms: 1200 } }],
+        do: [{ goto: titleCards }, { scroll: { to: 4, ms: 1200 } }],
       },
       {
         say:
-          "It starts from a simple observation: real deployment " +
-          "patterns are finite. They can be enumerated, encoded, and " +
-          "made repeatable. Everything from here is the answer.",
+          "So here is the condition, whole: even with A.I., going from " +
+          "an idea to a reliable product stayed expensive. Generation " +
+          "got cheap; shipping reliably did not. APEX starts from a " +
+          "simpler observation: real deployment patterns are finite — " +
+          "enumerate them, encode them, and the whole path gets cheap. " +
+          "Everything from here is the answer, and the goal has a name: " +
+          "make finding out cheap.",
         do: [{ goto: visionDeck }, { press: { key: "ArrowRight", times: 6 } }],
       },
     ],
@@ -397,7 +420,7 @@ const BEATS = [
         say:
           "What does a software company look like when finding out is " +
           "cheap? That's the question this product exists to answer.",
-        do: [{ goto: titleCards }, { scroll: { to: 4, ms: 1200 } }],
+        do: [{ goto: titleCards }, { scroll: { to: 6, ms: 1200 } }],
       },
     ],
   },
@@ -446,7 +469,7 @@ async function synthesize() {
       } else {
         sh("say", ["-v", VOICE, "-o", raw, seg.say]);
       }
-      sh("ffmpeg", ["-y", "-v", "error", "-i", raw, "-af", "apad=pad_dur=0.5",
+      sh("ffmpeg", ["-y", "-v", "error", "-i", raw, "-af", "adelay=400:all=1,apad=pad_dur=0.9",
         "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-ac", "2", m4a]);
       seg.durationMs = Math.round(probeDur(m4a) * 1000);
       segFiles.push(m4a);
