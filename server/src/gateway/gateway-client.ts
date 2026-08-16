@@ -322,4 +322,123 @@ export class GatewayClient {
     const message = typeof body?.detail === "string" ? body.detail : extractMessage(res.body, `Delete failed (${res.status})`);
     return { ok: false, status: "error", message };
   }
+
+  // ── LLM model-plane API (/llm/providers, /llm/models) ──────────────────
+  // These endpoints are on the gateway's LLM routing layer (not the MCP
+  // tool gateway). They manage the set of LLM providers and the model
+  // aliases (apex-*) that consumers call without knowing which backend serves
+  // them. The gateway's LLM plane is intentionally separate from its MCP tool
+  // plane — different concern, different object graph.
+
+  /** POST /llm/providers — register an LLM provider. */
+  async createLLMProvider(input: {
+    name: string;
+    providerType: "openai_compatible" | "openai" | "anthropic";
+    apiBase?: string;
+    apiKey?: string;
+    defaultModel?: string;
+    description?: string;
+  }): Promise<GatewayWriteResult> {
+    const body: Record<string, unknown> = {
+      name: input.name,
+      provider_type: input.providerType,
+      enabled: true,
+    };
+    if (input.apiBase) body.api_base = input.apiBase;
+    if (input.apiKey) body.api_key = input.apiKey;
+    if (input.defaultModel) body.default_model = input.defaultModel;
+    if (input.description) body.description = input.description;
+
+    const res = await timedWrite(`${gatewayUrl()}/llm/providers`, { method: "POST", body: JSON.stringify(body) });
+    if (!res) return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
+    if (res.status >= 200 && res.status < 300) {
+      const b = (res.body ?? {}) as Record<string, unknown>;
+      return { ok: true, id: str(b.id), name: String(b.name ?? input.name) };
+    }
+    if (res.status === 409) return { ok: false, status: "conflict", message: extractMessage(res.body, "Provider already exists") };
+    if (res.status === 422) return { ok: false, status: "validation", message: extractMessage(res.body, "Validation failed") };
+    return { ok: false, status: "error", message: extractMessage(res.body, `Create provider failed (${res.status})`) };
+  }
+
+  /** GET /llm/providers — list registered LLM providers. */
+  async listLLMProviders(): Promise<Array<{ id: string; name: string; providerType: string; apiBase: string | null; enabled: boolean }>> {
+    const res = await timedFetch(`${gatewayUrl()}/llm/providers`);
+    if (!res) return [];
+    const raw = await res.json().catch(() => null);
+    // Response is either a list or a {providers: [...]} envelope depending on gateway version
+    const rows = Array.isArray(raw) ? raw : Array.isArray((raw as Record<string, unknown>)?.providers) ? (raw as Record<string, unknown>).providers as unknown[] : [];
+    return (rows as Record<string, unknown>[]).map((p) => ({
+      id: String(p.id ?? ""),
+      name: String(p.name ?? ""),
+      providerType: String(p.provider_type ?? ""),
+      apiBase: str(p.api_base),
+      enabled: bool(p.enabled, true),
+    }));
+  }
+
+  /** DELETE /llm/providers/{id} — remove an LLM provider and all its models. */
+  async deleteLLMProvider(id: string): Promise<GatewayWriteResult> {
+    const res = await timedWrite(`${gatewayUrl()}/llm/providers/${encodeURIComponent(id)}`, { method: "DELETE" });
+    if (!res) return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
+    if (res.status >= 200 && res.status < 300) return { ok: true, id, name: id };
+    const body = res.body as Record<string, unknown> | null;
+    const message = typeof body?.detail === "string" ? body.detail : extractMessage(res.body, `Delete provider failed (${res.status})`);
+    return { ok: false, status: "error", message };
+  }
+
+  /** POST /llm/models — register a model (with optional routing alias). */
+  async createLLMModel(input: {
+    providerId: string;
+    modelId: string;
+    modelName: string;
+    modelAlias?: string;
+    supportsChat?: boolean;
+    supportsStreaming?: boolean;
+  }): Promise<GatewayWriteResult> {
+    const body: Record<string, unknown> = {
+      provider_id: input.providerId,
+      model_id: input.modelId,
+      model_name: input.modelName,
+      enabled: true,
+      supports_chat: input.supportsChat ?? true,
+      supports_streaming: input.supportsStreaming ?? true,
+    };
+    if (input.modelAlias) body.model_alias = input.modelAlias;
+
+    const res = await timedWrite(`${gatewayUrl()}/llm/models`, { method: "POST", body: JSON.stringify(body) });
+    if (!res) return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
+    if (res.status >= 200 && res.status < 300) {
+      const b = (res.body ?? {}) as Record<string, unknown>;
+      return { ok: true, id: str(b.id), name: String(b.model_alias ?? b.model_name ?? input.modelAlias ?? input.modelName) };
+    }
+    if (res.status === 409) return { ok: false, status: "conflict", message: extractMessage(res.body, "Model already exists") };
+    if (res.status === 422) return { ok: false, status: "validation", message: extractMessage(res.body, "Validation failed") };
+    return { ok: false, status: "error", message: extractMessage(res.body, `Create model failed (${res.status})`) };
+  }
+
+  /** GET /llm/models — list registered LLM models (including aliases). */
+  async listLLMModels(): Promise<Array<{ id: string; modelId: string; modelName: string; modelAlias: string | null; providerId: string; enabled: boolean }>> {
+    const res = await timedFetch(`${gatewayUrl()}/llm/models`);
+    if (!res) return [];
+    const raw = await res.json().catch(() => null);
+    const rows = Array.isArray(raw) ? raw : Array.isArray((raw as Record<string, unknown>)?.models) ? (raw as Record<string, unknown>).models as unknown[] : [];
+    return (rows as Record<string, unknown>[]).map((m) => ({
+      id: String(m.id ?? ""),
+      modelId: String(m.model_id ?? ""),
+      modelName: String(m.model_name ?? ""),
+      modelAlias: str(m.model_alias),
+      providerId: String(m.provider_id ?? ""),
+      enabled: bool(m.enabled, true),
+    }));
+  }
+
+  /** DELETE /llm/models/{id} — remove a model/alias. */
+  async deleteLLMModel(id: string): Promise<GatewayWriteResult> {
+    const res = await timedWrite(`${gatewayUrl()}/llm/models/${encodeURIComponent(id)}`, { method: "DELETE" });
+    if (!res) return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
+    if (res.status >= 200 && res.status < 300) return { ok: true, id, name: id };
+    const body = res.body as Record<string, unknown> | null;
+    const message = typeof body?.detail === "string" ? body.detail : extractMessage(res.body, `Delete model failed (${res.status})`);
+    return { ok: false, status: "error", message };
+  }
 }

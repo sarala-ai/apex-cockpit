@@ -21,6 +21,8 @@ import { projectRoutes } from "./routes/projects.js";
 import { apexSetupRoutes } from "./routes/apex-setup.js";
 import { apexScopingRoutes } from "./routes/apex-scoping.js";
 import { apexSetupStateRoutes } from "./routes/apex-setup-state.js";
+import { apexSetupModelsRoutes } from "./routes/apex-setup-models.js";
+import { subscriptionBridgeRouter } from "./apex/model-access/subscription-bridge.js";
 import { apexObserveRoutes } from "./routes/apex-observe.js";
 import { apexGatewayObserveRoutes } from "./routes/apex-gateway-observe.js";
 import { apexWorkflowsRoutes } from "./routes/apex-workflows.js";
@@ -253,6 +255,7 @@ export async function createApp(
   api.use(apexSetupRoutes());
   api.use(apexScopingRoutes(db));
   api.use(apexSetupStateRoutes(db));
+  api.use(apexSetupModelsRoutes());
   api.use(apexObserveRoutes(db));
   api.use(apexGatewayObserveRoutes());
   api.use(apexWorkflowsRoutes(db));
@@ -373,6 +376,12 @@ export async function createApp(
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });
   });
+
+  // Subscription bridge — OpenAI-compatible shim backed by the Claude Agent SDK.
+  // Mounted at /bridge/v1 (outside /api) so the gateway's LLM plane can reach
+  // it directly as an openai_compatible upstream provider. No auth guard: the
+  // bridge is loopback-only in local mode and the gateway is already trusted.
+  app.use("/bridge/v1", subscriptionBridgeRouter());
 
   // Cockpit MCP server — streamable-HTTP transport (APEX-35)
   app.use(mcpRoutes(db));
