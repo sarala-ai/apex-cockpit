@@ -11,6 +11,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, ChevronDown, ChevronRight, Circle, PartyPopper } from "lucide-react";
 import { setupStateApi, type SetupState } from "../../api/apex-setup-state";
+import { setupModelsApi } from "../../api/apex-setup-models";
 import { orgsApi } from "../../api/apex-scoping";
 import { useCompany } from "../../context/CompanyContext";
 import { GcloudAuthBanner } from "@/apex/GcloudAuthBanner";
@@ -25,7 +26,7 @@ import { PRODUCT_NAME } from "../../lib/product";
 // The cloud-first org→company engineering-setup spine. ORG steps (identity →
 // create org → org cloud → org GitHub) provision the shared substrate; COMPANY
 // steps (company cloud → company repos) provision each product unit; then the
-// capability layer (OAuth client → gateway → MCP → connect → governance).
+// capability layer (OAuth client → gateway → MCP → connect → models → governance).
 export type StepKey =
   | "auth"
   | "org"
@@ -38,6 +39,7 @@ export type StepKey =
   | "gateway"
   | "mcpServers"
   | "connect"
+  | "models"
   | "governance";
 
 interface StepDef {
@@ -93,6 +95,14 @@ const STEPS: StepDef[] = [
     key: "connect",
     title: "Connect capability (your Google consent)",
     done: (s) => s.oauthClient.configured && s.mcpServers.registered.length > 0,
+  },
+  {
+    key: "models",
+    title: "Models — how judges get paid for and routed",
+    done: (s) =>
+      s.models != null &&
+      (s.models.claude.subscriptionProviderRegistered || s.models.claude.apiKeyProviderRegistered) &&
+      s.models.aliasesRegistered.length > 0,
   },
   { key: "governance", title: "Per-tool governance", optional: true, done: () => false },
 ];
@@ -529,6 +539,8 @@ function StepBody({
       return <GuidedStep done={done} onRecheck={onRecheck} rechecking={rechecking} />;
     case "connect":
       return <GuidedStep done={done} onRecheck={onRecheck} rechecking={rechecking} />;
+    case "models":
+      return <ModelsStep onRecheck={onRecheck} rechecking={rechecking} />;
     case "governance":
       return <GuidedStep done={done} onRecheck={onRecheck} rechecking={rechecking} />;
   }
@@ -609,6 +621,244 @@ function CompanyCreateStep() {
           No companies yet — create your first (e.g. APEX, FinPilot, Bloom).
         </p>
       )}
+    </div>
+  );
+}
+
+/**
+ * The "Models" setup step (APEX-115).
+ *
+ * Default path: detect a logged-in local `claude` CLI → provision the
+ * subscription bridge + apex-* aliases with one click. Zero credentials
+ * needed: the OAuth token stays in the OS keychain and never touches the
+ * gateway's encrypted store.
+ *
+ * Advanced path: paste a Claude API key (metered, enables per-token cost
+ * attribution) or an OpenRouter key (BYO-plane proof).
+ */
+function ModelsStep({ onRecheck, rechecking }: { onRecheck: () => void; rechecking: boolean }) {
+  const queryClient = useQueryClient();
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [claudeKey, setClaudeKey] = useState("");
+  const [orKey, setOrKey] = useState("");
+
+  const stateQuery = useQuery({
+    queryKey: ["setup-state"],
+    queryFn: () => setupStateApi.get(),
+  });
+  const models = stateQuery.data?.models;
+
+  const invalidate = () => {
+    void queryClient.invalidateQueries({ queryKey: ["setup-state"] });
+    onRecheck();
+  };
+
+  const provisionSubscription = useMutation({
+    mutationFn: () => setupModelsApi.provisionSubscription(),
+    onSuccess: invalidate,
+  });
+
+  const provisionApiKey = useMutation({
+    mutationFn: () => setupModelsApi.provisionApiKey(claudeKey.trim()),
+    onSuccess: () => { setClaudeKey(""); invalidate(); },
+  });
+
+  const provisionOpenRouter = useMutation({
+    mutationFn: () => setupModelsApi.provisionOpenRouter(orKey.trim()),
+    onSuccess: () => { setOrKey(""); invalidate(); },
+  });
+
+  const modeLabel = (mode: string | undefined) => {
+    if (mode === "subscription_local") return "Local claude CLI (logged in)";
+    if (mode === "subscription_remote") return "Remote subscription token";
+    if (mode === "api_key") return "ANTHROPIC_API_KEY";
+    return "Not detected";
+  };
+
+  const bridgeReady =
+    models?.claude.subscriptionProviderRegistered || models?.claude.apiKeyProviderRegistered;
+  const aliasesReady = (models?.aliasesRegistered.length ?? 0) > 0;
+
+  return (
+    <div className="space-y-4" data-testid="apex-models-step">
+      {/* Status row */}
+      <div className="space-y-1 text-sm">
+        <div className="flex items-center gap-2">
+          {models?.claude.installed ? (
+            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+          ) : (
+            <Circle className="h-3.5 w-3.5 text-muted-foreground/40" />
+          )}
+          <span className="text-muted-foreground">
+            claude CLI: {models?.claude.installed ? "installed" : "not found"}
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          {models && models.claude.mode !== "none" ? (
+            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+          ) : (
+            <Circle className="h-3.5 w-3.5 text-muted-foreground/40" />
+          )}
+          <span className="text-muted-foreground">
+            Claude auth: {modeLabel(models?.claude.mode)}
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          {bridgeReady ? (
+            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+          ) : (
+            <Circle className="h-3.5 w-3.5 text-muted-foreground/40" />
+          )}
+          <span className="text-muted-foreground">
+            Gateway provider: {bridgeReady ? "registered" : "not provisioned"}
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          {aliasesReady ? (
+            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+          ) : (
+            <Circle className="h-3.5 w-3.5 text-muted-foreground/40" />
+          )}
+          <span className="text-muted-foreground">
+            apex-* aliases: {aliasesReady ? `${models!.aliasesRegistered.length} seeded` : "not seeded"}
+          </span>
+        </div>
+      </div>
+
+      {/* Default path — subscription bridge */}
+      {!bridgeReady && (
+        <div className="space-y-2">
+          <p className="text-xs text-muted-foreground">
+            Default: uses your logged-in <code className="rounded bg-muted px-1 py-0.5 text-[0.85em]">claude</code> CLI to provision
+            a subscription bridge — no credentials entered anywhere.
+          </p>
+          <Button
+            size="sm"
+            data-testid="apex-models-provision-subscription"
+            onClick={() => provisionSubscription.mutate()}
+            disabled={provisionSubscription.isPending}
+          >
+            {provisionSubscription.isPending ? "Provisioning…" : "Provision subscription bridge"}
+          </Button>
+          {provisionSubscription.isError && (
+            <p className="text-xs text-destructive">
+              {provisionSubscription.error instanceof Error
+                ? provisionSubscription.error.message
+                : "Provisioning failed"}
+            </p>
+          )}
+          {provisionSubscription.isSuccess && (
+            <p className="text-xs text-emerald-600">
+              Bridge provisioned — checking state…
+            </p>
+          )}
+        </div>
+      )}
+
+      {bridgeReady && (
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" onClick={invalidate} disabled={rechecking}>
+            {rechecking ? "Rechecking…" : "Recheck state"}
+          </Button>
+          {!aliasesReady && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => provisionSubscription.mutate()}
+              disabled={provisionSubscription.isPending}
+            >
+              {provisionSubscription.isPending ? "Seeding…" : "Re-seed aliases"}
+            </Button>
+          )}
+        </div>
+      )}
+
+      {/* Advanced path — toggle */}
+      <div>
+        <button
+          type="button"
+          onClick={() => setShowAdvanced((v) => !v)}
+          className="text-xs text-muted-foreground underline-offset-2 hover:underline"
+        >
+          {showAdvanced ? "Hide" : "Advanced"}: Claude API key / OpenRouter
+        </button>
+
+        {showAdvanced && (
+          <div className="mt-3 space-y-4">
+            {/* Claude API key */}
+            <div className="space-y-2">
+              <p className="text-xs font-medium">Claude API key (metered — enables per-token cost attribution)</p>
+              <div className="flex items-center gap-2">
+                <input
+                  type="password"
+                  value={claudeKey}
+                  onChange={(e) => setClaudeKey(e.target.value)}
+                  placeholder="sk-ant-…"
+                  className="w-56 rounded-md border border-border bg-transparent px-2.5 py-1 text-sm outline-none"
+                  data-testid="apex-models-claude-api-key-input"
+                />
+                <Button
+                  size="sm"
+                  variant="outline"
+                  data-testid="apex-models-provision-claude-api-key"
+                  onClick={() => provisionApiKey.mutate()}
+                  disabled={provisionApiKey.isPending || !claudeKey.trim()}
+                >
+                  {provisionApiKey.isPending ? "Saving…" : "Save key"}
+                </Button>
+              </div>
+              {provisionApiKey.isError && (
+                <p className="text-xs text-destructive">
+                  {provisionApiKey.error instanceof Error ? provisionApiKey.error.message : "Failed"}
+                </p>
+              )}
+              {provisionApiKey.isSuccess && (
+                <p className="text-xs text-emerald-600">API key provider registered.</p>
+              )}
+              <p className="text-xs text-muted-foreground">
+                The key is forwarded ONLY to the gateway's encrypted store — the cockpit never persists it.
+              </p>
+            </div>
+
+            {/* OpenRouter */}
+            <div className="space-y-2">
+              <p className="text-xs font-medium">OpenRouter key (BYO-plane — non-Claude models)</p>
+              <div className="flex items-center gap-2">
+                <input
+                  type="password"
+                  value={orKey}
+                  onChange={(e) => setOrKey(e.target.value)}
+                  placeholder="sk-or-…"
+                  className="w-56 rounded-md border border-border bg-transparent px-2.5 py-1 text-sm outline-none"
+                  data-testid="apex-models-openrouter-key-input"
+                />
+                <Button
+                  size="sm"
+                  variant="outline"
+                  data-testid="apex-models-provision-openrouter"
+                  onClick={() => provisionOpenRouter.mutate()}
+                  disabled={provisionOpenRouter.isPending || !orKey.trim()}
+                >
+                  {provisionOpenRouter.isPending ? "Saving…" : "Save key"}
+                </Button>
+              </div>
+              {provisionOpenRouter.isError && (
+                <p className="text-xs text-destructive">
+                  {provisionOpenRouter.error instanceof Error ? provisionOpenRouter.error.message : "Failed"}
+                </p>
+              )}
+              {provisionOpenRouter.isSuccess && (
+                <p className="text-xs text-emerald-600">
+                  OpenRouter registered — apex-* aliases remain on Claude subscription.
+                </p>
+              )}
+              {models?.openrouter.configured && (
+                <p className="text-xs text-emerald-600">OpenRouter: already configured.</p>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

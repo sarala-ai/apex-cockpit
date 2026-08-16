@@ -142,6 +142,16 @@ export const STEP_HELP: Record<StepKey, StepHelp> = {
       "The broker stores your token; the wizard detects the connection.",
     ],
   },
+  models: {
+    purpose:
+      "Answer 'how do model calls get paid for and routed here' — provision the subscription bridge (default) or wire an API key (advanced).",
+    whatYoullDo: [
+      "Default path (zero credentials): make sure `claude` is installed and logged in on this machine, then click 'Provision subscription bridge'. The cockpit starts an OpenAI-compatible shim backed by `claude -p`; the gateway gets a provider row and `apex-*` aliases pointing at it.",
+      "Advanced (Claude API key): paste a `sk-ant-…` key — it goes ONLY into the gateway's encrypted store, the cockpit never persists it. Enables per-token cost attribution (Costs page).",
+      "Advanced (OpenRouter): paste a `sk-or-…` key to register a BYO-plane provider. Existing `apex-*` aliases stay on Claude subscription; OpenRouter is available as an additional provider.",
+    ],
+    note: "Subscription mode uses the Claude Agent SDK under the hood (`claude -p`), which is the sanctioned path for OAuth tokens — the token is NEVER used as a raw chat-completions API key. Trade-off: no per-token cost metering in subscription mode (metering arrives only in API-key mode).",
+  },
   governance: {
     purpose:
       "Optional: allowlist which federated tools each company / agent may use — the resolver cascade applied to the catalog.",

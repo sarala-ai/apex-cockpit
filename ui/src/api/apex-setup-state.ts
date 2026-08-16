@@ -8,6 +8,20 @@ import { api } from "./client";
 
 type Health = "ok" | "missing" | "expired";
 
+export type ClaudeAuthMode = "subscription_local" | "subscription_remote" | "api_key" | "none";
+
+/** Mirrors server/src/apex/model-access/index.ts ModelAccessState. */
+export interface ModelAccessState {
+  claude: {
+    mode: ClaudeAuthMode;
+    installed: boolean;
+    subscriptionProviderRegistered: boolean;
+    apiKeyProviderRegistered: boolean;
+  };
+  openrouter: { configured: boolean };
+  aliasesRegistered: string[];
+}
+
 export interface SetupState {
   auth: { gcloud: Health; gh: Health; adc: Health };
   /** `posture` is the governance dial (default `individual`) — drives which
@@ -31,6 +45,8 @@ export interface SetupState {
   oauthClient: { configured: boolean; note?: string };
   gateway: { reachable: boolean };
   mcpServers: { registered: string[] };
+  /** Model access — how model calls are paid for and routed (APEX-115). */
+  models: ModelAccessState;
 }
 
 export const setupStateApi = {
