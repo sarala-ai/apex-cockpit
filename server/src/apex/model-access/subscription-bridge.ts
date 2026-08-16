@@ -16,6 +16,19 @@
  * is not a declared server dependency. The bridge uses `claude -p` (same as
  * board-chat.ts) which invokes the Agent SDK binary internally — equivalent
  * sanctioned path, no additional dependency needed.
+ *
+ * UNSUPPORTED PARAMS: `temperature` and `max_tokens` are silently ignored.
+ * The claude CLI has no temperature control, and max_tokens cannot be set via
+ * --print mode. Callers that depend on eval determinism via temperature=0 must
+ * use the api_key provider instead. The ignored params are surfaced in the
+ * response under `_bridge_ignored` for transparency.
+ *
+ * SECURITY: every spawn pins --max-turns 1 and --tools "" (disable all tools).
+ * This surface feeds UNTRUSTED content (judge inputs) into the harness; an
+ * agentic multi-turn run with tools would be a prompt-injection vector.
+ * `--tools ""` is the documented CLI flag for "disable all tools" (see `claude
+ * --help`). Do NOT raise max-turns or re-enable tools without an explicit
+ * agentic-use sign-off in the ticket.
  */
 
 import { Router, type Request, type Response } from 'express';
@@ -24,6 +37,9 @@ import { randomUUID } from 'node:crypto';
 
 /** Max time to wait for `claude -p` to respond (ms). Judge calls need headroom. */
 const BRIDGE_TIMEOUT_MS = 120_000;
+
+/** Cap concurrent claude spawns — judges can burst; mirrors board-chat cap of 3. */
+const MAX_CONCURRENT_BRIDGE_CALLS = 3;
 
 type OAIRole = 'system' | 'user' | 'assistant';
 interface OAIMessage {
@@ -75,10 +91,11 @@ function buildClaudePrompt(messages: OAIMessage[]): string {
 /** Spawn `claude -p` with the given prompt and return the response text. */
 function runClaude(prompt: string, abortSignal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
-    // --no-stream avoids interleaved SSE data in the output; --print captures
-    // the final response in a single block. The board-chat uses the same
-    // flags for its one-shot invocations.
-    const args = ['--print', '--output-format', 'text', '--max-turns', '8'];
+    // Security: --max-turns 1 + --tools "" makes this a pure completion, not
+    // an agentic harness. This bridge feeds UNTRUSTED judge content — multi-turn
+    // agentic runs with tools would be a prompt-injection vector.
+    // `--tools ""` is the documented CLI flag that disables all tools (claude --help).
+    const args = ['--print', '--output-format', 'text', '--max-turns', '1', '--tools', ''];
     const proc = spawn('claude', args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: BRIDGE_TIMEOUT_MS,
@@ -175,6 +192,7 @@ function sendStreamResponse(res: Response, model: string, text: string): void {
  */
 export function subscriptionBridgeRouter(): Router {
   const router = Router();
+  let liveBridgeCalls = 0;
 
   // POST /chat/completions — OpenAI-compatible chat endpoint
   router.post('/chat/completions', async (req: Request, res: Response) => {
@@ -183,6 +201,13 @@ export function subscriptionBridgeRouter(): Router {
     if (!Array.isArray(body?.messages) || body.messages.length === 0) {
       res.status(400).json({
         error: { message: 'messages is required and must be a non-empty array', type: 'invalid_request_error' },
+      });
+      return;
+    }
+
+    if (liveBridgeCalls >= MAX_CONCURRENT_BRIDGE_CALLS) {
+      res.status(429).json({
+        error: { message: 'Too many concurrent bridge calls — retry shortly', type: 'rate_limit_error' },
       });
       return;
     }
@@ -197,17 +222,28 @@ export function subscriptionBridgeRouter(): Router {
       return;
     }
 
+    // Collect ignored params for transparency (CLI has no temperature or token controls)
+    const ignoredParams: Record<string, unknown> = {};
+    if (body.temperature !== undefined) ignoredParams.temperature = body.temperature;
+    if (body.max_tokens !== undefined) ignoredParams.max_tokens = body.max_tokens;
+
     // Wire request abort to the claude subprocess
     const abortController = new AbortController();
     req.socket?.once('close', () => abortController.abort());
 
+    liveBridgeCalls += 1;
     try {
       const text = await runClaude(prompt, abortController.signal);
 
       if (body.stream) {
         sendStreamResponse(res, model, text);
       } else {
-        res.json(buildCompletionResponse(model, text));
+        const completion = buildCompletionResponse(model, text);
+        res.json(
+          Object.keys(ignoredParams).length > 0
+            ? { ...completion, _bridge_ignored: ignoredParams }
+            : completion,
+        );
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -224,6 +260,8 @@ export function subscriptionBridgeRouter(): Router {
           type: isAuth ? 'authentication_error' : 'upstream_error',
         },
       });
+    } finally {
+      liveBridgeCalls -= 1;
     }
   });
 
