@@ -52,11 +52,18 @@ describe("subscriptionBridgeRouter — prompt serialization", () => {
 
     expect(mockSpawn).toHaveBeenCalledOnce();
     const [, args] = mockSpawn.mock.calls[0];
-    // --max-turns 1 and --tools "" must be present
+    // --max-turns 1 must be present (first defense layer)
     expect(args).toContain("--max-turns");
     expect(args[args.indexOf("--max-turns") + 1]).toBe("1");
-    expect(args).toContain("--tools");
-    expect(args[args.indexOf("--tools") + 1]).toBe("");
+    // --disallowedTools must carry the full built-in deny-list (second defense layer;
+    // --tools "" is a fake flag silently ignored by the CLI — regression guard).
+    expect(args).toContain("--disallowedTools");
+    const denyList = args[args.indexOf("--disallowedTools") + 1] as string;
+    const deniedNames = denyList.split(",");
+    expect(deniedNames).toEqual(
+      expect.arrayContaining(["Bash", "Edit", "Write", "Read", "WebFetch", "WebSearch"]),
+    );
+    expect(denyList).not.toBe(""); // must not be the fake empty-string form
 
     // stdin receives the user content directly (no role prefix for single message)
     const written: string = mockSpawn.mock.results[0].value.stdin.write.mock.calls[0][0];

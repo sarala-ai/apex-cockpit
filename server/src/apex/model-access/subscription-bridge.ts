@@ -23,12 +23,13 @@
  * use the api_key provider instead. The ignored params are surfaced in the
  * response under `_bridge_ignored` for transparency.
  *
- * SECURITY: every spawn pins --max-turns 1 and --tools "" (disable all tools).
- * This surface feeds UNTRUSTED content (judge inputs) into the harness; an
- * agentic multi-turn run with tools would be a prompt-injection vector.
- * `--tools ""` is the documented CLI flag for "disable all tools" (see `claude
- * --help`). Do NOT raise max-turns or re-enable tools without an explicit
- * agentic-use sign-off in the ticket.
+ * SECURITY: every spawn pins --max-turns 1 AND --disallowedTools with an
+ * explicit deny-list of all built-in tool names. Defense-in-depth: max-turns 1
+ * blocks tool execution (a tool call needs a 2nd turn to receive its result),
+ * while --disallowedTools prevents tool execution even if max-turns is raised.
+ * `--tools ""` is NOT a real flag (silently ignored by the CLI); only
+ * --disallowedTools / --allowedTools are recognised (verified against
+ * `claude --help`). Do NOT remove either guard without an agentic-use sign-off.
  */
 
 import { Router, type Request, type Response } from 'express';
@@ -91,11 +92,14 @@ function buildClaudePrompt(messages: OAIMessage[]): string {
 /** Spawn `claude -p` with the given prompt and return the response text. */
 function runClaude(prompt: string, abortSignal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
-    // Security: --max-turns 1 + --tools "" makes this a pure completion, not
-    // an agentic harness. This bridge feeds UNTRUSTED judge content — multi-turn
-    // agentic runs with tools would be a prompt-injection vector.
-    // `--tools ""` is the documented CLI flag that disables all tools (claude --help).
-    const args = ['--print', '--output-format', 'text', '--max-turns', '1', '--tools', ''];
+    // Security: --max-turns 1 + --disallowedTools deny-list makes this a pure
+    // completion, not an agentic harness. This bridge feeds UNTRUSTED judge
+    // content — multi-turn agentic runs with tools would be a prompt-injection
+    // vector. --disallowedTools is the REAL CLI flag; --tools "" is silently
+    // ignored by the claude CLI and must NOT be used.
+    const DISALLOWED_TOOLS =
+      'Bash,Edit,Write,Read,Glob,Grep,WebFetch,WebSearch,Task,NotebookEdit,BashOutput,KillShell';
+    const args = ['--print', '--output-format', 'text', '--max-turns', '1', '--disallowedTools', DISALLOWED_TOOLS];
     const proc = spawn('claude', args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: BRIDGE_TIMEOUT_MS,
