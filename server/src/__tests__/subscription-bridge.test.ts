@@ -1,13 +1,13 @@
 import express from "express";
 import { EventEmitter } from "node:events";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockSpawn = vi.hoisted(() => vi.fn());
 vi.mock("node:child_process", () => ({ spawn: mockSpawn }));
 
 // Import after mocks are hoisted
-const { subscriptionBridgeRouter } = await import(
+const { subscriptionBridgeRouter, bridgeAuthMiddleware } = await import(
   "../apex/model-access/subscription-bridge.js"
 );
 
@@ -267,5 +267,89 @@ describe("subscriptionBridgeRouter — GET /models", () => {
     expect(res.status).toBe(200);
     expect(res.body.object).toBe("list");
     expect(res.body.data[0].id).toBe("claude-subscription");
+  });
+});
+
+describe("bridgeAuthMiddleware — no secret configured (local mode)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("APEX_BRIDGE_SECRET", "");
+  });
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it("allows requests when APEX_BRIDGE_SECRET is not set", async () => {
+    const app = express();
+    app.use(express.json());
+    app.use("/bridge/v1", bridgeAuthMiddleware(), subscriptionBridgeRouter());
+    mockSpawn.mockImplementation(() => makeFakeProc({ stdout: "ok" }));
+    const res = await request(app)
+      .post("/bridge/v1/chat/completions")
+      .send({ messages: [{ role: "user", content: "hi" }] });
+    expect(res.status).toBe(200);
+  });
+
+  it("allows requests with no Authorization header in local mode", async () => {
+    const app = express();
+    app.use(express.json());
+    app.use("/bridge/v1", bridgeAuthMiddleware(), subscriptionBridgeRouter());
+    mockSpawn.mockImplementation(() => makeFakeProc({ stdout: "ok" }));
+    const res = await request(app)
+      .post("/bridge/v1/chat/completions")
+      .send({ messages: [{ role: "user", content: "hi" }] });
+    expect(res.status).toBe(200);
+  });
+});
+
+describe("bridgeAuthMiddleware — secret configured (container mode)", () => {
+  const SECRET = "test-bridge-secret-xyz";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("APEX_BRIDGE_SECRET", SECRET);
+  });
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it("allows requests with correct bearer token", async () => {
+    const app = express();
+    app.use(express.json());
+    app.use("/bridge/v1", bridgeAuthMiddleware(), subscriptionBridgeRouter());
+    mockSpawn.mockImplementation(() => makeFakeProc({ stdout: "ok" }));
+    const res = await request(app)
+      .post("/bridge/v1/chat/completions")
+      .set("Authorization", `Bearer ${SECRET}`)
+      .send({ messages: [{ role: "user", content: "hi" }] });
+    expect(res.status).toBe(200);
+  });
+
+  it("returns 401 when Authorization header is missing", async () => {
+    const app = express();
+    app.use(express.json());
+    app.use("/bridge/v1", bridgeAuthMiddleware(), subscriptionBridgeRouter());
+    const res = await request(app)
+      .post("/bridge/v1/chat/completions")
+      .send({ messages: [{ role: "user", content: "hi" }] });
+    expect(res.status).toBe(401);
+    expect(res.body.error.type).toBe("authentication_error");
+    expect(mockSpawn).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 with wrong token", async () => {
+    const app = express();
+    app.use(express.json());
+    app.use("/bridge/v1", bridgeAuthMiddleware(), subscriptionBridgeRouter());
+    const res = await request(app)
+      .post("/bridge/v1/chat/completions")
+      .set("Authorization", "Bearer wrong-token")
+      .send({ messages: [{ role: "user", content: "hi" }] });
+    expect(res.status).toBe(401);
+    expect(mockSpawn).not.toHaveBeenCalled();
+  });
+
+  it("also protects GET /models when secret is set", async () => {
+    const app = express();
+    app.use(express.json());
+    app.use("/bridge/v1", bridgeAuthMiddleware(), subscriptionBridgeRouter());
+    const res = await request(app).get("/bridge/v1/models");
+    expect(res.status).toBe(401);
   });
 });

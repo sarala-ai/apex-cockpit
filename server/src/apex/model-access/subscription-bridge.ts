@@ -32,7 +32,7 @@
  * `claude --help`). Do NOT remove either guard without an agentic-use sign-off.
  */
 
-import { Router, type Request, type Response } from 'express';
+import { Router, type Request, type RequestHandler, type Response } from 'express';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 
@@ -188,6 +188,37 @@ function sendStreamResponse(res: Response, model: string, text: string): void {
   res.write(`data: ${JSON.stringify(done)}\n\n`);
   res.write('data: [DONE]\n\n');
   res.end();
+}
+
+/**
+ * Machine-auth middleware for the subscription bridge.
+ *
+ * When APEX_BRIDGE_SECRET is set the gateway must present it as a bearer token.
+ * This authenticates the CALLER (service identity) rather than relying on the
+ * Host header — a browser threat model that doesn't apply to machine-to-machine
+ * traffic from a containerised gateway.
+ *
+ * When APEX_BRIDGE_SECRET is NOT set, the middleware is a no-op: local-mode
+ * deployments rely on the loopback interface for network-level isolation.
+ */
+export function bridgeAuthMiddleware(): RequestHandler {
+  const secret = process.env.APEX_BRIDGE_SECRET?.trim() || null;
+  if (!secret) {
+    return (_req, _res, next) => next();
+  }
+  const expected = `Bearer ${secret}`;
+  return (req, res, next) => {
+    if (req.headers.authorization === expected) {
+      next();
+      return;
+    }
+    res.status(401).json({
+      error: {
+        message: 'Bridge authorization required — gateway must present APEX_BRIDGE_SECRET as a bearer token',
+        type: 'authentication_error',
+      },
+    });
+  };
 }
 
 /**

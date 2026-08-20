@@ -59,10 +59,35 @@ export interface ModelAccessState {
   aliasesRegistered: string[];
 }
 
+/**
+ * Bridge shared secret for machine-to-machine auth.
+ *
+ * Set APEX_BRIDGE_SECRET to a stable value in containerised deployments so the
+ * gateway can authenticate itself to the bridge. Returns null in local mode —
+ * the loopback interface is the network-level isolation there.
+ */
+export function getBridgeSecret(): string | null {
+  return process.env.APEX_BRIDGE_SECRET?.trim() || null;
+}
+
+/**
+ * Derive the bridge's externally-reachable host. In host-local mode the default
+ * (127.0.0.1) is correct. When the gateway runs in Docker, set APEX_BRIDGE_HOST
+ * to host.docker.internal so the container can reach the host process.
+ */
+function bridgeHost(): string {
+  return process.env.APEX_BRIDGE_HOST?.trim() || '127.0.0.1';
+}
+
+/** True when the bridge host is not a standard loopback — needs SSRF bypass. */
+function isPrivateBridgeHost(host: string): boolean {
+  return host !== '127.0.0.1' && host !== 'localhost' && host !== '::1';
+}
+
 /** Derive the subscription bridge URL from the cockpit's own listen port. */
 function bridgeUrl(): string {
   const port = process.env.PORT ?? '3100';
-  return `http://127.0.0.1:${port}/bridge/v1`;
+  return `http://${bridgeHost()}:${port}/bridge/v1`;
 }
 
 /** Read ModelAccessState from the live gateway + local detection. Never throws. */
@@ -117,13 +142,26 @@ export async function provisionClaudeSubscription(
   }
 
   // Create or find the subscription bridge provider
+  const url = bridgeUrl();
+  const host = bridgeHost();
+  const secret = getBridgeSecret();
+  const privateHost = isPrivateBridgeHost(host);
+
   let providerId: string | null = null;
   const createRes = await client.createLLMProvider({
     name: CLAUDE_SUBSCRIPTION_PROVIDER_NAME,
     providerType: 'openai_compatible',
-    apiBase: bridgeUrl(),
+    apiBase: url,
     defaultModel: 'claude-subscription',
     description: 'Subscription bridge — Agent SDK shim; never stores OAuth token as a raw key',
+    // Secret allows the bridge to authenticate the gateway caller (not the Host header).
+    // Omitted in local mode (null) — loopback-only access is the network-level guard.
+    ...(secret ? { apiKey: secret } : {}),
+    // When the bridge is on a private/docker-internal host, tell the gateway to
+    // allow SSRF to that specific host. Ignored if the gateway API does not
+    // support per-provider SSRF bypass (operator must set SSRF_ALLOW_PRIVATE_NETWORKS
+    // on the gateway instead).
+    ...(privateHost ? { ssrfAllowPrivateNetworks: true } : {}),
   });
 
   if (createRes.ok) {
@@ -136,6 +174,15 @@ export async function provisionClaudeSubscription(
       return { ok: false, reason: `Gateway reports conflict but provider not found in list` };
     }
     providerId = found.id;
+  } else if (createRes.status === 'validation' && privateHost) {
+    // 422 from gateway SSRF guard: the bridge URL resolved to a private/docker host.
+    return {
+      ok: false,
+      reason:
+        `Gateway SSRF guard blocked ${url}. ` +
+        `Set SSRF_ALLOW_PRIVATE_NETWORKS=true on the apex-gateway container to allow ` +
+        `${host} as the bridge endpoint. (${createRes.message})`,
+    };
   } else {
     return { ok: false, reason: createRes.message };
   }
