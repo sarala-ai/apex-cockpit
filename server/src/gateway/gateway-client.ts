@@ -338,6 +338,10 @@ export class GatewayClient {
     apiKey?: string;
     defaultModel?: string;
     description?: string;
+    /** Per-provider SSRF bypass for private/docker-internal hosts. Silently ignored
+     *  by gateway versions that do not support this field — use the gateway-level
+     *  SSRF_ALLOW_PRIVATE_NETWORKS env var as the fallback in that case. */
+    ssrfAllowPrivateNetworks?: boolean;
   }): Promise<GatewayWriteResult> {
     const body: Record<string, unknown> = {
       name: input.name,
@@ -348,6 +352,7 @@ export class GatewayClient {
     if (input.apiKey) body.api_key = input.apiKey;
     if (input.defaultModel) body.default_model = input.defaultModel;
     if (input.description) body.description = input.description;
+    if (input.ssrfAllowPrivateNetworks) body.ssrf_allow_private_networks = true;
 
     const res = await timedWrite(`${gatewayUrl()}/llm/providers`, { method: "POST", body: JSON.stringify(body) });
     if (!res) return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };

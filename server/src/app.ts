@@ -22,7 +22,7 @@ import { apexSetupRoutes } from "./routes/apex-setup.js";
 import { apexScopingRoutes } from "./routes/apex-scoping.js";
 import { apexSetupStateRoutes } from "./routes/apex-setup-state.js";
 import { apexSetupModelsRoutes } from "./routes/apex-setup-models.js";
-import { subscriptionBridgeRouter } from "./apex/model-access/subscription-bridge.js";
+import { subscriptionBridgeRouter, bridgeAuthMiddleware } from "./apex/model-access/subscription-bridge.js";
 import { apexObserveRoutes } from "./routes/apex-observe.js";
 import { apexGatewayObserveRoutes } from "./routes/apex-gateway-observe.js";
 import { apexWorkflowsRoutes } from "./routes/apex-workflows.js";
@@ -200,6 +200,16 @@ export async function createApp(
   }));
   app.use("/api", apiCompression());
   app.use(httpLogger);
+
+  // Subscription bridge — OpenAI-compatible shim backed by the Claude Agent SDK.
+  // Mounted BEFORE the privateHostnameGuard because /bridge/v1 is a machine-to-
+  // machine endpoint: the gateway (potentially containerised) calls it with
+  // Host: host.docker.internal, which the browser-threat-model guard would
+  // otherwise block with 403. Auth is caller-identity via APEX_BRIDGE_SECRET
+  // (a shared bearer token), not hostname-based. No session cookie or actor
+  // context is needed here — the bridge validates the gateway's bearer token only.
+  app.use("/bridge/v1", bridgeAuthMiddleware(), subscriptionBridgeRouter());
+
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
     deploymentMode: opts.deploymentMode,
     deploymentExposure: opts.deploymentExposure,
@@ -376,12 +386,6 @@ export async function createApp(
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });
   });
-
-  // Subscription bridge — OpenAI-compatible shim backed by the Claude Agent SDK.
-  // Mounted at /bridge/v1 (outside /api) so the gateway's LLM plane can reach
-  // it directly as an openai_compatible upstream provider. No auth guard: the
-  // bridge is loopback-only in local mode and the gateway is already trusted.
-  app.use("/bridge/v1", subscriptionBridgeRouter());
 
   // Cockpit MCP server — streamable-HTTP transport (APEX-35)
   app.use(mcpRoutes(db));
