@@ -1401,6 +1401,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             },
             createdAt: now,
             updatedAt: now,
+            runId: null,
+            producerKind: null,
+            producerId: null,
+            producerVersion: null,
           } satisfies CompanySkill;
           const nowIso = now.toISOString();
           const record: PluginEntityRecord = {
@@ -1471,6 +1475,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             },
             createdAt: existing.skill?.createdAt ?? now,
             updatedAt: now,
+            runId: existing.skill?.runId ?? null,
+            producerKind: existing.skill?.producerKind ?? null,
+            producerId: existing.skill?.producerId ?? null,
+            producerVersion: existing.skill?.producerVersion ?? null,
           } satisfies CompanySkill;
           const nowIso = now.toISOString();
           const existingEntity = [...entities.values()].find((entity) =>
