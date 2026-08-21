@@ -171,6 +171,14 @@ export const issuesApi = {
     api.post<{ id: string; archivedAt: Date }>(`/issues/${id}/inbox-archive`, {}),
   unarchiveFromInbox: (id: string) =>
     api.delete<{ id: string; archivedAt: Date } | { ok: true }>(`/issues/${id}/inbox-archive`),
+  intakeCheck: (companyId: string, data: { title: string; projectId?: string | null; goalId?: string | null }) =>
+    api.post<{
+      duplicates: Array<{ id: string; identifier: string | null; title: string; status: string; projectId: string | null }>;
+      projects: Array<{ id: string; name: string; goalId: string | null }>;
+      goals: Array<{ id: string; title: string }>;
+      epicCandidates: Array<{ id: string; identifier: string | null; title: string; projectId: string | null }>;
+      missing: Array<"projectId" | "goalId">;
+    }>(`/companies/${companyId}/issues/intake-check`, data),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Issue>(`/companies/${companyId}/issues`, data),
   update: (id: string, data: Record<string, unknown>) =>
