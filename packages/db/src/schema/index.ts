@@ -121,6 +121,11 @@ export {
   companySkillTestRunTemplates,
   companySkillTestRuns,
 } from "./company_skills.js";
+export {
+  companyPrompts,
+  companyPromptVersions,
+  companyPromptLabels,
+} from "./company_prompts.js";
 export { plugins } from "./plugins.js";
 export { pluginConfig } from "./plugin_config.js";
 export { pluginCompanySettings } from "./plugin_company_settings.js";
