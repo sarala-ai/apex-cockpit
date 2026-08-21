@@ -12,6 +12,7 @@ import { authApi } from "../../api/auth";
 import { executionWorkspacesApi } from "../../api/execution-workspaces";
 import { instanceSettingsApi } from "../../api/instanceSettings";
 import { issuesApi } from "../../api/issues";
+import { goalsApi } from "../../api/goals";
 import { projectsApi } from "../../api/projects";
 import { useCompany } from "../../context/CompanyContext";
 import { queryKeys } from "../../lib/queryKeys";
@@ -164,6 +165,8 @@ export function IssueProperties({
   } | null>(null);
   const [projectOpen, setProjectOpen] = useState(false);
   const [projectSearch, setProjectSearch] = useState("");
+  const [goalOpen, setGoalOpen] = useState(false);
+  const [goalSearch, setGoalSearch] = useState("");
   const [blockedByOpen, setBlockedByOpen] = useState(false);
   const [blockedBySearch, setBlockedBySearch] = useState("");
   const [blockedByExpanded, setBlockedByExpanded] = useState(false);
@@ -230,6 +233,12 @@ export function IssueProperties({
     projects: activeProjects,
     companyId,
     userId: currentUserId,
+  });
+
+  const { data: goals } = useQuery({
+    queryKey: queryKeys.goals.list(companyId!),
+    queryFn: () => goalsApi.list(companyId!),
+    enabled: !!companyId,
   });
 
   const { data: labels } = useQuery({
@@ -1668,6 +1677,66 @@ export function IssueProperties({
     </>
   );
 
+  const currentGoal = issue.goalId
+    ? (goals ?? []).find((g) => g.id === issue.goalId) ?? null
+    : null;
+  const goalTitle = currentGoal?.title ?? issue.goal?.title ?? null;
+  const goalTrigger = goalTitle ? (
+    <span className="text-sm truncate min-w-0" title={goalTitle}>{goalTitle}</span>
+  ) : (
+    <span className="text-sm text-muted-foreground">None</span>
+  );
+  const goalContent = (
+    <>
+      <input
+        className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
+        placeholder="Search goals..."
+        value={goalSearch}
+        onChange={(e) => setGoalSearch(e.target.value)}
+        autoFocus={!inline}
+        data-testid="goal-search-input"
+      />
+      <div className="max-h-48 overflow-y-auto overscroll-contain">
+        <button
+          className={cn(
+            "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+            !issue.goalId && "bg-accent",
+          )}
+          onClick={() => {
+            onUpdate({ goalId: null });
+            setGoalOpen(false);
+          }}
+        >
+          No goal
+        </button>
+        {(goals ?? [])
+          .filter((g) => {
+            if (!goalSearch.trim()) return true;
+            return g.title.toLowerCase().includes(goalSearch.toLowerCase());
+          })
+          .map((g) => (
+            <button
+              key={g.id}
+              className={cn(
+                "flex w-full items-center gap-2 px-2 py-1.5 text-left text-xs rounded hover:bg-accent/50",
+                g.id === issue.goalId && "bg-accent",
+              )}
+              onClick={() => {
+                onUpdate({ goalId: g.id });
+                setGoalOpen(false);
+              }}
+            >
+              <span className="truncate">{g.title}</span>
+              {g.id === issue.goalId && <Check className="ml-auto h-3.5 w-3.5 shrink-0 text-foreground" aria-hidden="true" />}
+            </button>
+          ))}
+        {(goals ?? []).length === 0 ? (
+          <div className="px-2 py-2 text-xs text-muted-foreground">No goals found.</div>
+        ) : null}
+      </div>
+    </>
+  );
+
   const blockedByIds = issue.blockedBy?.map((relation) => relation.id) ?? [];
   const blockedByRelations = issue.blockedBy ?? [];
   const visibleBlockedByRelations = blockedByExpanded
@@ -1977,6 +2046,19 @@ export function IssueProperties({
           ) : undefined}
         >
           {projectContent}
+        </PropertyPicker>
+
+        <PropertyPicker
+          inline={inline}
+          label="Goal"
+          open={goalOpen}
+          onOpenChange={(open) => { setGoalOpen(open); if (!open) setGoalSearch(""); }}
+          triggerContent={goalTrigger}
+          triggerClassName="min-w-0 max-w-full"
+          popoverClassName="w-72"
+          data-testid="goal-property-picker"
+        >
+          {goalContent}
         </PropertyPicker>
       </PropertySection>
 
