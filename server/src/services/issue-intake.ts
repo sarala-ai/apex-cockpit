@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { goals, issues, projects, projectGoals } from "@paperclipai/db";
 
@@ -123,7 +123,7 @@ async function findDuplicates(
         sql`lower(${issues.title}) != ${title.toLowerCase()}`,
       ),
     )
-    .orderBy(sql`match_count DESC`)
+    .orderBy(desc(matchCountExpr))
     .limit(DEDUP_CANDIDATE_LIMIT * 3); // over-fetch, then filter
 
   return rows
