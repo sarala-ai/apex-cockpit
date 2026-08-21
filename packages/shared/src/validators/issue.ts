@@ -418,6 +418,11 @@ const createIssueBaseSchema = z.object({
     agentId: z.string().uuid(),
     instructions: multilineTextSchema.optional().nullable(),
   }).strict().optional().nullable(),
+  // Agent due-diligence acknowledgment. When true, the server skips the
+  // governed-intake gate even if dedup candidates or missing fields are found.
+  // Agents must call POST /companies/:id/issues/intake-check first, review the
+  // results, and only then set this flag to confirm they've done the diligence.
+  intakeAcknowledged: z.boolean().optional(),
 });
 
 export const createIssueInputSchema = createIssueBaseSchema.extend({

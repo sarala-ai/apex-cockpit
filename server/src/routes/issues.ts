@@ -197,6 +197,7 @@ import {
   shouldLoadStepHold,
 } from "../apex/pipeline/issue-lifecycle.js";
 import { openGateApprovalIdsForCases } from "../apex/pipeline/gate-brief-facts.js";
+import { runIntakeCheck } from "../services/issue-intake.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -6998,6 +6999,24 @@ export function issueRoutes(
     res.json({ ok: true });
   });
 
+  /**
+   * Governed intake check — call before creating an issue to surface duplicates,
+   * missing project/goal, and potential epic parents. Agents must call this and
+   * set intakeAcknowledged: true on the creation request once they've reviewed
+   * the results.
+   */
+  router.post(
+    "/companies/:companyId/issues/intake-check",
+    validate(z.object({ title: z.string().min(1), projectId: z.string().uuid().optional().nullable(), goalId: z.string().uuid().optional().nullable() }).strict()),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const { title, projectId, goalId } = req.body as { title: string; projectId?: string | null; goalId?: string | null };
+      const result = await runIntakeCheck(db, companyId, title, { projectId, goalId });
+      res.json(result);
+    },
+  );
+
   router.post("/companies/:companyId/issues", applyCreateIssueStatusDefault, validate(createIssueSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -7017,7 +7036,35 @@ export function issueRoutes(
       surface: "issues.create",
     });
     if (!sanitizedBody) return;
-    const { watchdogDiscovery: rawWatchdogDiscovery, ...rawCreateBody } = sanitizedBody;
+
+    // Governed intake gate for agent-created tickets. Agents must either:
+    //   (a) have called POST .../intake-check, reviewed results, and set
+    //       intakeAcknowledged: true, OR
+    //   (b) have provided all required fields (projectId + goalId) and there
+    //       are no dedup candidates found.
+    // Watchdog follow-ups and task-bridge tickets are exempt.
+    if (
+      req.actor.type === "agent" &&
+      !sanitizedBody.intakeAcknowledged &&
+      !sanitizedBody.watchdogDiscovery
+    ) {
+      const intakeResult = await runIntakeCheck(db, companyId, sanitizedBody.title, {
+        projectId: sanitizedBody.projectId ?? null,
+        goalId: sanitizedBody.goalId ?? null,
+      });
+      const hasDuplicates = intakeResult.duplicates.length > 0;
+      if (hasDuplicates || intakeResult.missing.length > 0) {
+        res.status(422).json({
+          error: "Ticket failed governed intake due-diligence. Review the intake results and re-submit with intakeAcknowledged: true.",
+          code: "intake_required",
+          intake: intakeResult,
+        });
+        return;
+      }
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { watchdogDiscovery: rawWatchdogDiscovery, intakeAcknowledged: _intakeAck, ...rawCreateBody } = sanitizedBody;
     const watchdogDiscovery = normalizeWatchdogDiscovery(rawWatchdogDiscovery);
     const watchdogProductBugFollowUp = await resolveTaskWatchdogProductBugFollowUp(
       req,
