@@ -1,6 +1,6 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
-import { companyPrompts, companyPromptVersions, companyPromptLabels } from "@paperclipai/db";
+import { companyPrompts, companyPromptVersions, companyPromptLabels, lineageEdges } from "@paperclipai/db";
 import { and, eq, isNull, desc } from "drizzle-orm";
 import {
   companyPromptCreateSchema,
@@ -340,6 +340,9 @@ export function companyPromptRoutes(db: Db) {
         commitMessage?: string | null;
       };
 
+      const producerKind = actor.actorType === "user" ? "user" : actor.actorType === "agent" ? "agent" : null;
+      const producerId = actor.actorType === "agent" ? (actor.agentId ?? null) : actor.actorType === "user" ? null : null;
+
       const [version] = await db
         .insert(companyPromptVersions)
         .values({
@@ -351,6 +354,9 @@ export function companyPromptRoutes(db: Db) {
           commitMessage: commitMessage ?? null,
           authorUserId: actor.actorType === "user" ? actor.actorId : null,
           authorAgentId: actor.agentId ?? null,
+          runId: actor.runId ?? null,
+          producerKind,
+          producerId,
         })
         .returning();
 
@@ -358,6 +364,16 @@ export function companyPromptRoutes(db: Db) {
         .update(companyPrompts)
         .set({ currentVersionId: version!.id, updatedAt: new Date() })
         .where(eq(companyPrompts.id, promptId));
+
+      await db.insert(lineageEdges).values({
+        companyId,
+        runId: actor.runId ?? null,
+        fromKind: "prompt_version",
+        fromId: version!.id,
+        toKind: "prompt",
+        toId: promptId,
+        edgeType: "produced",
+      });
 
       res.status(201).json(version);
     },

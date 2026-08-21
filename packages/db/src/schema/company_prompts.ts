@@ -13,6 +13,7 @@ import {
 import type { CompanyPromptVariable } from "@paperclipai/shared";
 import { agents } from "./agents.js";
 import { companies } from "./companies.js";
+import { heartbeatRuns } from "./heartbeat_runs.js";
 import { sql } from "drizzle-orm";
 
 export const companyPrompts = pgTable(
@@ -52,6 +53,9 @@ export const companyPromptVersions = pgTable(
     commitMessage: text("commit_message"),
     authorUserId: text("author_user_id"),
     authorAgentId: uuid("author_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    runId: uuid("run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    producerKind: text("producer_kind"),
+    producerId: uuid("producer_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
@@ -64,6 +68,7 @@ export const companyPromptVersions = pgTable(
       table.promptId,
       table.createdAt,
     ),
+    companyRunIdx: index("company_prompt_versions_run_idx").on(table.companyId, table.runId),
   }),
 );
 
