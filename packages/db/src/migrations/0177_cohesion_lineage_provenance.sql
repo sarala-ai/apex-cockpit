@@ -5,24 +5,46 @@
 -- producer_version), and emit a LINEAGE edge. This migration materialises the
 -- cockpit DB slice of that invariant. Nothing is removed or repurposed.
 --
--- 1 · Promote issues.origin_run_id text → uuid FK.
---     Existing values were always stored as UUID strings (set by randomUUID()
---     in the application layer). The cast is safe; values that are not valid
---     UUID strings are silently coerced to NULL rather than aborting the
---     migration. The FK is added NOT VALID so it does not scan the existing
---     rows (which may reference deleted runs) — only new rows are enforced.
-alter table "issues"
-  alter column "origin_run_id" type uuid
-  using case
-    when "origin_run_id" ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-    then "origin_run_id"::uuid
-    else null
-  end;
+-- 1 · Promote issues.origin_run_id text → uuid (idempotent: guarded by column
+--     type check so re-running after the column is already uuid is a no-op).
+--
+--     IMPORTANT: origin_run_id is POLYMORPHIC. For originKind='routine_execution'
+--     the stored value is a routine_runs.id, NOT a heartbeat_runs.id. No FK is
+--     added. A soft discriminator column (origin_run_kind) is added instead,
+--     following the same pattern as lineage_edges.from_kind/from_id.
+--
+--     The regex operator (~) does not exist on uuid columns, so the USING clause
+--     must be wrapped in a DO block that is skipped when the column is already uuid.
+DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name   = 'issues'
+      AND column_name  = 'origin_run_id'
+      AND data_type    = 'text'
+  ) THEN
+    EXECUTE $q$
+      ALTER TABLE "issues"
+        ALTER COLUMN "origin_run_id" TYPE uuid
+        USING (
+          CASE
+            WHEN "origin_run_id" ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+            THEN "origin_run_id"::uuid
+            ELSE NULL
+          END
+        )
+    $q$;
+  END IF;
+END $$;
 --> statement-breakpoint
-alter table "issues"
-  add constraint "issues_origin_run_id_heartbeat_runs_id_fk"
-  foreign key ("origin_run_id") references "heartbeat_runs"("id") on delete set null
-  not valid;
+
+-- Drop the incorrect FK if it was applied by a prior (non-idempotent) run.
+ALTER TABLE "issues"
+  DROP CONSTRAINT IF EXISTS "issues_origin_run_id_heartbeat_runs_id_fk";
+--> statement-breakpoint
+
+-- Polymorphic discriminator column: 'heartbeat_run' | 'routine_run' | null.
+ALTER TABLE "issues" ADD COLUMN IF NOT EXISTS "origin_run_kind" text;
 --> statement-breakpoint
 
 -- 2 · Nullable spine + provenance columns on company_skills.
@@ -38,6 +60,7 @@ alter table "company_skills" add column if not exists "producer_version" text;
 
 -- 3 · lineage_edges — standalone derivation graph, zero changes to existing
 --     tables. Pivots cross-DB on run_id. Extends the issue_relations pattern.
+--     Each DB (cockpit only in this slice) owns its own copy; no cross-DB FKs.
 create table if not exists "lineage_edges" (
   "id" uuid primary key default gen_random_uuid(),
   "company_id" uuid not null references "companies"("id") on delete cascade,
@@ -58,11 +81,16 @@ create index if not exists "lineage_edges_company_run_idx" on "lineage_edges" ("
 --> statement-breakpoint
 
 -- 4 · eval_lessons — terminal nodes: insights extracted from evaluation runs.
+--     eval_result_id: cross-DB soft-ref (text) to the eval result that produced
+--     this lesson. verdict: the evaluator's verdict that the lesson captures.
+--     Both nullable; the cross-DB eval bridge is a later slice.
 create table if not exists "eval_lessons" (
   "id" uuid primary key default gen_random_uuid(),
   "company_id" uuid not null references "companies"("id") on delete cascade,
   "run_id" uuid references "heartbeat_runs"("id") on delete set null,
   "issue_id" uuid references "issues"("id") on delete set null,
+  "eval_result_id" text,
+  "verdict" text,
   "producer_kind" text,
   "producer_id" uuid,
   "producer_version" text,
@@ -72,6 +100,11 @@ create table if not exists "eval_lessons" (
   "created_at" timestamp with time zone not null default now(),
   "updated_at" timestamp with time zone not null default now()
 );
+--> statement-breakpoint
+-- Guard: add new columns in case table existed from a prior partial run.
+alter table "eval_lessons" add column if not exists "eval_result_id" text;
+--> statement-breakpoint
+alter table "eval_lessons" add column if not exists "verdict" text;
 --> statement-breakpoint
 create index if not exists "eval_lessons_company_run_idx" on "eval_lessons" ("company_id", "run_id");
 --> statement-breakpoint

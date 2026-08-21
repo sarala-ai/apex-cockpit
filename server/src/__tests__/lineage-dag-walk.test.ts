@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
-import { companies, createDb, lineageEdges } from "@paperclipai/db";
+import { companies, createDb, issues, lineageEdges, routineRuns, routines } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -111,5 +111,41 @@ describeEmbeddedPostgres("lineage_edges: walkable DAG via recursive CTE", () => 
     expect(backward).toHaveLength(2);
     expect(backward[0]).toMatchObject({ from_kind: "heartbeat_run", from_id: runId, depth: 0 });
     expect(backward[1]).toMatchObject({ from_kind: "issue", from_id: issueId, depth: 1 });
+  });
+
+  it("routine_execution issue: inserting with a routine_runs.id as origin_run_id succeeds (no FK error)", async () => {
+    // APEX-146 regression guard: origin_run_id is polymorphic — routine_execution
+    // issues store a routine_runs.id, NOT a heartbeat_runs.id. Adding an FK to
+    // heartbeat_runs broke routine execution with a 23503 constraint violation.
+    // This test verifies the FK is absent and the insert succeeds.
+    const [routine] = await db.insert(routines).values({
+      companyId,
+      title: "Lineage Test Routine",
+      status: "active",
+      priority: "medium",
+      concurrencyPolicy: "coalesce_if_active",
+      catchUpPolicy: "skip_missed",
+      originKind: "manual",
+    }).returning();
+
+    const [routineRun] = await db.insert(routineRuns).values({
+      companyId,
+      routineId: routine.id,
+      source: "scheduled",
+      status: "received",
+    }).returning();
+
+    // This insert must NOT throw 23503 — routine_runs.id is not a heartbeat_runs.id.
+    const [createdIssue] = await db.insert(issues).values({
+      companyId,
+      title: "Routine execution issue",
+      status: "todo",
+      originKind: "routine_execution",
+      originRunId: routineRun.id,
+      originRunKind: "routine_run",
+    }).returning();
+
+    expect(createdIssue.originRunId).toBe(routineRun.id);
+    expect(createdIssue.originRunKind).toBe("routine_run");
   });
 });

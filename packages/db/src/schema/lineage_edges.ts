@@ -6,8 +6,10 @@ import { heartbeatRuns } from "./heartbeat_runs.js";
  * Cross-entity derivation graph — one row per lineage edge.
  *
  * Keyed to `run_id` so cross-DB pivots use only the spinal `apex.run.id`.
- * Each DB (cockpit, gateway, apex-eval) owns its own copy of this table;
- * no cross-DB FKs are used. Extends the issue_relations pattern.
+ * Cockpit owns this copy. The run→eval cross-DB bridge (gateway and apex-eval
+ * copies of this table) is planned for a later slice; apex-eval does NOT have
+ * a lineage_edges table yet. No cross-DB FKs are used. Extends the
+ * issue_relations pattern.
  *
  * APEX-146 cohesion invariant: every artifact must emit ≥1 edge where
  * `to_id` = the artifact's UUID (Q3 of the evaluator seam questions).

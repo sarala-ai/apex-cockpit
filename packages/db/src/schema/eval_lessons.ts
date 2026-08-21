@@ -12,6 +12,10 @@ import { issues } from "./issues.js";
  *
  * APEX-146 cohesion invariant: each lesson must carry run_id (spine),
  * producer_* (provenance), and a lineage_edges row where to_id = lesson.id.
+ *
+ * eval_result_id is a cross-DB soft-ref (text) to the apex-eval result row
+ * that produced this lesson. verdict captures the evaluator's verdict text.
+ * Both are nullable; the live eval bridge is a later slice.
  */
 export const evalLessons = pgTable(
   "eval_lessons",
@@ -20,6 +24,8 @@ export const evalLessons = pgTable(
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     runId: uuid("run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     issueId: uuid("issue_id").references(() => issues.id, { onDelete: "set null" }),
+    evalResultId: text("eval_result_id"),
+    verdict: text("verdict"),
     producerKind: text("producer_kind"),
     producerId: uuid("producer_id"),
     producerVersion: text("producer_version"),
