@@ -58,7 +58,10 @@ export const issues = pgTable(
     identifier: text("identifier"),
     originKind: text("origin_kind").notNull().default("manual"),
     originId: text("origin_id"),
-    originRunId: text("origin_run_id"),
+    // APEX-146: promoted from text to uuid FK (migration 0176). Values were
+    // always UUID strings in application code; NOT VALID allows the FK to
+    // tolerate existing rows that reference deleted runs.
+    originRunId: uuid("origin_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     originFingerprint: text("origin_fingerprint").notNull().default("default"),
     requestDepth: integer("request_depth").notNull().default(0),
     billingCode: text("billing_code"),

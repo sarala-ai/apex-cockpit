@@ -60,6 +60,11 @@ export interface CompanySkill {
   forkCount: number;
   currentVersionId: string | null;
   metadata: Record<string, unknown> | null;
+  // APEX-146 cohesion invariant: nullable spine + provenance stamps.
+  runId: string | null;
+  producerKind: string | null;
+  producerId: string | null;
+  producerVersion: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
