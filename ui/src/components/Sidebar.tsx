@@ -24,6 +24,7 @@ import {
   Network,
   Workflow,
   Rocket,
+  BookOpen,
 } from "lucide-react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -271,6 +272,7 @@ export function Sidebar() {
         <SidebarSection label="AI Governance">
           <SidebarNavItem to="/gateway" label="Gateway" icon={Network} />
           <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
+          <SidebarNavItem to="/prompts" label="Prompts" icon={BookOpen} />
           <SidebarNavItem to="/workflows" label="Workflows" icon={Workflow} />
         </SidebarSection>
 

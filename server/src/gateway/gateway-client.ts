@@ -18,6 +18,7 @@ import type {
   GatewayAgentEntry,
   GatewayAuditEntry,
   GatewayMetrics,
+  GatewayPromptEntry,
 } from "@paperclipai/shared";
 
 const gatewayUrl = (): string =>
@@ -444,6 +445,72 @@ export class GatewayClient {
     if (res.status >= 200 && res.status < 300) return { ok: true, id, name: id };
     const body = res.body as Record<string, unknown> | null;
     const message = typeof body?.detail === "string" ? body.detail : extractMessage(res.body, `Delete model failed (${res.status})`);
+    return { ok: false, status: "error", message };
+  }
+
+  // ── Prompts registry (/prompts) ──────────────────────────────────────────
+  // The gateway's ContextForge fork ships prompt_service.py and a prompts
+  // table but the cockpit never called these endpoints. Wiring them here
+  // lets the Prompt Library page show what the gateway already knows about,
+  // so operators can adopt rather than rebuild.
+
+  /** GET /prompts — list all MCP prompts the gateway knows about. */
+  async listGatewayPrompts(): Promise<GatewayPromptEntry[]> {
+    const res = await timedFetch(`${gatewayUrl()}/prompts`);
+    if (!res) return [];
+    const raw = await res.json().catch(() => []);
+    const rows = Array.isArray(raw) ? raw : [];
+    return rows.map(
+      (p: Record<string, unknown>): GatewayPromptEntry => ({
+        id: str(p.id),
+        name: String(p.name ?? "prompt"),
+        description: str(p.description),
+        arguments: Array.isArray(p.arguments)
+          ? (p.arguments as Record<string, unknown>[]).map((a) => ({
+              name: String(a.name ?? ""),
+              description: str(a.description),
+              required: bool(a.required, false),
+            }))
+          : [],
+        enabled: bool(p.enabled, true),
+        createdAt: str(p.createdAt ?? p.created_at),
+      }),
+    );
+  }
+
+  /** POST /prompts — register a new MCP prompt in the gateway registry. */
+  async createGatewayPrompt(input: {
+    name: string;
+    description?: string | null;
+    arguments?: Array<{ name: string; description?: string | null; required?: boolean }>;
+    template?: string;
+  }): Promise<GatewayWriteResult> {
+    const body: Record<string, unknown> = {
+      name: input.name,
+      enabled: true,
+    };
+    if (input.description) body.description = input.description;
+    if (input.arguments?.length) body.arguments = input.arguments;
+    if (input.template) body.template = input.template;
+
+    const res = await timedWrite(`${gatewayUrl()}/prompts`, { method: "POST", body: JSON.stringify(body) });
+    if (!res) return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
+    if (res.status >= 200 && res.status < 300) {
+      const b = (res.body ?? {}) as Record<string, unknown>;
+      return { ok: true, id: str(b.id), name: String(b.name ?? input.name) };
+    }
+    if (res.status === 409) return { ok: false, status: "conflict", message: extractMessage(res.body, "Prompt name already exists") };
+    if (res.status === 422) return { ok: false, status: "validation", message: extractMessage(res.body, "Validation failed") };
+    return { ok: false, status: "error", message: extractMessage(res.body, `Create prompt failed (${res.status})`) };
+  }
+
+  /** DELETE /prompts/{id} — remove a prompt from the gateway registry. */
+  async deleteGatewayPrompt(id: string): Promise<GatewayWriteResult> {
+    const res = await timedWrite(`${gatewayUrl()}/prompts/${encodeURIComponent(id)}`, { method: "DELETE" });
+    if (!res) return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
+    if (res.status >= 200 && res.status < 300) return { ok: true, id, name: id };
+    const body = res.body as Record<string, unknown> | null;
+    const message = typeof body?.detail === "string" ? body.detail : extractMessage(res.body, `Delete prompt failed (${res.status})`);
     return { ok: false, status: "error", message };
   }
 }
