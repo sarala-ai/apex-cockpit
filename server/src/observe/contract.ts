@@ -89,6 +89,33 @@ export const ToolAttr = {
   success: "apex.tool.success",
 } as const;
 
+/**
+ * Provenance — producer identity carried by every artifact (APEX-146).
+ * Emitted on the artifact span and stored in the DB row. Answers Q2 of the
+ * cohesion invariant evaluator: "does the artifact carry provenance?"
+ */
+export const Provenance = {
+  producerKind: "apex.provenance.producer_kind", // 'agent' | 'user' | 'workflow'
+  producerId: "apex.provenance.producer_id",
+  producerVersion: "apex.provenance.producer_version",
+} as const;
+
+/**
+ * Lineage — derivation edge attributes (APEX-146).
+ * Written to the `lineage_edges` table and emitted as span events on the
+ * producing run. Answers Q3 of the cohesion invariant evaluator: "does the
+ * artifact emit a lineage edge?"
+ *
+ * `edgeType` values: 'derived_from' | 'amends' | 'lessons_from'
+ */
+export const LineageEdge = {
+  fromKind: "apex.lineage.from_kind",
+  fromId: "apex.lineage.from_id",
+  toKind: "apex.lineage.to_kind",
+  toId: "apex.lineage.to_id",
+  edgeType: "apex.lineage.edge_type",
+} as const;
+
 /** eval attributes. */
 export const EvalAttr = {
   scenario: "apex.eval.scenario",
