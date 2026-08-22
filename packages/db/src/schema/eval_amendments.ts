@@ -1,5 +1,6 @@
 import { index, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
+import { evalLessons } from "./eval_lessons.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
 import { issues } from "./issues.js";
 
@@ -23,8 +24,10 @@ export const evalAmendments = pgTable(
     producerKind: text("producer_kind"),
     producerId: uuid("producer_id"),
     producerVersion: text("producer_version"),
+    lessonId: uuid("lesson_id").references(() => evalLessons.id, { onDelete: "set null" }),
     subjectKind: text("subject_kind").notNull(),
     subjectId: uuid("subject_id").notNull(),
+    status: text("status").notNull().default("proposed"),
     summary: text("summary").notNull(),
     detail: text("detail"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -33,6 +36,7 @@ export const evalAmendments = pgTable(
   (table) => ({
     companyRunIdx: index("eval_amendments_company_run_idx").on(table.companyId, table.runId),
     companyIssueIdx: index("eval_amendments_company_issue_idx").on(table.companyId, table.issueId),
+    companyLessonIdx: index("eval_amendments_company_lesson_idx").on(table.companyId, table.lessonId),
     companySubjectIdx: index("eval_amendments_company_subject_idx").on(table.companyId, table.subjectKind, table.subjectId),
   }),
 );
