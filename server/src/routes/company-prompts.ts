@@ -472,6 +472,43 @@ export function companyPromptRoutes(db: Db) {
     },
   );
 
+  // GET /prompt-versions/:versionId — service-to-service read for apex-eval to
+  // resolve a judge's instruction at evaluate() time. Deliberately not company-
+  // scoped: the caller holds only the version UUID. Guarded by a shared service
+  // secret: when APEX_COCKPIT_API_KEY is set the caller must present it as a
+  // bearer token; when it is unset the route is open, for local single-process
+  // dev only (same model as the subscription bridge's APEX_BRIDGE_SECRET).
+  router.get("/prompt-versions/:versionId", async (req, res) => {
+    const serviceSecret = process.env.APEX_COCKPIT_API_KEY?.trim() || null;
+    if (serviceSecret && req.headers.authorization !== `Bearer ${serviceSecret}`) {
+      res.status(401).json({ error: "Service authorization required" });
+      return;
+    }
+
+    const versionId = req.params.versionId as string;
+
+    const [version] = await db
+      .select()
+      .from(companyPromptVersions)
+      .where(eq(companyPromptVersions.id, versionId));
+
+    if (!version) {
+      res.status(404).json({ error: "Prompt version not found" });
+      return;
+    }
+
+    res.json({
+      id: version.id,
+      promptId: version.promptId,
+      companyId: version.companyId,
+      revisionNumber: version.revisionNumber,
+      content: version.content,
+      variables: version.variables,
+      commitMessage: version.commitMessage,
+      createdAt: version.createdAt,
+    });
+  });
+
   // DELETE /companies/:companyId/prompts/:promptId/labels/:labelName
   router.delete("/companies/:companyId/prompts/:promptId/labels/:labelName", async (req, res) => {
     const companyId = req.params.companyId as string;
