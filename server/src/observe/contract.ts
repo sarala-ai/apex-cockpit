@@ -101,12 +101,21 @@ export const Provenance = {
 } as const;
 
 /**
- * Lineage — derivation edge attributes (APEX-146).
+ * Lineage — derivation edge attributes.
  * Written to the `lineage_edges` table and emitted as span events on the
  * producing run. Answers Q3 of the cohesion invariant evaluator: "does the
  * artifact emit a lineage edge?"
  *
- * `edgeType` values: 'derived_from' | 'amends' | 'lessons_from'
+ * DIRECTION: every edge points source -> derived. `from` is the artifact that
+ * came first (the cause/input); `to` is what was derived from it. So a run
+ * walks its provenance forward by chasing from->to, and answers "where did
+ * this come from?" by chasing to->from. Emitting an edge reversed strands the
+ * walk. `edgeType` names the relation from the source's side:
+ *   prompt_version --evaluated--> eval_result
+ *   eval_result    --caused_by--> eval_lesson
+ *   eval_lesson    --amends-----> eval_amendment  (read: the amendment amends in response to the lesson)
+ *   issue          --spawned----> heartbeat_run
+ *   heartbeat_run  --produced---> <artifact>
  */
 export const LineageEdge = {
   fromKind: "apex.lineage.from_kind",
