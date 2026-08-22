@@ -313,36 +313,9 @@ describe("Sidebar", () => {
     });
   });
 
-  it("hides the Goals nav item by default", async () => {
+  it("always shows the Goals nav item in the Product section", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
-      enableGoalsSidebarLink: false,
-    });
-    const root = await renderSidebar();
-
-    expect([...container.querySelectorAll("nav a")].map((a) => a.textContent?.trim())).not.toContain("Goals");
-
-    flushSync(() => {
-      root.unmount();
-    });
-  });
-
-  it("reserves the Goals nav slot while experimental settings are loading", async () => {
-    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
-    const root = await renderSidebar();
-
-    expect([...container.querySelectorAll("nav a")].map((a) => a.textContent?.trim())).not.toContain("Goals");
-    expect(container.querySelector('[data-testid="sidebar-goals-placeholder"]')).not.toBeNull();
-
-    flushSync(() => {
-      root.unmount();
-    });
-  });
-
-  it("shows the Goals nav item when the experimental setting is enabled", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIsolatedWorkspaces: false,
-      enableGoalsSidebarLink: true,
     });
     const root = await renderSidebar();
 
