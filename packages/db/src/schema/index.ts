@@ -1,16 +1,20 @@
 export { companies } from "./companies.js";
+export { orgs } from "./orgs.js";
+export { cloudScopeBindings } from "./cloud_scope_bindings.js";
 export { companyLogos } from "./company_logos.js";
 export { authUsers, authSessions, authAccounts, authVerifications } from "./auth.js";
 export { instanceSettings } from "./instance_settings.js";
 export { cloudUpstreamConnections, cloudUpstreamRuns } from "./cloud_upstreams.js";
 export { instanceUserRoles } from "./instance_user_roles.js";
 export { userSidebarPreferences } from "./user_sidebar_preferences.js";
+export { userUiPreferences } from "./user_ui_preferences.js";
 export { agents } from "./agents.js";
 export { builtInManagedResources } from "./built_in_managed_resources.js";
 export { agentMemberships } from "./agent_memberships.js";
 export { boardApiKeys } from "./board_api_keys.js";
 export { cliAuthChallenges } from "./cli_auth_challenges.js";
 export { companyMemberships } from "./company_memberships.js";
+export { orgMemberships } from "./org_memberships.js";
 export { companyUserSidebarPreferences } from "./company_user_sidebar_preferences.js";
 export { principalPermissionGrants } from "./principal_permission_grants.js";
 export { invites } from "./invites.js";
@@ -33,6 +37,7 @@ export { environmentCustomImageSetupSessions } from "./environment_custom_image_
 export { workspaceOperations } from "./workspace_operations.js";
 export { workspaceRuntimeServices } from "./workspace_runtime_services.js";
 export { projectGoals } from "./project_goals.js";
+export { resourceAttributions } from "./resource_attributions.js";
 export { goals } from "./goals.js";
 export { issues } from "./issues.js";
 export { issueWatchdogs } from "./issue_watchdogs.js";
@@ -90,6 +95,11 @@ export { heartbeatRunWatchdogDecisions } from "./heartbeat_run_watchdog_decision
 export { costEvents } from "./cost_events.js";
 export { financeEvents } from "./finance_events.js";
 export { approvals } from "./approvals.js";
+export {
+  proposals,
+  type ProposalRecordRow,
+  type ProposalMaterialization,
+} from "./proposals.js";
 export { approvalComments } from "./approval_comments.js";
 export { activityLog } from "./activity_log.js";
 export { companySecretProviderConfigs } from "./company_secret_provider_configs.js";
@@ -118,3 +128,6 @@ export { pluginDatabaseNamespaces, pluginMigrations } from "./plugin_database.js
 export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
+export { releases } from "./releases.js";
+export { releaseChanges } from "./release_changes.js";
+export { releaseArtifacts } from "./release_artifacts.js";

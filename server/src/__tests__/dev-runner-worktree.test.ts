@@ -31,6 +31,23 @@ describe("dev-runner worktree env bootstrap", () => {
     expect(isLinkedGitWorktreeCheckout(root)).toBe(true);
   });
 
+  /*
+   * A submodule's `.git` is also a file starting with `gitdir:`, so the
+   * original check classified one as a linked worktree and `pnpm dev` refused
+   * to start with "run `paperclipai worktree init`" — advice that cannot help,
+   * because a submodule has no worktree env to initialise. This cockpit IS a
+   * submodule of the sarala monorepo; the bug went unnoticed only because a
+   * long-lived dev server predated the check, and surfaced the first time the
+   * server actually had to restart.
+   */
+  it("does not mistake a git submodule for a linked worktree", () => {
+    const root = createTempRoot("paperclip-dev-runner-submodule-");
+    fs.writeFileSync(path.join(root, ".git"), "gitdir: ../../.git/modules/apex/modules/apex-cockpit\n", "utf8");
+
+    expect(isLinkedGitWorktreeCheckout(root)).toBe(false);
+    expect(bootstrapDevRunnerWorktreeEnv(root, {}).missingEnv).toBe(false);
+  });
+
   it("loads repo-local Paperclip env for initialized worktrees without overriding explicit env", () => {
     const root = createTempRoot("paperclip-dev-runner-worktree-env-");
     fs.mkdirSync(path.join(root, ".paperclip"), { recursive: true });

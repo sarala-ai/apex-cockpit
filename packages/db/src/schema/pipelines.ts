@@ -13,6 +13,14 @@ export const pipelines = pgTable(
     key: text("key").notNull(),
     name: text("name").notNull(),
     description: text("description"),
+    // Added by migration 0170_pipeline_step_kinds.sql: what a process
+    // definition itself carries (docs/architecture/execution-substrate.md
+    // §5-6). `version` and `ticketType` came off the flow YAML header — the
+    // decision brief and ticket-type-to-lifecycle lookup read them so they
+    // never have to invent a headline. `ticketType` is null for a pipeline
+    // that is not a ticket lifecycle.
+    version: text("version").notNull().default("1.0"),
+    ticketType: text("ticket_type"),
     enforceTransitions: boolean("enforce_transitions").notNull().default(false),
     createdByUserId: text("created_by_user_id"),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, { onDelete: "set null" }),

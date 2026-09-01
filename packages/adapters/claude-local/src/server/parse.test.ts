@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  parseClaudeStreamJson,
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
   isClaudeProviderQuotaError,
@@ -9,6 +10,56 @@ import {
   isClaudeUnknownSessionError,
   isClaudeImageProcessingError,
 } from "./parse.js";
+
+describe("parseClaudeStreamJson usage", () => {
+  const assistantEvent = (input: number, output: number, cached = 0) =>
+    JSON.stringify({
+      type: "assistant",
+      session_id: "s1",
+      message: {
+        usage: { input_tokens: input, output_tokens: output, cache_read_input_tokens: cached },
+        content: [{ type: "text", text: "hi" }],
+      },
+    });
+
+  it("prefers the terminal result usage when present", () => {
+    const stdout = [
+      assistantEvent(100, 10),
+      JSON.stringify({
+        type: "result",
+        session_id: "s1",
+        usage: { input_tokens: 500, output_tokens: 42, cache_read_input_tokens: 7 },
+        total_cost_usd: 0.012,
+      }),
+    ].join("\n");
+    const parsed = parseClaudeStreamJson(stdout);
+    expect(parsed.usage).toEqual({ inputTokens: 500, cachedInputTokens: 7, outputTokens: 42 });
+    expect(parsed.costUsd).toBe(0.012);
+  });
+
+  it("falls back to the per-turn aggregate when the result omits usage", () => {
+    const stdout = [
+      assistantEvent(200, 15, 3),
+      assistantEvent(350, 25, 9),
+      JSON.stringify({ type: "result", session_id: "s1", result: "done" }),
+    ].join("\n");
+    const parsed = parseClaudeStreamJson(stdout);
+    // input/cached take the last (fullest) turn; output sums across turns.
+    expect(parsed.usage).toEqual({ inputTokens: 350, cachedInputTokens: 9, outputTokens: 40 });
+  });
+
+  it("aggregates usage even when there is no terminal result event", () => {
+    const stdout = [assistantEvent(120, 8), assistantEvent(120, 12)].join("\n");
+    const parsed = parseClaudeStreamJson(stdout);
+    expect(parsed.usage).toEqual({ inputTokens: 120, cachedInputTokens: 0, outputTokens: 20 });
+  });
+
+  it("returns null usage when no token counts are present anywhere", () => {
+    const stdout = JSON.stringify({ type: "result", session_id: "s1", result: "ok" });
+    const parsed = parseClaudeStreamJson(stdout);
+    expect(parsed.usage).toEqual({ inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 });
+  });
+});
 
 describe("detectClaudeLoginRequired", () => {
   it("classifies Claude's invalid API key login prompt as auth required", () => {

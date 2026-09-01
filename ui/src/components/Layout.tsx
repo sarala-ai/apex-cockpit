@@ -465,6 +465,16 @@ export function Layout() {
     return scheduleMainContentFocus(mainContent);
   }, [location.pathname]);
 
+  // On mobile the desktop `<SidebarShell/>` (which publishes --app-sidebar-width)
+  // isn't mounted — the sidebar is an off-canvas overlay that occupies no
+  // in-flow width. Force the var to 0px so fixed chrome mounted outside the
+  // layout tree (SetupStatusBar) stays full-width on mobile, including on a
+  // direct load where SidebarShell's own unmount cleanup never ran.
+  useEffect(() => {
+    if (!isMobile || typeof document === "undefined") return;
+    document.documentElement.style.setProperty("--app-sidebar-width", "0px");
+  }, [isMobile]);
+
   // Continuously record the scroll offset of the active history entry so a
   // later back/forward navigation can restore it (see NavigationScrollMemory).
   useEffect(() => {

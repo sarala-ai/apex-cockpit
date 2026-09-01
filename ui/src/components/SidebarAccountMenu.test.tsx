@@ -16,7 +16,10 @@ const mockAuthApi = vi.hoisted(() => ({
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
 }));
-const mockToggleTheme = vi.hoisted(() => vi.fn());
+const mockApexSetupApi = vi.hoisted(() => ({
+  auth: vi.fn(),
+}));
+const mockCycleTheme = vi.hoisted(() => vi.fn());
 const mockSetSidebarOpen = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/auth", () => ({
@@ -25,6 +28,10 @@ vi.mock("@/api/auth", () => ({
 
 vi.mock("@/api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
+}));
+
+vi.mock("@/api/apex-setup", () => ({
+  apexSetupApi: mockApexSetupApi,
 }));
 
 vi.mock("../api/instanceSettings", () => ({
@@ -47,7 +54,8 @@ vi.mock("../context/SidebarContext", () => ({
 vi.mock("../context/ThemeContext", () => ({
   useTheme: () => ({
     theme: "dark",
-    toggleTheme: mockToggleTheme,
+    preference: "dark",
+    cycleTheme: mockCycleTheme,
   }),
 }));
 
@@ -84,6 +92,12 @@ describe("SidebarAccountMenu", () => {
     });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
+    });
+    // Default: no connected identity (so the authenticated-mode test keeps showing
+    // the signed-in name). The local-mode test overrides this.
+    mockApexSetupApi.auth.mockResolvedValue({
+      google: { authed: false, account: null, live: false },
+      github: { authed: false, user: null, live: false },
     });
   });
 
@@ -146,6 +160,47 @@ describe("SidebarAccountMenu", () => {
     expect(document.body.querySelector('[data-slot="popover-content"]')?.className)
       .toContain("w-(--sz-277px)");
     expect(document.body.querySelector('a[href="/company/settings/instance/profile"]')).not.toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows the connected gcloud/GitHub identity instead of the synthetic 'Board' in local mode", async () => {
+    // Local-trusted: no real signed-in name → the chip should reflect the operator's
+    // connected identity (gcloud email + GitHub handle), not "Board" / "BO".
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { id: "session-local", userId: "local-board" },
+      user: { id: "local-board", name: null, email: null, image: null },
+    });
+    mockApexSetupApi.auth.mockResolvedValue({
+      google: { authed: true, account: "coolksrini@gmail.com", live: true },
+      github: { authed: true, user: "srini", live: true },
+    });
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarAccountMenu deploymentMode="local_trusted" version="1.2.3" />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("coolksrini@gmail.com");
+    expect(container.textContent).not.toContain("Board");
+
+    // The GitHub handle surfaces in the account card's secondary line.
+    const trigger = container.querySelector('button[aria-label="Open account menu"]');
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    expect(document.body.textContent).toContain("@srini");
 
     await act(async () => {
       root.unmount();

@@ -22,12 +22,15 @@ export type BuiltInAgentStatus =
  * managed resource bundle (instructions + skill + routine). The server strips
  * file bodies to key lists; the UI only needs the identity/labels to render the
  * bundle status panel. Present only on bundle-backed built-ins (Reflection
- * Coach); flat built-ins (briefs/learning) omit it.
+ * Coach, Product Assistant); flat built-ins (briefs/learning) omit it.
+ *
+ * `skill` is optional: a bundle ships whatever managed resources its agent
+ * needs, and the Product Assistant needs instructions and a routine only.
  */
 export interface BuiltInAgentBundleMeta {
   stockVersion: string;
   instructions: { entryFile: string; files: string[] };
-  skill: {
+  skill?: {
     skillKey: string;
     displayName: string;
     slug: string;

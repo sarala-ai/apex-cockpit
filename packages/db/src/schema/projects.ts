@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, date, index, jsonb } from "drizzle-orm/pg-core";
+import { type AnyPgColumn, pgTable, uuid, text, timestamp, date, index, jsonb } from "drizzle-orm/pg-core";
 import type { AgentEnvConfig } from "@paperclipai/shared";
 import { companies } from "./companies.js";
 import { goals } from "./goals.js";
@@ -18,6 +18,12 @@ export const projects = pgTable(
     color: text("color"),
     icon: text("icon"),
     env: jsonb("env").$type<AgentEnvConfig>(),
+    // Where a folded project's work went. `folded` is the third project
+    // closure the model has always listed and the schema never had. At most one
+    // of these is set, and only on a project with status "folded" (enforced by
+    // `foldLinkIssues` on every write).
+    foldedIntoProjectId: uuid("folded_into_project_id").references((): AnyPgColumn => projects.id),
+    foldedIntoGoalId: uuid("folded_into_goal_id").references(() => goals.id),
     pauseReason: text("pause_reason"),
     pausedAt: timestamp("paused_at", { withTimezone: true }),
     executionWorkspacePolicy: jsonb("execution_workspace_policy").$type<Record<string, unknown>>(),

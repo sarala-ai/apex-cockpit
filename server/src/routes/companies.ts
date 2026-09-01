@@ -7,9 +7,14 @@ import { agents as agentsTable } from "@paperclipai/db";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
   companyArtifactsQuerySchema,
+  companyDataErasureSchema,
+  companyIssuePrefixSchema,
+  companySlugSchema,
   companyPortabilityExportSchema,
   companyPortabilityImportSchema,
   companyPortabilityPreviewSchema,
+  companySlugBreakGlassSchema,
+  companyIssuePrefixBreakGlassSchema,
   createCompanySchema,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
@@ -24,6 +29,7 @@ import {
   agentService,
   budgetService,
   companyArtifactsService,
+  companyDataErasureService,
   companyPortabilityService,
   companyService,
   feedbackService,
@@ -31,7 +37,13 @@ import {
   workTimelineService,
 } from "../services/index.js";
 import type { StorageService } from "../storage/types.js";
-import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
+import {
+  assertBoard,
+  assertCompanyAccess,
+  assertCompanyOwner,
+  assertInstanceAdmin,
+  getActorInfo,
+} from "./authz.js";
 import { COMPANY_IMPORT_ROUTE_PATH } from "./company-import-paths.js";
 
 export function companyRoutes(db: Db, storage?: StorageService) {
@@ -129,6 +141,35 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     }
     const filtered = Object.fromEntries(Object.entries(stats).filter(([companyId]) => allowed.has(companyId)));
     res.json(filtered);
+  });
+
+  // Preview of the identity (issue prefix + slug) svc.create() would allocate
+  // for ?name=, without writing anything — same authorization gate as company
+  // creation itself (POST /), since this exists purely to inform that flow.
+  // Placed ahead of "/:companyId" so it isn't swallowed as a companyId param.
+  //
+  // Optional ?prefix= / ?slug= check availability of an operator-edited value
+  // instead of the derived default (wizard dirty-field tracking) — malformed
+  // shapes are ignored here (ok as query input; the wizard already validates
+  // shape client-side against the same companyIssuePrefixSchema/
+  // companySlugSchema patterns before it would ever send one) rather than
+  // rejected, so a shape mismatch just falls back to the derived default.
+  router.get("/identity-preview", async (req, res) => {
+    assertBoard(req);
+    if (!(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)) {
+      throw forbidden("Instance admin required");
+    }
+    const name = typeof req.query.name === "string" ? req.query.name : "";
+    const prefixOverrideRaw = typeof req.query.prefix === "string" ? req.query.prefix : undefined;
+    const slugOverrideRaw = typeof req.query.slug === "string" ? req.query.slug : undefined;
+    const parsedPrefix = prefixOverrideRaw ? companyIssuePrefixSchema.safeParse(prefixOverrideRaw) : undefined;
+    const parsedSlug = slugOverrideRaw ? companySlugSchema.safeParse(slugOverrideRaw) : undefined;
+    res.json(
+      await svc.identityPreview(name, {
+        issuePrefix: parsedPrefix?.success ? parsedPrefix.data : undefined,
+        slug: parsedSlug?.success ? parsedSlug.data : undefined,
+      }),
+    );
   });
 
   // Common malformed path when companyId is empty in "/api/companies/{companyId}/issues".
@@ -523,10 +564,130 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     res.json(company);
   });
 
+  // Break-glass slug change — the one deliberate, audited escape hatch out of
+  // write-once slug immutability. Instance-admin-gated (stronger than the
+  // plain board access the normal settings routes accept), because this can
+  // silently orphan capability paths, env vars, and bound-repo config keyed
+  // on the old slug. Same POST body shape serves both calls:
+  //   - no `confirm` → 200 preview (consequences report only, no write)
+  //   - `confirm` set to the CURRENT slug → executes the change
+  router.post("/:companyId/slug-break-glass", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertInstanceAdmin(req);
+
+    const body = companySlugBreakGlassSchema.parse(req.body);
+    const actor = getActorInfo(req);
+
+    const result = await svc.breakGlassChangeSlug(companyId, body.newSlug, {
+      confirm: body.confirm,
+      actor,
+    });
+
+    if (result.preview) {
+      res.status(200).json({ preview: true, consequences: result.consequences });
+      return;
+    }
+
+    res.status(200).json({
+      preview: false,
+      company: result.company,
+      consequences: result.consequences,
+      activityId: result.activityId ?? null,
+    });
+  });
+
+  // Break-glass issue prefix change — same posture and gating as
+  // slug-break-glass above (instance-admin-gated, preview-then-confirm), but
+  // for issue prefix, which has NO normal update() path at all today. See
+  // companyService.breakGlassChangeIssuePrefix: unlike the slug this is NOT
+  // forward-only — existing issue identifiers are rewritten transactionally
+  // in the same operation, and the consequences report says so.
+  router.post("/:companyId/issue-prefix-break-glass", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertInstanceAdmin(req);
+
+    const body = companyIssuePrefixBreakGlassSchema.parse(req.body);
+    const actor = getActorInfo(req);
+
+    const result = await svc.breakGlassChangeIssuePrefix(companyId, body.newPrefix, {
+      confirm: body.confirm,
+      actor,
+    });
+
+    if (result.preview) {
+      res.status(200).json({ preview: true, consequences: result.consequences });
+      return;
+    }
+
+    res.status(200).json({
+      preview: false,
+      company: result.company,
+      consequences: result.consequences,
+      activityId: result.activityId ?? null,
+    });
+  });
+
+  // DESTRUCTIVE DATA ERASURE — one endpoint, three scopes.
+  //
+  // Three scopes rather than three routes so the safety envelope is written
+  // ONCE and cannot drift apart between them: owner gate, dry run by default,
+  // slug confirmation, one audit record, one transaction. Three near-identical
+  // routes would each be a place for one of those five to go missing.
+  //
+  //   - no `confirm`            → 200 preview, per-table counts, writes nothing
+  //   - `confirm` = the slug    → executes in one transaction
+  //   - blocked by children     → 200 with `blocked` set, writes nothing
+  //
+  // Distinct from `DELETE /:companyId` below, which removes the company itself.
+  // This leaves the company, its members and its settings standing and empties
+  // the board underneath them.
+  router.post("/:companyId/data-erasure", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyOwner(req, companyId);
+
+    const body = companyDataErasureSchema.parse(req.body ?? {});
+    const actor = getActorInfo(req);
+    const report = await companyDataErasureService(db).erase(companyId, body, {
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+    });
+    res.status(200).json(report);
+  });
+
   router.delete("/:companyId", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     assertBoard(req);
+
+    const existing = await svc.getById(companyId);
+    if (!existing) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+
+    const confirmed = parseBooleanQuery(req.query.confirm) ||
+      (req.body && typeof req.body === "object" && parseBooleanQuery((req.body as Record<string, unknown>).confirm));
+
+    const summary = await svc.getDeletionSummary(companyId);
+
+    if (!summary.isEmpty && !confirmed) {
+      // NOTE: this is a hard delete-or-block gate. Data MIGRATION/remap (e.g.
+      // reassigning issues/agents to another company, or remapping cloud scope
+      // bindings before delete) is a deferred follow-up and intentionally NOT
+      // built here — confirming delete permanently discards the substantive
+      // work counted below.
+      res.status(409).json({
+        error: "Company has existing data. Pass confirm=true to delete it anyway.",
+        requiresConfirmation: true,
+        counts: summary.counts,
+      });
+      return;
+    }
+
     const company = await svc.remove(companyId);
     if (!company) {
       res.status(404).json({ error: "Company not found" });

@@ -66,3 +66,9 @@ tests/storybook-visual/playwright-report/
 .superpowers/
 .claude/worktrees/
 .herenow
+
+# apex-tower: local APEX CLI venv installed by scripts/run-tower.sh
+.venv-apex/
+
+# standalone-install artifacts for sandbox-provider plugins
+packages/plugins/sandbox-providers/*/pnpm-lock.yaml

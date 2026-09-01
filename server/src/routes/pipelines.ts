@@ -31,6 +31,7 @@ import {
   PIPELINE_CONTEXT_PACK_EVENT_LIMIT,
   ensurePipelineCaseBodyDocumentFromSummary,
   pipelineService,
+  readActiveStepHold,
   resolvePipelineCaseConversationSource,
   type PipelineActor,
   type PipelineStageConfig,
@@ -52,6 +53,8 @@ import {
   PIPELINE_ATTENTION_MAX_LIMIT,
   type AttentionCaller,
 } from "../services/pipelines-aggregation.js";
+import { shapeStepHold } from "../apex/pipeline/step-hold.js";
+import { openGateApprovalIdsForCases } from "../apex/pipeline/gate-brief-facts.js";
 import { accessService } from "../services/access.js";
 import { authorizationService } from "../services/authorization.js";
 import { issueService } from "../services/issues.js";
@@ -64,6 +67,7 @@ import {
   PIPELINE_CASE_BODY_DOCUMENT_KEY,
   pipelineAutomationRetryRequestSchema,
   pipelineAutomationRetryScopeSchema,
+  stageEntryStepRef,
   type PipelineStageAutomation,
   type PipelineCaseLiveness,
   type PipelineHealthFailedAutomationInput,
@@ -238,7 +242,7 @@ function stageAutomationRoutineId(config: unknown) {
   const onEnter = (config as { onEnter?: unknown }).onEnter;
   if (!onEnter || typeof onEnter !== "object" || Array.isArray(onEnter)) return null;
   const record = onEnter as Record<string, unknown>;
-  return record.type === "run_routine" && typeof record.routineId === "string" ? record.routineId : null;
+  return record.type === "routine" && typeof record.routineId === "string" ? record.routineId : null;
 }
 
 function readAutomationContextValue(value: unknown): string | null {
@@ -623,13 +627,17 @@ async function listPipelineCaseDocumentRevisions(db: Db, input: { companyId: str
 
 async function resolveCasePipelineId(db: Db, input: { companyId: string; caseId: string }) {
   const row = await db
-    .select({ pipelineId: pipelineCases.pipelineId })
+    .select({ id: pipelineCases.id, pipelineId: pipelineCases.pipelineId })
     .from(pipelineCases)
     .where(and(eq(pipelineCases.companyId, input.companyId), eq(pipelineCases.id, input.caseId)))
     .limit(1)
     .then((rows) => rows[0] ?? null);
   if (!row) throw notFound("Pipeline case not found");
   return row.pipelineId;
+}
+
+function parseForceQuery(value: unknown) {
+  return value === true || value === "true" || value === "1" || value === "";
 }
 
 function activityActorForPipelineRoute(actor: PipelineActor) {
@@ -1184,6 +1192,38 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
       .where(and(eq(pipelines.id, pipelineId), eq(pipelines.companyId, companyId)))
       .returning();
     res.json(updated);
+  });
+
+  router.delete("/pipelines/:pipelineId", async (req, res) => {
+    const pipelineId = req.params.pipelineId as string;
+    const companyId = await assertPipelineAccess(db, req, pipelineId);
+    await assertPipelineWriteAccess(req, { access, companyId, pipelineId });
+    const actor = actorForMutation(req);
+    const result = await svc.deletePipeline({
+      companyId,
+      pipelineId,
+      force: parseForceQuery(req.query.force),
+      actor,
+    });
+    await logActivity(db, {
+      companyId,
+      ...activityActorForPipelineRoute(actor),
+      action: "pipeline.deleted",
+      entityType: "pipeline",
+      entityId: pipelineId,
+      details: {
+        name: result.pipeline.name,
+        deletedCaseCount: result.deletedCaseCount,
+        deletedStageCount: result.deletedStageCount,
+        forcedNonTerminalCaseCount: result.forcedNonTerminalCaseCount,
+      },
+    });
+    res.json({
+      deleted: true,
+      pipelineId,
+      deletedCaseCount: result.deletedCaseCount,
+      deletedStageCount: result.deletedStageCount,
+    });
   });
 
   router.post("/pipelines/:pipelineId/stages", validate(createStageSchema), async (req, res) => {
@@ -1924,6 +1964,43 @@ export function pipelineRoutes(db: Db, options: Parameters<typeof pipelineServic
     res.json(updated);
   });
 
+  router.delete("/cases/:caseId", async (req, res) => {
+    const caseId = req.params.caseId as string;
+    const companyId = await assertCaseAccess(db, req, caseId);
+    const owningCase = await db
+      .select({ pipelineId: pipelineCases.pipelineId })
+      .from(pipelineCases)
+      .where(and(eq(pipelineCases.id, caseId), eq(pipelineCases.companyId, companyId)))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!owningCase) throw notFound("Pipeline case not found");
+    await assertPipelineWriteAccess(req, {
+      access,
+      companyId,
+      pipelineId: owningCase.pipelineId,
+    });
+    const actor = actorForMutation(req);
+    const result = await svc.deleteCase({
+      companyId,
+      caseId,
+      force: parseForceQuery(req.query.force),
+      actor,
+    });
+    await logActivity(db, {
+      companyId,
+      ...activityActorForPipelineRoute(actor),
+      action: "pipeline.case_deleted",
+      entityType: "pipeline_case",
+      entityId: caseId,
+      details: {
+        pipelineId: owningCase.pipelineId,
+        caseKey: result.case.caseKey,
+        deletedCaseCount: result.deletedCaseCount,
+      },
+    });
+    res.json({ deleted: true, caseId, deletedCaseCount: result.deletedCaseCount });
+  });
+
   router.post("/cases/:caseId/claim", validate(claimCaseSchema), async (req, res) => {
     const caseId = req.params.caseId as string;
     const companyId = await assertCaseAccess(db, req, caseId);
@@ -2345,16 +2422,32 @@ async function getCaseDetail(db: Db, companyId: string, caseId: string) {
     builtFromAutomation,
     parentCase,
     pendingSuggestion: row.case.pendingSuggestion,
+    /**
+     * The OPEN decision's approval id, when this item is sitting at one.
+     *
+     * The item page's review panel used to offer three buttons and the stage
+     * name, with nothing about what was being decided. The DECISION BRIEF is
+     * served by approval id, and this is how the panel gets one — read the
+     * same way the ticket reads it, so the two surfaces cannot show two
+     * different briefs for the same decision.
+     */
+    gateApprovalId:
+      row.stage.kind === "review" && row.case.terminalKind === null
+        ? (await openGateApprovalIdsForCases(db, companyId, [caseId])).get(caseId) ?? null
+        : null,
   };
 }
 
+/**
+ * The ledger id of this stage's entry step, whatever kind it is.
+ *
+ * Used to resolve an execution row back to the stage that produced it. Reading
+ * routines only meant a `run` or `agent` execution could never be matched to
+ * its stage, so the surface that reports where a case came from reported
+ * nothing about two thirds of the step kinds.
+ */
 function stageAutomationId(stage: typeof pipelineStages.$inferSelect) {
-  const config = stage.config && typeof stage.config === "object" && !Array.isArray(stage.config)
-    ? stage.config as PipelineStageConfig
-    : null;
-  const onEnter = config?.onEnter;
-  if (!onEnter || onEnter.type !== "run_routine" || !onEnter.routineId) return null;
-  return typeof onEnter.id === "string" ? onEnter.id : `${stage.id}:on_enter`;
+  return stageEntryStepRef(stage.config, stage.id)?.id ?? null;
 }
 
 async function loadBuiltFromAutomation(
@@ -2467,17 +2560,21 @@ function stageHasChildrenTerminalGate(config: unknown) {
     (typeof record.autoAdvanceOnChildrenTerminal === "string" && record.autoAdvanceOnChildrenTerminal.trim().length > 0);
 }
 
+/** Second spelling of the same question, kept only because two call sites
+ *  below read it; both now get the same three-kind answer. */
 function readStageAutomationId(stage: typeof pipelineStages.$inferSelect) {
-  if (!stage.config || typeof stage.config !== "object" || Array.isArray(stage.config)) return null;
-  const onEnterValue = (stage.config as Record<string, unknown>).onEnter;
-  if (!onEnterValue || typeof onEnterValue !== "object" || Array.isArray(onEnterValue)) return null;
-  const onEnter = onEnterValue as Record<string, unknown>;
-  const rawId = typeof onEnter.id === "string" ? onEnter.id.trim() : "";
-  const routineId = typeof onEnter.routineId === "string" ? onEnter.routineId.trim() : "";
-  if (onEnter.type !== "run_routine" || routineId.length === 0) return null;
-  return rawId.length > 0 ? rawId : `${stage.id}:on_enter`;
+  return stageEntryStepRef(stage.config, stage.id)?.id ?? null;
 }
 
+/**
+ * The pipeline a stage's entry step will WRITE INTO, when it declares one.
+ *
+ * This guards a cross-pipeline write: if a step breaks work down into another
+ * pipeline, the caller must have write access to that pipeline too. Gating it
+ * on "is this a routine?" meant a `run` or `agent` step with a breakdown
+ * target returned null here, the assertion below returned early, and the check
+ * was skipped — an authorization hole rather than a cosmetic one.
+ */
 function readStageAutomationTargetPipelineId(stage: typeof pipelineStages.$inferSelect) {
   if (!readStageAutomationId(stage)) return null;
   const breakdown = readStageBreakdownConfig(stage.config);
@@ -2571,6 +2668,36 @@ async function latestBreakdownCreatedEvent(db: Db, companyId: string, caseId: st
     .then((rows) => rows[0] ?? null);
 }
 
+/**
+ * The liveness payload for a step that stopped.
+ *
+ * `state: "attention"` rather than `"blocked"` on purpose: "blocked" in this
+ * union means waiting on something else to finish, and a hold is not waiting
+ * on anything. It is waiting on a PERSON, which is the whole point of
+ * surfacing it. The `message` is the server's own recorded sentence; the
+ * client supplies the surrounding words and the "what to do" line.
+ */
+function stepHeldLiveness(
+  hold: NonNullable<PipelineCaseLiveness["hold"]>,
+  automation: typeof pipelineAutomationExecutions.$inferSelect | null,
+): PipelineCaseLiveness {
+  return {
+    state: "attention",
+    reason: "step_held",
+    message: hold.message ?? "This step stopped and the process cannot move on until it is dealt with.",
+    hold,
+    automation: automation
+      ? {
+        automationId: automation.automationId,
+        routineId: automation.routineId,
+        executionId: automation.id,
+        error: automation.error,
+        fingerprint: null,
+      }
+      : null,
+  };
+}
+
 async function derivePipelineCaseLiveness(
   db: Db,
   companyId: string,
@@ -2589,6 +2716,21 @@ async function derivePipelineCaseLiveness(
       state: "live",
       reason: "lease_active",
       message: "Pipeline item has an active lease.",
+    };
+  }
+
+  // A COMMISSIONED AGENT STEP IS RUNNING. Reported before anything else that
+  // could look like trouble, and it is the reason a re-run is refused rather
+  // than merely discouraged: a step parked at `waiting_agent` has a live
+  // commission against it, and starting a second one would put two agents on
+  // the same work. It also outranks the hold below, so a re-run of a failed
+  // step stops shouting the moment the fresh run starts and only shouts again
+  // if that one fails too.
+  if (row.case.stepStatus === "waiting_agent") {
+    return {
+      state: "live",
+      reason: "step_running",
+      message: "An agent is working on this step now.",
     };
   }
 
@@ -2681,6 +2823,19 @@ async function derivePipelineCaseLiveness(
     };
   }
 
+  // THE HOLD. Read before the automation ledger because it is the fact that
+  // actually stops the case: `assertStageTransitionGates` refuses every
+  // transition out of this step while it stands, and it carries the recorded
+  // sentence about what went wrong. The ledger's own failure state says only
+  // "an automation failed", and for an agent step recovered by the sweep there
+  // may be no failed ledger at all — which is exactly how a held case used to
+  // fall all the way through to `no_action_path` ("This item is stuck") and
+  // tell a person nothing.
+  const stepHold = shapeStepHold(
+    await readActiveStepHold(db, row.case, row.stage),
+    { stageName: row.stage.name },
+  );
+
   const latestAutomation = await db
     .select()
     .from(pipelineAutomationExecutions)
@@ -2723,6 +2878,11 @@ async function derivePipelineCaseLiveness(
         };
       }
     }
+    // A missing permission has its own recovery path (grant, then automatic
+    // retry) and must keep precedence. Anything else: if the step also
+    // recorded a hold, the hold's message is the specific one and wins over
+    // the ledger's generic "automation failed".
+    if (!fingerprint && stepHold) return stepHeldLiveness(stepHold, latestAutomation);
     return {
       state: fingerprint ? "blocked" : "attention",
       reason: fingerprint ? "permission_preflight_failed" : "automation_failed",
@@ -2738,6 +2898,8 @@ async function derivePipelineCaseLiveness(
       },
     };
   }
+
+  if (stepHold) return stepHeldLiveness(stepHold, null);
 
   const breakdownConfig = readStageBreakdownConfig(row.stage.config);
   if (breakdownConfig) {

@@ -5,13 +5,14 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeToggle } from "./ThemeToggle";
 
-const mockToggleTheme = vi.hoisted(() => vi.fn());
-const mockTheme = vi.hoisted(() => ({ value: "dark" as "dark" | "light" }));
+const mockCycleTheme = vi.hoisted(() => vi.fn());
+const mockPreference = vi.hoisted(() => ({ value: "dark" as "dark" | "light" | "system" }));
 
 vi.mock("../context/ThemeContext", () => ({
   useTheme: () => ({
-    theme: mockTheme.value,
-    toggleTheme: mockToggleTheme,
+    theme: mockPreference.value === "light" ? "light" : "dark",
+    preference: mockPreference.value,
+    cycleTheme: mockCycleTheme,
   }),
 }));
 
@@ -30,7 +31,7 @@ describe("ThemeToggle", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
-    mockTheme.value = "dark";
+    mockPreference.value = "dark";
   });
 
   afterEach(() => {
@@ -39,7 +40,7 @@ describe("ThemeToggle", () => {
     vi.clearAllMocks();
   });
 
-  it("renders an icon button by default with the 'switch to light' label when current theme is dark", async () => {
+  it("renders an icon button by default labelled with the next step in the cycle (dark → system)", async () => {
     const root = createRoot(container);
     await act(async () => {
       root.render(<ThemeToggle />);
@@ -48,31 +49,31 @@ describe("ThemeToggle", () => {
 
     const button = container.querySelector("button");
     expect(button).not.toBeNull();
-    expect(button?.getAttribute("aria-label")).toBe("Switch to light mode");
-    expect(button?.getAttribute("title")).toBe("Switch to light mode");
+    expect(button?.getAttribute("aria-label")).toBe("Switch to system theme");
+    expect(button?.getAttribute("title")).toBe("Switch to system theme");
 
     await act(async () => {
       button?.click();
     });
-    expect(mockToggleTheme).toHaveBeenCalledTimes(1);
+    expect(mockCycleTheme).toHaveBeenCalledTimes(1);
 
     await act(async () => root.unmount());
   });
 
-  it("renders a menu-action row when variant='menu-action' and includes the description text", async () => {
+  it("renders a menu-action row when variant='menu-action' showing the current mode", async () => {
     const root = createRoot(container);
     await act(async () => {
       root.render(<ThemeToggle variant="menu-action" />);
     });
     await flushReact();
 
-    expect(container.textContent).toContain("Switch to light mode");
-    expect(container.textContent).toContain("Toggle the app appearance.");
+    expect(container.textContent).toContain("Switch to system theme");
+    expect(container.textContent).toContain("Theme is dark.");
 
     await act(async () => root.unmount());
   });
 
-  it("calls onAfterToggle after toggling (used by SidebarAccountMenu to close the popover)", async () => {
+  it("calls onAfterToggle after cycling (used by SidebarAccountMenu to close the popover)", async () => {
     const onAfterToggle = vi.fn();
     const root = createRoot(container);
     await act(async () => {
@@ -85,22 +86,31 @@ describe("ThemeToggle", () => {
       button?.click();
     });
 
-    expect(mockToggleTheme).toHaveBeenCalledTimes(1);
+    expect(mockCycleTheme).toHaveBeenCalledTimes(1);
     expect(onAfterToggle).toHaveBeenCalledTimes(1);
 
     await act(async () => root.unmount());
   });
 
-  it("flips label and icon when current theme is light", async () => {
-    mockTheme.value = "light";
+  it("labels each preference with its next step in the cycle", async () => {
+    mockPreference.value = "light";
     const root = createRoot(container);
     await act(async () => {
       root.render(<ThemeToggle />);
     });
     await flushReact();
 
-    const button = container.querySelector("button");
-    expect(button?.getAttribute("aria-label")).toBe("Switch to dark mode");
+    let button = container.querySelector("button");
+    expect(button?.getAttribute("aria-label")).toBe("Switch to dark theme");
+
+    mockPreference.value = "system";
+    await act(async () => {
+      root.render(<ThemeToggle />);
+    });
+    await flushReact();
+
+    button = container.querySelector("button");
+    expect(button?.getAttribute("aria-label")).toBe("Switch to light theme");
 
     await act(async () => root.unmount());
   });

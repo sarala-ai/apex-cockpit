@@ -28,6 +28,7 @@ import {
   ISSUE_WATCHDOG_DISCOVERY_KINDS,
   MODEL_PROFILE_KEYS,
   REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT,
+  TICKET_TYPES,
 } from "../constants.js";
 import { multilineTextSchema } from "./text.js";
 import { lowTrustReviewPresetPolicySchema, trustAuthorizationPolicySchema } from "./trust-policy.js";
@@ -383,8 +384,18 @@ const createIssueBaseSchema = z.object({
   inheritExecutionWorkspaceFromIssueId: z.string().uuid().optional().nullable(),
   title: z.string().min(1),
   description: multilineTextSchema.optional().nullable(),
+  // The machine half of a ticket — ids, payload shapes, exact commands. Kept
+  // out of `description` so the human body stays readable; delivered to the
+  // agent unchanged via its task context.
+  agentBrief: multilineTextSchema.optional().nullable(),
   status: z.enum(ISSUE_STATUSES),
   workMode: z.enum(ISSUE_WORK_MODES).optional().default("standard"),
+  // WHAT KIND OF WORK, and therefore WHICH LIFECYCLE. Optional and never
+  // defaulted: a ticket filed without a declared type has no type, which is a
+  // different (and honest) statement from "it is a chore". The route turns a
+  // declared type into a pipeline case by looking up the pipeline whose
+  // `ticketType` matches — see server/src/apex/pipeline/ticket-lifecycle.ts.
+  ticketType: z.enum(TICKET_TYPES).optional().nullable(),
   harnessKind: z.enum(ISSUE_HARNESS_KINDS).optional().nullable(),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
   assigneeAgentId: z.string().uuid().optional().nullable(),

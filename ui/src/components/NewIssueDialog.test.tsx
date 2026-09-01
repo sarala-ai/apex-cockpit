@@ -49,7 +49,45 @@ const mockIssuesApi = vi.hoisted(() => ({
   create: vi.fn(),
   upsertDocument: vi.fn(),
   uploadAttachment: vi.fn(),
+  ticketTypes: vi.fn(),
 }));
+
+/** The four types as the live board serves them: three seeded processes, and
+ *  chore reported as processless BY DESIGN rather than simply absent. */
+const TICKET_TYPE_OPTIONS = [
+  {
+    ticketType: "chore",
+    pipelineId: null,
+    pipelineKey: null,
+    pipelineName: null,
+    processlessByDesign: true,
+    commissionsRepoWritingAgent: false,
+  },
+  {
+    ticketType: "bug",
+    pipelineId: "pipeline-bug",
+    pipelineKey: "bug",
+    pipelineName: "Bug",
+    processlessByDesign: false,
+    commissionsRepoWritingAgent: true,
+  },
+  {
+    ticketType: "design-change",
+    pipelineId: "pipeline-design",
+    pipelineKey: "design-change",
+    pipelineName: "Design change",
+    processlessByDesign: false,
+    commissionsRepoWritingAgent: true,
+  },
+  {
+    ticketType: "feature",
+    pipelineId: "pipeline-feature",
+    pipelineKey: "feature",
+    pipelineName: "Feature",
+    processlessByDesign: false,
+    commissionsRepoWritingAgent: true,
+  },
+];
 
 const mockExecutionWorkspacesApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -338,6 +376,8 @@ describe("NewIssueDialog", () => {
     mockIssuesApi.create.mockReset();
     mockIssuesApi.upsertDocument.mockReset();
     mockIssuesApi.uploadAttachment.mockReset();
+    mockIssuesApi.ticketTypes.mockReset();
+    mockIssuesApi.ticketTypes.mockResolvedValue(TICKET_TYPE_OPTIONS);
     mockExecutionWorkspacesApi.list.mockReset();
     mockExecutionWorkspacesApi.listSummaries.mockReset();
     mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([]);
@@ -1313,5 +1353,527 @@ describe("NewIssueDialog", () => {
 
       act(() => root.unmount());
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // GAP 1 — a ticket can now enter a lifecycle.
+  // -------------------------------------------------------------------------
+  describe("ticket type", () => {
+    function typeOptionButton(ticketType: string) {
+      return container.querySelector<HTMLButtonElement>(
+        `[data-issue-ticket-type-option="${ticketType}"]`,
+      );
+    }
+
+    it("offers every type the board serves, plus an explicit no-type", async () => {
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        expect(typeOptionButton("bug")).not.toBeNull();
+      });
+
+      expect(typeOptionButton("none")?.textContent).toContain("No type");
+      expect(typeOptionButton("chore")?.textContent).toContain("Chore");
+      expect(typeOptionButton("bug")?.textContent).toContain("Bug");
+      expect(typeOptionButton("design-change")?.textContent).toContain("Design change");
+      expect(typeOptionButton("feature")?.textContent).toContain("Feature");
+
+      act(() => root.unmount());
+    });
+
+    it("defaults to NO type — it never guesses a process for you", async () => {
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        expect(typeOptionButton("bug")).not.toBeNull();
+      });
+
+      expect(
+        container.querySelector("[data-testid='new-issue-ticket-type-chip']")
+          ?.getAttribute("data-issue-ticket-type"),
+      ).toBe("none");
+
+      act(() => root.unmount());
+    });
+
+    it("names the process a type runs, and says chore has none BY DESIGN", async () => {
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        expect(typeOptionButton("bug")).not.toBeNull();
+      });
+
+      expect(typeOptionButton("bug")?.textContent).toContain("Runs the Bug process");
+      // The honest handling of chore: shown, selectable, and truthful.
+      expect(typeOptionButton("chore")?.textContent).toContain("No process, by design");
+      expect(typeOptionButton("chore")?.textContent).toContain("never enters a pipeline");
+
+      act(() => root.unmount());
+    });
+
+    it("distinguishes a type whose pipeline is merely missing from chore", async () => {
+      mockIssuesApi.ticketTypes.mockResolvedValue([
+        { ...TICKET_TYPE_OPTIONS[0] },
+        {
+          ticketType: "bug",
+          pipelineId: null,
+          pipelineKey: null,
+          pipelineName: null,
+          processlessByDesign: false,
+          commissionsRepoWritingAgent: false,
+        },
+      ]);
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        expect(typeOptionButton("bug")).not.toBeNull();
+      });
+
+      expect(typeOptionButton("bug")?.textContent).toContain("No process on this board yet");
+      expect(typeOptionButton("bug")?.textContent).not.toContain("by design");
+
+      act(() => root.unmount());
+    });
+
+    it("sends the chosen type so the server can start the process", async () => {
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        expect(typeOptionButton("chore")).not.toBeNull();
+      });
+
+      await act(async () => {
+        typeOptionButton("chore")!.click();
+      });
+      await flush();
+
+      const title = container.querySelector<HTMLTextAreaElement>("textarea[placeholder='Task title']")!;
+      await typeTextareaValue(title, "Rotate the deploy key");
+      await act(async () => {
+        [...container.querySelectorAll("button")]
+          .find((button) => button.textContent?.includes("Create Task"))!
+          .click();
+      });
+      await flush();
+
+      await waitForAssertion(() => {
+        expect(mockIssuesApi.create).toHaveBeenCalled();
+      });
+      expect(mockIssuesApi.create.mock.calls[0]![1]).toMatchObject({ ticketType: "chore" });
+
+      act(() => root.unmount());
+    });
+
+    it("omits ticketType entirely when the author declared none", async () => {
+      const { root } = renderDialog(container);
+      await flush();
+
+      const title = container.querySelector<HTMLTextAreaElement>("textarea[placeholder='Task title']")!;
+      await typeTextareaValue(title, "A question");
+      await act(async () => {
+        [...container.querySelectorAll("button")]
+          .find((button) => button.textContent?.includes("Create Task"))!
+          .click();
+      });
+      await flush();
+
+      await waitForAssertion(() => {
+        expect(mockIssuesApi.create).toHaveBeenCalled();
+      });
+      // Absent, not "chore". An undeclared type is its own fact.
+      expect(mockIssuesApi.create.mock.calls[0]![1]).not.toHaveProperty("ticketType");
+
+      act(() => root.unmount());
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // GAP 2 — a ticket cannot silently have no codebase.
+  // -------------------------------------------------------------------------
+  describe("codebase preflight", () => {
+    const implementer = {
+      id: "agent-implementer",
+      name: "Implementer",
+      role: "engineering",
+      title: "Implementer",
+      icon: "wrench",
+      adapterType: "claude_local",
+      adapterConfig: {
+        dangerouslySkipPermissions: false,
+        allowedTools: "Read Edit Write Bash Glob Grep",
+      },
+      permissions: {},
+    };
+    const specifier = {
+      ...implementer,
+      id: "agent-specifier",
+      name: "Specifier",
+      adapterConfig: {
+        dangerouslySkipPermissions: false,
+        allowedTools: "AskUserQuestion Glob Grep Monitor Read TaskOutput TaskStop ToolSearch",
+      },
+    };
+
+    function missingNote() {
+      return container.querySelector("[data-testid='new-issue-codebase-missing-note']");
+    }
+    function createButton() {
+      return [...container.querySelectorAll("button")]
+        .find((button) => button.textContent?.includes("Create Task")) as HTMLButtonElement;
+    }
+
+    it("warns and REFUSES when a repo-writing assignee has no codebase", async () => {
+      mockAgentsApi.list.mockResolvedValue([implementer]);
+      mockProjectsApi.list.mockResolvedValue([]);
+      dialogState.newIssueDefaults = { assigneeAgentId: "agent-implementer", title: "Fix it" };
+
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        expect(missingNote()).not.toBeNull();
+      });
+
+      expect(missingNote()!.getAttribute("data-codebase-blocking")).toBe("true");
+      expect(missingNote()!.textContent).toContain("Implementer needs a codebase");
+      expect(missingNote()!.textContent).toContain("Pick a project with a repository");
+      expect(createButton().disabled).toBe(true);
+
+      act(() => root.unmount());
+    });
+
+    it("warns without refusing when the ticket is parked in backlog", async () => {
+      mockAgentsApi.list.mockResolvedValue([implementer]);
+      mockProjectsApi.list.mockResolvedValue([]);
+      dialogState.newIssueDefaults = {
+        assigneeAgentId: "agent-implementer",
+        title: "Fix it later",
+        status: "backlog",
+      };
+
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        expect(missingNote()).not.toBeNull();
+      });
+
+      expect(missingNote()!.getAttribute("data-codebase-blocking")).toBe("false");
+      expect(missingNote()!.textContent).toContain("parked in Backlog");
+      expect(createButton().disabled).toBe(false);
+
+      act(() => root.unmount());
+    });
+
+    it("says nothing about a read-only assignee — project stays optional", async () => {
+      mockAgentsApi.list.mockResolvedValue([specifier]);
+      mockProjectsApi.list.mockResolvedValue([]);
+      dialogState.newIssueDefaults = { assigneeAgentId: "agent-specifier", title: "Draft the spec" };
+
+      const { root } = renderDialog(container);
+      await flush();
+      await flush();
+
+      expect(missingNote()).toBeNull();
+      expect(createButton().disabled).toBe(false);
+
+      act(() => root.unmount());
+    });
+
+    it("defaults to the single repo-bound project and SAYS it defaulted", async () => {
+      mockAgentsApi.list.mockResolvedValue([implementer]);
+      mockProjectsApi.list.mockResolvedValue([
+        {
+          id: "project-1",
+          name: "APEX Cockpit",
+          description: null,
+          archivedAt: null,
+          color: "#445566",
+          codebase: { repoUrl: "sarala-ai/apex-cockpit" },
+        },
+        {
+          id: "project-2",
+          name: "Notes",
+          description: null,
+          archivedAt: null,
+          color: "#112233",
+          codebase: { repoUrl: null },
+        },
+      ]);
+      dialogState.newIssueDefaults = { assigneeAgentId: "agent-implementer", title: "Fix it" };
+
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        expect(
+          container.querySelector("[data-testid='new-issue-codebase-defaulted-note']"),
+        ).not.toBeNull();
+      });
+
+      const note = container.querySelector("[data-testid='new-issue-codebase-defaulted-note']")!;
+      expect(note.textContent).toContain("APEX Cockpit");
+      expect(note.textContent).toContain("the only project with a repository bound");
+      expect(missingNote()).toBeNull();
+      expect(createButton().disabled).toBe(false);
+
+      act(() => root.unmount());
+    });
+
+    it("refuses to guess between two repo-bound projects", async () => {
+      mockAgentsApi.list.mockResolvedValue([implementer]);
+      mockProjectsApi.list.mockResolvedValue([
+        {
+          id: "project-1",
+          name: "APEX Cockpit",
+          archivedAt: null,
+          description: null,
+          color: "#445566",
+          codebase: { repoUrl: "sarala-ai/apex-cockpit" },
+        },
+        {
+          id: "project-2",
+          name: "Bloom",
+          archivedAt: null,
+          description: null,
+          color: "#112233",
+          codebase: { repoUrl: "sarala-ai/bloom" },
+        },
+      ]);
+      dialogState.newIssueDefaults = { assigneeAgentId: "agent-implementer", title: "Fix it" };
+
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        expect(missingNote()).not.toBeNull();
+      });
+
+      expect(container.querySelector("[data-testid='new-issue-codebase-defaulted-note']")).toBeNull();
+      expect(createButton().disabled).toBe(true);
+
+      act(() => root.unmount());
+    });
+
+    it("fires on the LIFECYCLE even with no assignee at all", async () => {
+      mockAgentsApi.list.mockResolvedValue([]);
+      mockProjectsApi.list.mockResolvedValue([]);
+
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        expect(
+          container.querySelector<HTMLButtonElement>("[data-issue-ticket-type-option='bug']"),
+        ).not.toBeNull();
+      });
+
+      await act(async () => {
+        container
+          .querySelector<HTMLButtonElement>("[data-issue-ticket-type-option='bug']")!
+          .click();
+      });
+      await flush();
+
+      await waitForAssertion(() => {
+        expect(missingNote()).not.toBeNull();
+      });
+      expect(missingNote()!.textContent).toContain("Bug process");
+
+      act(() => root.unmount());
+    });
+
+    it("says nothing for a chore, which commissions nobody", async () => {
+      mockAgentsApi.list.mockResolvedValue([]);
+      mockProjectsApi.list.mockResolvedValue([]);
+
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        expect(
+          container.querySelector<HTMLButtonElement>("[data-issue-ticket-type-option='chore']"),
+        ).not.toBeNull();
+      });
+
+      await act(async () => {
+        container
+          .querySelector<HTMLButtonElement>("[data-issue-ticket-type-option='chore']")!
+          .click();
+      });
+      await flush();
+
+      expect(missingNote()).toBeNull();
+
+      act(() => root.unmount());
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // GAP 3 — the mode chip cannot be read as an assignee picker.
+  // -------------------------------------------------------------------------
+  describe("work mode is labelled as a mode", () => {
+    it("prefixes the chip so 'Agent' cannot be read as an assignee", async () => {
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        expect(container.querySelector("[data-issue-work-mode-chip]")).not.toBeNull();
+      });
+
+      const chip = container.querySelector("[data-issue-work-mode-chip]")!;
+      expect(chip.textContent).toContain("Mode:");
+      expect(chip.textContent).toContain("Agent");
+      expect(chip.getAttribute("aria-label")).toContain("Work mode");
+      expect(chip.getAttribute("aria-label")).toContain("assignee itself is set above");
+
+      act(() => root.unmount());
+    });
+
+    it("says in the menu itself where the assignee is chosen", async () => {
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        expect(container.textContent).toContain("Work mode");
+      });
+
+      expect(container.textContent).toContain("How the assignee works");
+
+      act(() => root.unmount());
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // APEX-71 — controlled inputs survive re-layout / init re-run
+  // The root cause: IssueDescriptionEditor kept a local draftValue and a
+  // useEffect that re-synced it from the parent prop.  When the initialization
+  // effect re-ran (new initializationKey) it called setIssueText("...", ""),
+  // changing the description prop from the draft text back to "".  The sync
+  // effect then cleared draftValue, so the textarea went visually blank even
+  // though descriptionRef still held the user's text.
+  // -------------------------------------------------------------------------
+  it("preserves user-typed description visually after a dialog context re-initialization", async () => {
+    // Pre-load a draft so the description editor starts with non-empty text.
+    localStorage.setItem(
+      "paperclip:issue-draft",
+      JSON.stringify({
+        title: "Saved draft title",
+        description: "Saved draft description",
+        status: "todo",
+        priority: "",
+        assigneeValue: "",
+        reviewerValue: "",
+        approverValue: "",
+        projectId: "",
+        assigneeModelOverride: "",
+        assigneeThinkingEffort: "",
+        assigneeChrome: false,
+        workMode: "standard",
+      }),
+    );
+
+    const { root, queryClient } = renderDialog(container);
+    await flush();
+
+    const descriptionInput = container.querySelector(
+      'textarea[aria-label="Add description..."]',
+    ) as HTMLTextAreaElement | null;
+    expect(descriptionInput).not.toBeNull();
+
+    // The draft description should appear in the editor on open.
+    await waitForAssertion(() => {
+      expect(descriptionInput!.value).toBe("Saved draft description");
+    });
+
+    // User edits the description.
+    await typeTextareaValue(descriptionInput!, "User edited the description");
+
+    // User types a long title — simulating the title-wrap scenario that triggers
+    // re-renders in the real browser.
+    const titleInput = container.querySelector(
+      'textarea[placeholder="Task title"]',
+    ) as HTMLTextAreaElement | null;
+    await typeTextareaValue(
+      titleInput!,
+      "A title long enough that it would wrap across two lines in the modal",
+    );
+
+    // Simulate a dialog-context update that changes the initialization key
+    // (e.g. anchor scroll in the real app can push new newIssueDefaults).
+    // This causes the initialization effect to re-run and call setIssueText
+    // with a fresh empty description, which previously cleared the editor.
+    dialogState.newIssueDefaults = { title: "New task title from context" };
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <NewIssueDialog />
+        </QueryClientProvider>,
+      );
+      await Promise.resolve();
+    });
+    // Flush multiple times: the init effect sets description="", which queues a re-render
+    // of IssueDescriptionEditor, which then runs the sync useEffect setting draftValue="".
+    // Each flush() handles one round; we need several to let all second-order effects settle.
+    for (let i = 0; i < 5; i++) await flush();
+
+    // The user's edited description must survive the re-initialization.
+    // Before the fix: the sync useEffect in IssueDescriptionEditor cleared draftValue
+    // when the description prop was reset to "" by the init effect, so this was "".
+    expect(descriptionInput!.value).toBe("User edited the description");
+
+    act(() => root.unmount());
+    // Restore defaults for subsequent tests.
+    dialogState.newIssueDefaults = {};
+  });
+
+  it("shows an empty editor after discard-draft + close + reopen, even though hasInteracted was true", async () => {
+    const { root, queryClient } = renderDialog(container);
+    await flush();
+
+    // Type a title so canDiscardDraft becomes true.
+    const titleInput = container.querySelector(
+      'textarea[placeholder="Task title"]',
+    ) as HTMLTextAreaElement | null;
+    expect(titleInput).not.toBeNull();
+    await typeTextareaValue(titleInput!, "Draft title");
+
+    // Type into description — this sets hasInteracted.current = true inside
+    // IssueDescriptionEditor, permanently disabling the prop-sync effect.
+    const descriptionInput = container.querySelector(
+      'textarea[aria-label="Add description..."]',
+    ) as HTMLTextAreaElement | null;
+    expect(descriptionInput).not.toBeNull();
+    await typeTextareaValue(descriptionInput!, "Draft body");
+    expect(descriptionInput!.value).toBe("Draft body");
+
+    // Click "Discard Draft" — calls reset() which sets description = "" via
+    // setIssueText("", ""), then closeNewIssue() (our mock, so newIssueOpen
+    // stays true here; we simulate the close below).
+    const discardButton = Array.from(container.querySelectorAll("button"))
+      .find((b) => b.textContent?.includes("Discard Draft"));
+    expect(discardButton).not.toBeUndefined();
+    await act(async () => {
+      discardButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    // Simulate closeNewIssue: the real handler toggles newIssueOpen = false.
+    // Our mock Dialog renders null when open=false, so the sub-tree (including
+    // IssueDescriptionEditor and its hasInteracted ref) unmounts.
+    dialogState.newIssueOpen = false;
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <NewIssueDialog />
+        </QueryClientProvider>,
+      );
+      await Promise.resolve();
+    });
+    await flush();
+
+    // Reopen.
+    dialogState.newIssueOpen = true;
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <NewIssueDialog />
+        </QueryClientProvider>,
+      );
+      await Promise.resolve();
+    });
+    await flush();
+
+    // After unmount/remount, IssueDescriptionEditor starts with
+    // hasInteracted = false, so the sync effect fires and picks up the
+    // parent's description = "" (set by reset() above). The textarea must
+    // be empty — not show the discarded draft.
+    const reopenedDescription = container.querySelector(
+      'textarea[aria-label="Add description..."]',
+    ) as HTMLTextAreaElement | null;
+    expect(reopenedDescription).not.toBeNull();
+    expect(reopenedDescription!.value).toBe("");
+
+    act(() => root.unmount());
+    dialogState.newIssueOpen = true;
   });
 });

@@ -328,11 +328,34 @@ IMPORTANT: **NEVER ASK A HUMAN TO DO WHAT AN AGENT COULD DO**. If you need to es
 
 ## Comment Style (Required)
 
-When posting issue comments or writing issue descriptions, use concise markdown with:
+An issue thread is a human conversation, and your comment is one of the few
+things in it a person actually has to read. Write it as a colleague would,
+not as a build log.
 
-- a short status line
-- bullets for what changed / what is blocked
-- links to related entities when available
+**The short form (required for every completion or status comment):**
+
+- One sentence of outcome, in plain language, first.
+- Then only what the reader could **not** already see: a surprise, a
+  deviation from what was asked, or a decision someone now has to make. If
+  there is none of that, the one sentence is the whole comment.
+- Links to related entities (PR, approval, run, issue) when available.
+
+**Never:**
+
+- emoji status checklists (`✅ Actions taken:` / `1. ✓ …`) — the activity
+  trail already records what happened, in order, without you retelling it
+- restating the instruction, the task parameters, or the acceptance
+  criteria back to the person who wrote them
+- listing the steps you took, or an "Actions taken" / "Verification"
+  section enumerating work already visible in the trail
+- pasting command output, payloads, or diagnostics
+
+**When you are blocked**, that is the report: name what is blocked and the
+single thing that would unblock it, in a few lines. What you tried, the
+errors, and the variations you attempted belong in the run transcript — it
+is linked from the issue and stays retrievable. Do not paste your debugging
+into the thread; a wall of attempts is permanent, loud, and helps nobody
+reading the ticket later.
 
 **Ticket references are links (required):** If you mention another issue identifier such as `PAP-224`, `ZED-24`, or any `{PREFIX}-{NUMBER}` ticket id inside a comment body or issue description, wrap it in a Markdown link:
 
@@ -385,8 +408,6 @@ If the plan needs explicit approval before implementation, update the `plan` doc
 
 When asked to convert a plan into executable Paperclip tasks — depth, assignment, dependencies, parallelization — use the companion skill `paperclip-converting-plans-to-tasks`.
 
-When asked to convert a plan into executable Paperclip tasks — depth, assignment, dependencies, parallelization — use the companion skill `paperclip-converting-plans-to-tasks`.
-
 Recommended API flow:
 
 ```bash
@@ -400,6 +421,25 @@ PUT /api/issues/{issueId}/documents/plan
 ```
 
 If `plan` already exists, fetch the current document first and send its latest `baseRevisionId` when you update it.
+
+## Document Review Annotations (Required when revising against review comments)
+
+Reviewers comment on a **passage** of a reviewable document (`plan`, `spec`), not on the issue. Those threads arrive in your wake context as `annotationDeltas` and `planReviewContext`. They are a conversation you are already in.
+
+- **Reply where the comment was made.** Post your response as a comment in that thread, not as a summary comment on the issue. The reviewer reads it next to the text they were talking about.
+- **Resolve the thread when you have addressed it** — after the revision lands, not before. Leave it open if you disagreed or only partly addressed it, and say which in your reply.
+- **One issue comment at the end** naming the new revision is enough. Do not restate per-thread responses there.
+
+| Action                      | Endpoint                                                                              |
+| --------------------------- | ------------------------------------------------------------------------------------- |
+| List threads on a document  | `GET /api/issues/:issueId/documents/:key/annotations?status=open&includeComments=true` |
+| Get one thread              | `GET /api/issues/:issueId/documents/:key/annotations/:threadId`                        |
+| Reply in a thread           | `POST /api/issues/:issueId/documents/:key/annotations/:threadId/comments`              |
+| Resolve / reopen a thread   | `PATCH /api/issues/:issueId/documents/:key/annotations/:threadId` (`{"status":"resolved"\|"open"}`) |
+
+Over MCP: `paperclipListDocumentAnnotations`, `paperclipGetDocumentAnnotationThread`, `paperclipReplyToDocumentAnnotation`, `paperclipSetDocumentAnnotationThreadStatus`.
+
+Starting a new annotation thread requires a human text selection; agents comment on and resolve existing threads only.
 
 ## Key Endpoints (Hot Routes)
 

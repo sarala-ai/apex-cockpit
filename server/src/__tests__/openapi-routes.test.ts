@@ -15,6 +15,11 @@ const apiPrefixes: Record<string, string> = {
   "activity.ts": "/api",
   "adapters.ts": "/api",
   "agents.ts": "/api",
+  "apex-observe.ts": "/api",
+  "apex-pipeline.ts": "/api",
+  "apex-scoping.ts": "/api",
+  "apex-setup.ts": "/api",
+  "apex-setup-state.ts": "/api",
   "approvals.ts": "/api",
   "assets.ts": "/api",
   "auth.ts": "/api/auth",
@@ -40,6 +45,8 @@ const apiPrefixes: Record<string, string> = {
   "plugin-ui-static.ts": "/api",
   "plugins.ts": "/api",
   "projects.ts": "/api",
+  "proposals.ts": "/api",
+  "releases.ts": "/api",
   "resource-memberships.ts": "/api",
   "routines.ts": "/api",
   "secrets.ts": "/api",
@@ -55,8 +62,15 @@ const HTTP_METHODS = new Set(["get", "put", "post", "delete", "options", "head",
 const explicitOpenApiCoverageExclusions = new Set([
   // Pipeline routes are experimental and not yet represented in the public OpenAPI document.
   "pipelines.ts",
-  // Case routes are experimental (enableCases flag) and not yet in the public OpenAPI document.
+  // Case routes are not yet in the public OpenAPI document.
   "cases.ts",
+  // APEX Tower in-progress surfaces (capability sync scheduler, Design viewer,
+  // Gateway registry/observe, workflow-builder groundwork) — mounted
+  // under /api but not yet part of the public OpenAPI document.
+  "apex-capabilities.ts",
+  "apex-design.ts",
+  "apex-gateway-observe.ts",
+  "apex-workflows.ts",
 ]);
 
 function createApp() {

@@ -7,6 +7,8 @@ import type {
 } from "@paperclipai/shared";
 import {
   Check,
+  ChevronDown,
+  ChevronRight,
   Copy,
   MoreHorizontal,
   RotateCcw,
@@ -140,6 +142,17 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
           (a.normalizedStart - b.normalizedStart)
           || (a.markdownStart - b.markdownStart)
           || (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())),
+    [props.threads],
+  );
+
+  // Orphaned threads have no passage left to sit beside, so they are kept out of
+  // the anchored list and collected below it — otherwise the reviewer's comment
+  // simply vanishes when a revision rewrites the text it was attached to.
+  const detachedThreads = useMemo(
+    () =>
+      props.threads
+        .filter((thread) => thread.anchorState === "orphaned" && thread.status !== "resolved")
+        .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
     [props.threads],
   );
 
@@ -405,6 +418,16 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
             ))}
           </ul>
         )}
+        {detachedThreads.length > 0 ? (
+          <DetachedThreads
+            threads={detachedThreads}
+            target={annotationTarget}
+            onResolve={(threadId) => updateStatus.mutate({ threadId, status: "resolved" })}
+            pendingResolveThreadId={updateStatus.isPending ? updateStatus.variables?.threadId ?? null : null}
+            agentMap={props.agentMap}
+            userProfileMap={props.userProfileMap}
+          />
+        ) : null}
       </div>
       {props.pendingAnchor ? (
         <div className="border-t border-border bg-popover px-3 py-2">
@@ -608,6 +631,135 @@ function ThreadCard(props: {
             {latestComment ? <span className="ml-1">· {truncate(latestComment.body, 120)}</span> : null}
           </p>
         )}
+      </article>
+    </li>
+  );
+}
+
+const ANCHOR_FAILURE_LABELS: Record<string, string> = {
+  quote_mismatch: "the quoted text no longer appears",
+  position_mismatch: "the passage moved and no longer matches",
+  invalid_range: "the anchored range is no longer valid",
+  no_match: "no matching passage was found",
+  ambiguous_match: "the passage now appears more than once",
+};
+
+function describeAnchorFailure(reason: string | null) {
+  if (!reason) return "the passage it was anchored to changed";
+  return ANCHOR_FAILURE_LABELS[reason] ?? `the passage it was anchored to changed (${reason})`;
+}
+
+/**
+ * Threads whose anchor could not be remapped. Shows the passage the comment was
+ * written against and, from the re-anchoring trail, which revision it last
+ * matched and why it stopped.
+ */
+function DetachedThreads(props: {
+  threads: DocumentAnnotationThreadWithComments[];
+  target: DocumentAnnotationTarget;
+  onResolve: (threadId: string) => void;
+  pendingResolveThreadId: string | null;
+  agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon">>>;
+  userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <section data-testid="document-annotation-detached" className="mt-3 border-t border-border pt-2">
+      <button
+        type="button"
+        onClick={() => setExpanded((current) => !current)}
+        aria-expanded={expanded}
+        className="flex w-full items-center gap-1 text-left text-(length:--text-micro) font-medium text-muted-foreground hover:text-foreground"
+      >
+        {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+        Detached comments ({props.threads.length})
+      </button>
+      {expanded ? (
+        <ul className="mt-2 space-y-2">
+          {props.threads.map((thread) => (
+            <DetachedThreadCard
+              key={thread.id}
+              thread={thread}
+              target={props.target}
+              onResolve={() => props.onResolve(thread.id)}
+              pendingResolve={props.pendingResolveThreadId === thread.id}
+              agentMap={props.agentMap}
+              userProfileMap={props.userProfileMap}
+            />
+          ))}
+        </ul>
+      ) : null}
+    </section>
+  );
+}
+
+function DetachedThreadCard(props: {
+  thread: DocumentAnnotationThreadWithComments;
+  target: DocumentAnnotationTarget;
+  onResolve: () => void;
+  pendingResolve: boolean;
+  agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon">>>;
+  userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
+}) {
+  const { thread } = props;
+  const historyQuery = useQuery({
+    queryKey: queryKeys.documentAnnotations.anchorHistory(thread.id),
+    queryFn: () => documentAnnotationsApi.getForTarget(props.target, thread.id),
+    staleTime: 60_000,
+  });
+  const detachment = useMemo(() => {
+    const history = historyQuery.data?.anchorHistory ?? [];
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+      const entry = history[index];
+      if (entry.anchorState === "orphaned") return entry;
+    }
+    return null;
+  }, [historyQuery.data]);
+
+  return (
+    <li>
+      <article
+        data-detached-thread-id={thread.id}
+        data-anchor-state={thread.anchorState}
+        className="rounded-none border border-dashed border-border bg-background"
+      >
+        <blockquote className="mx-3 mt-2 line-clamp-3 overflow-hidden rounded-none bg-muted px-2 py-1 text-xs italic leading-5 text-muted-foreground [overflow-wrap:anywhere]">
+          {truncate(thread.selectedText, 160)}
+        </blockquote>
+        <p
+          data-testid={`document-annotation-detached-reason-${thread.id}`}
+          className="px-3 pt-1.5 text-(length:--text-micro) text-muted-foreground"
+        >
+          {detachment
+            ? `Last matched at revision ${detachment.fromRevisionNumber ?? "?"}; detached at revision ${detachment.toRevisionNumber} because ${describeAnchorFailure(detachment.failureReason)}.`
+            : historyQuery.isPending
+              ? "Loading anchor history…"
+              : `Detached at revision ${thread.currentRevisionNumber} because ${describeAnchorFailure(null)}.`}
+        </p>
+        <div className="space-y-2 px-3 py-2">
+          {thread.comments.map((comment) => (
+            <CommentRow
+              key={comment.id}
+              comment={comment}
+              focused={false}
+              agentMap={props.agentMap}
+              userProfileMap={props.userProfileMap}
+            />
+          ))}
+          <div className="flex justify-end">
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              onClick={props.onResolve}
+              disabled={props.pendingResolve}
+              className="gap-1"
+            >
+              <Check className="h-3 w-3" /> Resolve
+            </Button>
+          </div>
+        </div>
       </article>
     </li>
   );

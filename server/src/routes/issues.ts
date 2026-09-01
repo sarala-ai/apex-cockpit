@@ -80,11 +80,13 @@ import {
   type IssueWakeDiagnosticsResponse,
   type IssueRelationIssueSummary,
   type IssueWatchdogDiscoveryKind,
+  type PipelineStepHold,
   type ProjectWorkspace,
   type SourceTrustMetadata,
   type SuccessfulRunHandoffState,
   type WorkspaceRuntimeService,
 } from "@paperclipai/shared";
+import { isReviewableDocumentKey } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import type { StorageService } from "../storage/types.js";
@@ -183,6 +185,18 @@ import {
   type TrustPresetResolution,
 } from "../services/trust-preset-resolver.js";
 import { externalObjectService } from "../services/external-objects.js";
+import {
+  listTicketTypeOptions,
+  startTicketLifecycle,
+} from "../apex/pipeline/ticket-lifecycle.js";
+import { readActiveStepHold, type PipelineActor } from "../services/pipelines.js";
+import { shapeStepHold } from "../apex/pipeline/step-hold.js";
+import {
+  isAwaitingHumanDecision,
+  shapeIssueLinkedCase,
+  shouldLoadStepHold,
+} from "../apex/pipeline/issue-lifecycle.js";
+import { openGateApprovalIdsForCases } from "../apex/pipeline/gate-brief-facts.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -202,6 +216,21 @@ const promoteLowTrustOutputSchema = z.object({
   summary: z.string().trim().min(1).max(8_000),
 });
 
+/**
+ * The processes this ticket is running on, and — when one of them has stopped
+ * to ask a human something — everything needed to answer without leaving the
+ * ticket.
+ *
+ * This is the ONLY path from a ticket to its process. The `issues.flow*`
+ * columns are the retired flow mirror: they are null for every pipeline case
+ * and reading them reports "the lifecycle never started" about tickets that
+ * are demonstrably mid-flight. The truth is the issue-link table, the same
+ * join `resolvePipelineCaseConversationSource` walks in the other direction.
+ *
+ * Retired links are excluded. A link that was retired says where the ticket
+ * USED to sit; carrying it forward would put a stale process on the ticket
+ * header, which is exactly the failure this surface exists to fix.
+ */
 async function listIssueLinkedCases(db: Db, companyId: string, issueId: string) {
   const rows = await db
     .select({
@@ -219,26 +248,69 @@ async function listIssueLinkedCases(db: Db, companyId: string, issueId: string) 
       eq(pipelineCaseIssueLinks.issueId, issueId),
       eq(pipelineCases.companyId, companyId),
       eq(pipelines.companyId, companyId),
-    ));
-  return rows.map((row) => ({
-    id: row.case.id,
-    caseKey: row.case.caseKey,
-    title: row.case.title,
-    status: row.case.terminalKind ?? "open",
-    role: row.link.role,
-    pipeline: {
-      id: row.pipeline.id,
-      key: row.pipeline.key,
-      name: row.pipeline.name,
-    },
-    stage: {
-      id: row.stage.id,
-      key: row.stage.key,
-      name: row.stage.name,
-      kind: row.stage.kind,
-    },
+      isNull(pipelineCaseIssueLinks.retiredAt),
+      isNull(pipelineCases.retiredAt),
+    ))
+    .orderBy(desc(pipelineCaseIssueLinks.createdAt), desc(pipelineCaseIssueLinks.id));
+
+  // Only a pending decision needs its pipeline's stage names, and pending
+  // decisions are rare — so the second query is skipped on the overwhelming
+  // majority of ticket loads rather than paid for on every one.
+  const awaitingPipelineIds = [
+    ...new Set(
+      rows
+        .filter((row) => isAwaitingHumanDecision(row.case, row.stage))
+        .map((row) => row.pipeline.id),
+    ),
+  ];
+  const stageNamesByPipeline = new Map<string, Record<string, string>>();
+  if (awaitingPipelineIds.length > 0) {
+    const stageRows = await db
+      .select({ pipelineId: pipelineStages.pipelineId, key: pipelineStages.key, name: pipelineStages.name })
+      .from(pipelineStages)
+      .where(inArray(pipelineStages.pipelineId, awaitingPipelineIds));
+    for (const stage of stageRows) {
+      const names = stageNamesByPipeline.get(stage.pipelineId) ?? {};
+      names[stage.key] = stage.name;
+      stageNamesByPipeline.set(stage.pipelineId, names);
+    }
+  }
+
+  // A STOPPED STEP, for the one link that reports the ticket's lifecycle.
+  // Same economics as the stage-name lookup above: almost every ticket has no
+  // live `work` case, so almost every load pays nothing, and a ticket with one
+  // pays a couple of indexed event lookups to answer the question a person
+  // opening it is most likely to have — "why has nothing happened?"
+  const holdRows = rows.filter((row) => shouldLoadStepHold(row));
+  const holdsByCaseId = new Map<string, PipelineStepHold>();
+  await Promise.all(holdRows.map(async (row) => {
+    const hold = shapeStepHold(
+      await readActiveStepHold(db, row.case, row.stage),
+      { stageName: row.stage.name },
+    );
+    if (hold) holdsByCaseId.set(row.case.id, hold);
   }));
+
+  // The OPEN decision's approval id, for the same links whose stage names
+  // were just loaded — and paid for on the same rare tickets, for the same
+  // reason. Without it the ticket can show a gate and nothing to decide it on.
+  const awaitingCaseIds = rows
+    .filter((row) => isAwaitingHumanDecision(row.case, row.stage))
+    .map((row) => row.case.id);
+  const gateApprovalIds = awaitingCaseIds.length > 0
+    ? await openGateApprovalIdsForCases(db, companyId, awaitingCaseIds)
+    : new Map<string, string>();
+
+  return rows.map((row) =>
+    shapeIssueLinkedCase({
+      ...row,
+      stageNames: stageNamesByPipeline.get(row.pipeline.id),
+      gateApprovalId: gateApprovalIds.get(row.case.id) ?? null,
+      hold: holdsByCaseId.get(row.case.id) ?? null,
+    })
+  );
 }
+
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
@@ -340,6 +412,61 @@ function buildAttachmentContentPath(attachmentId: string): string {
   return `/api/attachments/${attachmentId}/content`;
 }
 
+// Tables that deliberately reference `issues` without ON DELETE CASCADE — ledger
+// rows that must outlive the issue, plus skill test runs (ON DELETE RESTRICT).
+// Everything else cascades, so a 23503 on issue delete means one of these.
+const ISSUE_DELETE_BLOCKER_LABELS: Record<string, string> = {
+  cost_events: "cost events",
+  finance_events: "finance events",
+  feedback_votes: "feedback votes",
+  company_skill_test_runs: "skill test runs",
+};
+
+// Drizzle wraps driver failures in a query error, so the postgres.js error with
+// the SQLSTATE and table name sits on the cause chain rather than the top level.
+function findPgError(error: unknown): Record<string, unknown> | null {
+  let current: unknown = error;
+  for (let depth = 0; current && depth < 8; depth += 1) {
+    const record = current as Record<string, unknown>;
+    if (typeof record.code === "string") return record;
+    current = record.cause;
+  }
+  return null;
+}
+
+function readPgErrorField(pgError: Record<string, unknown> | null, ...keys: string[]): string | null {
+  if (!pgError) return null;
+  for (const key of keys) {
+    const value = pgError[key];
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return null;
+}
+
+/**
+ * Never let a raw driver error out of DELETE /api/issues/:id. Residual foreign
+ * key violations become a classified 409 that names the rows still pointing at
+ * the issue instead of a bare 500.
+ */
+function classifyIssueDeleteError(error: unknown, issueId: string): never {
+  const pgError = findPgError(error);
+  if (pgError?.code !== "23503") throw error;
+  const table = readPgErrorField(pgError, "table_name", "table");
+  const constraintName = readPgErrorField(pgError, "constraint_name", "constraint");
+  const blockedBy = table ?? null;
+  const label = (blockedBy && ISSUE_DELETE_BLOCKER_LABELS[blockedBy]) ?? "related records";
+  throw conflict(
+    `Issue cannot be deleted because ${label} still reference it`,
+    {
+      code: "issue_delete_blocked",
+      issueId,
+      blockedBy,
+      constraint: constraintName,
+      remediation: `Remove or reassign the ${label} that reference this issue, then delete it again.`,
+    },
+  );
+}
+
 const GENERIC_ATTACHMENT_CONTENT_TYPES = new Set([
   "application/octet-stream",
   "binary/octet-stream",
@@ -426,6 +553,23 @@ function hasOwn(record: Record<string, unknown>, key: string) {
   return Object.prototype.hasOwnProperty.call(record, key);
 }
 
+/**
+ * The route's actor, as the pipeline substrate spells one.
+ *
+ * An agent WITHOUT a run id degrades to `system` rather than being passed
+ * through: `assertActorProvenance` rejects a run-less agent actor outright, and
+ * a ticket that entered its process is not worth failing over an attribution
+ * the caller could not supply. The provenance that matters — who created the
+ * ticket — is already on the issue row and in the activity log either way.
+ */
+function pipelineActorForIssueLifecycle(actor: ReturnType<typeof getActorInfo>): PipelineActor {
+  if (actor.actorType === "agent" && actor.agentId && actor.runId) {
+    return { type: "agent", agentId: actor.agentId, runId: actor.runId };
+  }
+  if (actor.actorType === "user") return { type: "user", userId: actor.actorId };
+  return { type: "system" };
+}
+
 async function auditAgentIssueCreateAttributionSpoof(input: {
   db: Db;
   req: Request;
@@ -507,12 +651,12 @@ function authenticatedActorResponsibleUserId(req: Request) {
 
 function readPlanConfirmationTargetForIssue(payload: unknown, issueId: string) {
   const target = readObject(readObject(payload).target);
-  if (target.type !== "issue_document" || target.key !== "plan") return null;
+  if (target.type !== "issue_document" || !isReviewableDocumentKey(target.key)) return null;
   if (readNonEmptyString(target.issueId) !== issueId) return null;
   return {
     issueId,
     documentId: readNonEmptyString(target.documentId),
-    key: "plan",
+    key: target.key,
     revisionId: readNonEmptyString(target.revisionId),
     revisionNumber: typeof target.revisionNumber === "number" ? target.revisionNumber : null,
   };
@@ -2024,6 +2168,7 @@ function toCompactIssue(issue: any): CompactIssue {
     title: issue.title,
     description: issue.description,
     status: issue.status,
+    ticketType: issue.ticketType ?? null,
     workMode: issue.workMode,
     priority: issue.priority,
     assigneeAgentId: issue.assigneeAgentId,
@@ -4462,6 +4607,22 @@ export function issueRoutes(
     res.json(result);
   });
 
+  /**
+   * The ticket types this company can actually file, and what each one costs.
+   *
+   * The composer needs three facts BEFORE a ticket exists, and none of them
+   * can be hardcoded in the client: whether a type has a live process here,
+   * whether that process commissions an agent that will change a repository
+   * (and therefore whether the ticket needs a codebase bound before it is
+   * dispatched), and whether a missing process is by design or a gap. All
+   * three are computed from the seeded pipelines — see listTicketTypeOptions.
+   */
+  router.get("/companies/:companyId/ticket-types", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await listTicketTypeOptions(db, companyId));
+  });
+
   router.get("/companies/:companyId/issues", async (req, res) => {
     const startedAt = Date.now();
     const companyId = req.params.companyId as string;
@@ -4977,6 +5138,10 @@ export function issueRoutes(
         identifier: issue.identifier,
         title: issue.title,
         description: issue.description,
+        // The agent half of the ticket travels on the agent-facing context
+        // route in full — the split is a human-reading concern, never a
+        // capability one.
+        agentBrief: issue.agentBrief ?? null,
         status: issue.status,
         workMode: issue.workMode,
         ...(blockerAttention ? { blockerAttention } : {}),
@@ -7051,6 +7216,39 @@ export function issueRoutes(
       });
     }
 
+    // THE TICKET ENTERS ITS PROCESS. A declared type is a request to run a
+    // lifecycle, so the case is opened HERE, on the create path, rather than
+    // left to a later manual step — that gap is the whole reason three seeded
+    // processes had no front door.
+    //
+    // Failure is REPORTED, never swallowed: a ticket whose lifecycle could not
+    // start is still a real ticket (the row is committed and the caller gets
+    // it), but the response and the activity log both say so. Rolling the
+    // ticket back would discard the author's work over a pipeline problem;
+    // staying quiet would recreate the silent-default defect this replaces.
+    const lifecycle = await startTicketLifecycle(db, {
+      companyId,
+      issue,
+      actor: pipelineActorForIssueLifecycle(actor),
+    }).catch((error: unknown) => ({
+      status: "failed" as const,
+      ticketType: issue.ticketType ?? null,
+      error: error instanceof Error ? error.message : String(error),
+    }));
+    if (lifecycle.status === "started" || lifecycle.status === "failed") {
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: lifecycle.status === "started" ? "issue.lifecycle_started" : "issue.lifecycle_start_failed",
+        entityType: "issue",
+        entityId: issue.id,
+        details: { identifier: issue.identifier, ...lifecycle },
+      });
+    }
+
     void queueIssueAssignmentWakeup({
       heartbeat,
       issue,
@@ -7064,6 +7262,7 @@ export function issueRoutes(
 
     res.status(201).json({
       ...issue,
+      lifecycle,
       relatedWork: referenceSummary,
       referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
     });
@@ -7886,6 +8085,11 @@ export function issueRoutes(
       return;
     }
 
+    // Work-loop doctrine reflection (docs/architecture/work-loop.md): moved
+    // into issueService.update (Finding 5c, adversarial architecture review)
+    // so every status transition reflects, not just the ones that flow
+    // through this route.
+
     let cancelledStatusRunId: string | null = null;
     if (runToCancelForCancelledStatus) {
       try {
@@ -8658,7 +8862,7 @@ export function issueRoutes(
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     const attachments = await svc.listAttachments(id);
 
-    const issue = await svc.remove(id);
+    const issue = await svc.remove(id).catch((err) => classifyIssueDeleteError(err, id));
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
@@ -9056,7 +9260,7 @@ export function issueRoutes(
         interaction.kind === "request_confirmation" &&
         interaction.status === "accepted" &&
         acceptedPlanTarget?.issueId === issue.id &&
-        acceptedPlanTarget.key === "plan";
+        isReviewableDocumentKey(acceptedPlanTarget.key);
       queueResolvedInteractionContinuationWakeup({
         heartbeat,
         issue: continuationWakeIssue,

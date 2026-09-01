@@ -6,6 +6,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
+
+  approvals,
   companies,
   companyMemberships,
   createDb,
@@ -18,6 +20,7 @@ import {
   issues,
   pipelineAutomationExecutions,
   pipelineCaseBlockers,
+  pipelineCaseDocuments,
   pipelineCaseEvents,
   pipelineCaseIssueLinks,
   pipelineCases,
@@ -88,6 +91,9 @@ describeEmbeddedPostgres("pipeline routes", () => {
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
     await db.delete(agents);
+    // A review stage now opens a gate APPROVAL on entry, and approvals
+    // reference the company — so they must go before it does.
+    await db.delete(approvals);
     await db.delete(companies);
     await db.delete(instanceSettings);
   });
@@ -445,7 +451,7 @@ describeEmbeddedPostgres("pipeline routes", () => {
       name: "Plan",
       kind: "working",
       position: 100,
-      config: { onEnter: { type: "run_routine", id: "build-content", routineId: routine!.id } },
+      config: { onEnter: { type: "routine", id: "build-content", routineId: routine!.id } },
     }).returning();
     const [targetPipeline] = await db.insert(pipelines).values({
       companyId: company.id,
@@ -1036,6 +1042,10 @@ describeEmbeddedPostgres("pipeline routes", () => {
     expect(approvedEvents.body.items.map((event: { type: string }) => event.type)).toEqual([
       "ingested",
       "transitioned",
+      // Entering the review stage OPENS THE GATE, in the same transaction as
+      // the move — so "the case is at a review stage" and "there is a decision
+      // waiting" are one fact rather than two that can disagree.
+      "gate_opened",
       "updated",
       "transitioned",
       "review_decided",
@@ -1272,5 +1282,141 @@ describeEmbeddedPostgres("pipeline routes", () => {
     expect(res.body.code).toBe("version_conflict");
     expect(res.body.details.version).toBe(2);
     expect(res.body.details.stage.key).toBe("intake");
+  });
+  async function seedDeletablePipeline(companyId: string, key: string) {
+    const http = request(app(boardActor));
+    const created = await http
+      .post(`/api/companies/${companyId}/pipelines`)
+      .send({
+        key,
+        name: `Pipeline ${key}`,
+        stages: [
+          { key: "intake", name: "Intake", kind: "open", position: 100 },
+          { key: "done", name: "Done", kind: "done", position: 900 },
+          { key: "cancelled", name: "Cancelled", kind: "cancelled", position: 1000 },
+        ],
+      })
+      .expect(201);
+    const pipelineId = created.body.id as string;
+    await http
+      .put(`/api/pipelines/${pipelineId}/transitions`)
+      .send({ transitions: [{ fromStageKey: "intake", toStageKey: "done" }] })
+      .expect(200);
+    await http.put(`/api/pipelines/${pipelineId}/documents/guidance`).send({ body: "Guidance." }).expect(200);
+    return pipelineId;
+  }
+
+  it("deletes a pipeline and cascades to stages, transitions, documents, cases and case events", async () => {
+    const company = await seedCompany();
+    const http = request(app(boardActor));
+    const pipelineId = await seedDeletablePipeline(company.id, "cascade");
+    const ingested = await http
+      .post(`/api/pipelines/${pipelineId}/cases`)
+      .send({ caseKey: "cascade-case", title: "Cascade case" })
+      .expect(201);
+    const caseId = ingested.body.case.id as string;
+    await http.put(`/api/cases/${caseId}/documents/notes`).send({ body: "Case notes." }).expect(200);
+    await http.post(`/api/cases/${caseId}/transition`).send({ toStageKey: "done", expectedVersion: 1 }).expect(200);
+
+    const documentIds = [
+      ...(await db.select().from(pipelineDocuments).where(eq(pipelineDocuments.pipelineId, pipelineId))),
+      ...(await db.select().from(pipelineCaseDocuments).where(eq(pipelineCaseDocuments.caseId, caseId))),
+    ].map((row) => row.documentId);
+    expect(documentIds.length).toBeGreaterThanOrEqual(2);
+
+    const res = await http.delete(`/api/pipelines/${pipelineId}`).expect(200);
+    expect(res.body).toMatchObject({ deleted: true, pipelineId, deletedCaseCount: 1, deletedStageCount: 3 });
+
+    expect(await db.select().from(pipelines).where(eq(pipelines.id, pipelineId))).toHaveLength(0);
+    expect(await db.select().from(pipelineStages).where(eq(pipelineStages.pipelineId, pipelineId))).toHaveLength(0);
+    expect(await db.select().from(pipelineTransitions).where(eq(pipelineTransitions.pipelineId, pipelineId))).toHaveLength(0);
+    expect(await db.select().from(pipelineCases).where(eq(pipelineCases.pipelineId, pipelineId))).toHaveLength(0);
+    expect(await db.select().from(pipelineCaseEvents).where(eq(pipelineCaseEvents.caseId, caseId))).toHaveLength(0);
+    expect(await db.select().from(pipelineDocuments).where(eq(pipelineDocuments.pipelineId, pipelineId))).toHaveLength(0);
+    for (const documentId of documentIds) {
+      expect(await db.select().from(documents).where(eq(documents.id, documentId))).toHaveLength(0);
+    }
+    await http.get(`/api/pipelines/${pipelineId}`).expect(404);
+  });
+
+  it("guards pipeline delete on non-terminal cases and honours ?force=true", async () => {
+    const company = await seedCompany();
+    const http = request(app(boardActor));
+    const pipelineId = await seedDeletablePipeline(company.id, "guarded");
+    await http.post(`/api/pipelines/${pipelineId}/cases`).send({ caseKey: "open-1", title: "Still open" }).expect(201);
+    const settled = await http
+      .post(`/api/pipelines/${pipelineId}/cases`)
+      .send({ caseKey: "closed-1", title: "Closed" })
+      .expect(201);
+    await http
+      .post(`/api/cases/${settled.body.case.id}/transition`)
+      .send({ toStageKey: "done", expectedVersion: 1 })
+      .expect(200);
+
+    const blocked = await http.delete(`/api/pipelines/${pipelineId}`).expect(409);
+    expect(blocked.body.code).toBe("pipeline_has_active_cases");
+    expect(blocked.body.error).toContain("non-terminal case");
+    expect(blocked.body.error).toContain("force=true");
+    expect(blocked.body.details.nonTerminalCaseCount).toBe(1);
+    expect(blocked.body.details.sampleCaseKeys).toEqual(["open-1"]);
+    expect(await db.select().from(pipelines).where(eq(pipelines.id, pipelineId))).toHaveLength(1);
+
+    const forced = await http.delete(`/api/pipelines/${pipelineId}?force=true`).expect(200);
+    expect(forced.body.deletedCaseCount).toBe(2);
+    expect(await db.select().from(pipelines).where(eq(pipelines.id, pipelineId))).toHaveLength(0);
+    expect(await db.select().from(pipelineCases).where(eq(pipelineCases.pipelineId, pipelineId))).toHaveLength(0);
+  });
+
+  it("deletes a case subtree and guards on non-terminal children", async () => {
+    const company = await seedCompany();
+    const http = request(app(boardActor));
+    const pipelineId = await seedDeletablePipeline(company.id, "subtree");
+    const parent = await http
+      .post(`/api/pipelines/${pipelineId}/cases`)
+      .send({ caseKey: "parent", title: "Parent" })
+      .expect(201);
+    const parentId = parent.body.case.id as string;
+    const child = await http
+      .post(`/api/pipelines/${pipelineId}/cases`)
+      .send({ caseKey: "child", title: "Child", parentCaseId: parentId })
+      .expect(201);
+    const childId = child.body.case.id as string;
+
+    const blocked = await http.delete(`/api/cases/${parentId}`).expect(409);
+    expect(blocked.body.code).toBe("case_not_terminal");
+    expect(blocked.body.details.nonTerminalCaseCount).toBe(2);
+    expect(await db.select().from(pipelineCases).where(eq(pipelineCases.id, parentId))).toHaveLength(1);
+
+    const forced = await http.delete(`/api/cases/${parentId}?force=true`).expect(200);
+    expect(forced.body.deletedCaseCount).toBe(2);
+    expect(await db.select().from(pipelineCases).where(eq(pipelineCases.id, parentId))).toHaveLength(0);
+    expect(await db.select().from(pipelineCases).where(eq(pipelineCases.id, childId))).toHaveLength(0);
+    expect(await db.select().from(pipelineCaseEvents).where(eq(pipelineCaseEvents.caseId, childId))).toHaveLength(0);
+  });
+
+  it("hides pipeline and case delete from another company", async () => {
+    const company = await seedCompany();
+    const http = request(app(boardActor));
+    const pipelineId = await seedDeletablePipeline(company.id, "scoped");
+    const created = await http
+      .post(`/api/pipelines/${pipelineId}/cases`)
+      .send({ caseKey: "scoped-case", title: "Scoped case" })
+      .expect(201);
+    const caseId = created.body.case.id as string;
+
+    const foreignActor: Express.Request["actor"] = {
+      type: "agent",
+      agentId: randomUUID(),
+      companyId: randomUUID(),
+      runId: randomUUID(),
+      source: "agent_key",
+    };
+    const foreign = request(app(foreignActor));
+    // Pipeline routes convert a cross-company 403 into a 404 so the existence of
+    // another company's pipeline is not observable.
+    await foreign.delete(`/api/pipelines/${pipelineId}`).expect(404);
+    await foreign.delete(`/api/cases/${caseId}?force=true`).expect(404);
+    expect(await db.select().from(pipelines).where(eq(pipelines.id, pipelineId))).toHaveLength(1);
+    expect(await db.select().from(pipelineCases).where(eq(pipelineCases.id, caseId))).toHaveLength(1);
   });
 });

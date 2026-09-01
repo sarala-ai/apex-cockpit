@@ -4,6 +4,7 @@ import {
   createProjectSchema,
   createProjectWorkspaceSchema,
   findWorkspaceCommandDefinition,
+  foldLinkIssues,
   isUuidLike,
   matchWorkspaceRuntimeServiceToCommand,
   updateProjectSchema,
@@ -234,6 +235,30 @@ export function projectRoutes(db: Db) {
     }
     assertCompanyAccess(req, existing.companyId);
     const body = { ...req.body };
+
+    // A PATCH may not carry a status at all, so the fold links are checked
+    // against the status the project will HAVE — the same shape the goal routes
+    // use for initiative-only fields.
+    const nextStatus = (body.status as string | undefined) ?? existing.status;
+    const foldIssues = foldLinkIssues(
+      nextStatus,
+      {
+        foldedIntoProjectId:
+          body.foldedIntoProjectId !== undefined
+            ? (body.foldedIntoProjectId as string | null)
+            : existing.foldedIntoProjectId,
+        foldedIntoGoalId:
+          body.foldedIntoGoalId !== undefined
+            ? (body.foldedIntoGoalId as string | null)
+            : existing.foldedIntoGoalId,
+      },
+      id,
+    );
+    if (foldIssues.length > 0) {
+      res.status(400).json({ error: foldIssues.join("; ") });
+      return;
+    }
+
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       collectProjectExecutionWorkspaceCommandPaths(body.executionWorkspacePolicy),

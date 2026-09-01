@@ -215,6 +215,37 @@ export const ISSUE_PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
 export const ISSUE_WORK_MODES = ["standard", "ask", "planning", "skill_test"] as const;
 export type IssueWorkMode = (typeof ISSUE_WORK_MODES)[number];
+/**
+ * WHAT KIND OF WORK A TICKET IS — and, through that, which lifecycle it runs.
+ *
+ * These four strings are the same vocabulary the seeded lifecycle pipelines
+ * carry in `pipelines.ticket_type` (server/src/apex/pipeline/lifecycles.ts).
+ * The mapping from a type to a process is therefore a LOOKUP, not a table in
+ * code: a type enters the process whose `ticketType` equals it. Adding a
+ * lifecycle is seeding a pipeline row, never editing a switch.
+ *
+ * `chore` is in this list and has no pipeline, deliberately. A fully
+ * deterministic sequence — no agent step, no gate — needs no case: cases,
+ * leases and versions exist to govern non-determinism and to hold work for a
+ * human, and a chore has neither to govern. It is still a real ticket type
+ * with a status, an assignee, a board seat and an audit trail; the only claim
+ * is that its lifecycle does not need stages. Surfaces must say that out loud
+ * rather than hide the option or imply a process that is not there.
+ *
+ * A ticket may also carry NO type at all (the column is nullable). That is the
+ * honest state of every ticket filed before types existed, and of a ticket
+ * whose author has not decided yet — not a silent "chore".
+ */
+export const TICKET_TYPES = ["chore", "bug", "design-change", "feature"] as const;
+export type TicketType = (typeof TICKET_TYPES)[number];
+
+/** Types that deliberately have no process. See TICKET_TYPES. */
+export const TICKET_TYPES_WITHOUT_PROCESS: readonly TicketType[] = ["chore"];
+
+export function isTicketType(value: unknown): value is TicketType {
+  return typeof value === "string" && (TICKET_TYPES as readonly string[]).includes(value);
+}
+
 export const ISSUE_HARNESS_KINDS = ["skill_test"] as const;
 export type IssueHarnessKind = (typeof ISSUE_HARNESS_KINDS)[number];
 export const MAX_ISSUE_REQUEST_DEPTH = 1024;
@@ -470,20 +501,189 @@ export type IssueExecutionMonitorClearReason = (typeof ISSUE_EXECUTION_MONITOR_C
 export const ISSUE_EXECUTION_DECISION_OUTCOMES = ["approved", "changes_requested"] as const;
 export type IssueExecutionDecisionOutcome = (typeof ISSUE_EXECUTION_DECISION_OUTCOMES)[number];
 
-export const GOAL_LEVELS = ["company", "team", "agent", "task"] as const;
+// "initiative" sits directly under "company": in the product-engineering noun
+// chain (idea → initiative → project → task) it is the object that carries a
+// budget, a stop condition and — sometimes — a hypothesis. The other levels are
+// org-scope goals and keep exactly the meaning they had.
+export const GOAL_LEVELS = ["company", "initiative", "team", "agent", "task"] as const;
 export type GoalLevel = (typeof GOAL_LEVELS)[number];
 
 export const GOAL_STATUSES = ["planned", "active", "achieved", "cancelled"] as const;
 export type GoalStatus = (typeof GOAL_STATUSES)[number];
 
+/**
+ * How an initiative ended. Deliberately NOT folded into `GOAL_STATUSES`:
+ * "achieved"/"cancelled" already carry a meaning for company/team/agent/task
+ * goals, and the four initiative closures are a different kind of statement —
+ * a verdict about what was learned, not a state the object sits in. Keeping
+ * them apart means the status picker at every other level stays honest, and a
+ * closed initiative can still say which lifecycle state it closed *from*.
+ *
+ * Only meaningful when `level === "initiative"`; null everywhere else.
+ */
+export const GOAL_CLOSURES = ["validated", "stopped", "revised", "expired"] as const;
+export type GoalClosure = (typeof GOAL_CLOSURES)[number];
+
+/** Which discipline an initiative assumption belongs to. */
+export const GOAL_ASSUMPTION_TYPES = [
+  "technical",
+  "regulatory",
+  "commercial",
+  "operational",
+] as const;
+export type GoalAssumptionType = (typeof GOAL_ASSUMPTION_TYPES)[number];
+
+/** Where an assumption stands: untested, retired (answered), or blocked. */
+export const GOAL_ASSUMPTION_STATUSES = ["untested", "retired", "blocked"] as const;
+export type GoalAssumptionStatus = (typeof GOAL_ASSUMPTION_STATUSES)[number];
+
+/**
+ * Where a validation criterion stands.
+ *
+ * `never_registered` is the one that earns its place. APEX pre-registered ~40
+ * numbered success criteria across 21 specs and reported against none of them;
+ * an imported historical initiative must be able to say *that*, out loud, on
+ * the record. Without the value the only honest alternative is an empty list,
+ * which reads as "we did not need criteria" rather than "we wrote them and
+ * never looked". Absence is reported, never omitted
+ * (docs/architecture/initiative-discipline.md §4a).
+ */
+export const GOAL_CRITERION_STATUSES = [
+  "pending",
+  "hit",
+  "missed",
+  "never_registered",
+] as const;
+export type GoalCriterionStatus = (typeof GOAL_CRITERION_STATUSES)[number];
+
+/** Only these two transitions are a *report*; the other statuses are states. */
+export const GOAL_CRITERION_VERDICTS = ["hit", "missed"] as const;
+export type GoalCriterionVerdict = (typeof GOAL_CRITERION_VERDICTS)[number];
+
+/**
+ * Where a hypothesis stands. The three answers come straight from the model
+ * doc's hypothesis lifecycle (stated → testing → answered, closing as
+ * supported · falsified · inconclusive); `untested` is the state before any of
+ * them.
+ *
+ * This is a vocabulary and not prose because the fourteen hypotheses APEX
+ * carried were folded into ten free-text fields, three of which held two or
+ * three questions in one string with their verdicts written as sentences.
+ * "Falsified" buried mid-paragraph is not a queryable answer, and a falsified
+ * hypothesis is supposed to be a permanent one.
+ */
+export const GOAL_HYPOTHESIS_VERDICTS = [
+  "untested",
+  "supported",
+  "falsified",
+  "inconclusive",
+] as const;
+export type GoalHypothesisVerdict = (typeof GOAL_HYPOTHESIS_VERDICTS)[number];
+
+/**
+ * How an initiative's record came to exist. `confirmed` = a person said so or
+ * it was read from something someone wrote down; `inferred` = reconstructed
+ * from commits, releases or resources. The shaping agent weights them
+ * differently — confirmed history is prior art it may rely on, inferred
+ * history is a hypothesis about the past it must raise as a question — so this
+ * has to be a field, not a sentence in the description that no reader can
+ * parse (product-engineering.md, "Provenance on the reconstruction itself").
+ */
+export const GOAL_PROVENANCE_KINDS = ["confirmed", "inferred"] as const;
+export type GoalProvenanceKind = (typeof GOAL_PROVENANCE_KINDS)[number];
+
+// "on_hold" is the state a real portfolio spends most of its time in: valid,
+// decided, not now. Without it a deprioritised project has to masquerade as
+// cancelled (a lie about the decision) or in_progress (a lie about the work).
+// "backlog" already carries not-started — it is the create default and reads
+// correctly — so no separate not_started value is added.
+// Where a release sits in its lifecycle. Separate from RELEASE_CLOSURES for the
+// same reason goals keep `status` and `closure` apart: "observing" is a
+// position, "rolled_back" is a verdict, and one column cannot carry both.
+export const RELEASE_STATUSES = ["planned", "building", "released", "observing"] as const;
+export type ReleaseStatus = (typeof RELEASE_STATUSES)[number];
+
+// How a release ended. `partially_reverted` is not a hedge — it is the honest
+// answer when one initiative's change in a shared release was pulled and the
+// rest stayed, and it is exactly the case that makes measurement unclean.
+export const RELEASE_CLOSURES = [
+  "stable",
+  "rolled_back",
+  "superseded",
+  "partially_reverted",
+] as const;
+export type ReleaseClosure = (typeof RELEASE_CLOSURES)[number];
+
+// "built" is delivered-but-never-exercised: the code exists, nothing has run
+// through it against a real case. Four of APEX's own projects (apex-eval, the
+// Observe pillar, the GCP observability provider, the observability skill pack)
+// sat in `in_progress` for months because the only alternative — `completed` —
+// would have claimed something nobody had checked. Delivered is not validated
+// (docs/architecture/initiative-discipline.md §4) is the sentence the whole
+// discipline turns on, and until now the project row could not say it.
+// `completed` therefore means built AND exercised; `built` means built only.
+//
+// "folded" is the third project closure the model doc has always listed
+// (product-engineering.md: "delivered · cancelled · folded into another
+// project") and the schema never had. "Skill packs as the moat" folded into
+// another initiative and had to be recorded as `cancelled` with prose — which
+// says the work was abandoned when in fact it continues somewhere named. The
+// `folded_into_project_id` / `folded_into_goal_id` columns carry the name.
 export const PROJECT_STATUSES = [
   "backlog",
   "planned",
   "in_progress",
+  "on_hold",
+  "built",
   "completed",
+  "folded",
   "cancelled",
 ] as const;
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
+
+/**
+ * Project statuses that mean the building is done. `built` is here and
+ * `completed` is here; the difference between them is exercise, not delivery,
+ * and it is reported as a count rather than by withholding delivery.
+ */
+export const PROJECT_DELIVERED_STATUSES = ["built", "completed"] as const;
+
+/**
+ * Terminal statuses that take a project out of the live set: nothing more will
+ * be built under this project, here. They are NOT interchangeable — `cancelled`
+ * abandons a stated outcome, `folded` moves it somewhere named — which is why
+ * the derived reading treats them differently and the board counts them apart.
+ */
+export const PROJECT_CLOSED_OUT_STATUSES = ["cancelled", "folded"] as const;
+
+/**
+ * An initiative's status is READ FROM ITS PROJECTS, never stored. "Active — one
+ * of four projects delivered, three on hold" is the honest reading, and a
+ * stored label drifts the moment a project moves. Contrast `GOAL_CLOSURES`,
+ * which a person sets deliberately: closure is a decision, status is a
+ * consequence.
+ */
+/**
+ * `partial` is the value that stops the board overstating. APEX's MCP-first
+ * initiative had two failed projects recorded as `cancelled` and one that
+ * shipped; because cancelled projects drop out of the live set, the derivation
+ * read `delivered` for an initiative whose own sentence — every interface
+ * generated from MCP tools — was falsified. `partial` says: everything still
+ * standing was built, and something was abandoned along the way. The counts
+ * beside it say how much.
+ *
+ * `on_hold` can now also be ASSERTED rather than derived, via the `hold`
+ * marker on the goal — see `deriveInitiativeStatus`.
+ */
+export const INITIATIVE_DERIVED_STATUSES = [
+  "planned",
+  "active",
+  "on_hold",
+  "partial",
+  "delivered",
+  "cancelled",
+] as const;
+export type InitiativeDerivedStatus = (typeof INITIATIVE_DERIVED_STATUSES)[number];
 
 export const ENVIRONMENT_DRIVERS = ["local", "ssh", "sandbox", "plugin"] as const;
 export type EnvironmentDriver = (typeof ENVIRONMENT_DRIVERS)[number];
@@ -593,6 +793,13 @@ export const APPROVAL_TYPES = [
   "approve_ceo_strategy",
   "budget_override_required",
   "request_board_approval",
+  // apex-tower (Task 2 §2b): a ticket-lifecycle HITL gate (spec/plan/pr review).
+  "pipeline_gate",
+  // NOTE: `criterion_review` is deliberately NOT here, for the same reason
+  // `flow_gate` is not: it is minted by the criterion-review sweep, never by a
+  // client. A caller able to create one could fabricate a review prompt — and
+  // then resolve it — against a criterion nobody looked at, which is precisely
+  // the failure the monitor exists to make impossible.
 ] as const;
 export type ApprovalType = (typeof APPROVAL_TYPES)[number];
 

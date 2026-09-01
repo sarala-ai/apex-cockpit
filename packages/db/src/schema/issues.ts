@@ -30,7 +30,18 @@ export const issues = pgTable(
     parentId: uuid("parent_id").references((): AnyPgColumn => issues.id),
     title: text("title").notNull(),
     description: text("description"),
+    // The machine-facing half of a ticket: ids, coordinates, payload shapes,
+    // exact CLI invocations — everything an agent needs and no human reading
+    // the ticket wants in their way. `description` stays the human body (the
+    // outcome wanted and the decision); this column carries the brief.
+    // Additive/nullable: existing tickets keep their body as their body.
+    agentBrief: text("agent_brief"),
     status: text("status").notNull().default("backlog"),
+    // WHAT KIND OF WORK, and therefore WHICH LIFECYCLE — the join key to
+    // `pipelines.ticket_type`. Nullable with no default: an untyped ticket is
+    // untyped, not a chore. See migration 0172 and TICKET_TYPES in
+    // packages/shared/src/constants.ts.
+    ticketType: text("ticket_type"),
     workMode: text("work_mode").notNull().default("standard"),
     harnessKind: text("harness_kind"),
     priority: text("priority").notNull().default("medium"),
@@ -65,6 +76,11 @@ export const issues = pgTable(
     executionWorkspacePreference: text("execution_workspace_preference"),
     executionWorkspaceSettings: jsonb("execution_workspace_settings").$type<Record<string, unknown>>(),
     sourceTrust: jsonb("source_trust").$type<SourceTrustMetadata | null>(),
+    // GitHub projection mirror ref ("owner/repo#123"). The projection that
+    // wrote it was the flow front-end's, and went with it in 0173; the column
+    // survives so the refs already written still resolve, and so a projection
+    // re-hosted on the pipeline step host has its seam waiting.
+    githubMirrorRef: text("github_mirror_ref"),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
@@ -75,6 +91,9 @@ export const issues = pgTable(
   (table) => ({
     companyStatusIdx: index("issues_company_status_idx").on(table.companyId, table.status),
     companyHarnessKindIdx: index("issues_company_harness_kind_idx").on(table.companyId, table.harnessKind),
+    companyTicketTypeIdx: index("issues_company_ticket_type_idx")
+      .on(table.companyId, table.ticketType)
+      .where(sql`${table.ticketType} is not null`),
     assigneeStatusIdx: index("issues_company_assignee_status_idx").on(
       table.companyId,
       table.assigneeAgentId,
@@ -156,5 +175,15 @@ export const issues = pgTable(
           and ${table.hiddenAt} is null
           and ${table.status} not in ('done', 'cancelled')`,
       ),
+    // Finding 5b (adversarial architecture review): the GitHub ingest job
+    // upserts by (companyId, originFingerprint) at the application layer, but
+    // nothing stopped the scheduler tick and a manual `POST
+    // /apex/github-ingest` from racing each other into two inserts for the
+    // same GitHub issue. This constraint makes the dedupe atomic — scoped to
+    // `plugin:github` origin only, mirroring the other origin-scoped partial
+    // unique indexes above.
+    githubOriginFingerprintIdx: uniqueIndex("issues_github_origin_fingerprint_uq")
+      .on(table.companyId, table.originFingerprint)
+      .where(sql`${table.originKind} = 'plugin:github'`),
   }),
 );

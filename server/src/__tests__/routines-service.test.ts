@@ -20,6 +20,7 @@ import {
   projectWorkspaces,
   projects,
   routineDocuments,
+  routineRevisions,
   routineRuns,
   routines,
   routineTriggers,
@@ -201,7 +202,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       {},
     );
 
-    return { companyId, agentId, issueSvc, projectId, routine, svc, wakeups };
+    return { companyId, agentId, defaultResponsibleUserId, issueSvc, projectId, routine, svc, wakeups };
   }
 
   it("filters listed routines by project", async () => {
@@ -776,6 +777,96 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .from(issues)
       .where(eq(issues.id, run.linkedIssueId!));
     expect(createdIssue?.responsibleUserId).toBe(responsibleUserId);
+  });
+
+  it("resolves a bundle-seeded routine's service-marker actor through the ladder instead of storing it verbatim", async () => {
+    // "built-in-bundles" is the non-user actor bundle seeding stamps on
+    // built-in agent routines (see services/built-in-agents.ts). It must
+    // never be carried into responsibleUserId as if it were a real,
+    // accountable user — it should resolve through the same ladder as an
+    // absent actor and land on the company default.
+    const { companyId, agentId, defaultResponsibleUserId, projectId, svc } = await seedFixture();
+
+    const routine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "bundle-seeded routine",
+        description: null,
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      { agentId: null, userId: "built-in-bundles" },
+    );
+
+    expect(routine.responsibleUserId).toBe(defaultResponsibleUserId);
+    expect(routine.responsibleUserId).not.toBe("built-in-bundles");
+
+    // Simulate a routine that was already corrupted before this fix existed
+    // (dispatch must sanitize the stored value too, not just the create path).
+    await db
+      .update(routines)
+      .set({ responsibleUserId: "built-in-bundles", updatedAt: new Date() })
+      .where(eq(routines.id, routine.id));
+    await db
+      .update(routineRevisions)
+      .set({ responsibleUserId: "built-in-bundles" })
+      .where(eq(routineRevisions.routineId, routine.id));
+
+    const run = await svc.runRoutine(routine.id, { source: "schedule" });
+
+    expect(run.status).toBe("issue_created");
+    expect(run.responsibleUserId).toBe(defaultResponsibleUserId);
+    expect(run.responsibleUserId).not.toBe("built-in-bundles");
+    const [createdIssue] = await db
+      .select({ responsibleUserId: issues.responsibleUserId })
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!));
+    expect(createdIssue?.responsibleUserId).toBe(defaultResponsibleUserId);
+    expect(createdIssue?.responsibleUserId).not.toBe("built-in-bundles");
+  });
+
+  it("resolves a routine whose ticket names a responsibleUserId to that user even for a bundle-seeded actor (first rung wins)", async () => {
+    const { companyId, agentId, defaultResponsibleUserId, issueSvc, projectId, svc } = await seedFixture();
+    const ticketResponsibleUserId = randomUUID();
+
+    const ticket = await issueSvc.create(companyId, {
+      projectId,
+      title: "Parent ticket with an explicit owner",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      responsibleUserId: ticketResponsibleUserId,
+      trustExplicitResponsibleUserId: true,
+    });
+
+    const routine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: ticket.id,
+        title: "bundle-seeded routine under a ticket",
+        description: null,
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      { agentId: null, userId: "built-in-bundles" },
+    );
+
+    // The ticket's own responsibleUserId (rung 1) wins over the company
+    // default (rung 3), and the marker never gets a vote.
+    expect(routine.responsibleUserId).toBe(ticketResponsibleUserId);
+    expect(routine.responsibleUserId).not.toBe(defaultResponsibleUserId);
+    expect(routine.responsibleUserId).not.toBe("built-in-bundles");
   });
 
   it("waits for the assignee wakeup to be queued before returning the routine run", async () => {

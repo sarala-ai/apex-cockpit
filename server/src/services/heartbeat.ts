@@ -9,6 +9,7 @@ import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   MODEL_PROFILE_KEYS,
+  agentWritesRepositories,
   envBindingSchema,
   isEnvironmentDriverSupportedForAdapter,
   type BillingType,
@@ -51,6 +52,7 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  pipelineCases,
   issueWorkProducts,
   projects,
   projectWorkspaces,
@@ -73,6 +75,8 @@ import type {
   UsageSummary,
 } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
+import { mintCockpitMcpJwt } from "../mcp/cockpit-mcp-jwt.js";
+import { DEFAULT_MCP_GRANTED_CAPABILITIES } from "../apex/steps/run-policy.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
@@ -115,6 +119,7 @@ import {
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
+import { usableResponsibleUserIdOrNull } from "./service-actor-markers.js";
 import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
 } from "./issue-dependency-wakeups.js";
@@ -290,6 +295,7 @@ export {
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
   ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
 } from "./recovery/service.js";
+import { lockIssueRow } from "./db-lock-order.js";
 export const ACTIVE_RUN_OUTPUT_PROGRESS_FLUSH_INTERVAL_MS = 60 * 1000;
 export const ACTIVE_RUN_LOG_RUNTIME_STATUS_REFRESH_INTERVAL_MS = 5 * 1000;
 export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS = [
@@ -1345,6 +1351,194 @@ function isConfigurationIncompleteFailedRun(
   run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode"> | null | undefined,
 ) {
   return run?.errorCode === CONFIGURATION_INCOMPLETE_FAILURE_CODE;
+}
+
+/** Which dispatch precondition a `configuration_incomplete` run failed on, or
+ *  null when it failed on something else (a missing secret binding). */
+export function readDispatchPreconditionReason(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "resultJson"> | null | undefined,
+): string | null {
+  if (!run) return null;
+  // `mergeHeartbeatRunStopMetadata` spreads the failure's resultJson at the top
+  // level, so the block written by assertRunDispatchPreconditions survives here.
+  const reason = readNonEmptyString(
+    parseObject(parseObject(run.resultJson).configurationIncomplete).reason,
+  );
+  return reason === DISPATCH_PRECONDITION_NO_CODEBASE_REASON
+    || reason === DISPATCH_PRECONDITION_NO_PERMISSION_DECISION_REASON
+    ? reason
+    : null;
+}
+
+/**
+ * DISPATCH PRECONDITIONS — the fail-closed gate in front of every agent launch.
+ *
+ * An agent run that cannot succeed must not start. Two preconditions are
+ * checked here because both were, in practice, silently defaulted rather than
+ * refused:
+ *
+ *  1. NO CODEBASE. The repo binding lives on `project_workspaces` and is only
+ *     reachable THROUGH a project. A task with no project resolves to the agent
+ *     home fallback cwd — an empty directory — and the agent then guesses where
+ *     the code is (observed: recursive greps over `$HOME`). The existing
+ *     `assertGitSensitiveAdapterWorkspaceValid` does not catch this, because its
+ *     `workspaceExpectation` is derived FROM a project/workspace link: no
+ *     project means no expectation means every check is skipped. Absence of a
+ *     binding is exactly the condition that must be refused, not excused.
+ *
+ *  2. NO PERMISSION DECISION. `derivePermissionPolicy` is read by flow
+ *     commission and the pipeline agent port only; routine- and route-triggered
+ *     runs reach neither and inherit the adapter's
+ *     `dangerouslySkipPermissions: true` default. Carrying the grant on the
+ *     roster's `adapterConfig` makes the DEFAULT safe; it cannot make the unsafe
+ *     case impossible (an operator edit, a non-roster agent, or a path that
+ *     overrides `adapterConfig` all drop it silently). So the launch refuses a
+ *     config that expresses no decision at all.
+ *
+ * Both refusals are raised as `ConfigurationIncompleteFailure`, which is the
+ * platform's existing pre-dispatch blocker: the run finalizes as
+ * `configuration_incomplete`, `releaseIssueExecutionAndPromote` moves the issue
+ * to `blocked` with a source-scoped recovery action, and the recovery comment
+ * built below states the missing precondition on the ticket. That is
+ * deliberate — adding a third silent failure mode is the defect, not the fix.
+ */
+export const DISPATCH_PRECONDITION_NO_CODEBASE_REASON = "dispatch_precondition_no_codebase";
+export const DISPATCH_PRECONDITION_NO_PERMISSION_DECISION_REASON =
+  "dispatch_precondition_no_permission_decision";
+
+/**
+ * Adapters whose permission default is "skip everything". These are the only
+ * adapters where an ABSENT decision is materially different from a safe one;
+ * an adapter that defaults to prompting or sandboxing has nothing to inherit.
+ * Keep in sync with the adapters that read `config.dangerouslySkipPermissions`.
+ */
+const PERMISSION_DECISION_REQUIRED_ADAPTER_TYPES = new Set([
+  "claude_local",
+  "opencode_local",
+]);
+
+export type DispatchPreconditionDecision = {
+  /** The explicit permission decision the run will launch under. Returned, not
+   *  merely validated, so the launch path CONSUMES the guard: a caller that
+   *  deletes the guard loses the value it needs to build the adapter config. */
+  dangerouslySkipPermissions: boolean;
+};
+
+/**
+ * Refuse a dispatch that cannot succeed. Returns the validated permission
+ * decision for the launch path to apply.
+ */
+export function assertRunDispatchPreconditions(input: {
+  agent: { id: string; name: string; adapterType: string };
+  issue: { id: string; identifier: string | null; projectId: string | null } | null;
+  resolvedWorkspace: Pick<
+    ResolvedWorkspaceForRun,
+    "cwd" | "source" | "projectId" | "workspaceId" | "repoUrl"
+  >;
+  /** The effective adapter config the run would launch with. */
+  effectiveAdapterConfig: Record<string, unknown>;
+}): DispatchPreconditionDecision {
+  const agentLabel = readNonEmptyString(input.agent.name) ?? "This agent";
+  const issueLabel = input.issue ? input.issue.identifier ?? input.issue.id : null;
+
+  const fail = (reason: string, message: string, extra: Record<string, unknown>): never => {
+    throw new ConfigurationIncompleteFailure(message, {
+      configurationIncomplete: {
+        reason,
+        agentId: input.agent.id,
+        agentName: input.agent.name,
+        adapterType: input.agent.adapterType,
+        issueId: input.issue?.id ?? null,
+        issueIdentifier: input.issue?.identifier ?? null,
+        projectId: input.issue?.projectId ?? input.resolvedWorkspace.projectId ?? null,
+        ...extra,
+      },
+    });
+  };
+
+  // 1. No codebase. Scoped to issue-bound runs THAT WILL WRITE CODE — not to
+  //    runs on a coding adapter. Those are different questions, and the refusal
+  //    message states the sharper one ("none of the code it was asked to
+  //    change"). Adapter type alone refuses a read-only agent whose whole job is
+  //    reading several repositories' history rather than modifying one project's
+  //    checkout; it was never asked to change anything, so a missing project
+  //    workspace is not a missing precondition for it.
+  //
+  //    `agentWritesRepositories` reads the EFFECTIVE grant the run will launch
+  //    with (packages/shared), which is the same answer the composer preflight
+  //    gives before the ticket exists. It still returns true for a local coding
+  //    adapter carrying NO grant, because there absence means full bypass rather
+  //    than restriction — a misconfigured agent stays refused.
+  //
+  //    A run with no ticket is still exempt: there is nowhere to report the
+  //    refusal.
+  if (
+    input.issue &&
+    agentWritesRepositories({
+      adapterType: input.agent.adapterType,
+      adapterConfig: input.effectiveAdapterConfig,
+    })
+  ) {
+    const hasRepoBinding = Boolean(readNonEmptyString(input.resolvedWorkspace.repoUrl));
+    const hasProjectBinding = Boolean(
+      readNonEmptyString(input.issue.projectId) ??
+        readNonEmptyString(input.resolvedWorkspace.projectId),
+    );
+    // A project row alone is not a codebase. `resolveWorkspaceForRun` has two
+    // ways to report `project_primary` while handing back an empty directory:
+    // a project with no `project_workspaces` row at all (managed empty dir),
+    // and a project whose configured cwds were all unavailable (silent fallback
+    // to the agent's home dir, with the project's workspace id still attached).
+    // Both are checked, because both are the reported failure wearing a
+    // different source label.
+    const hasProjectWorkspaceRow = Boolean(readNonEmptyString(input.resolvedWorkspace.workspaceId));
+    const launchedFromAgentHome =
+      input.resolvedWorkspace.source === "agent_home" ||
+      sameResolvedPath(input.resolvedWorkspace.cwd, resolveDefaultAgentWorkspaceDir(input.agent.id));
+    if (
+      !hasRepoBinding &&
+      (!hasProjectBinding || !hasProjectWorkspaceRow || launchedFromAgentHome)
+    ) {
+      fail(
+        DISPATCH_PRECONDITION_NO_CODEBASE_REASON,
+        `${agentLabel} has no codebase: assign this task to a project with a repository, ` +
+          `or set a repo on the project. ` +
+          `Refusing to dispatch ${issueLabel} — no project or repository is bound to it, so ` +
+          `${agentLabel} would start in "${input.resolvedWorkspace.cwd}" with none of the code ` +
+          `it was asked to change.`,
+        {
+          missingPrecondition: "codebase",
+          resolvedWorkspaceSource: input.resolvedWorkspace.source,
+          resolvedWorkspaceCwd: input.resolvedWorkspace.cwd,
+          resolvedProjectWorkspaceId: input.resolvedWorkspace.workspaceId,
+          resolvedRepoUrl: input.resolvedWorkspace.repoUrl,
+        },
+      );
+    }
+  }
+
+  // 2. No permission decision.
+  const declaredSkip = input.effectiveAdapterConfig.dangerouslySkipPermissions;
+  if (typeof declaredSkip === "boolean") {
+    return { dangerouslySkipPermissions: declaredSkip };
+  }
+  if (!PERMISSION_DECISION_REQUIRED_ADAPTER_TYPES.has(input.agent.adapterType)) {
+    return { dangerouslySkipPermissions: false };
+  }
+  return fail(
+    DISPATCH_PRECONDITION_NO_PERMISSION_DECISION_REASON,
+    `${agentLabel} has no permission decision: its effective run config does not set ` +
+      `"dangerouslySkipPermissions", so ${input.agent.adapterType} would fall back to ` +
+      `skipping every permission check. ` +
+      `Refusing to dispatch${issueLabel ? ` ${issueLabel}` : ""} — set a permission profile on ` +
+      `${agentLabel} (or an explicit dangerouslySkipPermissions on the agent's adapter config) ` +
+      `before running it.`,
+    {
+      missingPrecondition: "permission_decision",
+      declaredDangerouslySkipPermissions:
+        declaredSkip === undefined ? null : (JSON.stringify(declaredSkip) ?? String(declaredSkip)),
+    },
+  );
 }
 
 async function hasGitMetadata(cwd: string | null | undefined) {
@@ -4204,6 +4398,7 @@ export async function buildPaperclipWakePayload(input: {
       includeForIssueComment: commentIds.length > 0,
       includeForAnnotationDelta: annotationDeltas.length > 0,
       interactionId,
+      preferredDocumentKey: annotationDeltas[0]?.documentKey ?? null,
     })
     : null;
   const payloadTruncated = truncated || planReviewContext?.truncated === true;
@@ -4529,6 +4724,10 @@ export function buildPaperclipTaskMarkdown(input: {
     title: string;
     workMode?: string | null;
     description?: string | null;
+    /** The machine-facing half of the ticket (issues.agent_brief). Hidden
+     *  behind a collapsed section for humans; delivered to the agent here,
+     *  in the same fenced task-context block the description always used. */
+    agentBrief?: string | null;
   } | null;
   ancestors?: Array<{
     id: string;
@@ -4615,6 +4814,14 @@ export function buildPaperclipTaskMarkdown(input: {
     const description = issue.description?.trim();
     if (description) {
       lines.push("", "Issue description:", fenceTaskText(description));
+    }
+    const agentBrief = issue.agentBrief?.trim();
+    if (agentBrief) {
+      lines.push(
+        "",
+        "Agent brief (machine detail for this ticket — ids, payload shapes, exact commands):",
+        fenceTaskText(agentBrief),
+      );
     }
   }
   if (ancestors.length > 0) {
@@ -4703,6 +4910,23 @@ function normalizeAgentNameKey(value: string | null | undefined) {
   const normalized = value.trim().toLowerCase();
   return normalized.length > 0 ? normalized : null;
 }
+
+/**
+ * `agents.role` values that mean "this agent writes to product repositories".
+ * Used to decide which runs must be serialized against each other (APEX-77 T4).
+ *
+ * Keyed on role rather than display name so that renaming an agent in the
+ * Configuration UI cannot silently disable a safety guard.
+ *
+ * CAVEAT, stated rather than hidden: `agents.role` is free text with no enum
+ * and no validation, and the codebase is not internally consistent about it —
+ * "engineer" appears ~355 times in fixtures and seeds while our live roster
+ * rows carry "engineering". Both are accepted here. This is a strictly better
+ * key than the display name, not a good one; the real fix is a stable agent
+ * role/key on the registry (APEX-32 territory), after which this set should
+ * collapse to a single canonical value.
+ */
+const REPO_WRITING_AGENT_ROLES = ["engineer", "engineering"] as const;
 
 const defaultSessionCodec: AdapterSessionCodec = {
   deserialize(raw: unknown) {
@@ -5141,13 +5365,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return evaluateAgentInvokabilityFromDb(db, agent);
   }
 
-  function toAgentOrgRow(agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name" | "reportsTo" | "status">): AgentOrgRow {
+  function toAgentOrgRow(
+    agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name" | "reportsTo" | "status" | "rosterKind">,
+  ): AgentOrgRow {
     return {
       id: agent.id,
       companyId: agent.companyId,
       name: agent.name,
       reportsTo: agent.reportsTo,
       status: agent.status,
+      rosterKind: agent.rosterKind,
     };
   }
 
@@ -5159,6 +5386,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         name: agents.name,
         reportsTo: agents.reportsTo,
         status: agents.status,
+        rosterKind: agents.rosterKind,
       })
       .from(agents)
       .where(eq(agents.companyId, companyId));
@@ -5226,6 +5454,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         identifier: issues.identifier,
         title: issues.title,
         description: issues.description,
+        agentBrief: issues.agentBrief,
         status: issues.status,
         workMode: issues.workMode,
         priority: issues.priority,
@@ -5344,7 +5573,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return {
           routineId: issueContext.originId,
           env: snapshot.routine.env ?? null,
-          responsibleUserId: revision?.responsibleUserId ?? snapshot.routine.responsibleUserId ?? null,
+          // A stored value here can be a non-human service marker (e.g. a
+          // bundle-seeded routine's stale "built-in-bundles"). Sanitize so the
+          // caller's ladder keeps looking (parent issue / company default)
+          // instead of treating the marker as an authoritative user.
+          responsibleUserId:
+            usableResponsibleUserIdOrNull(revision?.responsibleUserId) ??
+            usableResponsibleUserIdOrNull(snapshot.routine.responsibleUserId),
         };
       }
     }
@@ -5357,7 +5592,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return {
       routineId: issueContext.originId,
       env: routine?.env ?? null,
-      responsibleUserId: routineRun?.responsibleUserId ?? routine?.responsibleUserId ?? null,
+      responsibleUserId:
+        usableResponsibleUserIdOrNull(routineRun?.responsibleUserId) ??
+        usableResponsibleUserIdOrNull(routine?.responsibleUserId),
     };
   }
 
@@ -5412,7 +5649,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.id, parentId)))
       .then((rows) => rows[0] ?? null);
-    return parent?.responsibleUserId ?? null;
+    return usableResponsibleUserIdOrNull(parent?.responsibleUserId);
   }
 
   function isManualUserRun(input: {
@@ -5438,15 +5675,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     triggerDetail?: WakeupOptions["triggerDetail"] | null;
     existingRunResponsibleUserId?: string | null;
   }) {
-    const contextResponsibleUserId = readNonEmptyString(input.contextSnapshot.responsibleUserId);
+    // Every candidate below can, in principle, be a stored value that traces
+    // back to a non-human service marker (e.g. a bundle-seeded routine's
+    // "built-in-bundles") rather than a genuine user id. Sanitize each rung so
+    // a marker can never win the ladder — it falls through exactly as if that
+    // rung were empty, all the way to the live company-default rung.
+    const contextResponsibleUserId = usableResponsibleUserIdOrNull(
+      readNonEmptyString(input.contextSnapshot.responsibleUserId),
+    );
     const requestedUserId = input.requestedByActorType === "user"
       ? readNonEmptyString(input.requestedByActorId)
       : null;
     if (contextResponsibleUserId) return contextResponsibleUserId;
-    if (input.existingRunResponsibleUserId) return input.existingRunResponsibleUserId;
-    if (input.routineEnvContext.responsibleUserId) return input.routineEnvContext.responsibleUserId;
+    const existingRunResponsibleUserId = usableResponsibleUserIdOrNull(input.existingRunResponsibleUserId);
+    if (existingRunResponsibleUserId) return existingRunResponsibleUserId;
+    const routineResponsibleUserId = usableResponsibleUserIdOrNull(input.routineEnvContext.responsibleUserId);
+    if (routineResponsibleUserId) return routineResponsibleUserId;
     if (isManualUserRun(input) && requestedUserId) return requestedUserId;
-    if (input.issueContext?.responsibleUserId) return input.issueContext.responsibleUserId;
+    const issueResponsibleUserId = usableResponsibleUserIdOrNull(input.issueContext?.responsibleUserId);
+    if (issueResponsibleUserId) return issueResponsibleUserId;
     const parentResponsibleUserId = await resolveParentIssueResponsibleUserId(input.companyId, input.issueContext?.parentId);
     if (parentResponsibleUserId) return parentResponsibleUserId;
     if (input.issueContext) return resolveCompanyDefaultResponsibleUserId(input.companyId);
@@ -6864,6 +7111,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
       publishRunLifecyclePluginEvent(updated);
+      // A queued step run can go terminal WITHOUT ever running — the claim
+      // gate cancels it right here through this path (`issue_assignee_changed`
+      // et al.), so the completion bridge must hang off every terminal
+      // transition, not only the running→terminal one. Observed live
+      // (APEX-31/APEX-27): the cancel took this function, the hook below never
+      // fired, and the case sat invisible at `waiting_agent` until the sweep.
+      notifyStepHostOfTerminalRun(updated);
     }
 
     return updated;
@@ -6901,6 +7155,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
       publishRunLifecyclePluginEvent(updated);
+      notifyStepHostOfTerminalRun(updated);
       return { run: updated, updated: true as const };
     }
 
@@ -6911,6 +7166,64 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
 
     return { run: current, updated: false as const };
+  }
+
+  /** Agent-step completion bridge: when a run a process's agent step
+   *  commissioned reaches a terminal status, hand completion back to the
+   *  pipeline host — the narrow event seam mirroring the approvals gate hook.
+   *  `interrupted` is deliberately excluded (the process-loss retry may
+   *  revive it; the pipeline sweep resolves abandoned chains). Fire-and-forget:
+   *  run finalization must never block on case advancement, and the sweep is
+   *  the at-least-once recovery if this in-process notify is lost.
+   *
+   *  The context marker (`flowAgentStep`) keeps its historical spelling on
+   *  purpose — see apex/steps/commission.ts: it is data already written into
+   *  immutable context snapshots, and renaming it would orphan exactly the
+   *  in-flight runs this hook exists to catch. */
+  function notifyStepHostOfTerminalRun(run: typeof heartbeatRuns.$inferSelect) {
+    if (!["succeeded", "failed", "timed_out", "cancelled"].includes(run.status)) return;
+    const context = parseObject(run.contextSnapshot);
+    if (context.flowAgentStep !== true) return;
+    const stepKey = readNonEmptyString(context.stepKey);
+    if (!stepKey) return;
+    void (async () => {
+      const { pipelineService } = await import("./pipelines.js");
+      const svc = pipelineService(db);
+      // The run can reach terminal BEFORE the commissioning bookkeeping links
+      // it: the claim gate cancels the queued run INSIDE the commission call
+      // chain, so at notify time `recordCommissioned` has not yet written
+      // `pipelineCases.stepRunId` and a single lookup finds nothing — the
+      // terminal outcome then stayed invisible until the staleness sweep,
+      // minutes later (observed live, APEX-31/APEX-27). The linkage write is
+      // milliseconds behind in the same process, so re-resolve over a bounded
+      // window instead of giving up; `processAgentStepCompletion` is a CAS on
+      // `waiting_agent`, so a duplicate resolution is a no-op and the sweep
+      // remains the at-least-once recovery beyond the window.
+      const deadline = Date.now() + 15_000;
+      for (;;) {
+        const caseRow = await db
+          .select({ id: pipelineCases.id, companyId: pipelineCases.companyId })
+          .from(pipelineCases)
+          .where(eq(pipelineCases.stepRunId, run.id))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (caseRow) {
+          await svc.processAgentStepCompletion(caseRow.companyId, caseRow.id, {
+            runId: run.id,
+            runStatus: run.status,
+            error: run.error ?? null,
+          });
+          return;
+        }
+        if (Date.now() >= deadline) return;
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    })().catch((err) => {
+      logger.warn(
+        { err, runId: run.id, stepKey },
+        "pipeline agent-step completion hook failed (classified: step_completion_hook_failed) — the sweep will recover",
+      );
+    });
   }
 
   function publishRunLifecyclePluginEvent(run: typeof heartbeatRuns.$inferSelect) {
@@ -7907,6 +8220,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
 
     const queued = await db.transaction(async (tx) => {
+      // THE LOCK ORDER: `issues` before `heartbeat_runs` — services/db-lock-order.ts.
+      // The retry run's `retryOfRunId` FK takes a KEY SHARE lock on the lost
+      // run's row, and the issue's execution lock is rewritten below, so this
+      // transaction holds both. Taking the issue first is the order.
+      if (issueId) await lockIssueRow(tx, issueId);
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -8631,12 +8949,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
 
     const scheduleResult = await db.transaction(async (tx): Promise<ScheduledRetryTransactionResult> => {
+      // THE LOCK ORDER: `issues` before `heartbeat_runs` — services/db-lock-order.ts.
+      // Hoisted out of the max-turn branch below, which already did exactly
+      // this. Every branch of this transaction ends up holding both rows (the
+      // scheduled run's `retryOfRunId` FK takes a KEY SHARE lock on `run.id`,
+      // and the issue's execution lock is rewritten), so the issue lock belongs
+      // at the head where it covers all of them rather than one.
+      if (issueId) await lockIssueRow(tx, issueId);
       if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) {
-        if (issueId) {
-          await tx.execute(
-            sql`select id from issues where company_id = ${run.companyId} and id = ${issueId} for update`,
-          );
-        } else {
+        if (!issueId) {
           await tx.execute(
             sql`select id from heartbeat_runs where company_id = ${run.companyId} and id = ${run.id} for update`,
           );
@@ -9344,6 +9665,50 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  /**
+   * PER-PROJECT serialization (APEX-77 T4): returns true when a repo-writing
+   * run is already running for the same project, so the current run should
+   * stay queued rather than be claimed.
+   *
+   * SCOPE IS THE PROJECT, NOT THE REPO. A project can carry several
+   * workspaces, and two projects can point at one repo, so this is an
+   * approximation of the real collision boundary. It is deliberate and
+   * temporary: APEX-82 moves execution onto per-branch git worktrees, which
+   * removes the shared working tree these runs actually collide over and
+   * makes this guard largely redundant. Do not rename this to "per-repo"
+   * without also changing what it keys on.
+   *
+   * Repo-writing is determined by the agent's `role`, never by its display
+   * name — renaming an agent in the Configuration UI must not silently
+   * disable a safety guard. See REPO_WRITING_AGENT_ROLES for why that key is
+   * better but still imperfect. Specifier (role "product") and Design
+   * Engineer (role "design") are read-only with respect to product
+   * repositories and are correctly exempt.
+   */
+  async function isBlockedByPerProjectSerialisation(
+    run: typeof heartbeatRuns.$inferSelect,
+    agentRole: string | null,
+    projectId: string | null,
+  ): Promise<boolean> {
+    const roleKey = normalizeAgentNameKey(agentRole);
+    if (!roleKey || !REPO_WRITING_AGENT_ROLES.includes(roleKey as never)) return false;
+    if (!projectId) return false;
+
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, run.companyId),
+          eq(heartbeatRuns.status, "running"),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'projectId' = ${projectId}`,
+          inArray(sql`lower(trim(${agents.role}))`, [...REPO_WRITING_AGENT_ROLES]),
+        ),
+      );
+    return Number(count ?? 0) > 0;
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect, companyAgents?: AgentOrgRow[]) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -9432,6 +9797,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
+    // APEX-77 T4: per-PROJECT serialization — one repo-writing run per project
+    // at a time (see isBlockedByPerProjectSerialisation for why project, not
+    // repo, and why APEX-82 supersedes this).
+    // Leave the run queued (do not cancel) so the next cycle picks it up.
+    const projectId = readNonEmptyString(context.projectId);
+    if (await isBlockedByPerProjectSerialisation(run, agent.role, projectId)) {
+      logger.info(
+        { runId: run.id, agentId: run.agentId, agentRole: agent.role, projectId },
+        "claimQueuedRun: per-project serialization — leaving queued while another repo-writing run is active",
+      );
+      return null;
+    }
+
     const claimedAt = new Date();
     const responsibleUserId = await resolveResponsibleUserIdForRun({
       run,
@@ -9507,8 +9885,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     unresolvedBlockerIssueIds: string[],
   ) {
     const now = new Date();
+
+    // Resolve blocker UUIDs to human-readable identifiers for the run event message.
+    const blockerIdentifiers: string[] = [];
+    if (unresolvedBlockerIssueIds.length > 0) {
+      const blockerRows = await db
+        .select({ id: issues.id, identifier: issues.identifier })
+        .from(issues)
+        .where(inArray(issues.id, unresolvedBlockerIssueIds));
+      const idToIdentifier = new Map(blockerRows.map((r) => [r.id, r.identifier]));
+      for (const id of unresolvedBlockerIssueIds) {
+        const ident = idToIdentifier.get(id);
+        blockerIdentifiers.push(ident ?? id);
+      }
+    }
+
+    const blockerSummary = blockerIdentifiers.length > 0
+      ? ` (blocked by ${blockerIdentifiers.join(", ")})`
+      : "";
     const reason =
-      "Cancelled because issue dependencies are still blocked; Paperclip will wake the assignee when blockers resolve";
+      `Cancelled because issue dependencies are still blocked${blockerSummary}; Paperclip will wake the assignee when blockers resolve`;
     const cancelled = await setRunStatus(run.id, "cancelled", {
       finishedAt: now,
       error: reason,
@@ -9553,6 +9949,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       payload: {
         issueId,
         unresolvedBlockerIssueIds,
+        unresolvedBlockerIdentifiers: blockerIdentifiers,
       },
     });
 
@@ -10620,6 +11017,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           priority: issueContext.priority,
           workMode: issueContext.workMode,
           description: issueContext.description,
+          agentBrief: issueContext.agentBrief,
           projectId: issueContext.projectId,
           projectWorkspaceId: issueContext.projectWorkspaceId,
           executionWorkspaceId: issueContext.executionWorkspaceId,
@@ -10696,6 +11094,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             title: issueRef.title,
             workMode: issueRef.workMode,
             description: issueRef.description,
+            agentBrief: issueRef.agentBrief,
           }
         : null,
       ancestors: issueAncestors,
@@ -10714,6 +11113,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         identifier: issueRef.identifier,
         title: issueRef.title,
         description: issueRef.description,
+        agentBrief: issueRef.agentBrief,
         workMode: issueRef.workMode,
       };
     } else {
@@ -11037,6 +11437,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           { useProjectWorkspace: requestedExecutionWorkspaceMode !== "agent_default" },
         ),
     });
+    // Fail-closed dispatch gate. Placed HERE — after the workspace resolves and
+    // the effective adapter config is assembled, before any execution workspace
+    // is realized, any environment leased, and any adapter launched — because
+    // this is the one point every dispatch path passes through with both facts
+    // in hand. See assertRunDispatchPreconditions for why each is refused.
+    const dispatchPreconditions = assertRunDispatchPreconditions({
+      agent: { id: agent.id, name: agent.name, adapterType: agent.adapterType },
+      issue: issueRef
+        ? { id: issueRef.id, identifier: issueRef.identifier, projectId: issueRef.projectId }
+        : null,
+      resolvedWorkspace,
+      effectiveAdapterConfig: runtimeConfig,
+    });
+    // Apply the validated decision, so the guard is load-bearing rather than
+    // advisory: removing it removes the only definition of this value.
+    runtimeConfig = {
+      ...runtimeConfig,
+      dangerouslySkipPermissions: dispatchPreconditions.dangerouslySkipPermissions,
+    };
     const hostExecutionWorkspaceConfig = stripHostWorkspaceProvisionForLowTrustSandbox({
       config: mergedConfig,
       trustPreset,
@@ -11977,6 +12396,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
+      // Mint a cockpit-mcp-audience JWT so the run can reach board tools via MCP
+      // without a static API key (APEX-35/T8). Capability grant: read from the
+      // issue's governed adapter override (set by applyStepRunPermissionOverride
+      // at commission time) when present; else DEFAULT_MCP_GRANTED_CAPABILITIES.
+      // Never mint anonymously — the token always carries agentId + runId so
+      // audit rows have identity.
+      const overrideAdapterConfig = issueAssigneeOverrides?.adapterConfig;
+      const rawOverrideGranted = Array.isArray(overrideAdapterConfig?.grantedCapabilities)
+        ? (overrideAdapterConfig.grantedCapabilities as unknown[]).filter((c): c is string => typeof c === "string")
+        : null;
+      const mcpGrantedCapabilities: string[] = rawOverrideGranted ?? [...DEFAULT_MCP_GRANTED_CAPABILITIES];
+      const mcpToken = adapter.supportsLocalAgentJwt
+        ? mintCockpitMcpJwt({
+          agentId: agent.id,
+          companyId: agent.companyId,
+          runId: run.id,
+          adapterType: agent.adapterType,
+          grantedCapabilities: mcpGrantedCapabilities,
+          issueId: issueRef?.id ?? null,
+        })
+        : null;
+      const extraEnv: Record<string, string> | undefined = mcpToken
+        ? { PAPERCLIP_MCP_TOKEN: mcpToken }
+        : undefined;
       let adapterFinalizeOutcome: "succeeded" | "failed" | null = null;
       const inspectFinalizeWorkspaceBranch = async () => {
         const workspaceRecord = persistedExecutionWorkspace?.id
@@ -12184,6 +12627,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             });
           },
           authToken: authToken ?? undefined,
+          extraEnv,
         });
         // Adapter returned cleanly, which means its workspace-restore finally
         // block also ran without throwing. Record the workspace_finalize
@@ -12877,8 +13321,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   function buildConfigurationIncompleteRecoveryComment(input: {
-    latestRun: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode"> | null | undefined;
+    latestRun:
+      | Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode" | "resultJson">
+      | null
+      | undefined;
   }) {
+    // A dispatch-precondition refusal shares the configuration_incomplete
+    // failure code (and therefore its blocked-with-recovery routing), but it is
+    // NOT a missing secret. Say what actually stopped the run — a refusal
+    // nobody can act on is only marginally better than a hang.
+    const dispatchPreconditionReason = readDispatchPreconditionReason(input.latestRun);
+    if (dispatchPreconditionReason) {
+      const refusal = readNonEmptyString(input.latestRun?.error)?.trim() ?? null;
+      const missing =
+        dispatchPreconditionReason === DISPATCH_PRECONDITION_NO_CODEBASE_REASON
+          ? "no codebase was bound to it"
+          : "no explicit permission decision was in its run config";
+      return (
+        `Paperclip refused to dispatch this run before it started because ${missing}. ` +
+        `An agent run that cannot succeed must not start.${refusal ? `\n\n> ${refusal}` : ""}\n\n` +
+        "Moving it to `blocked` with a source-scoped recovery action so the missing precondition can be " +
+        "supplied before resuming."
+      );
+    }
     const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
     return (
       "Paperclip stopped before dispatching the adapter because required secret/env bindings are missing. " +
@@ -13073,6 +13538,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               name: agents.name,
               reportsTo: agents.reportsTo,
               status: agents.status,
+              rosterKind: agents.rosterKind,
             })
             .from(agents)
             .where(eq(agents.companyId, issue.companyId))

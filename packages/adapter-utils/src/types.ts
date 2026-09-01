@@ -140,6 +140,8 @@ export interface AdapterExecutionContext {
   onRuntimeProgress?: RuntimeStatusSink;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   authToken?: string;
+  /** Per-run server-injected environment variables (e.g. PAPERCLIP_MCP_TOKEN). */
+  extraEnv?: Record<string, string>;
 }
 
 export interface AdapterModel {

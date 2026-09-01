@@ -21,7 +21,7 @@ import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
+import { Bot, CircleDot, DollarSign, OctagonAlert, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -304,6 +304,25 @@ export function Dashboard() {
                   {data.budgets.pendingApprovals > 0
                     ? `${data.budgets.pendingApprovals} budget overrides awaiting board review`
                     : "Awaiting board review"}
+                </span>
+              }
+            />
+            {/*
+              Deliberately its own tile rather than a line inside "Pending
+              Approvals". An approval is the process ASKING; this is the
+              process having STOPPED, with nobody told. Folding the second into
+              the first is how it stayed invisible.
+            */}
+            <MetricCard
+              icon={OctagonAlert}
+              value={data.stoppedSteps}
+              label="Stopped"
+              to="/inbox"
+              description={
+                <span>
+                  {data.stoppedSteps > 0
+                    ? "Nothing moves on from here until this is sorted out"
+                    : "Everything is moving"}
                 </span>
               }
             />

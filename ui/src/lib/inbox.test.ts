@@ -298,6 +298,7 @@ const dashboard: DashboardSummary = {
     monthUtilizationPercent: 90,
   },
   pendingApprovals: 1,
+  stoppedSteps: 0,
   budgets: {
     activeIncidents: 0,
     pendingApprovals: 0,
@@ -337,6 +338,7 @@ describe("inbox helpers", () => {
       failedRuns: 2,
       joinRequests: 1,
       mineIssues: 1,
+      stoppedSteps: 0,
       alerts: 1,
     });
   });
@@ -359,6 +361,7 @@ describe("inbox helpers", () => {
       failedRuns: 0,
       joinRequests: 0,
       mineIssues: 0,
+      stoppedSteps: 0,
       alerts: 0,
     });
   });

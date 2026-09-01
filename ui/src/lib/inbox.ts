@@ -5,6 +5,7 @@ import type {
   InboxDismissal,
   Issue,
   JoinRequest,
+  PipelineStoppedStep,
 } from "@paperclipai/shared";
 import {
   applyIssueFilters,
@@ -83,6 +84,13 @@ export interface InboxBadgeData {
   joinRequests: number;
   mineIssues: number;
   alerts: number;
+  /**
+   * Work that stopped and is waiting on ME. Counted into the badge because it
+   * is the definition of personal actionable work: nothing downstream happens
+   * until this person deals with it. Somebody ELSE's stopped work is not in
+   * here — the list still shows it, but it does not light up my sidebar.
+   */
+  stoppedSteps: number;
 }
 
 export interface InboxWorkItemGroup {
@@ -1231,6 +1239,7 @@ export function computeInboxBadgeData({
   dismissedAlerts,
   dismissedAtByKey,
   currentUserId,
+  stoppedSteps = [],
 }: {
   approvals: Approval[];
   joinRequests: JoinRequest[];
@@ -1240,6 +1249,7 @@ export function computeInboxBadgeData({
   dismissedAlerts: Set<string>;
   dismissedAtByKey: ReadonlyMap<string, number>;
   currentUserId?: string | null;
+  stoppedSteps?: PipelineStoppedStep[];
 }): InboxBadgeData {
   const actionableApprovals = approvals.filter(
     (approval) =>
@@ -1266,14 +1276,21 @@ export function computeInboxBadgeData({
     monthUtilizationPercent >= 80 &&
     !dismissedAlerts.has("alert:budget");
   const alerts = Number(showAggregateAgentError) + Number(showBudgetAlert);
+  // No dismissal filter, on purpose. Approvals, join requests and failed runs
+  // can be snoozed because a person can reasonably decide they are not urgent.
+  // A stopped step cannot: the process is refusing to advance, so the only
+  // thing that makes it go away is dealing with it — which is also the only
+  // thing that SHOULD make it go away.
+  const myStoppedSteps = stoppedSteps.filter((step) => step.isMine).length;
 
   return {
     // The inbox badge reflects personal/actionable work, not company-wide health alerts.
-    inbox: actionableApprovals + visibleJoinRequests + failedRuns + visibleMineIssues,
+    inbox: actionableApprovals + visibleJoinRequests + failedRuns + visibleMineIssues + myStoppedSteps,
     approvals: actionableApprovals,
     failedRuns,
     joinRequests: visibleJoinRequests,
     mineIssues: visibleMineIssues,
     alerts,
+    stoppedSteps: myStoppedSteps,
   };
 }

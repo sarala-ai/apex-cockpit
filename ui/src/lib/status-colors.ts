@@ -80,6 +80,56 @@ export const statusBadge: Record<string, string> = {
   idle: `border ${brandChipBadge.gray}`,
   archived: "bg-muted text-muted-foreground",
 
+  // Project "on_hold" and the derived initiative status of the same name:
+  // valid, decided, not now. Amber like `paused`, never red — a hold is not a
+  // failure.
+  on_hold: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
+  // Derived initiative status "delivered" (the projects are done).
+  delivered: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
+  // Derived initiative status "partial": everything still standing was built,
+  // and something was cancelled to get there. Blue, not green — the reader has
+  // to see at a glance that this is not the same claim as delivered.
+  partial: "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300",
+  // Project "built": the code exists, nothing has run through it. Deliberately
+  // NOT the green that `completed` gets — built-not-exercised looking like
+  // done is the overstatement the whole discipline exists to prevent.
+  built: "bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300",
+  // Project "folded": the work continues under a named link. Neutral, because
+  // a fold is neither a delivery nor a failure.
+  folded: "bg-muted text-muted-foreground",
+  // Hypothesis verdicts. "falsified" is not red: a falsified hypothesis is a
+  // permanent answer and the cheapest thing this platform can buy. The one to
+  // look twice at is `inconclusive` — the round that answered nothing.
+  supported: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
+  falsified: "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300",
+  inconclusive: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
+
+  // Initiative closures (goals with level "initiative"). Only "validated" is
+  // green: the model treats stopped and expired as honest, useful endings, not
+  // failures, so they read neutral/amber rather than red.
+  validated: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
+  stopped: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
+  revised: "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300",
+  expired: "bg-muted text-muted-foreground",
+
+  // Initiative assumption statuses. "blocked" already maps red below.
+  untested: "bg-muted text-muted-foreground",
+  retired: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
+
+  // Validation criterion statuses. "pending" already maps yellow below.
+  // "missed" is amber, not red: a criterion honestly reported as missed is the
+  // method working. The only genuinely bad state here is `never_registered` —
+  // a criterion nobody ever wrote a reader or a date for — so that is the one
+  // that reads as a problem.
+  hit: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
+  missed: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
+  never_registered: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
+
+  // Initiative provenance. Inferred history is a question about the past, not
+  // a fact — it must never look as settled as confirmed history.
+  confirmed: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
+  inferred: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
+
   // Goal statuses
   planned: "bg-muted text-muted-foreground",
   achieved: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",

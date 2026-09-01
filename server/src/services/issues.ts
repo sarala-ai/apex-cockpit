@@ -34,6 +34,8 @@ import {
   projectWorkspaces,
   projects,
   workspaceOperations,
+  pipelineCaseIssueLinks,
+  pipelineCases,
 } from "@paperclipai/db";
 import type {
   AcceptedPlanDecomposition,
@@ -64,6 +66,7 @@ import {
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
+import { reflectGithubIssueTransition } from "../apex/pipeline/github-issue-reflect.js";
 import { parseObject } from "../adapters/utils.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
@@ -102,6 +105,7 @@ import {
 } from "./recovery/origins.js";
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
+import { lockHeartbeatRunRows, lockIssueRow, readLockedRunStatus } from "./db-lock-order.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -2432,7 +2436,12 @@ const issueListSelect = {
       )
     END
   `,
+  // The agent brief is never carried by a list surface: nothing on a board
+  // card or inbox row reads it, and it is the field most likely to be large.
+  // Selected as a constant NULL so the row shape stays whole.
+  agentBrief: sql<string | null>`NULL::text`,
   status: issues.status,
+  ticketType: issues.ticketType,
   workMode: issues.workMode,
   harnessKind: issues.harnessKind,
   priority: issues.priority,
@@ -2466,6 +2475,7 @@ const issueListSelect = {
   executionWorkspacePreference: issues.executionWorkspacePreference,
   executionWorkspaceSettings: sql<null>`null`,
   sourceTrust: issues.sourceTrust,
+  githubMirrorRef: issues.githubMirrorRef,
   startedAt: issues.startedAt,
   completedAt: issues.completedAt,
   cancelledAt: issues.cancelledAt,
@@ -4345,21 +4355,12 @@ export function issueService(db: Db) {
     expectedCheckoutRunId: string;
   }) {
     return db.transaction(async (tx) => {
-      const lockedIssue = await tx
-        .select({
-          id: issues.id,
-          status: issues.status,
-          assigneeAgentId: issues.assigneeAgentId,
-          checkoutRunId: issues.checkoutRunId,
-          executionRunId: issues.executionRunId,
-        })
-        .from(issues)
-        .where(eq(issues.id, input.issueId))
-        .for("update")
-        .then((rows) => rows[0] ?? null);
-      if (!lockedIssue) {
+      // `issues` before `heartbeat_runs` — see services/db-lock-order.ts.
+      const held = await lockIssueRow(tx, input.issueId);
+      if (!held) {
         return { adopted: null, latest: null };
       }
+      const lockedIssue = held.row;
 
       if (
         lockedIssue.status !== "in_progress" ||
@@ -4369,28 +4370,13 @@ export function issueService(db: Db) {
         return { adopted: null, latest: lockedIssue };
       }
 
-      await Promise.all([
-        tx.execute(
-          sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.expectedCheckoutRunId} for update`,
-        ),
-        tx.execute(
-          sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.actorRunId} for update`,
-        ),
+      await lockHeartbeatRunRows(tx, held.lock, [input.expectedCheckoutRunId, input.actorRunId]);
+      const [existingRunStatus, actorRunStatus] = await Promise.all([
+        readLockedRunStatus(tx, input.expectedCheckoutRunId),
+        readLockedRunStatus(tx, input.actorRunId),
       ]);
-      const [existingRun, actorRun] = await Promise.all([
-        tx
-          .select({ status: heartbeatRuns.status })
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, input.expectedCheckoutRunId))
-          .then((rows) => rows[0] ?? null),
-        tx
-          .select({ status: heartbeatRuns.status })
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, input.actorRunId))
-          .then((rows) => rows[0] ?? null),
-      ]);
-      const stale = !existingRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(existingRun.status);
-      const actorLive = actorRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRun.status);
+      const stale = !existingRunStatus || TERMINAL_HEARTBEAT_RUN_STATUSES.has(existingRunStatus);
+      const actorLive = actorRunStatus && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRunStatus);
       if (!stale || !actorLive) {
         return { adopted: null, latest: lockedIssue };
       }
@@ -4445,15 +4431,28 @@ export function issueService(db: Db) {
     actorRunId: string;
   }) {
     return db.transaction(async (tx) => {
-      await tx.execute(
-        sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.actorRunId} for update`,
-      );
-      const actorRun = await tx
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, input.actorRunId))
-        .then((rows) => rows[0] ?? null);
-      if (!actorRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRun.status)) return null;
+      /*
+       * THE INVERSION THAT CAUSED THE DEADLOCK, corrected.
+       *
+       * This used to lock the actor's run and only then write `issues`, while
+       * its three siblings (`adoptStaleCheckoutRun`,
+       * `clearExecutionRunIfTerminal`, `clearCheckoutRunIfTerminal`) lock
+       * `issues` and then the run. Two orders, two concurrent transactions,
+       * `deadlock detected`. The order is now the one rule, stated once in
+       * services/db-lock-order.ts and enforced by the type of `lock`.
+       *
+       * Taking the issue's row lock first also strictly STRENGTHENS this
+       * function: the `UPDATE ... WHERE` below already re-checked every
+       * precondition against the row, so it was never wrong, but it could
+       * previously lose the row to a concurrent writer between the run check
+       * and the update and simply return `null`. Now it cannot.
+       */
+      const held = await lockIssueRow(tx, input.issueId);
+      if (!held) return null;
+
+      await lockHeartbeatRunRows(tx, held.lock, [input.actorRunId]);
+      const actorRunStatus = await readLockedRunStatus(tx, input.actorRunId);
+      if (!actorRunStatus || TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRunStatus)) return null;
 
       const now = new Date();
       const adopted = await tx
@@ -4488,25 +4487,14 @@ export function issueService(db: Db) {
 
   async function clearExecutionRunIfTerminal(issueId: string): Promise<boolean> {
     return db.transaction(async (tx) => {
-      await tx.execute(
-        sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`,
-      );
-      const issue = await tx
-        .select({ executionRunId: issues.executionRunId })
-        .from(issues)
-        .where(eq(issues.id, issueId))
-        .then((rows) => rows[0] ?? null);
+      // `issues` before `heartbeat_runs` — see services/db-lock-order.ts.
+      const held = await lockIssueRow(tx, issueId);
+      const issue = held?.row ?? null;
       if (!issue?.executionRunId) return false;
 
-      await tx.execute(
-        sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
-      );
-      const run = await tx
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, issue.executionRunId))
-        .then((rows) => rows[0] ?? null);
-      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+      await lockHeartbeatRunRows(tx, held!.lock, [issue.executionRunId]);
+      const runStatus = await readLockedRunStatus(tx, issue.executionRunId);
+      if (runStatus && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(runStatus)) return false;
 
       const updated = await tx
         .update(issues)
@@ -4536,36 +4524,21 @@ export function issueService(db: Db) {
   // assigned or what status the issue is currently in.
   async function clearCheckoutRunIfTerminal(issueId: string): Promise<boolean> {
     return db.transaction(async (tx) => {
-      await tx.execute(
-        sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`,
-      );
-      const issue = await tx
-        .select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
-        .from(issues)
-        .where(eq(issues.id, issueId))
-        .then((rows) => rows[0] ?? null);
+      // `issues` before `heartbeat_runs` — see services/db-lock-order.ts. Both
+      // runs are taken in ONE call so they are locked in a stable sorted order
+      // rather than checkout-then-execution, which is a second inversion this
+      // function could hit against itself on two issues sharing a run pair.
+      const held = await lockIssueRow(tx, issueId);
+      const issue = held?.row ?? null;
       if (!issue?.checkoutRunId) return false;
 
-      await tx.execute(
-        sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.checkoutRunId} for update`,
-      );
-      const run = await tx
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, issue.checkoutRunId))
-        .then((rows) => rows[0] ?? null);
-      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+      await lockHeartbeatRunRows(tx, held!.lock, [issue.checkoutRunId, issue.executionRunId]);
+      const runStatus = await readLockedRunStatus(tx, issue.checkoutRunId);
+      if (runStatus && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(runStatus)) return false;
 
       if (issue.executionRunId && issue.executionRunId !== issue.checkoutRunId) {
-        await tx.execute(
-          sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
-        );
-        const executionRun = await tx
-          .select({ status: heartbeatRuns.status })
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, issue.executionRunId))
-          .then((rows) => rows[0] ?? null);
-        if (executionRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(executionRun.status)) return false;
+        const executionRunStatus = await readLockedRunStatus(tx, issue.executionRunId);
+        if (executionRunStatus && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(executionRunStatus)) return false;
       }
 
       const updated = await tx
@@ -6259,6 +6232,38 @@ export function issueService(db: Db) {
         assertTransition(existing.status, issueData.status);
       }
 
+      // The pipeline case is the single writer for "this work is finished".
+      // An agent-driven terminal write on a ticket that belongs to a LIVE
+      // (non-terminal) case must be refused, whatever link role carries the
+      // relationship: the live lifecycles link the ticket as the case's WORK
+      // item, not its conversation (verified in the instance DB — APEX-14 and
+      // APEX-27 both carry role `work` and no `conversation` link exists), so
+      // a conversation-only guard never fires on the live topology. Only
+      // `origin`/`automation` links are exempt — those record provenance, not
+      // ownership. Observed live: the finish_successful_run_handoff run flips
+      // a work-linked ticket `done` while the case is held mid-pipeline
+      // (APEX-31, APEX-14 Aug 7).
+      if (issueData.status && (issueData.status === "done" || issueData.status === "cancelled") && actorAgentId) {
+        const liveLink = await dbOrTx
+          .select({ caseId: pipelineCaseIssueLinks.caseId, terminalKind: pipelineCases.terminalKind })
+          .from(pipelineCaseIssueLinks)
+          .innerJoin(pipelineCases, eq(pipelineCaseIssueLinks.caseId, pipelineCases.id))
+          .where(
+            and(
+              eq(pipelineCaseIssueLinks.issueId, id),
+              inArray(pipelineCaseIssueLinks.role, ["conversation", "work"]),
+              isNull(pipelineCases.terminalKind),
+            ),
+          )
+          .then((rows: Array<{ caseId: string; terminalKind: string | null }>) => rows[0] ?? null);
+        if (liveLink) {
+          throw unprocessable(
+            "This ticket belongs to a live pipeline case; the case is the single writer for terminal status — wait for the pipeline to complete",
+            { caseId: liveLink.caseId },
+          );
+        }
+      }
+
       const patch: Partial<typeof issues.$inferInsert> = {
         ...issueData,
         updatedAt: new Date(),
@@ -6468,7 +6473,52 @@ export function issueService(db: Db) {
         return enriched;
       };
 
-      return dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx);
+      const result = dbOrTx === db ? await db.transaction(runUpdate) : await runUpdate(dbOrTx);
+
+      // Finding 5c (adversarial architecture review): the GitHub reflect hook
+      // used to fire only from the route layer, so any status transition that
+      // went through this service without passing through that route (bulk
+      // tree-control cancel, heartbeat's deferred-comment reopen, etc.) never
+      // reflected back to GitHub. Firing it here, on every committed status
+      // transition, makes this the single place that doctrine is enforced.
+      // Fire-and-forget: a reflection failure must never fail or slow the
+      // issue update itself — `reflectGithubIssueTransition` itself no-ops
+      // for anything that isn't a plugin:github-origin status change.
+      if (result && issueData.status !== undefined && existing.status !== result.status) {
+        void reflectGithubIssueTransition(existing, result).catch((e) => {
+          logger.warn({ err: e, issueId: result.id }, "github issue reflection failed");
+        });
+      }
+
+      return result;
+    },
+
+    /**
+     * Finding 5a (adversarial architecture review): the GitHub ingest job
+     * used to read `status === "backlog"` and then, separately, call the
+     * general-purpose `update()` — a TOCTOU window in which a promotion
+     * (backlog -> anything else) between the read and the write would let
+     * GitHub's re-ingest pen touch a cockpit-owned issue. `update()`'s own
+     * signature has no room for an arbitrary WHERE clause without risking
+     * every other caller's invariants, so this is a narrow, explicit-WHERE
+     * store function scoped to exactly the ingest job's title/description
+     * refresh: the row only updates `WHERE status = 'backlog'` in the same
+     * statement that reads it, atomically. Returns `null` (no-op, not an
+     * error) if the row was promoted out of backlog concurrently — the
+     * caller logs that as a classified skip.
+     */
+    updateBacklogFieldsIfStillBacklog: async (
+      id: string,
+      patch: { title?: string; description?: string | null },
+    ) => {
+      const [updated] = await db
+        .update(issues)
+        .set({ ...patch, updatedAt: new Date() })
+        .where(and(eq(issues.id, id), eq(issues.status, "backlog")))
+        .returning();
+      if (!updated) return null;
+      const [enriched] = await withIssueLabels(db, [updated]);
+      return enriched ?? null;
     },
 
     clearExecutionWorkspaceEnvironmentSelection: async (companyId: string, environmentId: string) => {

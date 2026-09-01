@@ -4,6 +4,7 @@ import {
   getAgentWorkEligibility,
   isAgentAssignableToWork,
   isAgentInvokable,
+  isFixtureAgent,
   type AgentEligibilityAgent,
 } from "./agent-eligibility.js";
 
@@ -21,6 +22,38 @@ function agent(overrides: Partial<AgentEligibilityAgent> = {}): AgentEligibility
 }
 
 describe("agent work eligibility", () => {
+  it("excludes a fixture from both assignment and invocation", () => {
+    const agents = [
+      agent({ rosterKind: "fixture" }),
+      agent({ id: "manager-1", name: "CTO", status: "active", reportsTo: null }),
+    ];
+
+    expect(getAgentWorkEligibility({ agent: agents[0]!, agents })).toMatchObject({
+      assignable: false,
+      invokable: false,
+      assignabilityReason: "fixture",
+      invokabilityReason: "fixture",
+      // The org chain is fine — being a fixture is the only thing wrong, and
+      // that is precisely why status checks alone never caught it.
+      orgChainHealth: { status: "healthy" },
+    });
+  });
+
+  it("treats an undeclared roster kind as before, never as staff or fixture", () => {
+    const agents = [
+      agent({ rosterKind: null }),
+      agent({ id: "manager-1", name: "CTO", status: "active", reportsTo: null }),
+    ];
+
+    expect(isAgentAssignableToWork({ agent: agents[0]!, agents })).toBe(true);
+    expect(isFixtureAgent(agents[0]!.rosterKind)).toBe(false);
+  });
+
+  it("a fixture is still excluded when its status would also block it", () => {
+    const agents = [agent({ rosterKind: "fixture", status: "terminated", reportsTo: null })];
+    expect(getAgentWorkEligibility({ agent: agents[0]!, agents }).assignabilityReason).toBe("fixture");
+  });
+
   it("allows healthy active agents to accept work and be invoked", () => {
     const agents = [
       agent(),

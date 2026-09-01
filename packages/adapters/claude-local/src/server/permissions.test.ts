@@ -48,4 +48,35 @@ describe("claude-local remote permission args", () => {
       "--dangerously-skip-permissions",
     ]);
   });
+
+  describe("allowedToolsOverride (governed flow-commissioned runs)", () => {
+    it("passes the override through as --allowedTools even with skip-permissions disabled", () => {
+      expect(
+        buildClaudeExecutionPermissionArgs({
+          dangerouslySkipPermissions: false,
+          targetIsRemote: false,
+          allowedToolsOverride: "Read Grep Glob",
+        }),
+      ).toEqual(["--allowedTools", "Read Grep Glob"]);
+    });
+
+    it("wins over dangerouslySkipPermissions=true (never doubles up flags)", () => {
+      expect(
+        buildClaudeExecutionPermissionArgs({
+          dangerouslySkipPermissions: true,
+          targetIsRemote: false,
+          allowedToolsOverride: "Read Grep Glob",
+        }),
+      ).toEqual(["--allowedTools", "Read Grep Glob"]);
+    });
+
+    it("is a no-op (existing behavior) when absent or empty", () => {
+      expect(
+        buildClaudeExecutionPermissionArgs({ dangerouslySkipPermissions: false, targetIsRemote: false, allowedToolsOverride: null }),
+      ).toEqual([]);
+      expect(
+        buildClaudeExecutionPermissionArgs({ dangerouslySkipPermissions: false, targetIsRemote: false, allowedToolsOverride: "" }),
+      ).toEqual([]);
+    });
+  });
 });

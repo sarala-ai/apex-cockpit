@@ -48,8 +48,21 @@ import {
   rotateRoutineTriggerSecretSchema,
   runRoutineSchema,
   // Goal
+  GOAL_LEVELS,
   createGoalSchema,
   updateGoalSchema,
+  reportCriterionSchema,
+  // Proposal
+  createProposalSchema,
+  updateProposalSchema,
+  correctProposalRecordSchema,
+  submitProposalSchema,
+  createReleaseSchema,
+  updateReleaseSchema,
+  promoteReleaseSchema,
+  closeReleaseSchema,
+  attachReleaseChangesSchema,
+  addReleaseArtifactSchema,
   // Secret
   createSecretSchema,
   updateSecretSchema,
@@ -73,6 +86,8 @@ import {
   resolveBudgetIncidentSchema,
   // Sidebar
   upsertSidebarOrderPreferenceSchema,
+  // UI preferences
+  upsertUiPreferencesSchema,
   // Execution workspaces
   reconcileExecutionWorkspaceBranchSchema,
   updateExecutionWorkspaceSchema,
@@ -713,6 +728,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
 
 const INSTANCE_ADMIN_OPERATIONS = new Set([
   "POST /api/companies",
+  "GET /api/companies/identity-preview",
   "POST /api/plugins/install",
   "POST /api/instance/database-backups",
   "POST /api/admin/users/{userId}/promote-instance-admin",
@@ -740,6 +756,10 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/environments",
   "POST /api/environments/{environmentId}/custom-image-setup-sessions",
   "POST /api/companies/{companyId}/goals",
+  "POST /api/companies/{companyId}/releases",
+  "POST /api/releases/{id}/promote",
+  "POST /api/releases/{id}/changes",
+  "POST /api/releases/{id}/artifacts",
   "POST /api/companies/{companyId}/labels",
   "POST /api/issues/{id}/documents/{key}/annotations",
   "POST /api/issues/{id}/documents/{key}/annotations/{threadId}/comments",
@@ -2226,6 +2246,17 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "delete",
+  path: "/api/routines/{id}",
+  tags: ["routines"],
+  summary: "Delete a routine",
+  description:
+    "Deletes a routine and cascades to its revisions, triggers, runs and description document. Plugin-managed routines are rejected with 409.",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
   method: "get",
   path: "/api/routines/{id}/runs",
   tags: ["routines"],
@@ -2344,6 +2375,20 @@ registry.registerPath({
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
+// The read-back. An initiative's validation criteria are pre-registered with a
+// named reader and a date; this is how a verdict gets recorded against one.
+registry.registerPath({
+  method: "post",
+  path: "/api/goals/{id}/criteria/{criterionId}/report",
+  tags: ["goals"],
+  summary: "Report a verdict against a pre-registered validation criterion",
+  request: {
+    params: z.object({ id: z.string(), criterionId: z.string() }),
+    body: jsonBody(reportCriterionSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
 registry.registerPath({
   method: "delete",
   path: "/api/goals/{id}",
@@ -2351,6 +2396,275 @@ registry.registerPath({
   summary: "Delete a goal",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+// ─── Goals: the CSV sheet ────────────────────────────────────────────────────
+//
+// Export is a reading tool: 26 initiatives on one screen, scanned side by side.
+// It is NOT the review path — that is a proposal's grid, below, which shows
+// provenance per row and gates corrections. Import is the secondary bulk-edit
+// return leg, dry-run by default.
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/goals/export.csv",
+  tags: ["goals"],
+  summary: "Export goals as CSV for offline scanning",
+  description:
+    "One row per goal, projects summarised, UTF-8 with a BOM so Excel opens it correctly, ordered by created_at so two exports diff cleanly. Read-only columns say so in their header.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      level: z.enum(GOAL_LEVELS).optional().describe("Restrict to one goal level, e.g. initiative"),
+    }),
+  },
+  responses: {
+    200: { description: "CSV document", content: { "text/csv": { schema: z.string() } } },
+    400: r.badRequest,
+    401: r.unauthorized,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/goals/import.csv",
+  tags: ["goals"],
+  summary: "Import corrected goal rows from CSV (dry-run by default)",
+  description:
+    'Send the sheet as text/csv. A row with an id updates; a row without one creates. A BLANK CELL LEAVES THE STORED VALUE UNCHANGED — to clear a field, put "--" in it. derived_status and the projects column are computed and are reported as notices, never applied. Row errors carry their file line number and never abort the batch. Dry-run unless ?apply=true.',
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      apply: z.enum(["true", "false"]).optional().describe("true writes; anything else is a dry run"),
+    }),
+    body: { content: { "text/csv": { schema: z.string() } }, required: true },
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+// ─── Proposals ───────────────────────────────────────────────────────────────
+//
+// The reviewable artifact for STRUCTURED OBJECTS. Design files and code diffs
+// already render at a gate; a set of proposed records did not, which is why
+// reviewing a reconstructed initiative tree had no home in the product. A
+// proposal carries typed records of one `kind` with per-record provenance,
+// takes corrections in place, goes to ONE gate, and materialises only on
+// approval.
+
+registry.registerPath({
+  method: "get",
+  path: "/api/proposal-kinds",
+  tags: ["proposals"],
+  summary: "List registered proposal kinds and their review columns",
+  description:
+    "The review grid renders from this, so adding a kind requires no change to the review surface.",
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/proposals",
+  tags: ["proposals"],
+  summary: "List proposals in a company",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/proposals",
+  tags: ["proposals"],
+  summary: "Create a proposal carrying typed records",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(createProposalSchema),
+  },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/proposals/{id}",
+  tags: ["proposals"],
+  summary: "Get a proposal with its records",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/proposals/{id}/export.csv",
+  tags: ["proposals"],
+  summary: "Export a proposal's records as CSV for offline scanning",
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: { description: "CSV document", content: { "text/csv": { schema: z.string() } } },
+    401: r.unauthorized,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/proposals/{id}",
+  tags: ["proposals"],
+  summary: "Update a proposal's title, summary or record set",
+  request: { params: z.object({ id: z.string() }), body: jsonBody(updateProposalSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/proposals/{id}/records/{ref}",
+  tags: ["proposals"],
+  summary: "Correct one proposed record in place",
+  description:
+    "`fields` merges, so fixing one cell never requires resending the rest. Corrections live on the proposal; no live object is touched until the gate approves.",
+  request: {
+    params: z.object({ id: z.string(), ref: z.string() }),
+    body: jsonBody(correctProposalRecordSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/proposals/{id}/submit",
+  tags: ["proposals"],
+  summary: "Send the whole proposal to a single approval gate",
+  request: { params: z.object({ id: z.string() }), body: jsonBody(submitProposalSchema) },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+// ─── Releases ────────────────────────────────────────────────────────────────
+//
+// A release is scoped to a product (the level the schema calls a company) and
+// aggregates across the intent tree, which is why the collection hangs off the
+// company and the individual release does not.
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/releases",
+  tags: ["releases"],
+  summary: "List releases for a product",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/releases/confounds",
+  tags: ["releases"],
+  summary: "Compute the confound set for a measurement window",
+  description:
+    "Given a window and optionally the initiative being measured, returns every OTHER initiative "
+    + "that had changes in releases overlapping that window. Evidence gathered over a window with "
+    + "confounds is not attributable to one initiative, and the answer says so explicitly.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      windowStart: z.string(),
+      windowEnd: z.string(),
+      initiativeId: z.string().optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/releases/{id}",
+  tags: ["releases"],
+  summary: "Get a release with its changes, artifacts and confound set",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/releases/{id}/notes",
+  tags: ["releases"],
+  summary: "Get generated release notes",
+  description:
+    "Notes are a projection of the provenance record (ticket to pull request to tag), never "
+    + "hand-authored, and they state any confound rather than leaving it to be discovered.",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/releases",
+  tags: ["releases"],
+  summary: "Create a release",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(createReleaseSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/releases/{id}",
+  tags: ["releases"],
+  summary: "Update a release",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(updateReleaseSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/releases/{id}/promote",
+  tags: ["releases"],
+  summary: "Promote a release into another environment",
+  description:
+    "Creates a NEW release carrying the same changes and artifacts, linked back to its source, "
+    + "because each environment needs its own observation window.",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(promoteReleaseSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/releases/{id}/close",
+  tags: ["releases"],
+  summary: "Close a release as stable, rolled back, superseded or partially reverted",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(closeReleaseSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/releases/{id}/changes",
+  tags: ["releases"],
+  summary: "Attach tickets to a release",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(attachReleaseChangesSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/releases/{id}/artifacts",
+  tags: ["releases"],
+  summary: "Record a repository tag as release evidence",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(addReleaseArtifactSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
 });
 
 // ─── Secrets ─────────────────────────────────────────────────────────────────
@@ -2848,6 +3162,23 @@ registry.registerPath({
     params: z.object({ companyId: z.string() }),
     body: jsonBody(upsertSidebarOrderPreferenceSchema),
   },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/ui-preferences/me",
+  tags: ["sidebar"],
+  summary: "Get current user UI preferences (theme)",
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/ui-preferences/me",
+  tags: ["sidebar"],
+  summary: "Update current user UI preferences (theme)",
+  request: { body: jsonBody(upsertUiPreferencesSchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
@@ -5389,6 +5720,306 @@ for (const route of [
     ...(route[0] === "post" || route[0] === "put" ? { body: pluginLocalFolderRequestSchema } : {}),
   });
 }
+
+// ─── APEX Tower (org/company GCP+GitHub scoping, setup, observe, pipeline) ───
+
+for (const route of [
+  ["get", "/api/setup/auth", "Check gcloud/gh auth status"],
+  ["get", "/api/setup/gcp/projects", "List GCP projects the authed account can see"],
+  ["get", "/api/setup/gcp/orgs", "List GCP organizations the authed account can see"],
+  ["get", "/api/setup/github/orgs", "List GitHub organizations the authed account can see"],
+  ["get", "/api/setup/github/repos", "List GitHub repos the authed account can see"],
+] as const) {
+  registerCurrentRoute({ method: route[0], path: route[1], tags: ["apex"], summary: route[2] });
+}
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/setup/state",
+  tags: ["apex"],
+  summary: "Get one failure-isolated snapshot of every APEX setup prerequisite",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/observe/apex-runs",
+  tags: ["apex"],
+  summary: "List recent APEX workflow instances",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/observe/ci-runs",
+  tags: ["apex"],
+  summary: "List recent GitHub Actions runs for a repo",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/observe/agent-runs",
+  tags: ["apex"],
+  summary: "List recent embedded-agent runs (heartbeat runs) with usage",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/orgs",
+  tags: ["apex"],
+  summary: "List orgs",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/orgs",
+  tags: ["apex"],
+  summary: "Create an org",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/orgs/{orgId}/members",
+  tags: ["apex"],
+  summary: "List an org's members",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/orgs/{orgId}/membership",
+  tags: ["apex"],
+  summary: "Get the caller's membership in an org",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/orgs/{orgId}/members",
+  tags: ["apex"],
+  summary: "Add a member to an org",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/orgs/{orgId}/members/{userId}/approve",
+  tags: ["apex"],
+  summary: "Approve a pending org member",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/orgs/{id}",
+  tags: ["apex"],
+  summary: "Get an org",
+});
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/orgs/{id}",
+  tags: ["apex"],
+  summary: "Update an org's GitHub-org mapping and/or governance posture",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/orgs/{orgId}/companies",
+  tags: ["apex"],
+  summary: "Create or associate a company under an org",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/orgs/{orgId}/companies",
+  tags: ["apex"],
+  summary: "List companies under an org",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/apex/scope/{scopeType}/{scopeId}/cloud-binding",
+  tags: ["apex"],
+  summary: "Get the GCP project + GitHub repo binding for a scope (org or company)",
+});
+
+registerCurrentRoute({
+  method: "put",
+  path: "/api/apex/scope/{scopeType}/{scopeId}/cloud-binding",
+  tags: ["apex"],
+  summary: "Set the GCP project + GitHub repo binding for a scope (org or company)",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/apex/pipeline/seed",
+  tags: ["apex"],
+  summary: "Idempotently seed the fixed APEX Tower pipeline stage machine",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/apex/pipeline/ingest",
+  tags: ["apex"],
+  summary: "Mirror a repo's open GitHub issues into the seeded pipeline as cases",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/apex/pipeline/cases/{caseId}/execute",
+  tags: ["apex"],
+  summary: "Run a pipeline case's APEX workflow and advance its stage",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/apex/github-ingest",
+  tags: ["apex"],
+  summary: "Ingest a GitHub issue into a fork issue, reflecting promotion/close back",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/observe/gcp-resource",
+  tags: ["apex"],
+  summary: "Get a single GCP resource's detail",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/observe/gcp-inventory",
+  tags: ["apex"],
+  summary: "List a company's bound GCP projects' full resource inventory",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/observe/gcp-services",
+  tags: ["apex"],
+  summary: "List a company's bound GCP projects' enabled services",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/observe/attribution/import",
+  tags: ["apex"],
+  summary: "Bulk-import apex-core's resource-mapper report as auto_mapped attribution rows",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/observe/attribution/manual",
+  tags: ["apex"],
+  summary: "Set a manual resource attribution override",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/observe/attribution/refresh",
+  tags: ["apex"],
+  summary: "Refresh a project's resource attribution mapping",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/observe/attribution/conflicts",
+  tags: ["apex"],
+  summary: "List resources whose live cloud label disagrees with their auto_mapped attribution",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/observe/gcp-resource-health",
+  tags: ["apex"],
+  summary: "Get a GCP resource's health/readiness detail",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/observe/gateway-metrics",
+  tags: ["apex"],
+  summary: "Get apex-gateway invocation metrics",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/observe/fleet",
+  tags: ["apex"],
+  summary: "Get the composite fleet observe surface",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/observe/runs",
+  tags: ["apex"],
+  summary: "List recent observed runs across sources",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/observe/health",
+  tags: ["apex"],
+  summary: "Get the observe surface's own health status",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/observe/run-detail/{runId}",
+  tags: ["apex"],
+  summary: "Get one observed run's detail",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/observe/evals",
+  tags: ["apex"],
+  summary: "List recent eval results",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/observe/regressions",
+  tags: ["apex"],
+  summary: "List detected eval regressions",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/approvals/{id}/pr-diff",
+  tags: ["apex"],
+  summary: "Get the live PR file diff for a flow_gate approval",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/approvals/{id}/brief",
+  tags: ["apex"],
+  summary: "Get the decision brief for a flow_gate approval",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/identity-preview",
+  tags: ["apex"],
+  summary: "Preview the issue prefix and slug creating a company with this name would allocate",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/slug-break-glass",
+  tags: ["apex"],
+  summary: "Force-reassign a company's slug, breaking any existing holder",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/issue-prefix-break-glass",
+  tags: ["apex"],
+  summary: "Change a company's issue prefix, rewriting existing issue identifiers",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/data-erasure",
+  tags: ["apex"],
+  summary:
+    "Owner-only destructive erasure of company, project or initiative data. Dry run by default; writing requires `confirm` equal to the company's slug",
+});
 
 // ─── Spec builder ─────────────────────────────────────────────────────────────
 

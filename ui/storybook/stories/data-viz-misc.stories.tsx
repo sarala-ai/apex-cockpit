@@ -619,7 +619,6 @@ function PageSkeletonMatrix() {
     "approvals",
     "costs",
     "inbox",
-    "org-chart",
   ] as const;
 
   return (

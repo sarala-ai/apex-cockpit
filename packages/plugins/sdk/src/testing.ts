@@ -1565,6 +1565,9 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           title: input.title,
           description: input.description ?? null,
           status: input.status ?? "todo",
+          // A plugin-created ticket declares no type. Not "chore" — an
+          // undeclared type is its own honest state (see TICKET_TYPES).
+          ticketType: null,
           workMode: "standard",
           priority: input.priority ?? "medium",
           assigneeAgentId: input.assigneeAgentId ?? null,
@@ -1975,6 +1978,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             name: declaration.displayName,
             urlKey: declaration.displayName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""),
             role: (declaration.role ?? "general") as Agent["role"],
+            rosterKind: null,
             title: declaration.title ?? null,
             icon: declaration.icon ?? null,
             status: declaration.status ?? "idle",
@@ -2016,6 +2020,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
               name: declaration.displayName,
               urlKey: declaration.displayName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""),
               role: (declaration.role ?? "general") as Agent["role"],
+              rosterKind: null,
               title: declaration.title ?? null,
               icon: declaration.icon ?? null,
               status: declaration.status ?? "idle",
@@ -2045,6 +2050,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             ...resolved.agent,
             name: declaration.displayName,
             role: (declaration.role ?? "general") as Agent["role"],
+            rosterKind: null,
             title: declaration.title ?? null,
             icon: declaration.icon ?? null,
             capabilities: declaration.capabilities ?? null,
@@ -2135,6 +2141,14 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           status: input.status ?? "planned",
           parentId: input.parentId ?? null,
           ownerAgentId: input.ownerAgentId ?? null,
+          // Initiative-only fields: the plugin goals API does not accept them,
+          // so the fake mirrors a plain goal — null, never a guessed default.
+          closure: null,
+          closureReason: null,
+          assumptions: null,
+          budget: null,
+          stopCondition: null,
+          hypothesis: null,
           createdAt: now,
           updatedAt: now,
         };

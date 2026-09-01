@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Project } from "@paperclipai/shared";
+import { PROJECT_STATUSES as SHARED_PROJECT_STATUSES } from "@paperclipai/shared";
 import { StatusBadge } from "./StatusBadge";
 import { cn, formatDate } from "../lib/utils";
 import { environmentsApi } from "../api/environments";
@@ -24,13 +25,13 @@ import { InlineEditor } from "./InlineEditor";
 import { EnvironmentVariablesEditor } from "./environment-variables-editor";
 import { Badge } from "@/components/ui/badge";
 
-const PROJECT_STATUSES = [
-  { value: "backlog", label: "Backlog" },
-  { value: "planned", label: "Planned" },
-  { value: "in_progress", label: "In Progress" },
-  { value: "completed", label: "Completed" },
-  { value: "cancelled", label: "Cancelled" },
-];
+// Derived from the shared constant rather than retyped: a hand-maintained copy
+// silently drops any status added upstream (which is exactly how "on_hold"
+// would have gone missing from this picker).
+const PROJECT_STATUS_OPTIONS = SHARED_PROJECT_STATUSES.map((value) => ({
+  value,
+  label: value.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
+}));
 
 interface ProjectPropertiesProps {
   project: Project;
@@ -138,7 +139,7 @@ function ProjectStatusPicker({ status, onChange }: { status: string; onChange: (
         </button>
       </PopoverTrigger>
       <PopoverContent className="w-40 p-1" align="start">
-        {PROJECT_STATUSES.map((s) => (
+        {PROJECT_STATUS_OPTIONS.map((s) => (
           <Button
             key={s.value}
             variant="ghost"
@@ -559,6 +560,28 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
             <StatusBadge status={project.status} />
           )}
         </PropertyRow>
+        {/* Where a folded project's work went. Read-only: the fold is recorded
+            where the decision is taken, and a project that folded into nothing
+            recorded says so rather than showing a blank. */}
+        {project.status === "folded" && (
+          <PropertyRow label="Folded into">
+            {project.foldedIntoGoalId ? (
+              <Link to={`/goals/${project.foldedIntoGoalId}`} className="text-sm hover:underline">
+                {allGoals?.find((goal) => goal.id === project.foldedIntoGoalId)?.title ??
+                  project.foldedIntoGoalId.slice(0, 8)}
+              </Link>
+            ) : project.foldedIntoProjectId ? (
+              <Link
+                to={`/projects/${project.foldedIntoProjectId}`}
+                className="text-sm hover:underline"
+              >
+                {project.foldedIntoProjectId.slice(0, 8)}
+              </Link>
+            ) : (
+              <span className="text-sm text-muted-foreground">No destination recorded</span>
+            )}
+          </PropertyRow>
+        )}
         {project.leadAgentId && (
           <PropertyRow label="Lead">
             <span className="text-sm font-mono">{project.leadAgentId.slice(0, 8)}</span>

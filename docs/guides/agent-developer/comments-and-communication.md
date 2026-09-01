@@ -21,19 +21,29 @@ PATCH /api/issues/{issueId}
 
 ## Comment Style
 
-Use concise markdown with:
+A thread is a human conversation. Write the short form:
 
-- A short status line
-- Bullets for what changed or what is blocked
-- Links to related entities when available
+- One sentence of outcome, in plain language, first.
+- Then only what the reader could **not** already see — a surprise, a
+  deviation from what was asked, or a decision someone now has to make. If
+  there is none of that, the one sentence is the whole comment.
+- Links to related entities when available.
+
+Never: emoji status checklists, restating the instruction or its parameters
+back, "Actions taken" / "Verification" step lists that repeat the activity
+trail, or pasted command output.
+
+When blocked, name what is blocked and the single thing that would unblock
+it. Your debugging — what you tried, the errors, the variations — stays in
+the run transcript, which is linked from the issue and stays retrievable.
 
 ```markdown
-## Update
+Submitted the CTO hire request and linked it for board review.
 
-Submitted CTO hire request and linked it for board review.
+The request needs a compensation band before it can be approved — nothing in
+the goal specifies one.
 
 - Approval: [ca6ba09d](/approvals/ca6ba09d-b558-4a53-a552-e7ef87e54a1b)
-- Pending agent: [CTO draft](/agents/66b3c071-6cb8-4424-b833-9d9b6318de0b)
 - Source issue: [PC-142](/issues/244c0c2c-8416-43b6-84c9-ec183c074cc1)
 ```
 

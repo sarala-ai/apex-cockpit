@@ -25,9 +25,17 @@ export {
   createCompanySchema,
   updateCompanySchema,
   updateCompanyBrandingSchema,
+  companySlugSchema,
+  companySlugBreakGlassSchema,
+  COMPANY_SLUG_PATTERN,
+  companyIssuePrefixSchema,
+  companyIssuePrefixBreakGlassSchema,
+  COMPANY_ISSUE_PREFIX_PATTERN,
   type CreateCompany,
   type UpdateCompany,
   type UpdateCompanyBranding,
+  type CompanySlugBreakGlass,
+  type CompanyIssuePrefixBreakGlass,
 } from "./company.js";
 export {
   environmentDriverSchema,
@@ -76,6 +84,14 @@ export {
   upsertSidebarOrderPreferenceSchema,
   type UpsertSidebarOrderPreference,
 } from "./sidebar-preferences.js";
+export {
+  themePreferenceSchema,
+  uiPreferencesSchema,
+  upsertUiPreferencesSchema,
+  type ThemePreference,
+  type UiPreferences,
+  type UpsertUiPreferences,
+} from "./ui-preferences.js";
 export {
   resourceMembershipStateSchema,
   updateResourceMembershipSchema,
@@ -246,6 +262,7 @@ export {
 } from "./trust-policy.js";
 
 export {
+  agentRosterKindSchema,
   createAgentSchema,
   builtInAgentEmptyMutationSchema,
   builtInAgentProvisionSchema,
@@ -291,6 +308,7 @@ export {
 export {
   createProjectSchema,
   updateProjectSchema,
+  foldLinkIssues,
   createProjectWorkspaceSchema,
   updateProjectWorkspaceSchema,
   projectExecutionWorkspacePolicySchema,
@@ -481,8 +499,23 @@ export {
 export {
   createGoalSchema,
   updateGoalSchema,
+  goalAssumptionSchema,
+  goalValidationCriterionSchema,
+  goalHypothesisSchema,
+  goalHoldSchema,
+  goalProvenanceSchema,
+  reportCriterionSchema,
+  goalBaseSchema,
+  GOAL_INITIATIVE_FIELDS,
+  initiativeFieldsRejectedFor,
   type CreateGoal,
   type UpdateGoal,
+  type GoalAssumption,
+  type GoalValidationCriterion,
+  type GoalHypothesis,
+  type GoalHold,
+  type GoalProvenance,
+  type ReportCriterion,
 } from "./goal.js";
 
 export {
@@ -687,3 +720,19 @@ export {
   type SetPluginState,
   type ListPluginState,
 } from "./plugin.js";
+export {
+  createReleaseSchema,
+  updateReleaseSchema,
+  promoteReleaseSchema,
+  closeReleaseSchema,
+  attachReleaseChangesSchema,
+  addReleaseArtifactSchema,
+  confoundQuerySchema,
+  type CreateRelease,
+  type UpdateRelease,
+  type PromoteRelease,
+  type CloseRelease,
+  type AttachReleaseChanges,
+  type AddReleaseArtifact,
+  type ConfoundQuery,
+} from "./release.js";

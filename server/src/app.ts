@@ -18,6 +18,15 @@ import { builtInAgentRoutes } from "./routes/built-in-agents.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
+import { apexSetupRoutes } from "./routes/apex-setup.js";
+import { apexScopingRoutes } from "./routes/apex-scoping.js";
+import { apexSetupStateRoutes } from "./routes/apex-setup-state.js";
+import { apexObserveRoutes } from "./routes/apex-observe.js";
+import { apexGatewayObserveRoutes } from "./routes/apex-gateway-observe.js";
+import { apexWorkflowsRoutes } from "./routes/apex-workflows.js";
+import { apexCapabilitiesRoutes } from "./routes/apex-capabilities.js";
+import { apexDesignRoutes } from "./routes/apex-design.js";
+import { apexPipelineRoutes } from "./routes/apex-pipeline.js";
 import { issueRoutes } from "./routes/issues.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
 import { caseRoutes } from "./routes/cases.js";
@@ -27,6 +36,8 @@ import { pipelineRoutes } from "./routes/pipelines.js";
 import { environmentRoutes } from "./routes/environments.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
+import { proposalRoutes } from "./routes/proposals.js";
+import { releaseRoutes } from "./routes/releases.js";
 import { boardChatRoutes } from "./routes/board-chat.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { secretRoutes } from "./routes/secrets.js";
@@ -35,7 +46,9 @@ import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { userProfileRoutes } from "./routes/user-profiles.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
+import { stoppedStepRoutes } from "./routes/stopped-steps.js";
 import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
+import { uiPreferenceRoutes } from "./routes/ui-preferences.js";
 import { resourceMembershipRoutes } from "./routes/resource-memberships.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
@@ -51,6 +64,8 @@ import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
+import { mcpRoutes, registerCockpitMcpWithGateway } from "./mcp/router.js";
+import { oauthRoutes } from "./mcp/oauth.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
@@ -235,6 +250,14 @@ export async function createApp(
   api.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
+  api.use(apexSetupRoutes());
+  api.use(apexScopingRoutes(db));
+  api.use(apexSetupStateRoutes(db));
+  api.use(apexObserveRoutes(db));
+  api.use(apexGatewayObserveRoutes());
+  api.use(apexWorkflowsRoutes(db));
+  api.use(apexCapabilitiesRoutes());
+  api.use(apexDesignRoutes(db));
   api.use(issueRoutes(db, opts.storageService, {
     feedbackExportService: opts.feedbackExportService,
     pluginWorkerManager: workerManager,
@@ -244,9 +267,12 @@ export async function createApp(
   api.use(fileResourceRoutes(db));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(pipelineRoutes(db));
+  api.use(apexPipelineRoutes(db));
   api.use(environmentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(executionWorkspaceRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(goalRoutes(db));
+  api.use(proposalRoutes(db));
+  api.use(releaseRoutes(db));
   api.use(boardChatRoutes(db, { deploymentMode: opts.deploymentMode }));
   api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(secretRoutes(db));
@@ -255,7 +281,9 @@ export async function createApp(
   api.use(dashboardRoutes(db));
   api.use(userProfileRoutes(db));
   api.use(sidebarBadgeRoutes(db));
+  api.use(stoppedStepRoutes(db));
   api.use(sidebarPreferenceRoutes(db));
+  api.use(uiPreferenceRoutes(db));
   api.use(resourceMembershipRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db));
@@ -345,6 +373,16 @@ export async function createApp(
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });
   });
+
+  // Cockpit MCP server — streamable-HTTP transport (APEX-35)
+  app.use(mcpRoutes(db));
+  // OAuth 2.1 + PKCE flow for external MCP hosts (APEX-35 T7)
+  app.use(
+    oauthRoutes(db, {
+      resolveUserId: async (req) => (await opts.resolveSession?.(req))?.user?.id ?? null,
+      expectedResource: process.env.PAPERCLIP_COCKPIT_MCP_URL?.trim() || undefined,
+    }),
+  );
   app.use(pluginUiStaticRoutes(db, {
     localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
   }));
@@ -549,6 +587,9 @@ export async function createApp(
       );
     }
   };
+  void registerCockpitMcpWithGateway(opts.serverPort).catch((err) => {
+    logger.error({ err }, "cockpit-mcp gateway self-registration failed (non-fatal)");
+  });
   void ensureBundledKubernetesPlugin()
     .then(() => loader.loadAll())
     .then((result) => {

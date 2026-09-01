@@ -75,6 +75,13 @@ export type {
   RuntimeStatusUpdate,
 } from "./runtime-progress.js";
 export { inferOpenAiCompatibleBiller } from "./billing.js";
+export {
+  SPINE_ATTRIBUTE_KEYS,
+  buildResourceAttributes,
+  mergeResourceAttributes,
+  otelEnv,
+} from "./observe-spine-env.js";
+export type { RunSpine } from "./observe-spine-env.js";
 // Keep the root adapter-utils entry browser-safe because the UI imports it.
 // The sandbox callback bridge stays available via its dedicated subpath export.
 export type {

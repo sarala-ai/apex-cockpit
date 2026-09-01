@@ -13,6 +13,12 @@ import type {
   PlanReviewInteractionContext,
   PlanReviewInteractionResultContext,
   PlanReviewInteractionTargetContext,
+  ReviewableDocumentKey,
+} from "@paperclipai/shared";
+import {
+  isReviewableDocumentKey,
+  pickReviewableDocumentKey,
+  REVIEWABLE_DOCUMENT_KEYS,
 } from "@paperclipai/shared";
 import { parseObject } from "../adapters/utils.js";
 
@@ -32,6 +38,8 @@ type BuildPlanReviewContextInput = {
   includeForIssueComment?: boolean;
   includeForAnnotationDelta?: boolean;
   interactionId?: string | null;
+  /** Key of the reviewable document the wake is about, when the caller knows it. */
+  preferredDocumentKey?: string | null;
 };
 
 function nonEmptyString(value: unknown) {
@@ -58,15 +66,15 @@ function authorFrom(row: {
   };
 }
 
-function readPlanTarget(value: unknown, issueId: string): PlanReviewInteractionTargetContext | null {
+function readReviewableTarget(value: unknown, issueId: string): PlanReviewInteractionTargetContext | null {
   const target = parseObject(value);
   if (target.type !== "issue_document") return null;
-  if (target.key !== "plan") return null;
+  if (!isReviewableDocumentKey(target.key)) return null;
   if (nonEmptyString(target.issueId) !== issueId) return null;
   return {
     issueId,
     documentId: nonEmptyString(target.documentId),
-    key: "plan",
+    key: target.key,
     revisionId: nonEmptyString(target.revisionId),
     revisionNumber: typeof target.revisionNumber === "number" ? target.revisionNumber : null,
   };
@@ -112,7 +120,7 @@ async function getPlanInteractionContext(input: {
 
   if (!row) return null;
   const payload = parseObject(row.payload);
-  const target = readPlanTarget(payload.target, input.issueId);
+  const target = readReviewableTarget(payload.target, input.issueId);
   if (!target) return null;
   const result = readResult(row.result);
 
@@ -144,8 +152,9 @@ export async function buildPlanReviewContext(input: BuildPlanReviewContextInput)
     interaction !== null;
   if (!shouldInclude) return null;
 
-  const planDocument = await input.db
+  const reviewableDocuments = await input.db
     .select({
+      key: issueDocuments.key,
       documentId: documents.id,
       latestRevisionId: documents.latestRevisionId,
       latestRevisionNumber: documents.latestRevisionNumber,
@@ -155,11 +164,23 @@ export async function buildPlanReviewContext(input: BuildPlanReviewContextInput)
     .where(and(
       eq(issueDocuments.companyId, input.companyId),
       eq(issueDocuments.issueId, input.issueId),
-      eq(issueDocuments.key, "plan"),
+      inArray(issueDocuments.key, [...REVIEWABLE_DOCUMENT_KEYS]),
       eq(documents.companyId, input.companyId),
-    ))
-    .then((rows) => rows[0] ?? null);
-  if (!planDocument) return null;
+    ));
+
+  // An interaction target (or the wake's own annotation) names the document under
+  // review; otherwise fall back to the highest-priority reviewable document present.
+  const presentKeys = reviewableDocuments.map((row) => row.key);
+  const targetKey = interaction?.target?.key;
+  const preferredKey = input.preferredDocumentKey;
+  const documentKey: ReviewableDocumentKey | null =
+    (isReviewableDocumentKey(targetKey) ? targetKey : null)
+    ?? (isReviewableDocumentKey(preferredKey) && presentKeys.includes(preferredKey) ? preferredKey : null)
+    ?? pickReviewableDocumentKey(presentKeys);
+  const planDocument = documentKey
+    ? reviewableDocuments.find((row) => row.key === documentKey) ?? null
+    : null;
+  if (!planDocument || !documentKey) return null;
 
   const [{ count: openThreadCount }] = await input.db
     .select({ count: sql<number>`count(*)::int` })
@@ -168,7 +189,7 @@ export async function buildPlanReviewContext(input: BuildPlanReviewContextInput)
       eq(documentAnnotationThreads.companyId, input.companyId),
       eq(documentAnnotationThreads.issueId, input.issueId),
       eq(documentAnnotationThreads.documentId, planDocument.documentId),
-      eq(documentAnnotationThreads.documentKey, "plan"),
+      eq(documentAnnotationThreads.documentKey, documentKey),
       eq(documentAnnotationThreads.status, "open"),
     ));
 
@@ -195,7 +216,7 @@ export async function buildPlanReviewContext(input: BuildPlanReviewContextInput)
       eq(documentAnnotationThreads.companyId, input.companyId),
       eq(documentAnnotationThreads.issueId, input.issueId),
       eq(documentAnnotationThreads.documentId, planDocument.documentId),
-      eq(documentAnnotationThreads.documentKey, "plan"),
+      eq(documentAnnotationThreads.documentKey, documentKey),
       eq(documentAnnotationThreads.status, "open"),
     ))
     .orderBy(desc(documentAnnotationThreads.updatedAt), desc(documentAnnotationThreads.id))
@@ -236,7 +257,7 @@ export async function buildPlanReviewContext(input: BuildPlanReviewContextInput)
       eq(documentAnnotationThreads.companyId, input.companyId),
       eq(documentAnnotationThreads.issueId, input.issueId),
       eq(documentAnnotationThreads.documentId, planDocument.documentId),
-      eq(documentAnnotationThreads.documentKey, "plan"),
+      eq(documentAnnotationThreads.documentKey, documentKey),
       eq(documentAnnotationThreads.status, "open"),
     ));
 
@@ -310,7 +331,7 @@ export async function buildPlanReviewContext(input: BuildPlanReviewContextInput)
   if (omittedCommentCount > 0) truncated = true;
 
   return {
-    documentKey: "plan",
+    documentKey,
     issueId: input.issueId,
     latestRevisionId: planDocument.latestRevisionId,
     latestRevisionNumber: planDocument.latestRevisionNumber,

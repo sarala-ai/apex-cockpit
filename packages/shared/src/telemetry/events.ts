@@ -57,13 +57,28 @@ export function trackRoutineRun(
   });
 }
 
+/**
+ * The goal levels the telemetry contract actually enumerates. The contract is
+ * generated and upstream-owned, so it lags our own GOAL_LEVELS — "initiative"
+ * has no member there. Typing this list as the generated union means a member
+ * disappearing upstream is a compile error rather than a silent dimension;
+ * anything we know about but the contract does not reports as "other", which
+ * is the escape hatch the contract provides for exactly this.
+ */
+const CONTRACT_GOAL_LEVELS: readonly EventDimensionsMap["goal.created"]["goal_level"][] = [
+  "company",
+  "team",
+  "agent",
+  "task",
+];
+
 export function trackGoalCreated(
   client: TelemetryClient,
   dims?: { goalLevel?: RawDimension<EventDimensionsMap["goal.created"]["goal_level"]> | null },
 ): void {
-  client.track("goal.created", {
-    goal_level: dims?.goalLevel ? asEventDimension(dims.goalLevel) : "other",
-  });
+  const level = dims?.goalLevel;
+  const known = level ? CONTRACT_GOAL_LEVELS.find((member) => member === level) : undefined;
+  client.track("goal.created", { goal_level: known ?? "other" });
 }
 
 export function trackAgentCreated(

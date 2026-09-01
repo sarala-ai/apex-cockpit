@@ -37,13 +37,18 @@ export function validateConfiguredBindMode(input: {
   bind?: BindMode | null | undefined;
   host?: string | null | undefined;
   customBindHost?: string | null | undefined;
+  /** Identity spec rule 3: a LOCAL container must run trusted with no login,
+   *  but has to bind 0.0.0.0 for Docker port publishing — the operator
+   *  acknowledges (APEX_LOCAL_CONTAINER=true) that the port is published on
+   *  the host's loopback only, making the host interface the boundary. */
+  localContainerAck?: boolean;
 }): string[] {
   const bind = input.bind ?? inferBindModeFromHost(input.host);
   const customBindHost = normalizeHost(input.customBindHost);
   const errors: string[] = [];
 
-  if (input.deploymentMode === "local_trusted" && bind !== "loopback") {
-    errors.push("local_trusted requires server.bind=loopback");
+  if (input.deploymentMode === "local_trusted" && bind !== "loopback" && !input.localContainerAck) {
+    errors.push("local_trusted requires server.bind=loopback (or APEX_LOCAL_CONTAINER=true in a container published on 127.0.0.1 only)");
   }
 
   if (bind === "custom" && !customBindHost) {

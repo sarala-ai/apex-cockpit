@@ -4,6 +4,7 @@ import {
   askUserQuestionsPayloadSchema,
   checkoutIssueSchema,
   createApprovalSchema,
+  createDocumentAnnotationCommentSchema,
   createIssueInputSchema,
   issueThreadInteractionContinuationPolicySchema,
   requestCheckboxConfirmationPayloadSchema,
@@ -12,6 +13,9 @@ import {
   updateIssueSchema,
   upsertIssueDocumentSchema,
   linkIssueApprovalSchema,
+  createProposalSchema,
+  proposalRecordSchema,
+  submitProposalSchema,
 } from "@paperclipai/shared";
 import { PaperclipApiClient } from "./client.js";
 import { formatErrorResponse, formatTextResponse } from "./format.js";
@@ -168,6 +172,66 @@ const createApprovalToolSchema = z.object({
   companyId: companyIdOptional,
 }).merge(createApprovalSchema);
 
+// ── PROPOSALS ────────────────────────────────────────────────────────────────
+//
+// The only way an agent may put structured records in front of a person. The
+// review artifact, its gate and its materialiser already exist; what was
+// missing was any route by which an agent could reach them, so `proposals` was
+// a surface nobody could commission. These two tools are that route and no
+// more: ASSEMBLE a set, SUBMIT it once. There is deliberately no tool to
+// approve, correct or materialise — those are the reviewer's verbs, and an
+// agent that could do them would turn a gate into a formality.
+//
+// Reading is already covered (`paperclipListGoals` returns the initiatives a
+// record may target), so no read tool is added here either.
+
+/**
+ * One proposed record, as an AGENT may state it.
+ *
+ * Two narrowings against the shared schema, both of which are the doctrine
+ * being ENFORCED rather than requested:
+ *
+ *   - The reviewer's own fields (`note`, `excluded`, `correctedAt`,
+ *     `correctedByUserId`) are not accepted. An agent that could pre-annotate
+ *     or pre-strike a row would be writing the review as well as the
+ *     proposal.
+ *   - `provenance.source` is REQUIRED and non-empty. The shared schema makes
+ *     provenance mandatory but leaves its source optional, which is right for
+ *     a human correcting a row in the grid and wrong for a machine
+ *     reconstructing one: `{kind: "confirmed"}` with nothing behind it is
+ *     indistinguishable from an assertion, and `{kind: "inferred"}` with
+ *     nothing behind it cannot be checked by the person who has to decide
+ *     whether the inference holds. "Confirmed with a concrete source or
+ *     inferred from something nameable" is the whole claim being made.
+ */
+const proposalRecordToolSchema = proposalRecordSchema
+  .omit({ note: true, excluded: true, correctedAt: true, correctedByUserId: true })
+  .superRefine((record, ctx) => {
+    if ((record.provenance.source ?? "").trim().length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["provenance", "source"],
+        message:
+          record.provenance.kind === "confirmed"
+            ? `Record "${record.ref}": provenance.kind "confirmed" requires a concrete source — the commit sha, spec path, PR number or document you read it in. A confirmed record with no source is an assertion.`
+            : `Record "${record.ref}": provenance.kind "inferred" requires a source naming what it was inferred FROM (e.g. "47 commits, March–May" or "3 specs under specs/022-*"), so a reviewer can check the inference instead of trusting it.`,
+      });
+    }
+  });
+
+const createProposalToolSchema = createProposalSchema
+  // `proposedByAgentId` is stamped server-side from the authenticated actor.
+  // Accepting it here would let one agent file a proposal under another's name.
+  .omit({ records: true, proposedByAgentId: true })
+  .extend({
+    companyId: companyIdOptional,
+    records: z.array(proposalRecordToolSchema).min(1).max(200),
+  });
+
+const submitProposalToolSchema = z
+  .object({ proposalId: z.string().uuid() })
+  .merge(submitProposalSchema);
+
 const apiRequestSchema = z.object({
   method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
   path: z.string().min(1),
@@ -232,6 +296,24 @@ async function getIssueWorkspaceRuntime(client: PaperclipApiClient, issueId: str
     workspace,
     runtimeServices: readWorkspaceRuntimeServices(workspace),
   };
+}
+
+// Observe (read-only) tool inputs — the scope maps to the /observe/* query params.
+const observeScope = {
+  companyId: companyIdOptional,
+  projectId: z.string().optional().nullable(),
+  agentId: agentIdOptional,
+  repo: z.string().optional().nullable(),
+  env: z.enum(["dev", "staging", "prod", "local"]).optional().nullable(),
+};
+function observeQs(input: Record<string, unknown>): string {
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(input)) {
+    if (v === undefined || v === null || k === "runId") continue;
+    params.set(k, String(v));
+  }
+  const qs = params.toString();
+  return qs ? `?${qs}` : "";
 }
 
 export function createToolDefinitions(client: PaperclipApiClient): ToolDefinition[] {
@@ -343,6 +425,67 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
         ),
     ),
     makeTool(
+      "paperclipListDocumentAnnotations",
+      "List review annotation threads on an issue document (anchored, threaded review comments)",
+      z.object({
+        issueId: issueIdSchema,
+        key: documentKeySchema,
+        status: z.enum(["open", "resolved", "all"]).optional(),
+        includeComments: z.boolean().optional(),
+      }),
+      async ({ issueId, key, status, includeComments }) => {
+        const params = new URLSearchParams();
+        if (status) params.set("status", status);
+        if (includeComments) params.set("includeComments", "true");
+        const qs = params.toString();
+        return client.requestJson(
+          "GET",
+          `/issues/${encodeURIComponent(issueId)}/documents/${encodeURIComponent(key)}/annotations${qs ? `?${qs}` : ""}`,
+        );
+      },
+    ),
+    makeTool(
+      "paperclipGetDocumentAnnotationThread",
+      "Get one review annotation thread on an issue document, with its comments",
+      z.object({ issueId: issueIdSchema, key: documentKeySchema, threadId: z.string().uuid() }),
+      async ({ issueId, key, threadId }) =>
+        client.requestJson(
+          "GET",
+          `/issues/${encodeURIComponent(issueId)}/documents/${encodeURIComponent(key)}/annotations/${encodeURIComponent(threadId)}`,
+        ),
+    ),
+    makeTool(
+      "paperclipReplyToDocumentAnnotation",
+      "Reply inside a review annotation thread on an issue document",
+      z.object({
+        issueId: issueIdSchema,
+        key: documentKeySchema,
+        threadId: z.string().uuid(),
+      }).merge(createDocumentAnnotationCommentSchema),
+      async ({ issueId, key, threadId, ...body }) =>
+        client.requestJson(
+          "POST",
+          `/issues/${encodeURIComponent(issueId)}/documents/${encodeURIComponent(key)}/annotations/${encodeURIComponent(threadId)}/comments`,
+          { body },
+        ),
+    ),
+    makeTool(
+      "paperclipSetDocumentAnnotationThreadStatus",
+      "Resolve or reopen a review annotation thread on an issue document",
+      z.object({
+        issueId: issueIdSchema,
+        key: documentKeySchema,
+        threadId: z.string().uuid(),
+        status: z.enum(["open", "resolved"]),
+      }),
+      async ({ issueId, key, threadId, status }) =>
+        client.requestJson(
+          "PATCH",
+          `/issues/${encodeURIComponent(issueId)}/documents/${encodeURIComponent(key)}/annotations/${encodeURIComponent(threadId)}`,
+          { body: { status } },
+        ),
+    ),
+    makeTool(
       "paperclipListProjects",
       "List projects in a company",
       z.object({ companyId: companyIdOptional }),
@@ -417,6 +560,30 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "Get a goal by id",
       z.object({ goalId: goalIdSchema }),
       async ({ goalId }) => client.requestJson("GET", `/goals/${encodeURIComponent(goalId)}`),
+    ),
+    makeTool(
+      "paperclipCreateProposal",
+      [
+        "Create a PROPOSAL: a set of typed records a person reviews as one grid and approves once. Nothing is written to the board until that approval — this is the only way an agent may put structured records in front of a reviewer, and it is inert until they decide.",
+        'kind="initiatives" record fields: title (required), description, hypothesis, budget, stopCondition, closure (validated|stopped|revised|expired), closureReason. Status is derived from projects and can never be proposed.',
+        "Each record needs a unique `ref`. Set `targetId` to an existing initiative id (see paperclipListGoals) to propose an UPDATE to it; omit it to propose a CREATE.",
+        "Each record needs `provenance`: {kind:'confirmed', source:'<commit sha | spec path | PR number | document>'} for something you read, or {kind:'inferred', source:'<what you inferred it from>'} for a reconstruction. The source is required either way. Never present a reconstruction as confirmed.",
+        "Leave a field empty when the record does not say — an empty stop condition is an honest record that nobody wrote one. Do not invent dates, owners, criteria or stop conditions to fill a column.",
+      ].join(" "),
+      createProposalToolSchema,
+      async ({ companyId, ...body }) =>
+        client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/proposals`, {
+          body,
+        }),
+    ),
+    makeTool(
+      "paperclipSubmitProposal",
+      "Submit a proposal for review. Opens ONE approval over the whole set and hands it to a person; the records materialise only if they approve. Rejected with the offending refs if any record does not match its kind's shape.",
+      submitProposalToolSchema,
+      async ({ proposalId, note }) =>
+        client.requestJson("POST", `/proposals/${encodeURIComponent(proposalId)}/submit`, {
+          body: { note },
+        }),
     ),
     makeTool(
       "paperclipListApprovals",
@@ -629,6 +796,45 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
           body: parseOptionalJson(jsonBody),
         });
       },
+    ),
+    // ── Observe (READ-ONLY) — thin wrappers over /observe/*. The observe →
+    //    diagnose → file-ticket loop uses these to sense, then a SEPARATE write
+    //    tool (paperclipCreateIssue) to act. Sensing and acting stay split.
+    makeTool(
+      "observeFleet",
+      "Observe (read-only): list a company's agents / MCP servers / workflows with health, last run, and 24h success rate.",
+      z.object({ ...observeScope }),
+      async (input) => client.requestJson("GET", `/observe/fleet${observeQs(input)}`),
+    ),
+    makeTool(
+      "observeRuns",
+      "Observe (read-only): recent agent/workflow runs in scope, with status, duration, tokens, and cost.",
+      z.object({ ...observeScope, status: z.string().optional().nullable(), limit: z.number().int().min(1).max(200).optional() }),
+      async (input) => client.requestJson("GET", `/observe/runs${observeQs(input)}`),
+    ),
+    makeTool(
+      "observeRunDetail",
+      "Observe (read-only): full trace for one run — spans, tool calls, LLM calls, evals — to debug why it did what it did.",
+      z.object({ runId: z.string().min(1) }),
+      async ({ runId }) => client.requestJson("GET", `/observe/run-detail/${encodeURIComponent(runId)}`),
+    ),
+    makeTool(
+      "observeHealth",
+      "Observe (read-only): aggregate health for a scope over a window — success rate, avg duration, cost, eval pass rate.",
+      z.object({ ...observeScope, windowHours: z.number().int().min(1).max(720).optional() }),
+      async (input) => client.requestJson("GET", `/observe/health${observeQs(input)}`),
+    ),
+    makeTool(
+      "observeEvals",
+      "Observe (read-only): recent evaluation verdicts (pass/warn/fail + score + reason) in scope.",
+      z.object({ ...observeScope, verdict: z.enum(["pass", "warn", "fail"]).optional().nullable(), limit: z.number().int().min(1).max(200).optional() }),
+      async (input) => client.requestJson("GET", `/observe/evals${observeQs(input)}`),
+    ),
+    makeTool(
+      "observeRegressions",
+      "Observe (read-only): what got worse vs the prior window — success rate, eval score, latency, cost. Feeds the improvement loop.",
+      z.object({ ...observeScope, windowHours: z.number().int().min(1).max(720).optional() }),
+      async (input) => client.requestJson("GET", `/observe/regressions${observeQs(input)}`),
     ),
   ];
 }

@@ -14,6 +14,9 @@ import {
   heartbeatRuns,
   issueComments,
   issues,
+  routineRevisions,
+  routineRuns,
+  routines,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -21,6 +24,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { runningProcesses } from "../adapters/index.ts";
+import { verifyLocalAgentJwt } from "../agent-auth-jwt.ts";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -39,7 +43,11 @@ vi.mock("../adapters/index.ts", async () => {
   return {
     ...actual,
     getServerAdapter: vi.fn(() => ({
-      supportsLocalAgentJwt: false,
+      // supportsLocalAgentJwt: true so the "mints the agent JWT for a
+      // routine-triggered run" test below can capture and decode the token
+      // the adapter would actually receive. Other tests in this file ignore
+      // the authToken the mock is called with, so this is safe to flip.
+      supportsLocalAgentJwt: true,
       execute: mockAdapterExecute,
     })),
   };
@@ -61,11 +69,15 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
   let db!: ReturnType<typeof createDb>;
   let heartbeat!: ReturnType<typeof heartbeatService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  const originalAgentJwtSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-responsible-user-");
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db);
+    // Needed so createLocalAgentJwt actually mints a token (rather than
+    // silently returning null) for the agent-JWT assertion below.
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "heartbeat-responsible-user-invariant-test-secret";
   }, 20_000);
 
   afterEach(async () => {
@@ -86,6 +98,9 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
+    await db.delete(routineRuns);
+    await db.delete(routineRevisions);
+    await db.delete(routines);
     await db.delete(issues);
     await db.delete(agents);
     await db.delete(companySkills);
@@ -95,6 +110,11 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+    if (originalAgentJwtSecret === undefined) {
+      delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    } else {
+      process.env.PAPERCLIP_AGENT_JWT_SECRET = originalAgentJwtSecret;
+    }
   });
 
   async function seedCompany() {
@@ -302,5 +322,82 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId)));
     expect(runs).toHaveLength(0);
+  });
+
+  it("resolves a bundle-seeded routine's service-marker responsible user through the ladder, and mints the run's agent JWT for the resolved user", async () => {
+    // "built-in-bundles" is the non-user actor bundle seeding stamps on
+    // built-in agent routines (services/built-in-agents.ts). Simulate a
+    // routine + routine run that already carry that marker verbatim (the
+    // observed state on APEX-15) and confirm the heartbeat run this produces
+    // — and the agent JWT minted for it — resolve to a real accountable
+    // user via the ladder instead of carrying the marker forward.
+    const { companyId, agentId, ownerUserId } = await seedCompany();
+    // Give the agent a read-only grant so dispatch doesn't refuse the run for
+    // lacking a project codebase (agentWritesRepositories reads it off the
+    // grant) — irrelevant to what's under test here, which is responsible-user
+    // resolution, not the no-codebase precondition.
+    await db.update(agents).set({ adapterConfig: { allowedTools: "Read" } }).where(eq(agents.id, agentId));
+
+    const routineId = randomUUID();
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      title: "Bundle-seeded routine",
+      assigneeAgentId: agentId,
+      originKind: "built_in_agent_bundle",
+      originId: "bundle:demo",
+      responsibleUserId: "built-in-bundles",
+    });
+
+    const routineRunId = randomUUID();
+    await db.insert(routineRuns).values({
+      id: routineRunId,
+      companyId,
+      routineId,
+      source: "schedule",
+      status: "issue_created",
+      responsibleUserId: "built-in-bundles",
+    });
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Bundle-seeded routine execution",
+      status: "todo",
+      assigneeAgentId: agentId,
+      originKind: "routine_execution",
+      originId: routineId,
+      originRunId: routineRunId,
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId, mutation: "create" },
+      requestedByActorType: "system",
+      contextSnapshot: { issueId, source: "routine.dispatch" },
+    });
+
+    expect(run).not.toBeNull();
+    const completed = await waitForRun(db, run!.id);
+    expect(completed?.status).toBe("succeeded");
+    expect(completed?.responsibleUserId).toBe(ownerUserId);
+    expect(completed?.responsibleUserId).not.toBe("built-in-bundles");
+
+    // The agent JWT is the credential ("agent API key") the dispatched run
+    // actually authenticates with. Decode what the adapter received and
+    // assert the effective on-behalf-of user directly, rather than asserting
+    // that some internal function was called.
+    const lastCall = mockAdapterExecute.mock.calls.at(-1);
+    expect(lastCall).toBeTruthy();
+    const authToken = (lastCall?.[0] as { authToken?: string | null } | undefined)?.authToken;
+    expect(authToken).toBeTruthy();
+    const claims = verifyLocalAgentJwt(authToken!);
+    expect(claims).not.toBeNull();
+    expect(claims?.run_id).toBe(completed!.id);
+    expect(claims?.responsible_user_id).toBe(ownerUserId);
+    expect(claims?.responsible_user_id).not.toBe("built-in-bundles");
   });
 });

@@ -21,6 +21,15 @@ export function parseClaudeStreamJson(stdout: string) {
   let model = "";
   let finalResult: Record<string, unknown> | null = null;
   const assistantTexts: string[] = [];
+  // Aggregate token usage from per-turn `assistant` events as a FALLBACK for CLI
+  // runs whose terminal `result` event omits usage. NOTE: this CLI-path parser does
+  // NOT apply to the ACP engine — ACP surfaces only a context-window gauge
+  // ("usage updated: N/200000"), not an input/output/cost breakdown, so ACP runs
+  // legitimately have no billing usage here (a documented limitation of the
+  // acpx-engine, tracked separately).
+  let aggInputTokens = 0;
+  let aggOutputTokens = 0;
+  let aggCachedInputTokens = 0;
 
   for (const rawLine of stdout.split(/\r?\n/)) {
     const line = rawLine.trim();
@@ -38,6 +47,13 @@ export function parseClaudeStreamJson(stdout: string) {
     if (type === "assistant") {
       sessionId = asString(event.session_id, sessionId ?? "") || sessionId;
       const message = parseObject(event.message);
+      const turnUsage = parseObject(message.usage);
+      const turnInput = asNumber(turnUsage.input_tokens, 0);
+      const turnCached = asNumber(turnUsage.cache_read_input_tokens, 0);
+      // The final turn carries the fullest input context; output is per-turn, so sum it.
+      if (turnInput > 0) aggInputTokens = turnInput;
+      if (turnCached > 0) aggCachedInputTokens = turnCached;
+      aggOutputTokens += asNumber(turnUsage.output_tokens, 0);
       const content = Array.isArray(message.content) ? message.content : [];
       for (const entry of content) {
         if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
@@ -56,23 +72,37 @@ export function parseClaudeStreamJson(stdout: string) {
     }
   }
 
+  const aggregatedUsage: UsageSummary | null =
+    aggInputTokens > 0 || aggOutputTokens > 0
+      ? { inputTokens: aggInputTokens, cachedInputTokens: aggCachedInputTokens, outputTokens: aggOutputTokens }
+      : null;
+
   if (!finalResult) {
     return {
       sessionId,
       model,
       costUsd: null as number | null,
-      usage: null as UsageSummary | null,
+      usage: aggregatedUsage,
       summary: assistantTexts.join("\n\n").trim(),
       resultJson: null as Record<string, unknown> | null,
     };
   }
 
   const usageObj = parseObject(finalResult.usage);
-  const usage: UsageSummary = {
+  let usage: UsageSummary = {
     inputTokens: asNumber(usageObj.input_tokens, 0),
     cachedInputTokens: asNumber(usageObj.cache_read_input_tokens, 0),
     outputTokens: asNumber(usageObj.output_tokens, 0),
   };
+  // If the terminal result omitted usage, fall back to the per-turn aggregate.
+  if (
+    usage.inputTokens === 0 &&
+    usage.outputTokens === 0 &&
+    (usage.cachedInputTokens ?? 0) === 0 &&
+    aggregatedUsage
+  ) {
+    usage = aggregatedUsage;
+  }
   const costRaw = finalResult.total_cost_usd;
   const costUsd = typeof costRaw === "number" && Number.isFinite(costRaw) ? costRaw : null;
   const summary = asString(finalResult.result, assistantTexts.join("\n\n")).trim();

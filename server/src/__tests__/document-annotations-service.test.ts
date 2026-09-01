@@ -72,7 +72,10 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
     await tempDb?.cleanup();
   });
 
-  async function createIssueWithDocument(workMode: "planning" | "standard" = "planning") {
+  async function createIssueWithDocument(
+    workMode: "planning" | "standard" = "planning",
+    key = "plan",
+  ) {
     const companyId = randomUUID();
     const issueId = randomUUID();
 
@@ -96,7 +99,7 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
 
     const created = await docs.upsertIssueDocument({
       issueId,
-      key: "plan",
+      key,
       title: "Plan",
       format: "markdown",
       body: "Alpha selected text omega",
@@ -320,6 +323,87 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
     expect(cleanup.resolvedThreadIds).toEqual([]);
   });
 
+  it("returns the re-anchoring trail on single-thread reads and omits it from list reads", async () => {
+    const { issueId, document } = await createIssueWithDocument();
+    const thread = await annotations.createThread(
+      issueId,
+      "plan",
+      {
+        baseRevisionId: document.latestRevisionId!,
+        baseRevisionNumber: document.latestRevisionNumber,
+        selector: {
+          quote: { exact: "selected text", prefix: "Alpha ", suffix: " omega" },
+          position: { normalizedStart: 6, normalizedEnd: 19, markdownStart: 6, markdownEnd: 19 },
+        },
+        body: "Please review this passage",
+      },
+      { actorType: "user", actorId: "board-user", userId: "board-user" },
+    );
+
+    // Revision 2 shifts the passage: the anchor survives.
+    const shifted = await docs.upsertIssueDocument({
+      issueId,
+      key: "plan",
+      title: "Plan",
+      format: "markdown",
+      body: "Preamble. Alpha selected text omega",
+      baseRevisionId: document.latestRevisionId,
+    });
+    await annotations.remapOpenThreadsForDocument({
+      issueId,
+      key: "plan",
+      documentId: document.id,
+      nextRevisionId: shifted.document.latestRevisionId,
+      nextRevisionNumber: shifted.document.latestRevisionNumber,
+      nextBody: shifted.document.body,
+    });
+
+    // Revision 3 removes it entirely: the anchor orphans.
+    const rewritten = await docs.upsertIssueDocument({
+      issueId,
+      key: "plan",
+      title: "Plan",
+      format: "markdown",
+      body: "Something else entirely",
+      baseRevisionId: shifted.document.latestRevisionId,
+    });
+    await annotations.remapOpenThreadsForDocument({
+      issueId,
+      key: "plan",
+      documentId: document.id,
+      nextRevisionId: rewritten.document.latestRevisionId,
+      nextRevisionNumber: rewritten.document.latestRevisionNumber,
+      nextBody: rewritten.document.body,
+    });
+
+    const single = await annotations.getThreadForIssueDocument(issueId, "plan", thread.id);
+    expect(single?.anchorState).toBe("orphaned");
+    expect(single?.anchorHistory).toHaveLength(2);
+    expect(single?.anchorHistory?.[0]).toMatchObject({
+      fromRevisionNumber: 1,
+      toRevisionNumber: 2,
+      failureReason: null,
+    });
+    expect(single?.anchorHistory?.[0]?.nextAnchor).not.toBeNull();
+    const detachment = single?.anchorHistory?.[1];
+    expect(detachment).toMatchObject({
+      fromRevisionNumber: 2,
+      toRevisionNumber: 3,
+      anchorState: "orphaned",
+      nextAnchor: null,
+    });
+    // The passage the reviewer commented on is still recoverable from the trail.
+    expect(detachment?.previousAnchor.selectedText).toBe("selected text");
+    expect(detachment?.failureReason).toBeTruthy();
+
+    const listed = await annotations.listThreadsForIssueDocument(issueId, "plan", {
+      status: "all",
+      includeComments: true,
+    });
+    expect(listed).toHaveLength(1);
+    expect((listed[0] as { anchorHistory?: unknown }).anchorHistory).toBeUndefined();
+  });
+
   it("builds compact open plan review context and excludes resolved threads", async () => {
     const { companyId, issueId, document } = await createIssueWithDocument();
     const longBody = "x".repeat(PLAN_REVIEW_CONTEXT_LIMITS.maxBodyChars + 25);
@@ -400,6 +484,203 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
         }),
       ],
     });
+  });
+
+  it("builds review context for a spec document exactly as it does for a plan document", async () => {
+    const { companyId, issueId, document } = await createIssueWithDocument("planning", "spec");
+    const thread = await annotations.createThread(
+      issueId,
+      "spec",
+      {
+        baseRevisionId: document.latestRevisionId!,
+        baseRevisionNumber: document.latestRevisionNumber,
+        selector: {
+          quote: { exact: "selected text", prefix: "Alpha ", suffix: " omega" },
+          position: { normalizedStart: 6, normalizedEnd: 19, markdownStart: 6, markdownEnd: 19 },
+        },
+        body: "Tighten this requirement",
+      },
+      { actorType: "user", actorId: "board-user", userId: "board-user" },
+    );
+
+    const context = await buildPlanReviewContext({
+      db,
+      companyId,
+      issueId,
+      issueWorkMode: "planning",
+    });
+
+    expect(context).toMatchObject({
+      documentKey: "spec",
+      issueId,
+      latestRevisionId: document.latestRevisionId,
+      latestRevisionNumber: document.latestRevisionNumber,
+      totals: {
+        openThreadCount: 1,
+        includedThreadCount: 1,
+        commentCount: 1,
+        includedCommentCount: 1,
+      },
+      truncated: false,
+    });
+    expect(context?.threads.map((entry) => entry.id)).toEqual([thread.id]);
+    expect(context?.threads[0]).toMatchObject({
+      documentKey: "spec",
+      status: "open",
+      selectedText: "selected text",
+      comments: [expect.objectContaining({ body: "Tighten this requirement" })],
+    });
+  });
+
+  it("ignores annotations on documents that are not reviewable", async () => {
+    const { companyId, issueId, document } = await createIssueWithDocument("planning", "notes");
+    await annotations.createThread(
+      issueId,
+      "notes",
+      {
+        baseRevisionId: document.latestRevisionId!,
+        baseRevisionNumber: document.latestRevisionNumber,
+        selector: {
+          quote: { exact: "selected text", prefix: "Alpha ", suffix: " omega" },
+          position: { normalizedStart: 6, normalizedEnd: 19, markdownStart: 6, markdownEnd: 19 },
+        },
+        body: "Just a note",
+      },
+      { actorType: "user", actorId: "board-user", userId: "board-user" },
+    );
+
+    await expect(buildPlanReviewContext({
+      db,
+      companyId,
+      issueId,
+      issueWorkMode: "planning",
+    })).resolves.toBeNull();
+  });
+
+  it("reviews the document the wake is about when an issue has both plan and spec", async () => {
+    const { companyId, issueId, document: planDocument } = await createIssueWithDocument("planning", "plan");
+    const specDocument = (await docs.upsertIssueDocument({
+      issueId,
+      key: "spec",
+      title: "Spec",
+      format: "markdown",
+      body: "Alpha selected text omega",
+    })).document;
+
+    for (const [key, doc] of [["plan", planDocument], ["spec", specDocument]] as const) {
+      await annotations.createThread(
+        issueId,
+        key,
+        {
+          baseRevisionId: doc.latestRevisionId!,
+          baseRevisionNumber: doc.latestRevisionNumber,
+          selector: {
+            quote: { exact: "selected text", prefix: "Alpha ", suffix: " omega" },
+            position: { normalizedStart: 6, normalizedEnd: 19, markdownStart: 6, markdownEnd: 19 },
+          },
+          body: `Comment on ${key}`,
+        },
+        { actorType: "user", actorId: "board-user", userId: "board-user" },
+      );
+    }
+
+    // No hint: plan wins, as it did before spec existed.
+    await expect(buildPlanReviewContext({
+      db,
+      companyId,
+      issueId,
+      issueWorkMode: "planning",
+    })).resolves.toMatchObject({ documentKey: "plan" });
+
+    // The wake names the spec: review the spec.
+    await expect(buildPlanReviewContext({
+      db,
+      companyId,
+      issueId,
+      issueWorkMode: "planning",
+      preferredDocumentKey: "spec",
+    })).resolves.toMatchObject({ documentKey: "spec" });
+  });
+
+  it("carries a spec confirmation target through the review interaction context", async () => {
+    const { companyId, issueId, document } = await createIssueWithDocument("standard", "spec");
+    const [interaction] = await db
+      .insert(issueThreadInteractions)
+      .values({
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "accepted",
+        continuationPolicy: "wake_assignee_on_accept",
+        payload: {
+          version: 1,
+          prompt: "Approve this spec?",
+          target: {
+            type: "issue_document",
+            issueId,
+            documentId: document.id,
+            key: "spec",
+            revisionId: document.latestRevisionId,
+            revisionNumber: document.latestRevisionNumber,
+          },
+        },
+        result: { version: 1, outcome: "accepted", reason: null },
+        resolvedAt: new Date("2026-06-05T03:10:00.000Z"),
+      })
+      .returning();
+
+    const context = await buildPlanReviewContext({
+      db,
+      companyId,
+      issueId,
+      issueWorkMode: "standard",
+      interactionId: interaction.id,
+    });
+
+    expect(context).toMatchObject({
+      documentKey: "spec",
+      interaction: {
+        status: "accepted",
+        target: { key: "spec", revisionId: document.latestRevisionId },
+        acceptedTargetRevision: { key: "spec" },
+      },
+    });
+  });
+
+  it("ignores confirmation targets on documents that are not reviewable", async () => {
+    const { companyId, issueId, document } = await createIssueWithDocument("standard", "notes");
+    const [interaction] = await db
+      .insert(issueThreadInteractions)
+      .values({
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "accepted",
+        continuationPolicy: "wake_assignee_on_accept",
+        payload: {
+          version: 1,
+          prompt: "Approve these notes?",
+          target: {
+            type: "issue_document",
+            issueId,
+            documentId: document.id,
+            key: "notes",
+            revisionId: document.latestRevisionId,
+            revisionNumber: document.latestRevisionNumber,
+          },
+        },
+        result: { version: 1, outcome: "accepted", reason: null },
+        resolvedAt: new Date("2026-06-05T03:10:00.000Z"),
+      })
+      .returning();
+
+    await expect(buildPlanReviewContext({
+      db,
+      companyId,
+      issueId,
+      issueWorkMode: "standard",
+      interactionId: interaction.id,
+    })).resolves.toBeNull();
   });
 
   it("includes same-issue plan confirmation target/result and rejects cross-issue interaction context", async () => {

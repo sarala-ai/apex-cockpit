@@ -1,4 +1,10 @@
-export type { Company } from "./company.js";
+export type {
+  Company,
+  CompanyIdentityPreview,
+  CompanySlugBreakGlassConsequences,
+  CompanyIssuePrefixBreakGlassConsequences,
+  SlugKeyedReference,
+} from "./company.js";
 export type {
   Environment,
   EnvironmentDeleteBlastRadius,
@@ -424,6 +430,8 @@ export type {
   IssueAncestorGoal,
   IssueAttachment,
   IssueLabel,
+  IssueLinkedCase,
+  IssueLinkedCaseRole,
   IssueWatchdog,
   IssueWatchdogStatus,
   IssueWatchdogSummary,
@@ -658,3 +666,15 @@ export type {
   PluginDatabaseNamespaceMode,
   PluginDatabaseNamespaceStatus,
 } from "./plugin.js";
+export type {
+  Release,
+  ReleaseArtifact,
+  ReleaseChange,
+  ReleaseChangePullRequest,
+  ReleaseDetail,
+  ConfoundInitiative,
+  ConfoundSet,
+  ReleaseNotesEntry,
+  ReleaseNotesSection,
+  ReleaseNotes,
+} from "./release.js";

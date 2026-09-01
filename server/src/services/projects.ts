@@ -47,6 +47,8 @@ type CreateWorkspaceInput = {
   visibility?: string | null;
   setupCommand?: string | null;
   cleanupCommand?: string | null;
+  checkCommand?: string | null;
+  deployWorkflow?: string | null;
   remoteProvider?: string | null;
   remoteWorkspaceRef?: string | null;
   sharedWorkspaceKey?: string | null;
@@ -166,6 +168,8 @@ function toWorkspace(
     visibility: row.visibility as ProjectWorkspace["visibility"],
     setupCommand: row.setupCommand ?? null,
     cleanupCommand: row.cleanupCommand ?? null,
+    checkCommand: row.checkCommand ?? null,
+    deployWorkflow: row.deployWorkflow ?? null,
     remoteProvider: row.remoteProvider ?? null,
     remoteWorkspaceRef: row.remoteWorkspaceRef ?? null,
     sharedWorkspaceKey: row.sharedWorkspaceKey ?? null,
@@ -948,6 +952,8 @@ export function projectService(db: Db) {
             visibility: readNonEmptyString(data.visibility) ?? "default",
             setupCommand: readNonEmptyString(data.setupCommand),
             cleanupCommand: readNonEmptyString(data.cleanupCommand),
+            checkCommand: readNonEmptyString(data.checkCommand),
+            deployWorkflow: readNonEmptyString(data.deployWorkflow),
             remoteProvider: readNonEmptyString(data.remoteProvider),
             remoteWorkspaceRef,
             sharedWorkspaceKey: readNonEmptyString(data.sharedWorkspaceKey),
@@ -1024,6 +1030,8 @@ export function projectService(db: Db) {
       }
       if (data.setupCommand !== undefined) patch.setupCommand = readNonEmptyString(data.setupCommand);
       if (data.cleanupCommand !== undefined) patch.cleanupCommand = readNonEmptyString(data.cleanupCommand);
+      if (data.checkCommand !== undefined) patch.checkCommand = readNonEmptyString(data.checkCommand);
+      if (data.deployWorkflow !== undefined) patch.deployWorkflow = readNonEmptyString(data.deployWorkflow);
       if (data.remoteProvider !== undefined) patch.remoteProvider = readNonEmptyString(data.remoteProvider);
       if (data.remoteWorkspaceRef !== undefined) patch.remoteWorkspaceRef = nextRemoteWorkspaceRef;
       if (data.sharedWorkspaceKey !== undefined) patch.sharedWorkspaceKey = readNonEmptyString(data.sharedWorkspaceKey);

@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from "react";
+import { PROJECT_STATUSES } from "@paperclipai/shared";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -38,13 +39,12 @@ import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./Ma
 import { StatusBadge } from "./StatusBadge";
 import { ChoosePathButton } from "./PathInstructionsModal";
 
-const projectStatuses = [
-  { value: "backlog", label: "Backlog" },
-  { value: "planned", label: "Planned" },
-  { value: "in_progress", label: "In Progress" },
-  { value: "completed", label: "Completed" },
-  { value: "cancelled", label: "Cancelled" },
-];
+// Derived from the shared constant — a retyped copy silently drops any status
+// added upstream.
+const projectStatuses = PROJECT_STATUSES.map((value) => ({
+  value,
+  label: value.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
+}));
 
 export function NewProjectDialog() {
   const { newProjectOpen, closeNewProject } = useDialog();

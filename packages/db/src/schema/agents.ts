@@ -18,6 +18,18 @@ export const agents = pgTable(
     companyId: uuid("company_id").notNull().references(() => companies.id),
     name: text("name").notNull(),
     role: text("role").notNull().default("general"),
+    /**
+     * Is this a real worker, or machinery built to validate the machinery?
+     * "staff" | "fixture" | null (undeclared — every row that predates the
+     * distinction; see migration 0158, which deliberately does NOT backfill).
+     * A fixture is excluded from assignment and invocation
+     * (packages/shared/src/agent-eligibility.ts) and marked in the agent list;
+     * undeclared behaves exactly as before.
+     *
+     * "rosterKind", not "kind": `apex.agent.kind` already exists as the
+     * observe taxonomy (coding | product | workflow) — a different axis.
+     */
+    rosterKind: text("roster_kind"),
     title: text("title"),
     icon: text("icon"),
     status: text("status").notNull().default("idle"),

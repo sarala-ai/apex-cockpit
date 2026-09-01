@@ -61,6 +61,14 @@ import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
+import { startAttributionRefreshScheduler } from "./observe/attribution-refresh.js";
+import {
+  startCriterionReviewSweep,
+  type CriterionMonitorDeps,
+} from "./services/criterion-monitor.js";
+import { startGithubIssueIngestScheduler } from "./apex/pipeline/github-issue-ingest.js";
+import { startCapabilitySyncScheduler } from "./apex/capability-sync-job.js";
+import { resolveLocalActor, actorId } from "./identity/actor.js";
 import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
@@ -245,12 +253,25 @@ export async function startServer(): Promise<StartedServer> {
     }
   }
   
+  // Stable row id — issues.created_by_user_id and approvals.decided_by_user_id
+  // already reference it. The NAME and EMAIL are refreshed from the machine's
+  // real credentials on every boot, so existing audit rows re-attribute to the
+  // actual operator instead of the "Board / local@paperclip.local" placeholder
+  // this fork shipped (meaningless attribution, and a Paperclip remnant living
+  // in your data rather than just on screen).
   const LOCAL_BOARD_USER_ID = "local-board";
-  const LOCAL_BOARD_USER_EMAIL = "local@paperclip.local";
-  const LOCAL_BOARD_USER_NAME = "Board";
   
   async function ensureLocalTrustedBoardPrincipal(db: any): Promise<void> {
     const now = new Date();
+    const actor = await resolveLocalActor();
+    if (actor.unresolved) {
+      logger.warn(
+        "No local identity found (gcloud/git/gh all unset) — audit records will read 'unknown'. " +
+          "Authenticate one of them so effects can be reconciled with cloud audit logs.",
+      );
+    }
+    const resolvedName = actor.name;
+    const resolvedEmail = actorId(actor);
     const existingUser = await db
       .select({ id: authUsers.id })
       .from(authUsers)
@@ -260,13 +281,18 @@ export async function startServer(): Promise<StartedServer> {
     if (!existingUser) {
       await db.insert(authUsers).values({
         id: LOCAL_BOARD_USER_ID,
-        name: LOCAL_BOARD_USER_NAME,
-        email: LOCAL_BOARD_USER_EMAIL,
+        name: resolvedName,
+        email: resolvedEmail,
         emailVerified: true,
         image: null,
         createdAt: now,
         updatedAt: now,
       });
+    } else {
+      await db
+        .update(authUsers)
+        .set({ name: resolvedName, email: resolvedEmail, updatedAt: now })
+        .where(eq(authUsers.id, LOCAL_BOARD_USER_ID));
     }
   
     const role = await db
@@ -491,10 +517,29 @@ export async function startServer(): Promise<StartedServer> {
     startupDbInfo = { mode: "embedded-postgres", dataDir, port };
   }
   
-  if (config.deploymentMode === "local_trusted" && !isLoopbackHost(config.host)) {
+  // Identity spec (apex-docs architecture/identity.md), rule 3: auth mode is a
+  // setup choice, not a consequence of where APEX runs. A LOCAL container must
+  // be able to run trusted with no login — but a container has to bind 0.0.0.0
+  // for Docker port publishing to reach it, which this loopback guard forbade,
+  // silently forcing every containerised instance into authenticated mode.
+  //
+  // The escape hatch is an explicit acknowledgment, not a default: setting
+  // APEX_LOCAL_CONTAINER=true asserts that the operator keeps the instance
+  // local by publishing the port on the host's loopback only (compose:
+  // "127.0.0.1:3000:3100"), making the host interface the boundary the
+  // in-process bind check can no longer be. Exposure must still be private.
+  const localContainerAck = process.env.APEX_LOCAL_CONTAINER === "true";
+  if (config.deploymentMode === "local_trusted" && !isLoopbackHost(config.host) && !localContainerAck) {
     throw new Error(
       `local_trusted mode requires loopback host binding (received: ${config.host}). ` +
-        "Use authenticated mode for non-loopback deployments.",
+        "For a LOCAL container that must bind 0.0.0.0, set APEX_LOCAL_CONTAINER=true and " +
+        "publish the port on 127.0.0.1 only. Use authenticated mode for reachable deployments.",
+    );
+  }
+  if (config.deploymentMode === "local_trusted" && !isLoopbackHost(config.host) && localContainerAck) {
+    logger.warn(
+      "local_trusted on a non-loopback bind (APEX_LOCAL_CONTAINER acknowledged) — " +
+        "ensure the container port is published on 127.0.0.1 only; anyone who can reach this port is the operator.",
     );
   }
   
@@ -815,6 +860,11 @@ export async function startServer(): Promise<StartedServer> {
   }
 
   let drainHeartbeatRunsForShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<unknown>) | null = null;
+  // Handed to the criterion-review sweep below so an agent-owned criterion can
+  // be woken on its review date. Stays undefined when the heartbeat scheduler
+  // is off, in which case agent-owned criteria are left unsurfaced (and so
+  // surface on a later pass) rather than being silently dropped.
+  let heartbeatWakeup: CriterionMonitorDeps["wakeup"];
   let heartbeatSchedulerStopped = false;
   let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
   const heartbeatSchedulerInFlight = new Set<Promise<void>>();
@@ -836,6 +886,7 @@ export async function startServer(): Promise<StartedServer> {
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
     drainHeartbeatRunsForShutdown = heartbeat.drainRunningRunsForShutdown;
+    heartbeatWakeup = heartbeat.wakeup;
     const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
     const heartbeatSchedulingSuppression = await heartbeat.resolveSchedulingSuppression();
@@ -1057,7 +1108,51 @@ export async function startServer(): Promise<StartedServer> {
       });
     }, backupIntervalMs);
   }
-  
+
+  // Recurring resource-attribution refresh (spec: resource-attribution-mapping)
+  // — re-runs `apex resource-mapper` against every company's bound repos/
+  // projects and re-imports the result, so attribution rows stay fresh without
+  // a human running curl. First tick 5 minutes after boot, then every
+  // APEX_ATTRIBUTION_REFRESH_HOURS (default 24h; 0 disables). Same
+  // setInterval scheduling shape as the database-backup job above.
+  const stopAttributionRefreshScheduler = startAttributionRefreshScheduler(db as any);
+
+  // Recurring GitHub-Issues -> fork-issues ingest (work-loop doctrine Slice 0,
+  // docs/architecture/work-loop.md) — mirrors open issues from every bound
+  // GitHub repo into the fork's own issues table on originKind
+  // "plugin:github". First tick 5 minutes after boot, then every
+  // APEX_GITHUB_INGEST_HOURS (default 6h; 0 disables). Same setInterval
+  // scheduling shape as the attribution-refresh job above.
+  const stopGithubIssueIngestScheduler = startGithubIssueIngestScheduler(db as any);
+
+  // Pipeline step sweep — the same recovery duty for CASES, which is where
+  // process execution is moving. A case parked on a bounded agent run whose
+  // completion nobody observed would otherwise sit there indefinitely,
+  // indistinguishable from one whose agent is still working. Every
+  // APEX_PIPELINE_TICK_MINUTES (default 5m; 0 disables).
+  const { startPipelineStepSweep } = await import("./apex/pipeline/step-sweep.js");
+  const stopPipelineStepSweep = startPipelineStepSweep(db as any);
+
+  // Criterion-review sweep (docs/architecture/initiative-discipline.md §3) —
+  // finds pre-registered validation criteria whose review date has arrived and
+  // puts them in front of the reader named when they were written. APEX wrote
+  // ~40 such criteria and reported against none; this is the thing that reads
+  // them back. Every APEX_CRITERION_REVIEW_HOURS (default 1h; 0 disables).
+  const stopCriterionReviewSweep = startCriterionReviewSweep(db as any, {
+    deps: { wakeup: heartbeatWakeup },
+  });
+
+  // Recurring `apex capabilities sync` (spec: capability sync +
+  // PATH-canonical resolution, Session B / T4) — pulls configured
+  // capability_sources (workflows/skills) into ~/.apex/company/<alias>/ per
+  // the divergence rule, company-agnostic (syncs every configured source
+  // regardless of the cockpit's active company). First tick 5 minutes after
+  // boot, then every APEX_CAPABILITY_SYNC_HOURS (default 12h; 0 disables).
+  // Same setInterval scheduling shape as the schedulers above. The
+  // Workflows page's banner reads the in-memory snapshot this produces via
+  // GET /apex/capabilities/sync; POST triggers an on-demand refresh.
+  const stopCapabilitySyncScheduler = startCapabilitySyncScheduler();
+
   // Wait for external adapters to finish loading before accepting requests.
   // Without this, adapter type validation (assertKnownAdapterType) would
   // reject valid external adapter types during the startup loading window.
@@ -1144,6 +1239,11 @@ export async function startServer(): Promise<StartedServer> {
         clearInterval(heartbeatSchedulerInterval);
         heartbeatSchedulerInterval = null;
       }
+      stopAttributionRefreshScheduler();
+      stopGithubIssueIngestScheduler();
+      stopPipelineStepSweep();
+      stopCriterionReviewSweep();
+      stopCapabilitySyncScheduler();
       await waitForHeartbeatSchedulerIdle();
 
       const telemetryClient = getTelemetryClient();

@@ -8,6 +8,7 @@ import {
   instanceUserRoles,
   issueComments,
   issues,
+  orgMemberships,
   principalPermissionGrants,
   projects,
 } from "@paperclipai/db";
@@ -65,7 +66,12 @@ export type AuthorizationAction =
   | "issue:read"
   | "project:read"
   | "runtime:manage"
-  | "secrets:read";
+  | "secrets:read"
+  // Org-level governance (apex-tower). The org plane is org_memberships-based,
+  // distinct from the company plane above. Read = any active org member; write
+  // (scope bindings, posture, company creation) = org owner/admin.
+  | "org_scope:read"
+  | "org_scope:write";
 
 export type AuthorizationResource =
   | { type: "company"; companyId: string }
@@ -103,6 +109,9 @@ export type AuthorizationDecision = {
     | "allow_company_member"
     | "allow_simple_company_member"
     | "allow_manager_chain"
+    | "allow_org_role"
+    | "deny_org_role"
+    | "deny_org_not_member"
     | "deny_unauthenticated"
     | "deny_company_boundary"
     | "deny_missing_membership"
@@ -145,6 +154,9 @@ function permissionForAction(action: AuthorizationAction): PermissionKey | null 
     return null;
   }
   if (action === "issue:comment" || action === "issue:mutate") return null;
+  // Org-plane actions have no company PermissionKey — authorizeOrgScope decides
+  // them from org_memberships, not the company grant path.
+  if (action === "org_scope:read" || action === "org_scope:write") return null;
   return action;
 }
 
@@ -1928,8 +1940,73 @@ export function authorizationService(db: Db) {
     return applyResponsibleUserIntersection(input, agentDecision);
   }
 
+  /** Active org-membership role for a user, or null. Mirrors getActiveMembership,
+   *  but on the org plane (org_memberships) rather than company memberships. */
+  async function resolveActiveOrgRole(orgId: string, userId: string): Promise<string | null> {
+    const [row] = await db
+      .select({ role: orgMemberships.role, status: orgMemberships.status })
+      .from(orgMemberships)
+      .where(and(eq(orgMemberships.orgId, orgId), eq(orgMemberships.userId, userId)))
+      .limit(1);
+    return row?.status === "active" ? row.role : null;
+  }
+
+  /**
+   * Org-level authorization decision (apex-tower governance). Read = any active
+   * org member; write (scope bindings / posture / company creation) = org
+   * owner/admin. Instance admin (incl. the local_implicit board) bypasses, same
+   * as the company plane. Returns the engine's AuthorizationDecision so callers
+   * share one authorization vocabulary — the apex scope-policy seam is a thin
+   * posture adapter over THIS, not a parallel matrix.
+   *
+   * Note: authority here is ROLE-based. Grant-based org permissions would need
+   * principal_permission_grants to be org-scoped (it's companyId-NOT-NULL today);
+   * that's a deliberate future extension, not routed around here.
+   */
+  async function authorizeOrgScope(input: {
+    actor: Pick<AuthorizationActor, "userId" | "isInstanceAdmin" | "ignoreInstanceAdmin" | "source">;
+    orgId?: string | null;
+    action: "org_scope:read" | "org_scope:write";
+  }): Promise<AuthorizationDecision> {
+    const { action } = input;
+    const instanceAdmin =
+      Boolean(input.actor.isInstanceAdmin) ||
+      input.actor.source === "local_implicit" ||
+      (await isInstanceAdmin(input.actor.userId));
+    if (instanceAdmin && !input.actor.ignoreInstanceAdmin) {
+      return allow({ action, reason: "allow_instance_admin", explanation: "Instance admin / local board." });
+    }
+    if (!input.actor.userId) {
+      return deny({ action, reason: "deny_unauthenticated", explanation: "Unauthenticated actor." });
+    }
+    if (!input.orgId) {
+      return deny({ action, reason: "deny_org_not_member", explanation: "No org in scope." });
+    }
+    const role = await resolveActiveOrgRole(input.orgId, input.actor.userId);
+    if (!role) {
+      return deny({
+        action,
+        reason: "deny_org_not_member",
+        explanation: `User ${input.actor.userId} is not an active member of org ${input.orgId}.`,
+      });
+    }
+    if (action === "org_scope:write") {
+      if (role === "owner" || role === "admin") {
+        return allow({ action, reason: "allow_org_role", explanation: `Org ${role} may write scope/posture.` });
+      }
+      return deny({
+        action,
+        reason: "deny_org_role",
+        explanation: `Org role '${role}' cannot write scope/posture; requires owner or admin.`,
+      });
+    }
+    // org_scope:read — any active member (owner/admin/member/reviewer/observer).
+    return allow({ action, reason: "allow_org_role", explanation: `Org ${role} may read scope.` });
+  }
+
   return {
     decide,
     decidePrincipalGrant,
+    authorizeOrgScope,
   };
 }

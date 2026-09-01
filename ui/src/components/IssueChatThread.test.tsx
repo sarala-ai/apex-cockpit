@@ -322,6 +322,150 @@ describe("IssueChatThread", () => {
     markdownBodyRenderMock.mockClear();
   });
 
+  it("never hides an authored agent report, but clamps an over-long one with Show more", () => {
+    const report = ["Opened PR #2 for the board note.", ...Array.from({ length: 40 }, (_, i) => `line ${i}`)].join("\n");
+    const renderReport = () => {
+      const root = createRoot(container);
+      act(() => {
+        root.render(
+          <MemoryRouter>
+            <IssueChatThread
+              comments={[{
+                id: "agent-report",
+                companyId: "company-1",
+                issueId: "issue-1",
+                authorAgentId: "agent-1",
+                authorUserId: null,
+                body: report,
+                authorType: "agent" as const,
+                presentation: null,
+                metadata: null,
+                createdAt: new Date("2026-08-01T12:00:00.000Z"),
+                updatedAt: new Date("2026-08-01T12:00:00.000Z"),
+              }]}
+              currentUserId="user-board"
+              linkedRuns={[]}
+              timelineEvents={[]}
+              liveRuns={[]}
+              onAdd={async () => {}}
+              showComposer={false}
+              enableLiveTranscriptPolling={false}
+            />
+          </MemoryRouter>,
+        );
+      });
+      return root;
+    };
+
+    // Short enough to fit: no curtain toggle, and the report reads in full.
+    let root = renderReport();
+    expect(container.textContent).toContain("Opened PR #2 for the board note.");
+    expect(container.querySelector('[data-testid="fold-curtain"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="fold-curtain-toggle"]')).toBeNull();
+    act(() => root.unmount());
+
+    // A report tall enough to dominate the thread clamps instead — the comment
+    // is still there (authored comments are never hidden), just curtained.
+    const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => 900 });
+    try {
+      root = renderReport();
+      const curtain = container.querySelector('[data-testid="fold-curtain"]');
+      expect(curtain?.getAttribute("data-curtained")).toBe("true");
+      expect(curtain?.getAttribute("data-expanded")).toBe("false");
+      const toggle = container.querySelector('[data-testid="fold-curtain-toggle"]') as HTMLButtonElement;
+      expect(toggle).not.toBeNull();
+      expect(toggle.textContent).toContain("Show more");
+      expect(container.textContent).toContain("Opened PR #2 for the board note.");
+
+      act(() => {
+        toggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      expect(
+        container.querySelector('[data-testid="fold-curtain"]')?.getAttribute("data-expanded"),
+      ).toBe("true");
+      act(() => root.unmount());
+    } finally {
+      if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
+      else delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollHeight;
+    }
+  });
+
+  it("collapses flow machine correspondence by default and expands it in place", () => {
+    const root = createRoot(container);
+    const at = (minute: number) => new Date(Date.UTC(2026, 7, 1, 7, minute, 0));
+    const instructionBody =
+      "Flow **design-change** agent step `board_diff` — bounded agent run commissioned.\n\n" +
+      "Instruction:\nAuthor the design-board change requested by ticket APE-5.\n\n" +
+      "Acceptance: pr_exists:sarala-ai/apex-design#design/APE-5";
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[
+              {
+                id: "human-1",
+                companyId: "c1",
+                issueId: "i1",
+                authorType: "user",
+                authorAgentId: null,
+                authorUserId: "user-board",
+                body: "Please record the loop on the board.",
+                presentation: null,
+                metadata: null,
+                createdAt: at(10),
+                updatedAt: at(10),
+              },
+              {
+                id: "flow-instruction",
+                companyId: "c1",
+                issueId: "i1",
+                authorType: "system",
+                authorAgentId: null,
+                authorUserId: null,
+                body: instructionBody,
+                presentation: null,
+                metadata: null,
+                createdAt: at(20),
+                updatedAt: at(20),
+              },
+            ]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    // Default: the machine trail is one collapsed row, the human comment reads first.
+    expect(container.textContent).toContain("Please record the loop on the board.");
+    expect(container.textContent).toContain("Flow activity (1)");
+    expect(container.textContent).not.toContain("pr_exists:sarala-ai/apex-design");
+    expect(container.textContent).not.toContain("bounded agent run commissioned");
+
+    const toggle = container.querySelector('[data-testid="flow-activity-toggle"]') as HTMLButtonElement;
+    expect(toggle).not.toBeNull();
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+
+    act(() => {
+      toggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // Expanding restores the audit trail verbatim — nothing was deleted.
+    const expanded = container.querySelector('[data-testid="flow-activity-toggle"]') as HTMLButtonElement;
+    expect(expanded.getAttribute("aria-expanded")).toBe("true");
+    expect(container.textContent).toContain("bounded agent run commissioned");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("drops the count heading and does not use an internal scrollbox", () => {
     const root = createRoot(container);
 

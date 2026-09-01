@@ -164,6 +164,10 @@ vi.mock("@paperclipai/db", () => ({
   companies: {},
   companyMemberships: {},
   instanceUserRoles: {},
+  issues: {},
+  // Reached transitively: the flow coordinator now imports the case tables.
+  pipelineCases: {},
+  pipelineCaseIssueLinks: {},
 }));
 
 vi.mock("../app.js", () => ({

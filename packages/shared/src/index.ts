@@ -1,3 +1,13 @@
+export * from "./agent-repo-capability.js";
+export * from "./observe.js";
+export * from "./gateway.js";
+export * from "./design.js";
+export * from "./workflows.js";
+export * from "./capability-sync.js";
+export * from "./initiative-status.js";
+export * from "./goal-criteria.js";
+export * from "./proposals.js";
+export * from "./company-data-erasure.js";
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
   getAgentOrgChainHealth,
@@ -6,7 +16,9 @@ export {
   isAgentInvokable,
   isAgentStatusAssignableToWork,
   isAgentStatusInvokable,
+  isFixtureAgent,
   type AgentEligibilityAgent,
+  type AgentRosterKind,
   type AgentEligibilityLifecycleReason,
   type AgentInvalidOrgChainAncestor,
   type AgentOrgChainEntry,
@@ -28,6 +40,13 @@ export {
   type PipelineHealthWarning,
   type PipelineHealthWarningCode,
 } from "./pipeline-health.js";
+export {
+  stageEntryRoutineId,
+  stageEntryStepRef,
+  stageHasEntryStep,
+  type StageEntryStepKind,
+  type StageEntryStepRef,
+} from "./pipeline-stage-entry.js";
 export {
   caseTypeMatchesPipeline,
   deriveCaseType,
@@ -78,6 +97,8 @@ export type {
   PipelineCaseOutputsResponse,
   PipelineCaseWorkProductOutputItem,
   PipelineStageAutomation,
+  PipelineStepHold,
+  PipelineStoppedStep,
 } from "./types/pipeline.js";
 export {
   analyzeFrontmatterBlock,
@@ -142,6 +163,9 @@ export {
   ISSUE_PRIORITIES,
   ISSUE_WORK_MODES,
   ISSUE_HARNESS_KINDS,
+  TICKET_TYPES,
+  TICKET_TYPES_WITHOUT_PROCESS,
+  isTicketType,
   MAX_ISSUE_REQUEST_DEPTH,
   ISSUE_COMMENT_AUTHOR_TYPES,
   ISSUE_COMMENT_METADATA_ROW_TYPES,
@@ -189,7 +213,17 @@ export {
   ISSUE_EXECUTION_DECISION_OUTCOMES,
   GOAL_LEVELS,
   GOAL_STATUSES,
+  GOAL_CLOSURES,
+  GOAL_ASSUMPTION_TYPES,
+  GOAL_ASSUMPTION_STATUSES,
+  GOAL_CRITERION_STATUSES,
+  GOAL_CRITERION_VERDICTS,
+  GOAL_HYPOTHESIS_VERDICTS,
+  GOAL_PROVENANCE_KINDS,
+  INITIATIVE_DERIVED_STATUSES,
   PROJECT_STATUSES,
+  PROJECT_DELIVERED_STATUSES,
+  PROJECT_CLOSED_OUT_STATUSES,
   ENVIRONMENT_DRIVERS,
   ENVIRONMENT_STATUSES,
   ENVIRONMENT_LEASE_STATUSES,
@@ -287,6 +321,7 @@ export {
   type IssueStatus,
   type IssuePriority,
   type IssueWorkMode,
+  type TicketType,
   type IssueHarnessKind,
   type IssueCommentAuthorType,
   type IssueCommentMetadataRowType,
@@ -330,6 +365,14 @@ export {
   type IssueExecutionDecisionOutcome,
   type GoalLevel,
   type GoalStatus,
+  type GoalClosure,
+  type GoalAssumptionType,
+  type GoalAssumptionStatus,
+  type GoalCriterionStatus,
+  type GoalCriterionVerdict,
+  type GoalHypothesisVerdict,
+  type GoalProvenanceKind,
+  type InitiativeDerivedStatus,
   type ProjectStatus,
   type EnvironmentDriver,
   type EnvironmentStatus,
@@ -429,6 +472,10 @@ export {
 
 export type {
   Company,
+  CompanyIdentityPreview,
+  CompanySlugBreakGlassConsequences,
+  CompanyIssuePrefixBreakGlassConsequences,
+  SlugKeyedReference,
   Environment,
   EnvironmentDeleteBlastRadius,
   EnvironmentDeleteBlockedReason,
@@ -791,6 +838,8 @@ export type {
   LegacyPlanDocument,
   IssueAttachment,
   IssueLabel,
+  IssueLinkedCase,
+  IssueLinkedCaseRole,
   IssueTreeControlPreview,
   IssueTreeHold,
   IssueTreeHoldMember,
@@ -1030,6 +1079,13 @@ export {
 } from "./document-anchors.js";
 
 export {
+  isReviewableDocumentKey,
+  pickReviewableDocumentKey,
+  REVIEWABLE_DOCUMENT_KEYS,
+  type ReviewableDocumentKey,
+} from "./reviewable-documents.js";
+
+export {
   formatExternalObjectMentionSourceLabel,
   type ExternalObjectCanonicalIdentity,
   type ExternalObjectCanonicalUrl,
@@ -1043,6 +1099,14 @@ export {
   upsertSidebarOrderPreferenceSchema,
   type UpsertSidebarOrderPreference,
 } from "./validators/sidebar-preferences.js";
+export {
+  themePreferenceSchema,
+  uiPreferencesSchema,
+  upsertUiPreferencesSchema,
+  type ThemePreference,
+  type UiPreferences,
+  type UpsertUiPreferences,
+} from "./validators/ui-preferences.js";
 export {
   resourceMembershipStateSchema,
   updateResourceMembershipSchema,
@@ -1132,6 +1196,12 @@ export {
   createCompanySchema,
   updateCompanySchema,
   updateCompanyBrandingSchema,
+  companySlugSchema,
+  companySlugBreakGlassSchema,
+  COMPANY_SLUG_PATTERN,
+  companyIssuePrefixSchema,
+  companyIssuePrefixBreakGlassSchema,
+  COMPANY_ISSUE_PREFIX_PATTERN,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
   feedbackVoteValueSchema,
@@ -1148,6 +1218,7 @@ export {
   type CreateCompany,
   type UpdateCompany,
   type UpdateCompanyBranding,
+  type CompanySlugBreakGlass,
   type UpsertIssueFeedbackVote,
   type ExternalObjectCanonicalIdentityInput,
   type ExternalObjectMentionSourceInput,
@@ -1171,6 +1242,7 @@ export {
   agentSkillSnapshotSchema,
   agentSkillSyncSchema,
   type AgentSkillSync,
+  agentRosterKindSchema,
   createAgentSchema,
   builtInAgentEmptyMutationSchema,
   builtInAgentProvisionSchema,
@@ -1212,6 +1284,7 @@ export {
   type UpdateAgentPermissions,
   createProjectSchema,
   updateProjectSchema,
+  foldLinkIssues,
   createProjectWorkspaceSchema,
   updateProjectWorkspaceSchema,
   type CreateProject,
@@ -1368,8 +1441,23 @@ export {
   type ReleaseIssueTreeHold,
   createGoalSchema,
   updateGoalSchema,
+  goalAssumptionSchema,
+  goalValidationCriterionSchema,
+  goalHypothesisSchema,
+  goalHoldSchema,
+  goalProvenanceSchema,
+  reportCriterionSchema,
+  goalBaseSchema,
+  GOAL_INITIATIVE_FIELDS,
+  initiativeFieldsRejectedFor,
   type CreateGoal,
   type UpdateGoal,
+  type GoalAssumption,
+  type GoalValidationCriterion,
+  type GoalHypothesis,
+  type GoalHold,
+  type GoalProvenance,
+  type ReportCriterion,
   createApprovalSchema,
   upsertBudgetPolicySchema,
   resolveBudgetIncidentSchema,
@@ -1749,3 +1837,38 @@ export {
   type CreateEnvironmentCustomImageTerminalSessionToken,
   type EnvironmentCustomImageTerminalSessionToken,
 } from "./validators/environment-custom-images.js";
+
+export {
+  RELEASE_STATUSES,
+  RELEASE_CLOSURES,
+  type ReleaseStatus,
+  type ReleaseClosure,
+} from "./constants.js";
+export type {
+  Release,
+  ReleaseArtifact,
+  ReleaseChange,
+  ReleaseChangePullRequest,
+  ReleaseDetail,
+  ConfoundInitiative,
+  ConfoundSet,
+  ReleaseNotesEntry,
+  ReleaseNotesSection,
+  ReleaseNotes,
+} from "./types/index.js";
+export {
+  createReleaseSchema,
+  updateReleaseSchema,
+  promoteReleaseSchema,
+  closeReleaseSchema,
+  attachReleaseChangesSchema,
+  addReleaseArtifactSchema,
+  confoundQuerySchema,
+  type CreateRelease,
+  type UpdateRelease,
+  type PromoteRelease,
+  type CloseRelease,
+  type AttachReleaseChanges,
+  type AddReleaseArtifact,
+  type ConfoundQuery,
+} from "./validators/index.js";

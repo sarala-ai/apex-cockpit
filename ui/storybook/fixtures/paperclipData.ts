@@ -39,6 +39,7 @@ export const storybookCompanies: Company[] = [
     pauseReason: null,
     pausedAt: null,
     issuePrefix: "PAP",
+    slug: "pap",
     issueCounter: 1641,
     budgetMonthlyCents: 250_000,
     spentMonthlyCents: 67_500,
@@ -63,6 +64,7 @@ export const storybookCompanies: Company[] = [
     pauseReason: null,
     pausedAt: null,
     issuePrefix: "RES",
+    slug: "res",
     issueCounter: 88,
     budgetMonthlyCents: 180_000,
     spentMonthlyCents: 39_500,
@@ -87,6 +89,7 @@ export const storybookCompanies: Company[] = [
     pauseReason: "manual",
     pausedAt: recent(240),
     issuePrefix: "OPS",
+    slug: "ops",
     issueCounter: 204,
     budgetMonthlyCents: 90_000,
     spentMonthlyCents: 91_200,
@@ -1257,6 +1260,7 @@ export const storybookSidebarBadges: SidebarBadges = {
   approvals: 2,
   failedRuns: 1,
   joinRequests: 1,
+  stoppedSteps: 0,
 };
 
 export const storybookDashboardSummary: DashboardSummary = {
@@ -1279,6 +1283,7 @@ export const storybookDashboardSummary: DashboardSummary = {
     monthUtilizationPercent: 27,
   },
   pendingApprovals: 2,
+  stoppedSteps: 0,
   budgets: {
     activeIncidents: 1,
     pendingApprovals: 1,

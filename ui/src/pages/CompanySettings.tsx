@@ -11,12 +11,16 @@ import { assetsApi } from "../api/assets";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, CloudUpload, Download, Upload } from "lucide-react";
+import { Settings, CloudUpload, Download, Upload, Lock, ChevronDown, ChevronRight } from "lucide-react";
+import { COMPANY_SLUG_PATTERN } from "@paperclipai/shared";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
+import { CompanySlugBreakGlassDialog } from "../components/CompanySlugBreakGlassDialog";
 import {
   Field,
   ToggleField,
 } from "../components/agent-config-primitives";
+import { CloudSettingsSection } from "./company-settings/CloudSettingsSection";
+import { OrgScopingSection } from "./company-settings/OrgScopingSection";
 
 const BYTES_PER_MIB = 1024 * 1024;
 const DEFAULT_COMPANY_ATTACHMENT_MAX_MIB = DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES / BYTES_PER_MIB;
@@ -41,6 +45,9 @@ export function CompanySettings() {
   const [attachmentMaxMiB, setAttachmentMaxMiB] = useState(String(DEFAULT_COMPANY_ATTACHMENT_MAX_MIB));
   const [logoUrl, setLogoUrl] = useState("");
   const [logoUploadError, setLogoUploadError] = useState<string | null>(null);
+  const [slugDraft, setSlugDraft] = useState("");
+  const [slugBreakGlassDisclosureOpen, setSlugBreakGlassDisclosureOpen] = useState(false);
+  const [slugBreakGlassDialogOpen, setSlugBreakGlassDialogOpen] = useState(false);
 
   // Sync local state from selected company
   useEffect(() => {
@@ -50,6 +57,7 @@ export function CompanySettings() {
     setBrandColor(selectedCompany.brandColor ?? "");
     setAttachmentMaxMiB(String(Math.round((selectedCompany.attachmentMaxBytes ?? DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES) / BYTES_PER_MIB)));
     setLogoUrl(selectedCompany.logoUrl ?? "");
+    setSlugDraft(selectedCompany.slug ?? "");
   }, [selectedCompany]);
 
   const attachmentMaxBytes = Number.parseInt(attachmentMaxMiB, 10) * BYTES_PER_MIB;
@@ -87,6 +95,25 @@ export function CompanySettings() {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     }
   });
+
+  const slugValid = COMPANY_SLUG_PATTERN.test(slugDraft.trim().toLowerCase());
+
+  const slugMutation = useMutation({
+    mutationFn: (value: string) => companiesApi.update(selectedCompanyId!, { slug: value }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    }
+  });
+
+  function handleSetSlug() {
+    const trimmed = slugDraft.trim().toLowerCase();
+    if (!trimmed || !COMPANY_SLUG_PATTERN.test(trimmed)) return;
+    const confirmed = window.confirm(
+      `Set company slug to "${trimmed}"? This cannot be changed later — it permanently names this company's capability paths and env vars (APEX_${trimmed.toUpperCase()}_...).`
+    );
+    if (!confirmed) return;
+    slugMutation.mutate(trimmed);
+  }
 
   const syncLogoState = (nextLogoUrl: string | null) => {
     setLogoUrl(nextLogoUrl ?? "");
@@ -201,6 +228,86 @@ export function CompanySettings() {
               placeholder="Optional company description"
               onChange={(e) => setDescription(e.target.value)}
             />
+          </Field>
+          <Field
+            label="Slug"
+            hint="Stable identifier used for capability paths and env vars (APEX_<SLUG>_...). Changing it changes those env names."
+          >
+            {selectedCompany.slug ? (
+              <div className="space-y-1.5" data-testid="company-settings-slug-readonly">
+                <div className="flex items-center gap-2 rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-sm">
+                  <Lock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <span className="font-mono">{selectedCompany.slug}</span>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Permanent — set once at company creation and cannot be changed. Capability paths and env vars
+                  (APEX_{selectedCompany.slug.toUpperCase()}_...) are keyed on this value.
+                </p>
+                <div>
+                  <button
+                    type="button"
+                    className="flex items-center gap-1 text-xs text-muted-foreground hover:text-destructive"
+                    onClick={() => setSlugBreakGlassDisclosureOpen((v) => !v)}
+                    data-testid="company-settings-slug-breakglass-disclosure-trigger"
+                  >
+                    {slugBreakGlassDisclosureOpen ? (
+                      <ChevronDown className="h-3 w-3" />
+                    ) : (
+                      <ChevronRight className="h-3 w-3" />
+                    )}
+                    Break glass — force change (admin only)
+                  </button>
+                  {slugBreakGlassDisclosureOpen && (
+                    <div className="mt-1.5 space-y-1.5" data-testid="company-settings-slug-breakglass-disclosure">
+                      <p className="text-xs text-muted-foreground">
+                        Bypasses write-once immutability. Shows the consequences before anything changes and
+                        requires typing this company's current slug to confirm. Intended as a rare, audited
+                        escape hatch — not a normal edit path.
+                      </p>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="border-destructive/40 text-destructive hover:bg-destructive/10"
+                        onClick={() => setSlugBreakGlassDialogOpen(true)}
+                        data-testid="company-settings-slug-breakglass-open"
+                      >
+                        Force change slug&hellip;
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-1.5" data-testid="company-settings-slug-set">
+                <input
+                  className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
+                  type="text"
+                  value={slugDraft}
+                  placeholder="acme"
+                  onChange={(e) => setSlugDraft(e.target.value.toLowerCase())}
+                />
+                <p className="text-xs text-destructive">
+                  This cannot be changed later. It will permanently name this company's capability paths and env vars
+                  (APEX_{(slugDraft.trim() || "SLUG").toUpperCase()}_...).
+                </p>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleSetSlug}
+                    disabled={!slugValid || slugMutation.isPending}
+                  >
+                    {slugMutation.isPending ? "Setting..." : "Set slug"}
+                  </Button>
+                  {slugMutation.isError && (
+                    <span className="text-xs text-destructive">
+                      {slugMutation.error instanceof Error ? slugMutation.error.message : "Failed to set slug"}
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
           </Field>
         </div>
       </div>
@@ -350,6 +457,10 @@ export function CompanySettings() {
         </div>
       )}
 
+      {/* Cloud (APEX — GCP/repo binding) */}
+      {selectedCompanyId && <OrgScopingSection companyId={selectedCompanyId} />}
+      {selectedCompanyId && <CloudSettingsSection companyId={selectedCompanyId} />}
+
       {/* Hiring */}
       <div className="space-y-4" data-testid="company-settings-team-section">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
@@ -374,7 +485,7 @@ export function CompanySettings() {
         <div className="rounded-md border border-border px-4 py-4">
           <p className="text-sm text-muted-foreground">
             Import and export have moved to dedicated pages accessible from the{" "}
-            <a href="/org" className="underline hover:text-foreground">Org Chart</a> header.
+            <a href="/agents" className="underline hover:text-foreground">Agents</a> header.
           </p>
           <div className="mt-3 flex flex-wrap items-center gap-2">
             {cloudSyncEnabled ? (
@@ -453,6 +564,20 @@ export function CompanySettings() {
           </div>
         </div>
       </div>
+
+      {selectedCompany.slug && (
+        <CompanySlugBreakGlassDialog
+          companyId={selectedCompany.id}
+          currentSlug={selectedCompany.slug}
+          open={slugBreakGlassDialogOpen}
+          onOpenChange={(next) => {
+            setSlugBreakGlassDialogOpen(next);
+            if (!next) {
+              queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+            }
+          }}
+        />
+      )}
     </div>
   );
 }

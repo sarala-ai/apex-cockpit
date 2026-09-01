@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { and, eq } from "drizzle-orm";
 import {
   agents,
   authUsers,
@@ -9,6 +10,8 @@ import {
   instanceUserRoles,
   issueComments,
   issues,
+  orgMemberships,
+  orgs,
   principalPermissionGrants,
   projects,
 } from "@paperclipai/db";
@@ -178,6 +181,8 @@ describeEmbeddedPostgres("authorization service", () => {
     await db.delete(issues);
     await db.delete(agents);
     await db.delete(projects);
+    await db.delete(orgMemberships);
+    await db.delete(orgs);
     await db.delete(companies);
     await db.delete(authUsers);
   });
@@ -1784,5 +1789,83 @@ describeEmbeddedPostgres("authorization service", () => {
       allowed: false,
       reason: "deny_scope",
     });
+  });
+
+  // --- Org-plane authorization (apex-tower governance) -----------------------
+  async function createOrg(label: string) {
+    return db
+      .insert(orgs)
+      .values({ name: `Org ${label} ${randomUUID()}` })
+      .returning()
+      .then((rows) => rows[0]!);
+  }
+  async function addOrgMember(orgId: string, userId: string, role: string, status = "active") {
+    await db.insert(orgMemberships).values({ orgId, userId, role, status });
+  }
+
+  it("authorizeOrgScope: org owner may write, plain member may not", async () => {
+    const org = await createOrg("Owner");
+    const owner = await createUser(db);
+    const member = await createUser(db);
+    await addOrgMember(org.id, owner, "owner");
+    await addOrgMember(org.id, member, "member");
+    const authz = authorizationService(db);
+
+    await expect(
+      authz.authorizeOrgScope({ actor: { userId: owner }, orgId: org.id, action: "org_scope:write" }),
+    ).resolves.toMatchObject({ allowed: true, reason: "allow_org_role" });
+
+    await expect(
+      authz.authorizeOrgScope({ actor: { userId: member }, orgId: org.id, action: "org_scope:write" }),
+    ).resolves.toMatchObject({ allowed: false, reason: "deny_org_role" });
+  });
+
+  it("authorizeOrgScope: any active member reads; a non-member is denied", async () => {
+    const org = await createOrg("Read");
+    const member = await createUser(db);
+    const stranger = await createUser(db);
+    await addOrgMember(org.id, member, "member");
+    const authz = authorizationService(db);
+
+    await expect(
+      authz.authorizeOrgScope({ actor: { userId: member }, orgId: org.id, action: "org_scope:read" }),
+    ).resolves.toMatchObject({ allowed: true });
+
+    await expect(
+      authz.authorizeOrgScope({ actor: { userId: stranger }, orgId: org.id, action: "org_scope:read" }),
+    ).resolves.toMatchObject({ allowed: false, reason: "deny_org_not_member" });
+  });
+
+  it("authorizeOrgScope: a ROLE CHANGE flips the write decision (authority is the engine's)", async () => {
+    const org = await createOrg("Flip");
+    const user = await createUser(db);
+    await addOrgMember(org.id, user, "member");
+    const authz = authorizationService(db);
+
+    await expect(
+      authz.authorizeOrgScope({ actor: { userId: user }, orgId: org.id, action: "org_scope:write" }),
+    ).resolves.toMatchObject({ allowed: false });
+
+    await db
+      .update(orgMemberships)
+      .set({ role: "admin" })
+      .where(and(eq(orgMemberships.orgId, org.id), eq(orgMemberships.userId, user)));
+
+    await expect(
+      authz.authorizeOrgScope({ actor: { userId: user }, orgId: org.id, action: "org_scope:write" }),
+    ).resolves.toMatchObject({ allowed: true, reason: "allow_org_role" });
+  });
+
+  it("authorizeOrgScope: local_implicit board / instance admin bypasses membership", async () => {
+    const org = await createOrg("Admin");
+    const authz = authorizationService(db);
+
+    await expect(
+      authz.authorizeOrgScope({ actor: { source: "local_implicit" }, orgId: org.id, action: "org_scope:write" }),
+    ).resolves.toMatchObject({ allowed: true, reason: "allow_instance_admin" });
+
+    await expect(
+      authz.authorizeOrgScope({ actor: { isInstanceAdmin: true }, orgId: org.id, action: "org_scope:write" }),
+    ).resolves.toMatchObject({ allowed: true, reason: "allow_instance_admin" });
   });
 });

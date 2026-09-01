@@ -11,6 +11,7 @@ import {
 import type { DeploymentMode } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { authApi } from "@/api/auth";
+import { apexSetupApi } from "@/api/apex-setup";
 import { queryKeys } from "@/lib/queryKeys";
 import { useSidebar } from "../context/SidebarContext";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -118,6 +119,14 @@ export function SidebarAccountMenu({
     queryFn: () => authApi.getSession(),
     retry: false,
   });
+  // The operator's CONNECTED identity (gcloud account + GitHub user), so the chip
+  // reflects who's actually driving rather than the synthetic local "Board" actor.
+  // Same query key as GcloudAuthBanner → dedupes. Failure-isolated (retry: false).
+  const { data: connectedAuth } = useQuery({
+    queryKey: ["apex-setup", "auth"],
+    queryFn: () => apexSetupApi.auth(),
+    retry: false,
+  });
 
   const signOutMutation = useMutation({
     mutationFn: () => authApi.signOut(),
@@ -127,11 +136,22 @@ export function SidebarAccountMenu({
     },
   });
 
-  const displayName = session?.user.name?.trim() || "Board";
+  // Prefer a real signed-in name (authenticated mode); otherwise fall back to the
+  // connected gcloud email / GitHub handle; only then to the synthetic "Board".
+  const connectedEmail = connectedAuth?.google.account?.trim() || null;
+  const connectedGh = connectedAuth?.github.user?.trim() || null;
+  const displayName = session?.user.name?.trim() || connectedEmail || connectedGh || "Board";
+  const identityBits = [
+    connectedEmail && connectedEmail !== displayName ? connectedEmail : null,
+    connectedGh ? `@${connectedGh}` : null,
+  ].filter(Boolean) as string[];
   const secondaryLabel =
-    session?.user.email?.trim() || (deploymentMode === "authenticated" ? "Signed in" : "Local workspace board");
+    identityBits.length > 0
+      ? identityBits.join(" · ")
+      : session?.user.email?.trim() || (deploymentMode === "authenticated" ? "Signed in" : "Local workspace board");
   const accountBadge = deploymentMode === "authenticated" ? "Account" : "Local";
-  const initials = deriveInitials(displayName);
+  // Initials from a name/email; for an email, use the local part so we don't get "CO".
+  const initials = deriveInitials(displayName.includes("@") ? displayName.split("@")[0] : displayName);
   const profileHref = `/u/${deriveUserSlug(session?.user.name, session?.user.email, session?.user.id)}`;
 
   function closeNavigationChrome() {

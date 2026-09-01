@@ -35,17 +35,88 @@ import { queryKeys } from "../lib/queryKeys";
 import { agentRouteRef } from "../lib/utils";
 import { useDialogActions } from "../context/DialogContext";
 import { useToastActions } from "../context/ToastContext";
-import {
-  buildDuplicateAgentPayload,
-  duplicateAgentName,
-  type DuplicateInstructionsBundle,
-} from "../lib/duplicate-agent-payload";
 import type {
   Agent,
   AgentInstructionsBundle,
   AgentInstructionsFileSummary,
   HeartbeatRun,
 } from "@paperclipai/shared";
+
+const DUPLICATE_INSTRUCTION_CONFIG_KEYS = [
+  "instructionsBundleMode",
+  "instructionsRootPath",
+  "instructionsEntryFile",
+  "instructionsFilePath",
+  "agentsMdPath",
+  "promptTemplate",
+  "bootstrapPromptTemplate",
+] as const;
+
+type DuplicateInstructionsBundle = {
+  entryFile: string;
+  files: Record<string, string>;
+};
+
+type DuplicateAgentSource = Pick<
+  Agent,
+  | "name"
+  | "role"
+  | "title"
+  | "icon"
+  | "capabilities"
+  | "adapterType"
+  | "adapterConfig"
+  | "runtimeConfig"
+  | "defaultEnvironmentId"
+  | "budgetMonthlyCents"
+  | "permissions"
+  | "metadata"
+>;
+
+function cloneRecord(value: Record<string, unknown> | null | undefined): Record<string, unknown> {
+  if (!value) return {};
+  return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
+}
+
+function duplicateAgentName(name: string): string {
+  const trimmed = name.trim();
+  return `${trimmed || "Agent"} Copy`;
+}
+
+function buildDuplicateAgentPayload(
+  agent: DuplicateAgentSource,
+  instructionsBundle?: DuplicateInstructionsBundle | null,
+): Record<string, unknown> {
+  const adapterConfig = cloneRecord(agent.adapterConfig);
+  for (const key of DUPLICATE_INSTRUCTION_CONFIG_KEYS) {
+    delete adapterConfig[key];
+  }
+
+  const payload: Record<string, unknown> = {
+    name: duplicateAgentName(agent.name),
+    role: agent.role,
+    adapterType: agent.adapterType,
+    adapterConfig,
+    runtimeConfig: cloneRecord(agent.runtimeConfig),
+    defaultEnvironmentId: agent.defaultEnvironmentId ?? null,
+    budgetMonthlyCents: agent.budgetMonthlyCents ?? 0,
+    permissions: {
+      canCreateAgents: Boolean(agent.permissions?.canCreateAgents),
+      canCreateSkills: agent.permissions?.canCreateSkills !== false,
+    },
+  };
+
+  if (agent.title) payload.title = agent.title;
+  if (agent.icon) payload.icon = agent.icon;
+  if (agent.capabilities) payload.capabilities = agent.capabilities;
+  if (agent.metadata) payload.metadata = cloneRecord(agent.metadata);
+
+  if (instructionsBundle && Object.keys(instructionsBundle.files).length > 0) {
+    payload.instructionsBundle = instructionsBundle;
+  }
+
+  return payload;
+}
 
 export function RunButton({
   onClick,

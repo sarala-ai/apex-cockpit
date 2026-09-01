@@ -43,6 +43,7 @@ import {
   updateSecretProviderConfigSchema,
 } from "@paperclipai/shared";
 import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
+import { SECRET_FIELD_NAME_PATTERN } from "../redaction.js";
 import { logger } from "../middleware/logger.js";
 import {
   checkSecretProviders,
@@ -62,8 +63,10 @@ import { authorizationDeniedDetails, authorizationService } from "./authorizatio
 import { findActiveServerAdapter } from "../adapters/index.js";
 
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const SENSITIVE_ENV_KEY_RE =
-  /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
+/** Derived from the redaction module's list, never re-typed: a name that is
+ *  too sensitive to display is too sensitive to store in plaintext, and the
+ *  two answers must come from the same place. */
+export const SENSITIVE_ENV_KEY_RE = new RegExp(SECRET_FIELD_NAME_PATTERN, "i");
 const REDACTED_SENTINEL = "***REDACTED***";
 const COMING_SOON_SECRET_PROVIDERS: ReadonlySet<SecretProvider> = new Set([
   "gcp_secret_manager",

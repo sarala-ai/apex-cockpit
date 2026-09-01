@@ -2,7 +2,50 @@ import * as fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { prepareClaudeConfigSeed } from "./claude-config.js";
+import { buildGatewayMcpConfig, prepareClaudeConfigSeed } from "./claude-config.js";
+
+describe("buildGatewayMcpConfig", () => {
+  it("returns null when APEX_GATEWAY_TOKEN is absent or blank", () => {
+    expect(buildGatewayMcpConfig({})).toBeNull();
+    expect(buildGatewayMcpConfig({ APEX_GATEWAY_TOKEN: "   " })).toBeNull();
+  });
+
+  it("injects a streamable-http apex-gateway server with a token placeholder header", () => {
+    const config = buildGatewayMcpConfig({ APEX_GATEWAY_TOKEN: "jwt-abc" });
+    expect(config).toEqual({
+      mcpServers: {
+        "apex-gateway": {
+          type: "http",
+          url: "http://localhost:4444/mcp",
+          headers: { Authorization: "Bearer ${APEX_GATEWAY_TOKEN}" },
+        },
+      },
+    });
+    // The literal token value is never embedded — only the env placeholder.
+    expect(JSON.stringify(config)).not.toContain("jwt-abc");
+  });
+
+  it("derives /mcp from APEX_GATEWAY_URL (trimming trailing slashes)", () => {
+    const config = buildGatewayMcpConfig({
+      APEX_GATEWAY_TOKEN: "t",
+      APEX_GATEWAY_URL: "https://gw.example.com//",
+    });
+    expect((config?.mcpServers["apex-gateway"] as { url: string }).url).toBe(
+      "https://gw.example.com/mcp",
+    );
+  });
+
+  it("honors an explicit APEX_GATEWAY_MCP_URL over the derived one", () => {
+    const config = buildGatewayMcpConfig({
+      APEX_GATEWAY_TOKEN: "t",
+      APEX_GATEWAY_URL: "https://gw.example.com",
+      APEX_GATEWAY_MCP_URL: "https://gw.example.com/servers/x/mcp",
+    });
+    expect((config?.mcpServers["apex-gateway"] as { url: string }).url).toBe(
+      "https://gw.example.com/servers/x/mcp",
+    );
+  });
+});
 
 describe("prepareClaudeConfigSeed", () => {
   const cleanupDirs: string[] = [];

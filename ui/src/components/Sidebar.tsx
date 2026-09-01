@@ -7,7 +7,6 @@ import {
   History,
   Search,
   SquarePen,
-  Network,
   Boxes,
   Repeat,
   Layers,
@@ -20,6 +19,11 @@ import {
   Pin,
   MessagesSquare,
   GanttChartSquare,
+  PenTool,
+  Activity,
+  Network,
+  Workflow,
+  Rocket,
 } from "lucide-react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -76,10 +80,8 @@ export function Sidebar() {
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
   const liveRunCount = liveRuns?.length ?? 0;
   const showWorkspacesLink = experimentalSettings?.enableIsolatedWorkspaces === true;
-  const showPipelines = experimentalSettings?.enablePipelines === true;
   const goalsLinkPending = experimentalSettings === undefined;
   const showGoalsLink = experimentalSettings?.enableGoalsSidebarLink === true;
-  const showCases = experimentalSettings?.enableCases === true;
   // Streamlined left navigation (top-level Projects link + starred children) is
   // now the standard product sidebar (PAP-12472). The former experimental
   // opt-out was retired; classic per-project collapsible mode is no longer
@@ -181,40 +183,39 @@ export function Sidebar() {
             );
           })()}
           <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
+          {/* Stopped work reads as danger for the same reason a failed run does:
+              it is not a queue of things to get to, it is a process that will
+              not continue until somebody acts. */}
           <SidebarNavItem
             to="/inbox"
             label="Inbox"
             icon={Inbox}
             badge={inboxBadge.inbox}
             badgeLabel="unread"
-            badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
-            alert={inboxBadge.failedRuns > 0}
+            badgeTone={inboxBadge.failedRuns > 0 || inboxBadge.stoppedSteps > 0 ? "danger" : "default"}
+            alert={inboxBadge.failedRuns > 0 || inboxBadge.stoppedSteps > 0}
           />
           {conferenceRoomChatEnabled ? (
             <SidebarNavItem to="/board-chat" label="Conference Room" icon={MessagesSquare} />
           ) : null}
         </div>
 
+        {/* IA (decided Jul 27, on the Shell design board): five planes —
+            Work (the moving thread), Product (what we're making), Operations
+            (what's running), AI Governance (what can act + what's allowed),
+            Settings standalone. Lifecycle (design→develop→deploy→monitor)
+            deliberately lives INSIDE Pipelines as its columns, never as nav. */}
         <SidebarSection label="Work" collapsible={{ open: workOpen, onOpenChange: setWorkOpen }}>
           <SidebarNavItem to="/issues" label="Tasks" icon={CircleDot} />
-          {showCases ? (
-            <SidebarNavItem to="/cases" label="Cases" icon={Layers} textBadge="beta" />
-          ) : null}
+          <SidebarNavItem to="/cases" label="Cases" icon={Layers} textBadge="beta" />
           <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
-          {showPipelines ? (
-            <SidebarNavItem to="/pipelines" label="Pipelines" icon={GitBranch} />
-          ) : null}
-          {showGoalsLink ? (
-            <SidebarNavItem to="/goals" label="Goals" icon={Target} />
-          ) : goalsLinkPending ? (
-            <div
-              data-testid="sidebar-goals-placeholder"
-              className="h-8 pointer-coarse:h-7"
-              aria-hidden="true"
-            />
-          ) : null}
+          {/* Pipelines is the substrate every ticket moves through — no
+              longer gated behind an experimental flag (was Paperclip's
+              incubating `enablePipelines`, retired since it described
+              something upstream, never APEX). */}
+          <SidebarNavItem to="/pipelines" label="Pipelines" icon={GitBranch} />
+          <SidebarNavItem to="/timeline" label="Timeline" icon={GanttChartSquare} />
           <SidebarNavItem to="/artifacts" label="Artifacts" icon={Package} />
-          <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
           {showWorkspacesLink ? (
             <SidebarNavItem to="/workspaces" label="Workspaces" icon={GitBranch} />
           ) : null}
@@ -242,15 +243,40 @@ export function Sidebar() {
         {/* Classic mode restores the per-project collapsible below Work. */}
         {streamlined ? null : <SidebarProjects />}
 
-        <SidebarAgents streamlined={streamlined} />
+        <SidebarSection label="Product" collapsible={{ open: companyOpen, onOpenChange: setCompanyOpen }}>
+          <SidebarNavItem to="/design" label="Design" icon={PenTool} />
+          {showGoalsLink ? (
+            <SidebarNavItem to="/goals" label="Goals" icon={Target} />
+          ) : goalsLinkPending ? (
+            <div
+              data-testid="sidebar-goals-placeholder"
+              className="h-8 pointer-coarse:h-7"
+              aria-hidden="true"
+            />
+          ) : null}
+          {/* Target surfaces (Shell board IA panel): Docs, Issues — the
+              issue browser lands with multi-source tickets; promoting an
+              issue is a state transition into Work, never a copy. */}
+        </SidebarSection>
 
-        <SidebarSection label="Company" collapsible={{ open: companyOpen, onOpenChange: setCompanyOpen }}>
-          <SidebarNavItem to="/org" label="Org" icon={Network} />
-          <SidebarNavItem to="/timeline" label="Timeline" icon={GanttChartSquare} />
+        <SidebarSection label="Operations">
+          {/* Releases sits before Observe: a release is the measurement
+              boundary the Observe surface's numbers get read against. */}
+          <SidebarNavItem to="/releases" label="Releases" icon={Rocket} />
+          <SidebarNavItem to="/observe" label="Observe" icon={Activity} />
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
           <SidebarNavItem to="/activity" label="Activity" icon={History} />
-          <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
         </SidebarSection>
+
+        <SidebarSection label="AI Governance">
+          <SidebarNavItem to="/gateway" label="Gateway" icon={Network} />
+          <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
+          <SidebarNavItem to="/workflows" label="Workflows" icon={Workflow} />
+        </SidebarSection>
+
+        <SidebarAgents streamlined={streamlined} />
+
+        <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
 
         <PluginSlotOutlet
           slotTypes={["sidebarPanel"]}

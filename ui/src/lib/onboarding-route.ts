@@ -3,18 +3,21 @@ type OnboardingRouteCompany = {
   issuePrefix: string;
 };
 
-export function isOnboardingPath(pathname: string): boolean {
+function matchesLeaf(pathname: string, leaf: string): boolean {
   const segments = pathname.split("/").filter(Boolean);
-
-  if (segments.length === 1) {
-    return segments[0]?.toLowerCase() === "onboarding";
-  }
-
-  if (segments.length === 2) {
-    return segments[1]?.toLowerCase() === "onboarding";
-  }
-
+  // Top-level (`/onboarding`) or company-prefixed (`/pap/onboarding`).
+  if (segments.length === 1) return segments[0]?.toLowerCase() === leaf;
+  if (segments.length === 2) return segments[1]?.toLowerCase() === leaf;
   return false;
+}
+
+export function isOnboardingPath(pathname: string): boolean {
+  return matchesLeaf(pathname, "onboarding");
+}
+
+/** The identity-first setup wizard — top-level `/setup` or `/{prefix}/setup`. */
+export function isSetupPath(pathname: string): boolean {
+  return matchesLeaf(pathname, "setup");
 }
 
 export function resolveRouteOnboardingOptions(params: {
@@ -43,11 +46,22 @@ export function resolveRouteOnboardingOptions(params: {
   return { initialStep: 2, companyId: matchedCompany.id };
 }
 
-export function shouldRedirectCompanylessRouteToOnboarding(params: {
+/**
+ * A companyless instance's entry routes funnel into the identity-first setup
+ * wizard (`/setup`) — the cloud-first org→company spine, NOT the fork's original
+ * `/onboarding` company-creation wizard. `/onboarding` stays reachable (a
+ * re-entry point to create a company/agent), so we don't redirect when already
+ * heading there; nor when already on `/setup`.
+ */
+export function shouldRedirectCompanylessRouteToSetup(params: {
   pathname: string;
   hasCompanies: boolean;
 }): boolean {
-  return !params.hasCompanies && !isOnboardingPath(params.pathname);
+  return (
+    !params.hasCompanies &&
+    !isSetupPath(params.pathname) &&
+    !isOnboardingPath(params.pathname)
+  );
 }
 
 /**

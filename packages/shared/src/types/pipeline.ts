@@ -57,6 +57,8 @@ export interface PipelineCaseLiveness {
     | "breakdown_incomplete"
     | "children_waiting"
     | "review_waiting"
+    | "step_running"
+    | "step_held"
     | "no_action_path";
   message: string;
   issue?: {
@@ -84,6 +86,64 @@ export interface PipelineCaseLiveness {
     createdRequestKeys?: string[];
     missingRequestKeys?: string[];
   } | null;
+  /** Present when a step stopped and the process will not move on until
+   *  somebody deals with it. See {@link PipelineStepHold}. */
+  hold?: PipelineStepHold | null;
+}
+
+/**
+ * A step that stopped, and the recorded reason it stopped.
+ *
+ * The server has always known this — it writes the fact the moment a step
+ * fails, and every transition out of the step is refused because of it. What
+ * it never did was hand it to a surface a person reads. This is that hand-off:
+ * the raw facts, translated into words by the client (`ui/src/lib/step-hold`)
+ * so one wording serves the ticket and the item page alike.
+ */
+export interface PipelineStepHold {
+  /** The recorded event, so a surface can link to it or dedupe on it. */
+  eventId: string;
+  stageId: string | null;
+  stageKey: string | null;
+  /** The name the process gave this step, when the caller could resolve it. */
+  stageName?: string | null;
+  /** Which machinery stopped: `run_exit_failure`, `agent_step_failure`,
+   *  `acceptance_failed`, `step_exit_transition_blocked`. Drives the wording,
+   *  never shown raw. */
+  reason: string | null;
+  errorType: string | null;
+  /** The sentence the server recorded about this specific failure. Shown
+   *  verbatim — it is the only part that says what actually happened. */
+  message: string | null;
+  heldAt: string;
+}
+
+/**
+ * A stopped step as the attention surfaces read it.
+ *
+ * The count on the sidebar and the tile on the dashboard both need a list you
+ * can open, and that list has to name the ticket rather than the case: a
+ * person recognises "APEX-14", not a case key. Words are still the client's
+ * (`ui/src/lib/step-hold`) — this only carries the facts.
+ */
+export interface PipelineStoppedStep {
+  caseId: string;
+  caseKey: string;
+  pipelineId: string;
+  /** The step's own display name, so a surface never has to humanise a key. */
+  stageName: string;
+  /** The ticket this stopped on, when a live one points at it. */
+  issue: {
+    id: string;
+    identifier: string | null;
+    title: string;
+  } | null;
+  /** The human answerable for it: the ticket's, else whoever raised it, else
+   *  the company's default. Never the agent that was running the step. */
+  responsibleUserId: string | null;
+  /** True when that human is the one asking. */
+  isMine: boolean;
+  hold: PipelineStepHold;
 }
 
 export type PipelineAutomationRetryScope = "current_stage" | "previous_stage";

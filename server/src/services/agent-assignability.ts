@@ -13,6 +13,7 @@ type AgentAssignmentKind = "work" | "routine";
 type AssignabilityAgent = AgentEligibilityAgent;
 
 type AgentAssignmentConflictReason =
+  | "assignee_is_fixture"
   | "pending_approval"
   | "assignee_terminated"
   | "assignee_unknown_status"
@@ -23,6 +24,13 @@ type AgentAssignmentConflictReason =
   | "ancestor_depth_exceeded";
 
 function assignmentMessage(kind: AgentAssignmentKind, reason: AgentAssignmentConflictReason) {
+  if (reason === "assignee_is_fixture") {
+    // Said plainly, because the fixture usually looks perfectly healthy: the
+    // reason it cannot take this work is what it IS, not what state it is in.
+    return kind === "routine"
+      ? "Cannot assign routines to a test fixture agent"
+      : "Cannot assign work to a test fixture agent";
+  }
   if (reason === "pending_approval") {
     return kind === "routine"
       ? "Cannot assign routines to pending approval agents"
@@ -75,6 +83,7 @@ async function getAgent(db: Db, agentId: string): Promise<AssignabilityAgent | n
       name: agents.name,
       status: agents.status,
       reportsTo: agents.reportsTo,
+      rosterKind: agents.rosterKind,
     })
     .from(agents)
     .where(eq(agents.id, agentId))
@@ -89,6 +98,7 @@ async function listCompanyAgents(db: Db, companyId: string): Promise<Assignabili
       name: agents.name,
       status: agents.status,
       reportsTo: agents.reportsTo,
+      rosterKind: agents.rosterKind,
     })
     .from(agents)
     .where(eq(agents.companyId, companyId));
@@ -127,6 +137,14 @@ export async function assertAssignableAgent(
 
   if (eligibility.assignable) return;
 
+  if (eligibility.assignabilityReason === "fixture") {
+    throw conflict(assignmentMessage(kind, "assignee_is_fixture"), conflictDetails({
+      companyId,
+      assigneeAgentId: agentId,
+      reason: "assignee_is_fixture",
+      chain,
+    }));
+  }
   if (eligibility.assignabilityReason === "pending_approval") {
     throw conflict(assignmentMessage(kind, "pending_approval"), conflictDetails({
       companyId,

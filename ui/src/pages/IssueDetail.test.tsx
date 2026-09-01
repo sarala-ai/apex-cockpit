@@ -1158,6 +1158,35 @@ describe("IssueDetail", () => {
     });
   });
 
+  it("reads as a ticket: the human body is on the page and the agent brief is behind a collapsed section", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      description: "Record the first governed design-change loop on the Flows & gates board.",
+      agentBrief: 'apex run penpot update-file {"type":"add-obj","x":5190,"y":952}',
+    } as Partial<Issue>));
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain(
+        "Record the first governed design-change loop on the Flows & gates board.",
+      );
+      const toggle = container.querySelector('[data-testid="agent-brief-toggle"]');
+      expect(toggle).toBeTruthy();
+      expect(toggle?.getAttribute("aria-expanded")).toBe("false");
+      // The machine detail is not on the human reading surface.
+      expect(container.textContent).not.toContain("add-obj");
+      expect(container.textContent).not.toContain("apex run penpot update-file");
+    });
+  });
+
   it("attributes an agent-created issue to the transitive responsible user with a via affordance", async () => {
     mockIssuesApi.get.mockResolvedValue(createIssue({
       assigneeAgentId: "agent-1",
@@ -2474,6 +2503,7 @@ describe("IssueDetail", () => {
       );
     expect(footer?.className).toContain("bg-background");
   });
+
 });
 
 describe("canBoardResolveRecoveryAction", () => {

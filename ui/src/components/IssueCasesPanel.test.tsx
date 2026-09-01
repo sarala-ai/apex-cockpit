@@ -13,13 +13,11 @@ function act(callback: () => void) {
 }
 
 const mockCasesApi = vi.hoisted(() => ({ listForIssue: vi.fn() }));
-const mockInstanceApi = vi.hoisted(() => ({ getExperimental: vi.fn() }));
 
 vi.mock("@/api/cases", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/api/cases")>()),
   casesApi: mockCasesApi,
 }));
-vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: mockInstanceApi }));
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: AnchorHTMLAttributes<HTMLAnchorElement> & { to: string }) => (
     <a href={to} {...props}>{children}</a>
@@ -53,7 +51,6 @@ describe("IssueCasesPanel", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     mockCasesApi.listForIssue.mockReset();
-    mockInstanceApi.getExperimental.mockReset();
   });
   afterEach(() => container.remove());
 
@@ -71,17 +68,7 @@ describe("IssueCasesPanel", () => {
     return root;
   }
 
-  it("renders nothing when the Cases flag is off", async () => {
-    mockInstanceApi.getExperimental.mockResolvedValue({ enableCases: false });
-    mockCasesApi.listForIssue.mockResolvedValue(links);
-    const root = await render();
-    expect(container.textContent).toBe("");
-    expect(mockCasesApi.listForIssue).not.toHaveBeenCalled();
-    act(() => root.unmount());
-  });
-
-  it("renders linked cases with role + status when enabled", async () => {
-    mockInstanceApi.getExperimental.mockResolvedValue({ enableCases: true });
+  it("renders linked cases with role + status", async () => {
     mockCasesApi.listForIssue.mockResolvedValue(links);
     const root = await render();
     const text = container.textContent ?? "";
@@ -94,8 +81,7 @@ describe("IssueCasesPanel", () => {
     act(() => root.unmount());
   });
 
-  it("renders nothing when enabled but no cases are linked", async () => {
-    mockInstanceApi.getExperimental.mockResolvedValue({ enableCases: true });
+  it("renders nothing when no cases are linked", async () => {
     mockCasesApi.listForIssue.mockResolvedValue([]);
     const root = await render();
     expect(container.textContent).toBe("");

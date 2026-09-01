@@ -50,11 +50,6 @@ vi.mock("./components/Layout", async () => {
   return { Layout: () => <Outlet /> };
 });
 
-// The experimental gate would otherwise hide the page behind a feature flag.
-vi.mock("./components/CasesExperimentalGate", () => ({
-  CasesExperimentalGate: ({ children }: { children: ReactNode }) => <>{children}</>,
-}));
-
 // Rendered by <App> outside <Routes> and needs DialogProvider; irrelevant here.
 vi.mock("./components/OnboardingWizardVariant", () => ({
   OnboardingWizardVariant: () => null,

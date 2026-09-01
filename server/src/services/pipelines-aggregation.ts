@@ -11,6 +11,7 @@ import {
   pipelines,
   routines,
 } from "@paperclipai/db";
+import { stageEntryStepRef } from "@paperclipai/shared";
 import { notFound } from "../errors.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 
@@ -95,7 +96,7 @@ function stageAutomationFromConfig(stage: typeof pipelineStages.$inferSelect) {
   const onEnter = config.onEnter && typeof config.onEnter === "object" && !Array.isArray(config.onEnter)
     ? config.onEnter as Record<string, unknown>
     : null;
-  if (onEnter?.type !== "run_routine" || typeof onEnter.routineId !== "string" || !onEnter.routineId.trim()) {
+  if (onEnter?.type !== "routine" || typeof onEnter.routineId !== "string" || !onEnter.routineId.trim()) {
     return null;
   }
   return {
@@ -354,10 +355,13 @@ export async function listCompanyCaseEvents(
   const issuesById = new Map(issueRowsForEvents.map((issue) => [issue.id, issue]));
   const stagesByAutomationId = new Map<string, typeof pipelineStages.$inferSelect>();
   const stagesByRoutineId = new Map<string, typeof pipelineStages.$inferSelect>();
+  // See the same pair in services/pipelines.ts: the automation-id map must
+  // answer for every entry-step kind, the routine-id map only for routines.
   for (const stage of pipelineStageRows) {
+    const entry = stageEntryStepRef(stage.config, stage.id);
+    if (entry) stagesByAutomationId.set(entry.id, stage);
     const automation = stageAutomationFromConfig(stage);
     if (!automation) continue;
-    stagesByAutomationId.set(automation.id, stage);
     stagesByRoutineId.set(automation.routineId, stage);
   }
   const items = pageRows.map((row) => {
@@ -754,6 +758,11 @@ export async function loadPipelineConnections(
     .where(and(
       eq(pipelineCases.companyId, companyId),
       eq(parentCase.companyId, companyId),
+      // Connections are between PIPELINES, so both ends must have one. `ne`
+      // already discards nulls in SQL; the explicit predicates are what let the
+      // rows be read as non-null below.
+      isNotNull(pipelineCases.pipelineId),
+      isNotNull(parentCase.pipelineId),
       ne(pipelineCases.pipelineId, parentCase.pipelineId),
     ));
   const map = new Map<string, PipelineConnections>();
@@ -766,6 +775,7 @@ export async function loadPipelineConnections(
     return value;
   };
   for (const row of rows) {
+    if (!row.childPipelineId || !row.parentPipelineId) continue;
     entry(row.childPipelineId).upstreamPipelineIds.push(row.parentPipelineId);
     entry(row.parentPipelineId).downstreamPipelineIds.push(row.childPipelineId);
   }

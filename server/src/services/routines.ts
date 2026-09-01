@@ -68,6 +68,7 @@ import { heartbeatService } from "./heartbeat.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logActivity } from "./activity-log.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { usableResponsibleUserIdOrNull } from "./service-actor-markers.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
@@ -110,15 +111,21 @@ async function resolveCompanyDefaultResponsibleUserId(db: Db, companyId: string)
 }
 
 async function resolveRoutineResponsibleUserId(db: Db, companyId: string, actorUserId: string | null | undefined, parentIssueId?: string | null) {
-  if (actorUserId) return actorUserId;
+  // A non-human service marker (e.g. "built-in-bundles" from bundle seeding)
+  // is not an accountable user — never stamp it verbatim. Fall through to the
+  // rest of the ladder instead, same as if no actor were present.
+  const usableActorUserId = usableResponsibleUserIdOrNull(actorUserId);
+  if (usableActorUserId) return usableActorUserId;
   if (parentIssueId) {
     const parent = await db
       .select({ responsibleUserId: issues.responsibleUserId, createdByUserId: issues.createdByUserId })
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.id, parentIssueId)))
       .then((rows) => rows[0] ?? null);
-    if (parent?.responsibleUserId) return parent.responsibleUserId;
-    if (parent?.createdByUserId) return parent.createdByUserId;
+    const parentResponsibleUserId = usableResponsibleUserIdOrNull(parent?.responsibleUserId);
+    if (parentResponsibleUserId) return parentResponsibleUserId;
+    const parentCreatedByUserId = usableResponsibleUserIdOrNull(parent?.createdByUserId);
+    if (parentCreatedByUserId) return parentCreatedByUserId;
   }
   return resolveCompanyDefaultResponsibleUserId(db, companyId);
 }
@@ -1548,8 +1555,22 @@ export function routineService(
               return row?.responsibleUserId ?? snapshot?.routine.responsibleUserId ?? null;
             })
         : null;
+      // Any of these candidates can carry a non-human service marker forward
+      // verbatim (e.g. a bundle-seeded routine whose stored responsibleUserId
+      // is "built-in-bundles"). A stored value can also simply go stale.
+      // Sanitize each candidate and, if none survive, re-run the same ladder
+      // used at routine create/update time (live, not stored) so every
+      // dispatched run always resolves to a real accountable human.
       const responsibleUserId =
-        manualRunnerUserId ?? latestRevisionResponsibleUserId ?? input.routine.responsibleUserId ?? null;
+        usableResponsibleUserIdOrNull(manualRunnerUserId) ??
+        usableResponsibleUserIdOrNull(latestRevisionResponsibleUserId) ??
+        usableResponsibleUserIdOrNull(input.routine.responsibleUserId) ??
+        (await resolveRoutineResponsibleUserId(
+          txDb,
+          input.routine.companyId,
+          null,
+          input.routine.parentIssueId,
+        ));
       const [createdRun] = await txDb
         .insert(routineRuns)
         .values({
@@ -2330,6 +2351,90 @@ export function routineService(
           webhookSecret: secretValue,
         },
         revision,
+      };
+    },
+
+    remove: async (routineId: string) => {
+      const routine = await getRoutineById(routineId);
+      if (!routine) throw notFound("Routine not found");
+
+      const managedBy = await getManagedRoutineBinding(routine);
+      if (managedBy) {
+        throw conflict(
+          `Routine "${routine.title}" is managed by the ${managedBy.pluginKey} plugin and cannot be deleted directly`,
+          {
+            code: "routine_plugin_managed",
+            routineId: routine.id,
+            pluginKey: managedBy.pluginKey,
+            remediation: "Uninstall or reconfigure the owning plugin instead.",
+          },
+        );
+      }
+
+      const triggers = await db
+        .select({ id: routineTriggers.id, secretId: routineTriggers.secretId })
+        .from(routineTriggers)
+        .where(eq(routineTriggers.routineId, routine.id));
+
+      const result = await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        await tx.execute(sql`select id from ${routines} where ${routines.id} = ${routine.id} for update`);
+        const documentIds = (
+          await txDb
+            .select({ documentId: routineDocuments.documentId })
+            .from(routineDocuments)
+            .where(eq(routineDocuments.routineId, routine.id))
+        ).map((row) => row.documentId);
+        const revisionCount = (
+          await txDb
+            .select({ id: routineRevisions.id })
+            .from(routineRevisions)
+            .where(eq(routineRevisions.routineId, routine.id))
+        ).length;
+        const runCount = (
+          await txDb
+            .select({ id: routineRuns.id })
+            .from(routineRuns)
+            .where(eq(routineRuns.routineId, routine.id))
+        ).length;
+
+        // company_secret_bindings keys off (targetType, targetId) with no foreign
+        // key, so the routine's env bindings have to be released explicitly.
+        await secretsSvc.syncEnvBindingsForTarget(
+          routine.companyId,
+          { targetType: "routine", targetId: routine.id },
+          {},
+          { db: tx },
+        );
+
+        // Cascades: routine_revisions, routine_triggers, routine_runs,
+        // routine_documents, document_annotation_threads/comments and
+        // pipeline_automation_executions all declare ON DELETE CASCADE.
+        await txDb.delete(routines).where(eq(routines.id, routine.id));
+        if (documentIds.length > 0) {
+          await txDb.delete(documents).where(inArray(documents.id, documentIds));
+        }
+        return { revisionCount, runCount };
+      });
+
+      for (const trigger of triggers) {
+        if (!trigger.secretId) continue;
+        try {
+          await secretsSvc.remove(trigger.secretId);
+        } catch (err) {
+          logger.warn(
+            { err, routineId: routine.id, triggerId: trigger.id, secretId: trigger.secretId },
+            "failed to remove routine trigger webhook secret after routine deletion",
+          );
+        }
+      }
+
+      return {
+        deleted: true,
+        routine,
+        deletedRevisionCount: result.revisionCount,
+        deletedTriggerCount: triggers.length,
+        deletedRunCount: result.runCount,
       };
     },
 

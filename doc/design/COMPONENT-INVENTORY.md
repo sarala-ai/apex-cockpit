@@ -157,7 +157,6 @@ Grouped by rough domain area. One line each; variants column is props-based wher
 |---|---|
 | `PipelineHealthWarnings.tsx` / `PipelineLivenessBanner.tsx` | Pipeline health/liveness banners |
 | `PipelineItemBodyDocument.tsx` / `PipelineStageHistoryPanel.tsx` / `PipelineWorkReferences.tsx` | Pipeline stage detail panels |
-| `PipelinesExperimentalGate.tsx` | Feature-flag gate wrapper for pipelines |
 | `RoutineList.tsx` / `ManagedRoutinesList.tsx` | Routine list views |
 | `RoutineActivityRow.tsx` / `RoutineHistoryTab.tsx` | Routine activity row + history tab |
 | `RoutineRunVariablesDialog.tsx` / `RoutineVariablesEditor.tsx` | Routine run-variable input dialog/editor |
@@ -195,7 +194,7 @@ Grouped by rough domain area. One line each; variants column is props-based wher
 |---|---|
 | `OnboardingWizard.tsx` / `OnboardingWizardVariant.tsx` | Onboarding flow + an alternate variant — worth a human check on whether the variant is still live or leftover from an A/B (see 3.5) |
 | `FrontDoor.tsx` | Landing/entry gate component |
-| `CloudAccessGate.tsx` / `ConferenceRoomChatGate.tsx` / `PipelinesExperimentalGate.tsx` | Three separate feature-flag/access gate wrappers — same pattern (children-if-enabled), each hand-rolled per feature; candidate for a shared `FeatureGate` primitive (flagged, not built here) |
+| `CloudAccessGate.tsx` / `ConferenceRoomChatGate.tsx` | Feature-flag/access gate wrappers — same pattern (children-if-enabled), each hand-rolled per feature; candidate for a shared `FeatureGate` primitive (flagged, not built here). `PipelinesExperimentalGate.tsx` was removed — pipelines are the substrate every ticket moves through, not an experimental surface. |
 | `Identity.tsx` | Avatar + name identity chip (`deriveInitials` helper) |
 | `MembershipAction.tsx` | Membership accept/decline action row |
 | `access/` (2 files) | Access-request related components |
@@ -359,7 +358,7 @@ All of the below are **leads for human review**, not verdicts, per KNOWN-DUPLICA
 
 ### 5.5 Feature-gate wrapper pattern (not a duplicate, but a repeated pattern)
 
-`CloudAccessGate.tsx`, `ConferenceRoomChatGate.tsx`, `PipelinesExperimentalGate.tsx` each independently implement the same "render children only if flag X is enabled, else render fallback" shape. Not byte-identical (each checks a different flag/hook), so not a strict duplicate, but a strong candidate for a shared `FeatureGate`/`ExperimentalGate` primitive that takes a flag-check function as a prop. Flagged as a recommendation, not built here.
+`CloudAccessGate.tsx`, `ConferenceRoomChatGate.tsx` each independently implement the same "render children only if flag X is enabled, else render fallback" shape. Not byte-identical (each checks a different flag/hook), so not a strict duplicate, but a strong candidate for a shared `FeatureGate`/`ExperimentalGate` primitive that takes a flag-check function as a prop. Flagged as a recommendation, not built here. (`PipelinesExperimentalGate.tsx` was removed — pipelines are no longer an experimental surface.)
 
 ---
 

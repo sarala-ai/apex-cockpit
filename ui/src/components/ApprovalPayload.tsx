@@ -1,11 +1,20 @@
-import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
+import { useState } from "react";
+import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck, GitPullRequest } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { formatCents } from "../lib/utils";
+import { approvalsApi, type ApprovalPrDiff } from "../api/approvals";
+import { queryKeys } from "../lib/queryKeys";
+import { formatWaitingFor } from "../lib/approval-waiting";
+import { resolveArtifactRenderer } from "./artifact-renderers";
+import { ReviewPassChecklist } from "./ReviewPassChecklist";
+import { GateBriefBody } from "./GateBrief";
 
 export const typeLabel: Record<string, string> = {
   hire_agent: "Hire Agent",
   approve_ceo_strategy: "CEO Strategy",
   budget_override_required: "Budget Override",
   request_board_approval: "Board Approval",
+  flow_gate: "Flow Gate",
 };
 
 function firstNonEmptyString(...values: unknown[]): string | null {
@@ -41,6 +50,7 @@ export const typeIcon: Record<string, typeof UserPlus> = {
   approve_ceo_strategy: Lightbulb,
   budget_override_required: ShieldAlert,
   request_board_approval: ShieldCheck,
+  flow_gate: GitPullRequest,
 };
 
 export const defaultTypeIcon = ShieldCheck;
@@ -123,6 +133,30 @@ export function CeoStrategyPayload({ payload }: { payload: Record<string, unknow
         <pre className="mt-2 rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground overflow-x-auto max-h-48">
           {JSON.stringify(payload, null, 2)}
         </pre>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A pre-registered validation criterion has reached its review date. The item
+ * has to carry the question itself — the statement and the bar — because an
+ * inbox row that only links elsewhere is how forty criteria went unread.
+ */
+export function CriterionReviewPayload({ payload }: { payload: Record<string, unknown> }) {
+  const goalId = typeof payload.goalId === "string" ? payload.goalId : null;
+  return (
+    <div className="mt-3 space-y-1.5 text-sm">
+      <PayloadField label="Criterion" value={payload.statement} />
+      <PayloadField label="Threshold" value={payload.threshold} />
+      <PayloadField label="Measure" value={payload.measure} />
+      <PayloadField label="Window" value={payload.window} />
+      <PayloadField label="Review date" value={payload.reviewDate} />
+      <PayloadField label="Initiative" value={payload.goalTitle} />
+      {goalId && (
+        <a className="text-xs underline text-muted-foreground" href={`/goals/${goalId}`}>
+          Open the initiative to record hit or missed
+        </a>
       )}
     </div>
   );
@@ -229,19 +263,329 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
   );
 }
 
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
+      {children}
+    </p>
+  );
+}
+
+/**
+ * The artifact block — the PR the reviewer should actually look at.
+ *
+ * The BODY of this block is not written here. It comes from the
+ * artifact-renderer registry, keyed by the `artifactKind` the server
+ * classified. Adding a renderer for a new artifact type must require zero
+ * edits to this component; if that stops being true, the seam has leaked.
+ */
+function ArtifactBlock({ artifact }: { artifact: ApprovalPrDiff }) {
+  if (artifact.available === false) {
+    return <p className="text-xs text-muted-foreground">No linked pull request found for this gate.</p>;
+  }
+  if (artifact.degraded) {
+    return (
+      <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
+        Couldn&rsquo;t load {artifact.repo}#{artifact.headBranch}: {artifact.error}
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-2 rounded-md border border-border/60 bg-background/60 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <a
+          href={artifact.url}
+          target="_blank"
+          rel="noreferrer"
+          className="min-w-0 truncate font-medium text-foreground hover:underline"
+        >
+          {artifact.title || `${artifact.repo}#${artifact.headBranch}`}
+        </a>
+        <span className="shrink-0 text-xs text-muted-foreground">
+          <span className="text-green-600 dark:text-green-400">+{artifact.totals.additions}</span>{" "}
+          <span className="text-red-600 dark:text-red-400">-{artifact.totals.deletions}</span>{" "}
+          · {artifact.totals.changedFiles} file{artifact.totals.changedFiles === 1 ? "" : "s"}
+        </span>
+      </div>
+      <div className="border-t border-border/60 pt-2">
+        {resolveArtifactRenderer(artifact).render(artifact)}
+      </div>
+      {artifact.files_truncated && (
+        <p className="text-(length:--text-micro) text-muted-foreground">
+          Showing the first {artifact.files.length} changed files — more were truncated.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function formatStamp(value: string | null): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleString();
+}
+
+/**
+ * Flow-gate approval surface — a DECISION BRIEF, not a log.
+ *
+ * Founder critique this answers, verbatim: reviewing a flow-gated ticket
+ * today means "reviewing agent slop" — the ticket is loaded with machine
+ * correspondence and "I don't know what to interpret, where to start and
+ * where to end." So the reviewer's eye lands on the decision, then the
+ * artifact, and nothing else: sections read in decision order (what is being
+ * decided → what was already verified → what to look at → what happens next
+ * → who did the work), raw acceptance strings and UUIDs live behind a
+ * details affordance, and every section degrades independently because the
+ * server assembles them failure-isolated (GET /approvals/:id/brief).
+ */
+export function FlowGatePayload({
+  payload,
+  approvalId,
+  acknowledgedReviewPasses,
+  onAcknowledgedReviewPassesChange,
+}: {
+  payload: Record<string, unknown>;
+  approvalId?: string;
+  /** Review passes the approver has ticked, when this surface also submits
+   *  the decision. Omitting the pair renders the questions read-only rather
+   *  than offering a checkbox that would record nothing. */
+  acknowledgedReviewPasses?: string[];
+  onAcknowledgedReviewPassesChange?: (ids: string[]) => void;
+}) {
+  const prompt = firstNonEmptyString(payload.prompt);
+  const [showMachine, setShowMachine] = useState(false);
+
+  const { data, isLoading } = useQuery({
+    queryKey: queryKeys.approvals.brief(approvalId ?? ""),
+    queryFn: () => approvalsApi.getBrief(approvalId as string),
+    enabled: !!approvalId,
+    staleTime: 15_000,
+  });
+
+  if (!approvalId) {
+    return prompt ? <p className="mt-3 leading-6 text-sm text-foreground/90">{prompt}</p> : null;
+  }
+  if (isLoading) {
+    return <p className="mt-3 text-xs text-muted-foreground">Preparing the decision brief…</p>;
+  }
+  if (!data || data.available === false) {
+    // No brief (not a flow gate, no issue, or the assembler found nothing) —
+    // fall back to the gate's own prompt rather than showing an empty card.
+    return (
+      <div className="mt-3 space-y-2 text-sm">
+        {prompt && <p className="leading-6 text-foreground/90">{prompt}</p>}
+        <p className="text-xs text-muted-foreground">
+          No decision brief could be assembled for this gate
+          {data && "reason" in data && data.reason ? ` (${data.reason})` : ""}.
+        </p>
+      </div>
+    );
+  }
+
+  // A PIPELINE gate — every gate a seeded lifecycle opens — is a different
+  // brief with a different spine (the upstream step's own artifact, rather
+  // than a pull request reached through an acceptance declaration). It is
+  // rendered by the SAME module the ticket and the item page render, so one
+  // decision cannot read three ways depending on where you found it.
+  if (data.kind === "pipeline_gate") {
+    return (
+      <div className="mt-4">
+        <GateBriefBody
+          brief={data}
+          acknowledgedReviewPasses={acknowledgedReviewPasses}
+          onAcknowledgedReviewPassesChange={onAcknowledgedReviewPassesChange}
+        />
+      </div>
+    );
+  }
+
+  const { decision, verified, artifact, next, risk, provenance, machine } = data;
+  const waiting = formatWaitingFor(data.waitingSince);
+  const verifiedTone =
+    verified.ok === true
+      ? "border-emerald-500/25 bg-emerald-500/10"
+      : verified.ok === false
+        ? "border-red-500/25 bg-red-500/10"
+        : "border-border/60 bg-muted/30";
+  const machineLines = [
+    ...verified.machine,
+    machine.flowName ? `flow: ${machine.flowName}` : null,
+    machine.nodeId ? `gate node: ${machine.nodeId}` : null,
+    provenance.runId ? `run: ${provenance.runId}` : null,
+    provenance.agentId ? `agent: ${provenance.agentId}` : null,
+    `approval: ${machine.approvalId}`,
+    next.note ? `note: ${next.note}` : null,
+  ].filter((line): line is string => !!line);
+
+  const who = provenance.agentName ?? (provenance.agentId ? "An agent" : null);
+  const stamps = [
+    provenance.commissionedAt ? `started ${formatStamp(provenance.commissionedAt)}` : null,
+    provenance.gateOpenedAt ? `gate opened ${formatStamp(provenance.gateOpenedAt)}` : null,
+  ].filter((line): line is string => !!line);
+
+  return (
+    <div className="mt-4 space-y-4 text-sm" data-testid="flow-gate-decision-brief">
+      {/* 1 — what is being decided */}
+      <div className="space-y-1">
+        <SectionLabel>You are deciding</SectionLabel>
+        <p className="text-base font-medium leading-6 text-foreground">
+          {decision.headline}
+          {decision.detail ? <span className="font-normal text-foreground/80"> — {decision.detail}</span> : null}
+        </p>
+        {decision.subject && (
+          <p className="leading-6 text-muted-foreground">
+            {decision.ticketIdentifier ? `${decision.ticketIdentifier}: ` : ""}
+            {decision.subject}
+          </p>
+        )}
+        {waiting && (
+          <p
+            className={`text-xs ${waiting.stale ? "font-medium text-amber-700 dark:text-amber-300" : "text-muted-foreground"}`}
+            data-testid="flow-gate-waiting-for"
+          >
+            {waiting.label}
+            {waiting.stale ? " — you are the bottleneck here." : ""}
+          </p>
+        )}
+      </div>
+
+      {/* 2 — what the system already verified */}
+      <div className={`rounded-lg border px-3.5 py-3 ${verifiedTone}`}>
+        <SectionLabel>Already checked</SectionLabel>
+        <p className="mt-1 leading-6 text-foreground">{verified.headline}</p>
+      </div>
+
+      {/* 3 — what to look at */}
+      <div className="space-y-1.5">
+        <SectionLabel>What to look at</SectionLabel>
+        <ArtifactBlock artifact={artifact} />
+      </div>
+
+      {/* 3b — what you are supposed to be checking (renders nothing when the
+          gate declares no passes) */}
+      <ReviewPassChecklist
+        passes={data.reviewPasses ?? []}
+        acknowledged={acknowledgedReviewPasses}
+        onChange={onAcknowledgedReviewPassesChange}
+      />
+
+      {/* 4 — what happens next (derived from the flow definition), and how
+          hard it is to take back. "On approval" / "Risks" deliberately reuse
+          the board-approval brief's labels — one vocabulary across every
+          approval type, not a second one for flow gates. */}
+      <div className="space-y-1.5 rounded-lg border border-border/60 bg-background/60 px-3.5 py-3">
+        <SectionLabel>On approval</SectionLabel>
+        <p className="leading-6 text-foreground">{next.approve}</p>
+        {/* Every decision's consequence, not just approve's: the founder must
+            know BEFORE clicking that requesting changes starts another round
+            and where it goes, and that rejecting does not. */}
+        {next.requestChanges && (
+          <p className="leading-6 text-muted-foreground" data-testid="flow-gate-next-request-changes">
+            {next.requestChanges}
+          </p>
+        )}
+        <p className="leading-6 text-muted-foreground">{next.reject}</p>
+        {risk && (
+          <p
+            className={`leading-6 ${
+              risk.reversibility === "irreversible"
+                ? "font-medium text-red-700 dark:text-red-300"
+                : risk.reversibility === "reversible_with_effort"
+                  ? "text-amber-700 dark:text-amber-300"
+                  : "text-muted-foreground"
+            }`}
+            data-testid="flow-gate-reversibility"
+          >
+            {risk.reversibilityLine}
+          </p>
+        )}
+      </div>
+
+      {risk && risk.risks.length > 0 && (
+        <div className="space-y-1.5" data-testid="flow-gate-risks">
+          <SectionLabel>Risks</SectionLabel>
+          <ul className="space-y-1 text-sm text-muted-foreground">
+            {risk.risks.map((item) => (
+              <li key={item} className="flex items-start gap-2">
+                <span className="mt-2 h-1.5 w-1.5 rounded-full bg-muted-foreground/60" />
+                <span className="leading-6">{item}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* 5 — who / what did the work */}
+      {(who || stamps.length > 0 || provenance.permissionProfile) && (
+        <p className="text-xs leading-5 text-muted-foreground">
+          {who ? <span className="text-foreground/80">{who}</span> : null}
+          {who && provenance.permissionProfile ? ` · ${provenance.permissionProfile} permissions` : null}
+          {stamps.length > 0 ? `${who || provenance.permissionProfile ? " · " : ""}${stamps.join(" · ")}` : null}
+        </p>
+      )}
+
+      {/* the machine trail — present, but never the headline */}
+      {machineLines.length > 0 && (
+        <div>
+          <button
+            type="button"
+            aria-expanded={showMachine}
+            aria-controls={`flow-gate-machine-${machine.approvalId}`}
+            onClick={() => setShowMachine((current) => !current)}
+            className="text-(length:--text-micro) text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+          >
+            {showMachine ? "Hide technical details" : "Technical details"}
+          </button>
+          <ul
+            id={`flow-gate-machine-${machine.approvalId}`}
+            hidden={!showMachine}
+            className="mt-1.5 space-y-0.5 rounded-md bg-muted/40 px-3 py-2 font-mono text-(length:--text-micro) text-muted-foreground"
+          >
+            {machineLines.map((line) => (
+              <li key={line} className="break-all">
+                {line}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ApprovalPayloadRenderer({
   type,
   payload,
   hidePrimaryTitle = false,
+  approvalId,
+  acknowledgedReviewPasses,
+  onAcknowledgedReviewPassesChange,
 }: {
   type: string;
   payload: Record<string, unknown>;
   hidePrimaryTitle?: boolean;
+  approvalId?: string;
+  acknowledgedReviewPasses?: string[];
+  onAcknowledgedReviewPassesChange?: (ids: string[]) => void;
 }) {
   if (type === "hire_agent") return <HireAgentPayload payload={payload} />;
   if (type === "budget_override_required") return <BudgetOverridePayload payload={payload} />;
+  // Minted by the criterion-review sweep, never by a client — so, like
+  // "flow_gate" below, it is compared as a string and absent from APPROVAL_TYPES.
+  if (type === "criterion_review") return <CriterionReviewPayload payload={payload} />;
   if (type === "request_board_approval") {
     return <BoardApprovalPayload payload={payload} hideTitle={hidePrimaryTitle} />;
+  }
+  if (type === "flow_gate") {
+    return (
+      <FlowGatePayload
+        payload={payload}
+        approvalId={approvalId}
+        acknowledgedReviewPasses={acknowledgedReviewPasses}
+        onAcknowledgedReviewPassesChange={onAcknowledgedReviewPassesChange}
+      />
+    );
   }
   return <CeoStrategyPayload payload={payload} />;
 }

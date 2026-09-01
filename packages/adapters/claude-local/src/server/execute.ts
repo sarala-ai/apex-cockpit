@@ -58,6 +58,7 @@ import {
   isClaudeImageProcessingError,
 } from "./parse.js";
 import {
+  buildGatewayMcpConfig,
   materializeRemoteClaudeConfig,
   prepareClaudeConfigSeed,
   resolveSharedClaudeConfigDir,
@@ -66,7 +67,10 @@ import { claudeCommandSupportsEffortFlag } from "./cli-capabilities.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
-import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
+import {
+  assertExplicitPermissionDecision,
+  buildClaudeExecutionPermissionArgs,
+} from "./permissions.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import {
   createClaudeAcpExecutor,
@@ -85,6 +89,8 @@ interface ClaudeExecutionInput {
   runtimeCommandSpec?: AdapterExecutionContext["runtimeCommandSpec"];
   executionTarget?: ReturnType<typeof readAdapterExecutionTarget>;
   authToken?: string;
+  /** Extra per-run environment variables injected by the server (e.g. PAPERCLIP_MCP_TOKEN). */
+  extraEnv?: Record<string, string>;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
 }
 
@@ -282,6 +288,25 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     env.PAPERCLIP_API_KEY = authToken;
   }
 
+  // Carry the (short-lived, refresh-tolerant) gateway JWT + URL into the run env
+  // so the injected apex-gateway .mcp.json's `${APEX_GATEWAY_TOKEN}` resolves at
+  // the CLI — and so it reaches remote targets (which only get the explicit env).
+  // The adapter does NOT mint/fetch the token; whoever populates the run env
+  // supplies a fresh gateway JWT per run (no non-expiry assumption, no caching).
+  for (const gwKey of ["APEX_GATEWAY_TOKEN", "APEX_GATEWAY_URL", "APEX_GATEWAY_MCP_URL"] as const) {
+    if (env[gwKey] === undefined && typeof process.env[gwKey] === "string") {
+      env[gwKey] = process.env[gwKey] as string;
+    }
+  }
+
+  // Merge per-run server-injected vars (e.g. PAPERCLIP_MCP_TOKEN) after the
+  // adapter's own env-building so they are never silently overwritten.
+  if (input.extraEnv) {
+    for (const [k, v] of Object.entries(input.extraEnv)) {
+      env[k] = v;
+    }
+  }
+
   const runtimeEnv = Object.fromEntries(
     Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
@@ -390,7 +415,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     await ctx.onLog("stderr", formatClaudeAcpFallbackMessage(engineSelection.fallbackReason));
   }
 
-  const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
+  const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken, extraEnv } = ctx;
   const executionTarget = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
@@ -407,6 +432,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
+  // Governed-run seam: a caller (flow run-policy) that sets
+  // dangerouslySkipPermissions=false can also pass an explicit --allowedTools
+  // grant via config.allowedTools — otherwise skip=false alone would fall
+  // back to interactive permission prompting, which nothing can answer in an
+  // unattended run. Absent for every existing config, so this is a no-op for
+  // all current callers (asString returns "" -> null below).
+  const allowedToolsOverride = asString(config.allowedTools, "").trim() || null;
   const configEnv = parseObject(config.env);
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
@@ -435,6 +467,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     runtimeCommandSpec: ctx.runtimeCommandSpec,
     executionTarget,
     authToken,
+    extraEnv,
     onLog,
   });
   const {
@@ -563,6 +596,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? path.posix.join(effectivePromptBundleAddDir, path.basename(promptBundle.instructionsFilePath))
       : promptBundle.instructionsFilePath
     : undefined;
+  // Trusted apex-gateway MCP injection (when APEX_GATEWAY_TOKEN is in the run env).
+  // Written into the prompt-bundle dir so it rides the existing skills asset sync to
+  // remote targets; consumed via --mcp-config below. The file holds only the literal
+  // `${APEX_GATEWAY_TOKEN}` (resolved at the CLI from the run env) — no secret on disk.
+  const gatewayMcpConfig = buildGatewayMcpConfig(effectiveEnv);
+  let gatewayMcpConfigArgPath: string | null = null;
+  if (gatewayMcpConfig) {
+    await fs.writeFile(
+      path.join(promptBundle.addDir, "apex-gateway.mcp.json"),
+      JSON.stringify(gatewayMcpConfig, null, 2),
+    );
+    gatewayMcpConfigArgPath = path.posix.join(effectivePromptBundleAddDir, "apex-gateway.mcp.json");
+    await onLog(
+      "stdout",
+      "[paperclip] Injected apex-gateway MCP config (--mcp-config, --strict-mcp-config).\n",
+    );
+  }
   const remoteClaudeRuntimeRoot = executionTargetIsRemote
     ? preparedExecutionTargetRuntime?.runtimeRootDir ??
       path.posix.join(effectiveExecutionCwd, ".paperclip-runtime", "claude")
@@ -740,6 +790,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     args.push(...buildClaudeExecutionPermissionArgs({
       dangerouslySkipPermissions,
       targetIsRemote: executionTargetIsRemote,
+      allowedToolsOverride,
     }));
     if (chrome) args.push("--chrome");
     // For Bedrock: only pass --model when the ID is a Bedrock-native identifier
@@ -757,6 +808,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--append-system-prompt-file", attemptInstructionsFilePath);
     }
     args.push("--add-dir", effectivePromptBundleAddDir);
+    // Inject ONLY the trusted apex-gateway config (--strict-mcp-config ignores any
+    // ambient repo/user MCP for reproducibility). Added only when the gateway is
+    // configured, so agents without the gateway env run exactly as before.
+    if (gatewayMcpConfigArgPath) {
+      args.push("--mcp-config", gatewayMcpConfigArgPath, "--strict-mcp-config");
+    }
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
   };
@@ -784,7 +841,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (!resumeSessionId) {
       commandNotes.push(`Using stable Claude prompt bundle ${promptBundle.bundleKey}.`);
     }
-    if (dangerouslySkipPermissions && executionTargetIsRemote) {
+    if (allowedToolsOverride) {
+      commandNotes.push(
+        `Using a governed --allowedTools grant (dangerouslySkipPermissions=${dangerouslySkipPermissions}): ${allowedToolsOverride}`,
+      );
+    } else if (dangerouslySkipPermissions && executionTargetIsRemote) {
       commandNotes.push(
         "Using a broad --allowedTools whitelist for remote execution so hosted targets do not inherit local Claude bypass permissions.",
       );

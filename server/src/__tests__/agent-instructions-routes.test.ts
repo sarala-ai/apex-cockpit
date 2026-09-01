@@ -176,15 +176,19 @@ function makeAgent() {
   };
 }
 
-function makeReflectionCoachAgent(overrides: Record<string, unknown> = {}) {
+/** A BUILT-IN agent that an operator has granted `agents:suggest-changes`.
+ *  The key is a real roster key so the fixture cannot outlive the catalogue;
+ *  the grant is the subject of the test, not the definition (no roster agent
+ *  holds this grant by default — see BUILT_IN_AGENT_DEFAULT_GRANTS). */
+function makeBuiltInProposerAgent(overrides: Record<string, unknown> = {}) {
   return {
     ...makeAgent(),
     id: "22222222-2222-4222-8222-222222222222",
-    name: "Reflection Coach",
+    name: "Product Assistant",
     metadata: {
       paperclipBuiltInAgent: {
-        key: "reflection-coach",
-        featureKeys: ["reflection-coach"],
+        key: "product-assistant",
+        featureKeys: ["product-assistant"],
       },
     },
     ...overrides,
@@ -350,14 +354,14 @@ describe("agent instructions bundle routes", () => {
       explanation: "Allowed by explicit grant agents:suggest-changes.",
       grant: {
         principalType: "agent",
-        principalId: "coach-agent",
+        principalId: "proposer-agent",
         permissionKey: "agents:suggest-changes",
         scope: null,
       },
     });
     mockAgentService.getById.mockImplementation(async (id: string) => {
-      if (id === "coach-agent") {
-        return makeReflectionCoachAgent({ id: "coach-agent" });
+      if (id === "proposer-agent") {
+        return makeBuiltInProposerAgent({ id: "proposer-agent" });
       }
       return makeAgent();
     });
@@ -365,7 +369,7 @@ describe("agent instructions bundle routes", () => {
     const res = await requestApp(
       await createApp({
         type: "agent",
-        agentId: "coach-agent",
+        agentId: "proposer-agent",
         companyId: "company-1",
         source: "agent_key",
       }),

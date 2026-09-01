@@ -14,6 +14,7 @@ const mockCompanyService = vi.hoisted(() => ({
   update: vi.fn(),
   archive: vi.fn(),
   remove: vi.fn(),
+  getDeletionSummary: vi.fn(),
 }));
 
 const mockAgentService = vi.hoisted(() => ({
@@ -167,6 +168,19 @@ function resetMockDefaults() {
     status: "archived",
   }));
   mockCompanyService.remove.mockImplementation(async (id: string) => createCompany(id));
+  mockCompanyService.getDeletionSummary.mockResolvedValue({
+    isEmpty: true,
+    counts: {
+      issues: 0,
+      heartbeatRuns: 0,
+      documents: 0,
+      goals: 0,
+      costEvents: 0,
+      financeEvents: 0,
+      agents: 0,
+      scopeBindings: 0,
+    },
+  });
   mockAgentService.getById.mockImplementation(async (id: string) => {
     if (id === ceoAgentId) return { id, companyId: companyAId, role: "ceo" };
     return null;

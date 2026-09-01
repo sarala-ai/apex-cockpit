@@ -3,11 +3,10 @@ import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/i18n";
 import { Layout } from "./components/Layout";
 import { ConferenceRoomChatGate } from "./components/ConferenceRoomChatGate";
-import { PipelinesExperimentalGate } from "./components/PipelinesExperimentalGate";
-import { CasesExperimentalGate } from "./components/CasesExperimentalGate";
 import { Cases } from "./pages/Cases";
 import { CaseDetail } from "./pages/CaseDetail";
 import { OnboardingWizardVariant } from "./components/OnboardingWizardVariant";
+import { SetupStatusBar } from "./components/SetupStatusBar";
 import { CloudAccessGate } from "./components/CloudAccessGate";
 import { Dashboard } from "./pages/Dashboard";
 import { DashboardLive } from "./pages/DashboardLive";
@@ -32,13 +31,25 @@ import { ExecutionWorkspaceDetail } from "./pages/ExecutionWorkspaceDetail";
 import { Goals } from "./pages/Goals";
 import { Artifacts } from "./pages/Artifacts";
 import { GoalDetail } from "./pages/GoalDetail";
+import { Proposals } from "./pages/Proposals";
+import { ProposalReview } from "./pages/ProposalReview";
 import { Approvals } from "./pages/Approvals";
 import { ApprovalDetail } from "./pages/ApprovalDetail";
 import { Costs } from "./pages/Costs";
+import { Observe } from "./pages/Observe";
+import { Releases } from "./pages/Releases";
+import { ReleaseDetail } from "./pages/ReleaseDetail";
+import { RunDetail } from "./pages/RunDetail";
+import { Gateway } from "./pages/Gateway";
+import { Workflows } from "./pages/Workflows";
+import { WorkflowDetail } from "./pages/WorkflowDetail";
+import { WorkflowEditor } from "./pages/WorkflowEditor";
+import { Design } from "./pages/Design";
 import { Activity } from "./pages/Activity";
 import { Inbox } from "./pages/Inbox";
 import { BoardChat } from "./pages/BoardChat";
 import { CompanySettings } from "./pages/CompanySettings";
+import { SetupWizard } from "./pages/setup/SetupWizard";
 import { CompanyEnvironments } from "./pages/CompanyEnvironments";
 import { CloudUpstream } from "./pages/CloudUpstream";
 import { CloudUpstreamUxLab } from "./pages/CloudUpstreamUxLab";
@@ -62,7 +73,6 @@ import { PluginManager } from "./pages/PluginManager";
 import { PluginSettings } from "./pages/PluginSettings";
 import { AdapterManager } from "./pages/AdapterManager";
 import { PluginPage } from "./pages/PluginPage";
-import { OrgChart } from "./pages/OrgChart";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
@@ -75,7 +85,7 @@ import { useDialogActions, useDialogState } from "./context/DialogContext";
 import { loadLastInboxTab } from "./lib/inbox";
 import {
   isOnboardingWizardActive,
-  shouldRedirectCompanylessRouteToOnboarding,
+  shouldRedirectCompanylessRouteToSetup,
 } from "./lib/onboarding-route";
 import { normalizeRememberedInstanceSettingsPath } from "./lib/instance-settings";
 
@@ -85,9 +95,20 @@ function boardRoutes() {
       <Route index element={<Navigate to="dashboard" replace />} />
       <Route path="dashboard" element={<Dashboard />} />
       <Route path="dashboard/live" element={<DashboardLive />} />
+      <Route path="releases" element={<Releases />} />
+      <Route path="releases/:releaseId" element={<ReleaseDetail />} />
+      <Route path="observe" element={<Observe />} />
+      <Route path="observe/runs/:runId" element={<RunDetail />} />
+      <Route path="gateway" element={<Gateway />} />
+      <Route path="workflows" element={<Workflows />} />
+      <Route path="workflows/new" element={<WorkflowEditor />} />
+      <Route path="workflows/:name" element={<WorkflowDetail />} />
+      <Route path="workflows/:name/edit" element={<WorkflowEditor />} />
+      <Route path="design" element={<Design />} />
       <Route path="timeline" element={<Timeline />} />
       <Route path="onboarding" element={<OnboardingRoutePage />} />
       <Route path="companies" element={<Companies />} />
+      <Route path="setup" element={<SetupWizard />} />
       <Route path="company/settings" element={<CompanySettings />} />
       <Route path="company/settings/environments" element={<Navigate to="/company/settings/instance/environments" replace />} />
       <Route path="company/settings/cloud-upstream" element={<CloudUpstream />} />
@@ -117,7 +138,7 @@ function boardRoutes() {
       <Route path="settings" element={<LegacySettingsRedirect />} />
       <Route path="settings/*" element={<LegacySettingsRedirect />} />
       <Route path="plugins/:pluginId" element={<PluginPage />} />
-      <Route path="org" element={<OrgChart />} />
+      <Route path="org" element={<Navigate to="/agents/all" replace />} />
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />
       {AGENT_FILTER_TABS.map((tab) => (
         <Route key={tab} path={`agents/${tab}`} element={<Agents />} />
@@ -148,46 +169,25 @@ function boardRoutes() {
         <Route path="tests/perf/long-thread" element={<IssueChatLongThreadPerf />} />
       ) : null}
       <Route path="routines" element={<Routines />} />
-      <Route
-        path="cases"
-        element={<CasesExperimentalGate><Cases /></CasesExperimentalGate>}
-      />
-      <Route
-        path="cases/:caseIdentifier"
-        element={<CasesExperimentalGate><CaseDetail /></CasesExperimentalGate>}
-      />
-      <Route
-        path="review-queue"
-        element={<PipelinesExperimentalGate><ReviewQueue /></PipelinesExperimentalGate>}
-      />
-      <Route
-        path="learnings"
-        element={<PipelinesExperimentalGate><Learnings /></PipelinesExperimentalGate>}
-      />
-      <Route
-        path="pipelines"
-        element={<PipelinesExperimentalGate><Pipelines /></PipelinesExperimentalGate>}
-      />
-      <Route
-        path="pipelines/:pipelineId"
-        element={<PipelinesExperimentalGate><Pipelines /></PipelinesExperimentalGate>}
-      />
-      <Route
-        path="pipelines/:pipelineId/add"
-        element={<PipelinesExperimentalGate><Pipelines /></PipelinesExperimentalGate>}
-      />
-      <Route
-        path="pipelines/:pipelineId/settings"
-        element={<PipelinesExperimentalGate><PipelineSettings /></PipelinesExperimentalGate>}
-      />
-      <Route
-        path="pipelines/:pipelineId/items/:caseId"
-        element={<PipelinesExperimentalGate><PipelineItemDetail /></PipelinesExperimentalGate>}
-      />
-      <Route
-        path="pipelines/:pipelineId/cases/:caseId"
-        element={<PipelinesExperimentalGate><PipelineItemLegacyRedirect /></PipelinesExperimentalGate>}
-      />
+      {/* A pipeline case is the runtime object every ticket lifecycle
+          executes as, so these routes are no longer gated behind an
+          experimental flag (was Paperclip's incubating opt-in, a label for
+          a surface still separate from the substrate; it isn't any more). */}
+      <Route path="cases" element={<Cases />} />
+      <Route path="cases/:caseIdentifier" element={<CaseDetail />} />
+      {/* Pipelines is the substrate every ticket moves through and the only
+          place the four step kinds execute — these routes are no longer
+          gated behind an experimental flag (was Paperclip's incubating
+          `enablePipelines`, a label for something upstream was trying out;
+          it never described APEX). */}
+      <Route path="review-queue" element={<ReviewQueue />} />
+      <Route path="learnings" element={<Learnings />} />
+      <Route path="pipelines" element={<Pipelines />} />
+      <Route path="pipelines/:pipelineId" element={<Pipelines />} />
+      <Route path="pipelines/:pipelineId/add" element={<Pipelines />} />
+      <Route path="pipelines/:pipelineId/settings" element={<PipelineSettings />} />
+      <Route path="pipelines/:pipelineId/items/:caseId" element={<PipelineItemDetail />} />
+      <Route path="pipelines/:pipelineId/cases/:caseId" element={<PipelineItemLegacyRedirect />} />
       <Route path="routines/:routineId" element={<RoutineDetail />} />
       <Route path="routines/:routineId/:section" element={<RoutineDetail />} />
       <Route path="execution-workspaces/:workspaceId" element={<ExecutionWorkspaceDetail />} />
@@ -198,6 +198,8 @@ function boardRoutes() {
       <Route path="execution-workspaces/:workspaceId/routines" element={<ExecutionWorkspaceDetail />} />
       <Route path="goals" element={<Goals />} />
       <Route path="goals/:goalId" element={<GoalDetail />} />
+      <Route path="proposals" element={<Proposals />} />
+      <Route path="proposals/:proposalId" element={<ProposalReview />} />
       <Route path="artifacts" element={<Artifacts />} />
       <Route path="approvals" element={<Navigate to="/approvals/pending" replace />} />
       <Route path="approvals/pending" element={<Approvals />} />
@@ -281,12 +283,12 @@ function LegacySettingsRedirect() {
 
   if (!targetCompany) {
     if (
-      shouldRedirectCompanylessRouteToOnboarding({
+      shouldRedirectCompanylessRouteToSetup({
         pathname: location.pathname,
         hasCompanies: false,
       })
     ) {
-      return <Navigate to="/onboarding" replace />;
+      return <Navigate to="/setup" replace />;
     }
     return <NoCompaniesStartPage />;
   }
@@ -364,12 +366,12 @@ function CompanyRootRedirect() {
   const targetCompany = selectedCompany ?? companies[0] ?? null;
   if (!targetCompany) {
     if (
-      shouldRedirectCompanylessRouteToOnboarding({
+      shouldRedirectCompanylessRouteToSetup({
         pathname: location.pathname,
         hasCompanies: false,
       })
     ) {
-      return <Navigate to="/onboarding" replace />;
+      return <Navigate to="/setup" replace />;
     }
     return <NoCompaniesStartPage />;
   }
@@ -388,12 +390,12 @@ function UnprefixedBoardRedirect() {
   const targetCompany = selectedCompany ?? companies[0] ?? null;
   if (!targetCompany) {
     if (
-      shouldRedirectCompanylessRouteToOnboarding({
+      shouldRedirectCompanylessRouteToSetup({
         pathname: location.pathname,
         hasCompanies: false,
       })
     ) {
-      return <Navigate to="/onboarding" replace />;
+      return <Navigate to="/setup" replace />;
     }
     return <NoCompaniesStartPage />;
   }
@@ -445,6 +447,10 @@ export function App() {
         <Route element={<CloudAccessGate />}>
           <Route index element={<CompanyRootRedirect />} />
           <Route path="onboarding" element={<OnboardingRoutePage />} />
+          {/* Top-level setup wizard — reachable with zero companies/org (the
+              identity-first bootstrap entry). The company-scoped
+              `/{issuePrefix}/setup` mount still exists for in-company setup. */}
+          <Route path="setup" element={<SetupWizard />} />
           <Route path="instance" element={<LegacySettingsRedirect />} />
           <Route path="instance/settings" element={<LegacySettingsRedirect />} />
           <Route path="instance/settings/*" element={<LegacySettingsRedirect />} />
@@ -457,6 +463,16 @@ export function App() {
           <Route path="learnings" element={<UnprefixedBoardRedirect />} />
           <Route path="cases" element={<UnprefixedBoardRedirect />} />
           <Route path="cases/:caseIdentifier" element={<UnprefixedBoardRedirect />} />
+          <Route path="releases" element={<UnprefixedBoardRedirect />} />
+          <Route path="releases/:releaseId" element={<UnprefixedBoardRedirect />} />
+          <Route path="observe" element={<UnprefixedBoardRedirect />} />
+          <Route path="observe/runs/:runId" element={<UnprefixedBoardRedirect />} />
+          <Route path="gateway" element={<UnprefixedBoardRedirect />} />
+          <Route path="workflows" element={<UnprefixedBoardRedirect />} />
+          <Route path="workflows/new" element={<UnprefixedBoardRedirect />} />
+          <Route path="workflows/:name" element={<UnprefixedBoardRedirect />} />
+          <Route path="workflows/:name/edit" element={<UnprefixedBoardRedirect />} />
+          <Route path="design" element={<UnprefixedBoardRedirect />} />
           <Route path="pipelines" element={<UnprefixedBoardRedirect />} />
           <Route path="pipelines/:pipelineId" element={<UnprefixedBoardRedirect />} />
           <Route path="pipelines/:pipelineId/add" element={<UnprefixedBoardRedirect />} />
@@ -502,6 +518,7 @@ export function App() {
         </Route>
       </Routes>
       <OnboardingWizardVariant />
+      <SetupStatusBar />
     </>
   );
 }

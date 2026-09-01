@@ -27,6 +27,13 @@ import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "
 import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
 import { buildExecutionPolicy } from "../lib/issue-execution-policy";
 import { isIssueWorkMode, nextWorkMode, workModeMetaFor, workModeMetaList } from "../lib/work-mode-meta";
+import { describeTicketTypeOption, ticketTypeMetaFor } from "../lib/ticket-type-meta";
+import {
+  defaultCodebaseProjectId,
+  evaluateCodebasePreflight,
+  projectsWithRepository,
+  type CodebaseProjectCandidate,
+} from "../lib/ticket-codebase-preflight";
 import { useToastActions } from "../context/ToastContext";
 import {
   assigneeValueFromSelection,
@@ -68,6 +75,8 @@ import {
   ShieldAlert,
   ShieldCheck,
   ScanEye,
+  FolderGit2,
+  Tags,
 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "../lib/utils";
@@ -105,6 +114,7 @@ interface IssueDraft {
   selectedExecutionWorkspaceId?: string;
   useIsolatedExecutionWorkspace?: boolean;
   workMode?: IssueWorkMode;
+  ticketType?: string;
 }
 
 type StagedIssueFile = {
@@ -327,9 +337,15 @@ const IssueTitleTextarea = memo(function IssueTitleTextarea({
   onChange: (value: string) => void;
 }) {
   const [draftValue, setDraftValue] = useState(value);
+  const hasInteracted = useRef(false);
 
+  // Only sync the prop into local state before the user types; after interaction
+  // the user's draft is the source of truth and must survive parent re-renders
+  // (e.g. when newIssueDefaults changes and the init effect resets description).
   useEffect(() => {
-    setDraftValue(value);
+    if (!hasInteracted.current) {
+      setDraftValue(value);
+    }
   }, [value]);
 
   return (
@@ -340,6 +356,7 @@ const IssueTitleTextarea = memo(function IssueTitleTextarea({
       value={draftValue}
       onChange={(e) => {
         const nextValue = e.target.value;
+        hasInteracted.current = true;
         setDraftValue(nextValue);
         onChange(nextValue);
         e.target.style.height = "auto";
@@ -390,9 +407,12 @@ const IssueDescriptionEditor = memo(function IssueDescriptionEditor({
   onChange: (value: string) => void;
 }) {
   const [draftValue, setDraftValue] = useState(value);
+  const hasInteracted = useRef(false);
 
   useEffect(() => {
-    setDraftValue(value);
+    if (!hasInteracted.current) {
+      setDraftValue(value);
+    }
   }, [value]);
 
   return (
@@ -400,6 +420,7 @@ const IssueDescriptionEditor = memo(function IssueDescriptionEditor({
       ref={descriptionEditorRef}
       value={draftValue}
       onChange={(nextValue) => {
+        hasInteracted.current = true;
         setDraftValue(nextValue);
         onChange(nextValue);
       }}
@@ -447,6 +468,14 @@ export function NewIssueDialog() {
   const [executionWorkspaceMode, setExecutionWorkspaceMode] = useState<string>("shared_workspace");
   const [selectedExecutionWorkspaceId, setSelectedExecutionWorkspaceId] = useState("");
   const [workMode, setWorkMode] = useState<IssueWorkMode>("standard");
+  // "" means UNDECLARED — never silently "chore". The composer refuses to
+  // guess what kind of work a ticket is, because guessing would start a
+  // process nobody chose.
+  const [ticketType, setTicketType] = useState("");
+  // Whether `projectId` was chosen by the codebase default rather than by the
+  // author. Tracked so the notice can SAY it defaulted; a default the author
+  // cannot see is the same silent-binding defect in nicer clothes.
+  const [projectWasDefaulted, setProjectWasDefaulted] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [dialogCompanyId, setDialogCompanyId] = useState<string | null>(null);
   const [stagedFiles, setStagedFiles] = useState<StagedIssueFile[]>([]);
@@ -467,6 +496,7 @@ export function NewIssueDialog() {
   const [statusOpen, setStatusOpen] = useState(false);
   const [priorityOpen, setPriorityOpen] = useState(false);
   const [workModeOpen, setWorkModeOpen] = useState(false);
+  const [ticketTypeOpen, setTicketTypeOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [companyOpen, setCompanyOpen] = useState(false);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
@@ -483,6 +513,15 @@ export function NewIssueDialog() {
   const { data: projects } = useQuery({
     queryKey: queryKeys.projects.list(effectiveCompanyId!),
     queryFn: () => projectsApi.list(effectiveCompanyId!),
+    enabled: !!effectiveCompanyId && newIssueOpen,
+  });
+  // What each type COSTS on this board — which process it runs, whether the
+  // absence of one is by design, and whether it commissions an agent that
+  // writes code. Computed server-side from the seeded pipelines; never a
+  // constant in this file.
+  const { data: ticketTypeOptions } = useQuery({
+    queryKey: queryKeys.issues.ticketTypes(effectiveCompanyId!),
+    queryFn: () => issuesApi.ticketTypes(effectiveCompanyId!),
     enabled: !!effectiveCompanyId && newIssueOpen,
   });
   const {
@@ -681,10 +720,12 @@ export function NewIssueDialog() {
       executionWorkspaceMode,
       selectedExecutionWorkspaceId,
       workMode,
+      ticketType,
     });
   }, [
     newIssueOpen,
     scheduleSave,
+    ticketType,
     status,
     priority,
     assigneeValue,
@@ -739,6 +780,7 @@ export function NewIssueDialog() {
     executionWorkspaceMode,
     selectedExecutionWorkspaceId,
     workMode,
+    ticketType,
     newIssueOpen,
     queueDraftSave,
   ]);
@@ -766,6 +808,7 @@ export function NewIssueDialog() {
       const defaultExecutionWorkspaceMode = defaultExecutionWorkspaceModeForIssueDefaults(newIssueDefaults, defaultProject);
       setIssueText(newIssueDefaults.title ?? "", newIssueDefaults.description ?? "");
       setStatus(newIssueDefaults.status ?? "todo");
+      setTicketType("");
       setPriority(newIssueDefaults.priority ?? "");
       setProjectId(defaultProjectId);
       setProjectWorkspaceId(defaultProjectWorkspaceId);
@@ -784,6 +827,7 @@ export function NewIssueDialog() {
       const nextWorkMode = isIssueWorkMode(newIssueDefaults.workMode) ? newIssueDefaults.workMode : "standard";
       setIssueText(newIssueDefaults.title, newIssueDefaults.description ?? "");
       setStatus(newIssueDefaults.status ?? "todo");
+      setTicketType("");
       setPriority(newIssueDefaults.priority ?? "");
       const defaultProjectId = newIssueDefaults.projectId ?? "";
       const defaultProject = orderedProjects.find((project) => project.id === defaultProjectId);
@@ -816,6 +860,7 @@ export function NewIssueDialog() {
       const hasExplicitExecutionWorkspaceMode = newIssueDefaults.executionWorkspaceMode !== undefined;
       setIssueText(draft.title, draft.description);
       setStatus(draft.status || "todo");
+      setTicketType(draft.ticketType ?? "");
       setPriority(draft.priority);
       setAssigneeValue(
         newIssueDefaults.assigneeAgentId || newIssueDefaults.assigneeUserId
@@ -863,6 +908,7 @@ export function NewIssueDialog() {
       const hasExplicitProjectWorkspaceId = newIssueDefaults.projectWorkspaceId !== undefined;
       setIssueText("", "");
       setStatus(newIssueDefaults.status ?? "todo");
+      setTicketType("");
       setPriority(newIssueDefaults.priority ?? "");
       setProjectId(defaultProjectId);
       setProjectWorkspaceId(newIssueDefaults.projectWorkspaceId ?? defaultProjectWorkspaceIdForProject(defaultProject));
@@ -944,6 +990,8 @@ export function NewIssueDialog() {
     setExecutionWorkspaceMode("shared_workspace");
     setSelectedExecutionWorkspaceId("");
     setWorkMode("standard");
+    setTicketType("");
+    setProjectWasDefaulted(false);
     setExpanded(false);
     setDialogCompanyId(null);
     setStagedFiles([]);
@@ -974,6 +1022,8 @@ export function NewIssueDialog() {
     setExecutionWorkspaceMode("shared_workspace");
     setSelectedExecutionWorkspaceId("");
     setWorkMode("standard");
+    setTicketType("");
+    setProjectWasDefaulted(false);
   }
 
   function discardDraft() {
@@ -986,6 +1036,9 @@ export function NewIssueDialog() {
     const currentTitle = titleRef.current.trim();
     const currentDescription = descriptionRef.current.trim();
     if (!effectiveCompanyId || !currentTitle || createIssue.isPending) return;
+    // The friendly refusal. Same condition the dispatch precondition would hit
+    // a minute later, asked while the project picker is still on screen.
+    if (codebaseBlocksCreate) return;
     const effectiveLane = assigneeSupportsCheapLane
       ? assigneeModelLane
       : assigneeModelLane === "cheap"
@@ -1025,6 +1078,7 @@ export function NewIssueDialog() {
       status,
       priority: priority || "medium",
       workMode,
+      ...(ticketType ? { ticketType } : {}),
       ...(selectedAssigneeAgentId ? { assigneeAgentId: selectedAssigneeAgentId } : {}),
       ...(selectedAssigneeUserId ? { assigneeUserId: selectedAssigneeUserId } : {}),
       ...(newIssueDefaults.parentId ? { parentId: newIssueDefaults.parentId } : {}),
@@ -1221,6 +1275,10 @@ export function NewIssueDialog() {
 
   const handleProjectChange = useCallback((nextProjectId: string) => {
     if (nextProjectId) trackRecentProject(nextProjectId);
+    // Any change routed through the picker is the author's. The codebase
+    // default sets `projectWasDefaulted` back to true immediately after
+    // calling this, which is the only path that should claim it.
+    setProjectWasDefaulted(false);
     setProjectId(nextProjectId);
     const nextProject = orderedProjects.find((project) => project.id === nextProjectId);
     executionWorkspaceDefaultProjectId.current = nextProjectId || null;
@@ -1265,6 +1323,68 @@ export function NewIssueDialog() {
   );
   const currentWorkMode = workModeMetaFor(workMode);
   const CurrentWorkModeIcon = currentWorkMode.icon;
+
+  // ---------------------------------------------------------------------
+  // CODEBASE PREFLIGHT. The reasoning lives in lib/ticket-codebase-preflight.ts;
+  // this block only supplies it with what the composer currently knows.
+  // ---------------------------------------------------------------------
+  const selectedTicketTypeOption = useMemo(
+    () => (ticketTypeOptions ?? []).find((option) => option.ticketType === ticketType) ?? null,
+    [ticketTypeOptions, ticketType],
+  );
+  const codebaseProjectCandidates = useMemo<CodebaseProjectCandidate[]>(
+    () =>
+      orderedProjects.map((project) => ({
+        id: project.id,
+        name: project.name,
+        repoUrl: project.codebase?.repoUrl ?? null,
+      })),
+    [orderedProjects],
+  );
+  const codebasePreflight = useMemo(
+    () =>
+      evaluateCodebasePreflight({
+        status,
+        assignee: currentAssignee
+          ? {
+            name: currentAssignee.name,
+            adapterType: currentAssignee.adapterType,
+            adapterConfig: isRecord(currentAssignee.adapterConfig) ? currentAssignee.adapterConfig : null,
+          }
+          : null,
+        ticketTypeOption: selectedTicketTypeOption,
+        selectedProject: codebaseProjectCandidates.find((project) => project.id === projectId) ?? null,
+        selectedProjectWasDefaulted: projectWasDefaulted,
+      }),
+    [
+      status,
+      currentAssignee,
+      selectedTicketTypeOption,
+      codebaseProjectCandidates,
+      projectId,
+      projectWasDefaulted,
+    ],
+  );
+  const codebaseBlocksCreate = codebasePreflight.kind === "missing" && codebasePreflight.blocking;
+
+  // THE VISIBLE DEFAULT. Fires only when something will need a codebase, only
+  // when the author has not picked a project, and only when the company has
+  // exactly one project with a repository — and it flips `projectWasDefaulted`
+  // so the notice says the composer chose, not the author.
+  const codebaseIsDemanded =
+    codebasePreflight.kind === "missing" || codebasePreflight.kind === "satisfied";
+  useEffect(() => {
+    if (!newIssueOpen || projectId || !codebaseIsDemanded) return;
+    const candidateId = defaultCodebaseProjectId(codebaseProjectCandidates);
+    if (!candidateId) return;
+    handleProjectChange(candidateId);
+    setProjectWasDefaulted(true);
+  }, [newIssueOpen, projectId, codebaseIsDemanded, codebaseProjectCandidates, handleProjectChange]);
+
+  const repositoryProjectCount = useMemo(
+    () => projectsWithRepository(codebaseProjectCandidates).length,
+    [codebaseProjectCandidates],
+  );
 
   return (
     <Dialog
@@ -2042,6 +2162,84 @@ export function NewIssueDialog() {
 
         {/* Property chips bar */}
         <div className="flex items-center gap-1.5 px-4 py-2 border-t border-border flex-wrap shrink-0">
+          {/* Type chip — WHAT KIND OF WORK, and therefore which lifecycle.
+              First in the bar because it is the only property that decides
+              whether the ticket travels a process at all. */}
+          <Popover open={ticketTypeOpen} onOpenChange={setTicketTypeOpen}>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                data-testid="new-issue-ticket-type-chip"
+                data-issue-ticket-type={ticketType || "none"}
+                className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs transition-colors hover:bg-accent/50"
+              >
+                {ticketType ? (
+                  <>
+                    {(() => {
+                      const TypeIcon = ticketTypeMetaFor(ticketType).icon;
+                      return <TypeIcon className="h-3 w-3" />;
+                    })()}
+                    {ticketTypeMetaFor(ticketType).label}
+                  </>
+                ) : (
+                  <>
+                    <Tags className="h-3 w-3 text-muted-foreground" />
+                    <span className="text-muted-foreground">Type</span>
+                  </>
+                )}
+              </button>
+            </PopoverTrigger>
+            <PopoverContent className="w-80 p-1" align="start" data-testid="new-issue-ticket-type-menu">
+              <button
+                type="button"
+                data-issue-ticket-type-option="none"
+                className={cn(
+                  "flex w-full items-start gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50",
+                  !ticketType && "bg-accent",
+                )}
+                onClick={() => {
+                  setTicketType("");
+                  setTicketTypeOpen(false);
+                }}
+              >
+                <Tags className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
+                <span className="flex flex-col text-left leading-tight">
+                  <span>No type</span>
+                  <span className="text-(length:--text-nano) text-muted-foreground">
+                    Undeclared — the ticket enters no process until a type is set.
+                  </span>
+                </span>
+              </button>
+              {(ticketTypeOptions ?? []).map((option) => {
+                const meta = ticketTypeMetaFor(option.ticketType);
+                const OptionIcon = meta.icon;
+                return (
+                  <button
+                    type="button"
+                    key={option.ticketType}
+                    data-issue-ticket-type-option={option.ticketType}
+                    className={cn(
+                      "flex w-full items-start gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50",
+                      option.ticketType === ticketType && "bg-accent",
+                    )}
+                    onClick={() => {
+                      setTicketType(option.ticketType);
+                      setTicketTypeOpen(false);
+                    }}
+                  >
+                    <OptionIcon className="mt-0.5 h-3 w-3 shrink-0" />
+                    <span className="flex flex-col text-left leading-tight">
+                      <span>{meta.label}</span>
+                      <span className="text-(length:--text-nano) text-muted-foreground">
+                        {describeTicketTypeOption(option)}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+            </PopoverContent>
+          </Popover>
+
           {/* Status chip */}
           <Popover open={statusOpen} onOpenChange={setStatusOpen}>
             <PopoverTrigger asChild>
@@ -2133,23 +2331,42 @@ export function NewIssueDialog() {
             Upload
           </button>
 
-          {/* Work mode chip */}
+          {/* Work mode chip.
+              WHY IT SAYS "Mode:". This control picks HOW the assignee works
+              (build / plan / answer). The control next to it — the one
+              labelled "For" at the top of the dialog — picks WHO works. One of
+              this chip's values is called "Agent", which made two adjacent
+              controls read as if they both chose an agent, and cost a real
+              wrong click during testing. The prefix is the whole fix: the chip
+              now names its own axis, so "Mode: Agent" cannot be misread as an
+              assignee. The vocabulary is unchanged everywhere else, because
+              Agent/Plan/Ask is the mode language the rest of the product and
+              its adapters already use. */}
           <Popover open={workModeOpen} onOpenChange={setWorkModeOpen}>
             <PopoverTrigger asChild>
               <button
                 type="button"
                 data-issue-work-mode-chip={workMode}
                 aria-keyshortcuts="Meta+Period Control+Period"
+                aria-label={`Work mode: ${currentWorkMode.label}. How the assignee works — the assignee itself is set above, next to "For".`}
+                title={`Work mode — how the assignee works. The assignee is set above, next to "For".`}
                 className={cn(
                   "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors",
                   currentWorkMode.classes.chip,
                 )}
               >
                 <CurrentWorkModeIcon className="h-3 w-3" />
+                <span className="text-muted-foreground">Mode:</span>
                 {currentWorkMode.shortLabel}
               </button>
             </PopoverTrigger>
-            <PopoverContent className="w-36 p-1" align="start">
+            <PopoverContent className="w-52 p-1" align="start">
+              <div className="px-2 py-1 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
+                Work mode
+              </div>
+              <div className="px-2 pb-1 text-(length:--text-nano) leading-snug text-muted-foreground">
+                How the assignee works. Who works is set above, next to &ldquo;For&rdquo;.
+              </div>
               {workModeOptions.map((option) => {
                 const Icon = option.icon;
                 return (
@@ -2235,6 +2452,37 @@ export function NewIssueDialog() {
           </div>
         ) : null}
 
+        {codebasePreflight.kind === "missing" ? (
+          <div
+            data-testid="new-issue-codebase-missing-note"
+            data-codebase-blocking={codebasePreflight.blocking ? "true" : "false"}
+            className={cn(
+              "mx-4 mb-2 flex items-start gap-2 rounded-md border px-3 py-2 text-xs",
+              codebasePreflight.blocking
+                ? "border-destructive/50 bg-destructive/10 text-destructive"
+                : "border-amber-300/70 bg-amber-50/90 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100",
+            )}
+          >
+            <FolderGit2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span className="leading-snug">
+              {codebasePreflight.message}
+              {repositoryProjectCount === 0 ? (
+                <> No project on this board has a repository bound yet.</>
+              ) : null}
+            </span>
+          </div>
+        ) : null}
+
+        {codebasePreflight.kind === "satisfied" && codebasePreflight.defaulted ? (
+          <div
+            data-testid="new-issue-codebase-defaulted-note"
+            className="mx-4 mb-2 flex items-start gap-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
+          >
+            <FolderGit2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span className="leading-snug">{codebasePreflight.message}</span>
+          </div>
+        ) : null}
+
         {currentAssigneeLowTrust ? (
           <div
             data-testid="new-issue-low-trust-assignee-note"
@@ -2272,7 +2520,7 @@ export function NewIssueDialog() {
             <Button
               size="sm"
               className="min-w-(--sz-8_5rem) disabled:opacity-100"
-              disabled={!titleHasText || createIssue.isPending}
+              disabled={!titleHasText || createIssue.isPending || codebaseBlocksCreate}
               onClick={handleSubmit}
               aria-busy={createIssue.isPending}
             >

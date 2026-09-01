@@ -55,6 +55,14 @@ export const heartbeatRuns = pgTable(
     lastUsefulActionAt: timestamp("last_useful_action_at", { withTimezone: true }),
     nextAction: text("next_action"),
     contextSnapshot: jsonb("context_snapshot").$type<Record<string, unknown>>(),
+    // Visibility stamp for step-commissioned runs (server/src/apex/steps/
+    // run-policy.ts). Null for every run the step commissioner doesn't touch
+    // (all interactive, human-started runs) — the fork's existing
+    // dangerouslySkipPermissions=true default for local execution applies
+    // unchanged to those, so the observe surface treats a null
+    // permission_mode as "bypass" rather than "unknown".
+    permissionMode: text("permission_mode"),
+    permissionProfile: text("permission_profile"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

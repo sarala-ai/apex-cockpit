@@ -56,6 +56,26 @@ export {
   type ExternalObjectResolverSnapshot,
 } from "./external-objects.js";
 export { goalService } from "./goals.js";
+export {
+  proposalService,
+  registerProposalMaterializer,
+  getProposalMaterializer,
+  initiativesMaterializer,
+  type ProposalMaterializer,
+  type MaterializationResult,
+} from "./proposals.js";
+export {
+  criterionMonitor,
+  criterionReviewPayload,
+  criterionSweepIntervalMs,
+  startCriterionReviewSweep,
+  CRITERION_REVIEW_APPROVAL_TYPE,
+  CRITERION_SWEEP_ENV_VAR,
+  type CriterionMonitor,
+  type CriterionMonitorDeps,
+  type CriterionSweepResult,
+} from "./criterion-monitor.js";
+export { releaseService, type ReleaseService } from "./releases.js";
 export { activityService, type ActivityFilters } from "./activity.js";
 export { workTimelineService, normalizeTimelineWindow } from "./work-timeline.js";
 export type {
@@ -81,6 +101,7 @@ export { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recover
 export { dashboardService } from "./dashboard.js";
 export { sidebarBadgeService } from "./sidebar-badges.js";
 export { sidebarPreferenceService } from "./sidebar-preferences.js";
+export { uiPreferenceService } from "./ui-preferences.js";
 export { resourceMembershipService, type ResourceMembershipPolicyHook } from "./resource-memberships.js";
 export { inboxDismissalService } from "./inbox-dismissals.js";
 export { accessService } from "./access.js";
@@ -102,6 +123,10 @@ export { instanceSettingsService } from "./instance-settings.js";
 export { bootstrapExecutionPolicyFromEnv } from "./execution-policy-bootstrap.js";
 export { cloudUpstreamService, reconcileCloudUpstreamRunsOnStartup } from "./cloud-upstreams.js";
 export { companyPortabilityService } from "./company-portability.js";
+export {
+  companyDataErasureService,
+  isCompanyDataErasureExposed,
+} from "./company-data-erasure.js";
 export { teamsCatalogService } from "./teams-catalog.js";
 export { environmentService } from "./environments.js";
 export {

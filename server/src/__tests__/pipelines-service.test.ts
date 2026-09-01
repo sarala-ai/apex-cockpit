@@ -4,6 +4,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
+
+  approvals,
   companies,
   createDb,
   executionWorkspaces,
@@ -31,6 +33,7 @@ import {
 import {
   PIPELINE_AUTOMATION_DEFAULT_TITLE_TEMPLATE,
   pipelineService,
+  resolvePipelineCaseConversationSource,
   type PipelineActor,
 } from "../services/pipelines.ts";
 import { routineService } from "../services/routines.ts";
@@ -78,6 +81,9 @@ describeEmbeddedPostgres("pipelineService", () => {
     await db.delete(projectWorkspaces);
     await db.delete(projects);
     await db.delete(agents);
+    // A review stage now opens a gate APPROVAL on entry, and approvals
+    // reference the company — so they must go before it does.
+    await db.delete(approvals);
     await db.delete(companies);
     await db.delete(instanceSettings);
   });
@@ -161,6 +167,73 @@ describeEmbeddedPostgres("pipelineService", () => {
     });
     return issue!;
   }
+
+  it("links an issue INSIDE the ingest transaction, before the first stage fires", async () => {
+    // The ordering the ticket front door depends on. An `agent` first stage
+    // resolves who to commission against through the case's issue links, and
+    // ingestCase executes the first stage's automation the instant its
+    // transaction commits — so a link written by the caller afterwards is
+    // always one step too late. This pins that the link is in place by the
+    // time ingestCase returns, for the SAME case it created.
+    const { company, pipeline } = await seedPipeline();
+    const [issue] = await db.insert(issues).values({
+      companyId: company.id,
+      title: "Ticket that starts a process",
+      status: "todo",
+      priority: "medium",
+    }).returning();
+
+    const ingested = await svc.ingestCase({
+      companyId: company.id,
+      pipelineId: pipeline.id,
+      caseKey: `ticket:${issue!.id}`,
+      title: issue!.title,
+      linkIssue: { issueId: issue!.id, role: "work" },
+      actor: userActor,
+    });
+
+    const links = await db
+      .select()
+      .from(pipelineCaseIssueLinks)
+      .where(eq(pipelineCaseIssueLinks.caseId, ingested.case.id));
+    expect(links).toHaveLength(1);
+    expect(links[0]!.issueId).toBe(issue!.id);
+    expect(links[0]!.role).toBe("work");
+
+    // And the case is reachable as the conversation source for an agent step,
+    // which is the property the whole ordering exists to guarantee.
+    const source = await resolvePipelineCaseConversationSource(db, company.id, ingested.case.id);
+    expect(source?.issue?.id).toBe(issue!.id);
+  });
+
+  it("does not duplicate the link when an ingest is retried", async () => {
+    const { company, pipeline } = await seedPipeline();
+    const [issue] = await db.insert(issues).values({
+      companyId: company.id,
+      title: "Retried ticket",
+      status: "todo",
+      priority: "medium",
+    }).returning();
+    const args = {
+      companyId: company.id,
+      pipelineId: pipeline.id,
+      caseKey: `ticket:${issue!.id}`,
+      title: issue!.title,
+      linkIssue: { issueId: issue!.id, role: "work" as const },
+      actor: userActor,
+    };
+
+    const first = await svc.ingestCase(args);
+    const second = await svc.ingestCase(args);
+
+    expect(second.case.id).toBe(first.case.id);
+    expect(second.created).toBe(false);
+    const links = await db
+      .select()
+      .from(pipelineCaseIssueLinks)
+      .where(eq(pipelineCaseIssueLinks.caseId, first.case.id));
+    expect(links).toHaveLength(1);
+  });
 
   it("seeds default stages and protects non-empty stage deletion", async () => {
     const { company, pipeline, byKey } = await seedPipeline();
@@ -530,6 +603,52 @@ describeEmbeddedPostgres("pipelineService", () => {
     expect(moved.case.version).toBe(3);
     const events = await svc.listCaseEvents(company.id, blocked.case.id);
     expect(events.map((event) => event.type)).toContain("blockers_resolved");
+  });
+
+  it("releases the governed permission override when the case reaches a terminal stage", async () => {
+    // The drop this collapse was written to catch, in its general form. An
+    // agent step writes a bounded permission profile onto the case's
+    // conversation issue before every commission, and the flow coordinator
+    // cleared it at flow-terminal. The pipeline host inherited the apply and
+    // not the clear, so a finished ticket kept a bounded profile FOREVER —
+    // and the next human to open that agent on that ticket would silently run
+    // restricted, with nothing on screen saying why.
+    const { company, pipeline } = await seedPipeline();
+    const ingested = await svc.ingestCase({
+      companyId: company.id,
+      pipelineId: pipeline.id,
+      caseKey: "governed-release",
+      title: "A governed step ran here",
+      actor: userActor,
+    });
+    const issue = await seedLinkedIssue({
+      companyId: company.id,
+      caseId: ingested.case.id,
+      role: "work",
+    });
+    // What a commission leaves behind, plus a key the operator set themselves.
+    await db
+      .update(issues)
+      .set({
+        assigneeAdapterOverrides: {
+          dangerouslySkipPermissions: false,
+          allowedTools: ["Read", "Grep"],
+          model: "operator-choice",
+        } as never,
+      })
+      .where(eq(issues.id, issue.id));
+
+    await svc.transitionCase({
+      companyId: company.id,
+      caseId: ingested.case.id,
+      toStageKey: "done",
+      expectedVersion: ingested.case.version,
+      actor: userActor,
+    });
+
+    const [after] = await db.select().from(issues).where(eq(issues.id, issue.id));
+    // Only the two permission keys go. What a human put there is theirs.
+    expect(after!.assigneeAdapterOverrides).toEqual({ model: "operator-choice" });
   });
 
   it("emits blockers_resolved once for each fresh blocker set", async () => {
@@ -1291,7 +1410,7 @@ describeEmbeddedPostgres("pipelineService", () => {
       actor: userActor,
       stages: [
         { key: "intake", name: "Intake", kind: "open" },
-        { key: "drafting", name: "Drafting", kind: "working", config: { onEnter: { type: "run_routine", routineId: routine.id } } },
+        { key: "drafting", name: "Drafting", kind: "working", config: { onEnter: { type: "routine", routineId: routine.id } } },
         { key: "done", name: "Done", kind: "done" },
         { key: "cancelled", name: "Cancelled", kind: "cancelled" },
       ],
@@ -1429,7 +1548,7 @@ describeEmbeddedPostgres("pipelineService", () => {
       actor: userActor,
     });
     expect((updatedStage.config as { onEnter?: unknown }).onEnter).toMatchObject({
-      type: "run_routine",
+      type: "routine",
       projectId,
       projectWorkspaceId,
       executionWorkspaceId,
@@ -1588,7 +1707,7 @@ describeEmbeddedPostgres("pipelineService", () => {
       actor: userActor,
       stages: [
         { key: "intake", name: "Intake", kind: "open" },
-        { key: "drafting", name: "Drafting", kind: "working", config: { onEnter: { type: "run_routine", routineId: otherRoutine.id } } },
+        { key: "drafting", name: "Drafting", kind: "working", config: { onEnter: { type: "routine", routineId: otherRoutine.id } } },
         { key: "done", name: "Done", kind: "done" },
         { key: "cancelled", name: "Cancelled", kind: "cancelled" },
       ],
@@ -1601,7 +1720,7 @@ describeEmbeddedPostgres("pipelineService", () => {
       actor: userActor,
       stages: [
         { key: "intake", name: "Intake", kind: "open" },
-        { key: "drafting", name: "Drafting", kind: "working", config: { onEnter: { type: "run_routine", routineId: routine.id } } },
+        { key: "drafting", name: "Drafting", kind: "working", config: { onEnter: { type: "routine", routineId: routine.id } } },
         { key: "done", name: "Done", kind: "done" },
         { key: "cancelled", name: "Cancelled", kind: "cancelled" },
       ],
@@ -1672,7 +1791,7 @@ describeEmbeddedPostgres("pipelineService", () => {
           config: {
             autoAdvanceOnChildrenTerminal: "review",
             onEnter: {
-              type: "run_routine",
+              type: "routine",
               id: "build-children",
               routineId: routine.id,
             },
@@ -1796,7 +1915,7 @@ describeEmbeddedPostgres("pipelineService", () => {
           kind: "working",
           config: {
             onEnter: {
-              type: "run_routine",
+              type: "routine",
               id: "build-descendants",
               routineId: routine.id,
             },

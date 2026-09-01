@@ -62,6 +62,7 @@ export const queryKeys = {
   },
   issues: {
     list: (companyId: string) => ["issues", companyId] as const,
+    ticketTypes: (companyId: string) => ["issues", companyId, "ticket-types"] as const,
     mentionPool: (companyId: string) => ["issues", companyId, "mention-pool"] as const,
     search: (companyId: string, q: string, projectId?: string, limit?: number) =>
       ["issues", companyId, "search", q, projectId ?? "__all-projects__", limit ?? "__no-limit__"] as const,
@@ -185,6 +186,10 @@ export const queryKeys = {
     list: (companyId: string) => ["projects", companyId] as const,
     detail: (id: string) => ["projects", "detail", id] as const,
   },
+  documentAnnotations: {
+    // Re-anchoring trail for one thread. Append-only, so it never needs invalidating.
+    anchorHistory: (threadId: string) => ["document-annotations", "anchor-history", threadId] as const,
+  },
   cases: {
     list: (companyId: string) => ["cases", companyId] as const,
     detail: (id: string) => ["cases", "detail", id] as const,
@@ -206,6 +211,11 @@ export const queryKeys = {
   goals: {
     list: (companyId: string) => ["goals", companyId] as const,
     detail: (id: string) => ["goals", "detail", id] as const,
+  },
+  releases: {
+    list: (companyId: string) => ["releases", companyId] as const,
+    detail: (id: string) => ["releases", "detail", id] as const,
+    notes: (id: string) => ["releases", "notes", id] as const,
   },
   artifacts: {
     list: (
@@ -233,6 +243,8 @@ export const queryKeys = {
     detail: (approvalId: string) => ["approvals", "detail", approvalId] as const,
     comments: (approvalId: string) => ["approvals", "comments", approvalId] as const,
     issues: (approvalId: string) => ["approvals", "issues", approvalId] as const,
+    prDiff: (approvalId: string) => ["approvals", "pr-diff", approvalId] as const,
+    brief: (approvalId: string) => ["approvals", "brief", approvalId] as const,
   },
   access: {
     invites: (companyId: string, state: string = "all", limit: number = 20) =>
@@ -253,6 +265,9 @@ export const queryKeys = {
     companyOrder: (userId: string) => ["sidebar-preferences", "company-order", userId] as const,
     projectOrder: (companyId: string, userId: string) =>
       ["sidebar-preferences", "project-order", companyId, userId] as const,
+  },
+  uiPreferences: {
+    me: ["ui-preferences", "me"] as const,
   },
   resourceMemberships: {
     mine: (companyId: string) => ["resource-memberships", companyId, "me"] as const,
@@ -285,6 +300,7 @@ export const queryKeys = {
   userProfile: (companyId: string, userSlug: string) =>
     ["user-profile", companyId, userSlug] as const,
   sidebarBadges: (companyId: string) => ["sidebar-badges", companyId] as const,
+  stoppedSteps: (companyId: string) => ["stopped-steps", companyId] as const,
   inboxDismissals: (companyId: string) => ["inbox-dismissals", companyId] as const,
   activity: (companyId: string) => ["activity", companyId] as const,
   costs: (companyId: string, from?: string, to?: string) =>

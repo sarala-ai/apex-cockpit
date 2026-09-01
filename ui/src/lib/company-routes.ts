@@ -25,6 +25,12 @@ const BOARD_ROUTE_ROOTS = new Set([
   "search",
   "settings",
   "timeline",
+  // apex facets — must be here or applyCompanyPrefix treats them as company
+  // slugs and the router 404s with "No company matches prefix OBSERVE"
+  // (verified by click, not just curl).
+  "observe",
+  "gateway",
+  "design",
 ]);
 
 const GLOBAL_ROUTE_ROOTS = new Set(["auth", "invite", "board-claim", "cli-auth", "docs", "instance"]);

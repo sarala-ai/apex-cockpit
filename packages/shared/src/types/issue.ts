@@ -21,6 +21,7 @@ import type {
   IssueRecoveryActionOwnerType,
   IssueRecoveryActionStatus,
   IssueWorkMode,
+  TicketType,
   ModelProfileKey,
   IssueThreadInteractionContinuationPolicy,
   IssueThreadInteractionKind,
@@ -28,6 +29,7 @@ import type {
   IssueStatus,
 } from "../constants.js";
 import type { Goal } from "./goal.js";
+import type { PipelineStepHold } from "./pipeline.js";
 import type { Project, ProjectWorkspace } from "./project.js";
 import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
 import type { IssueWorkProduct } from "./work-product.js";
@@ -700,6 +702,53 @@ export interface IssueWatchdog extends IssueWatchdogSummary {
   updatedByRunId: string | null;
 }
 
+/** How a ticket is attached to a pipeline case. `work` means the case IS this
+ *  ticket's work — the one that decides which process the ticket is on. */
+export type IssueLinkedCaseRole = "origin" | "conversation" | "work" | "automation";
+
+/**
+ * A process this ticket is on, and — when the process has stopped to ask a
+ * human something — what it is asking and what may be answered.
+ *
+ * `review` is non-null only while a decision is genuinely outstanding, so no
+ * surface has to infer "does this need me?" from a stage kind.
+ */
+export interface IssueLinkedCase {
+  id: string;
+  caseKey: string | null;
+  title: string;
+  status: string;
+  role: IssueLinkedCaseRole;
+  /** Required by the review endpoint's optimistic-concurrency check. */
+  version: number;
+  terminalKind: string | null;
+  pipeline: { id: string; key: string; name: string };
+  stage: { id: string; key: string; name: string; kind: string };
+  review: {
+    /** The gate's own question, as written by whoever built the process.
+     *  Null when the gate never declared one. */
+    question: string | null;
+    config: Record<string, unknown>;
+    /** Stage key → the name that pipeline gave it, so a decision reads the
+     *  same on the ticket as it does on the board. */
+    stageNames: Record<string, string>;
+    /** The open approval this decision was recorded under, which is how the
+     *  DECISION BRIEF is fetched (GET /approvals/:id/brief). Null means the
+     *  ticket can still take the decision, just without the artifact behind
+     *  it — a gap the surface states rather than hides. */
+    approvalId: string | null;
+  } | null;
+  /**
+   * Set when the step this ticket is sitting on STOPPED and the process will
+   * not move on until somebody deals with it.
+   *
+   * The same class of signal as `review` — "this needs you" — and carried the
+   * same way, for the same reason: a ticket must not have to infer that a
+   * process has stalled from a stage name that still reads "in progress".
+   */
+  hold: PipelineStepHold | null;
+}
+
 export interface Issue {
   id: string;
   companyId: string;
@@ -710,7 +759,15 @@ export interface Issue {
   ancestors?: IssueAncestor[];
   title: string;
   description: string | null;
+  /** The machine half of the ticket (ids, payload shapes, exact commands).
+   *  Rendered collapsed for humans; delivered to agents in full. */
+  agentBrief?: string | null;
   status: IssueStatus;
+  /** What kind of work this is, and therefore which lifecycle it runs.
+   *  `null`/absent means UNDECLARED — a distinct fact from "chore". Optional
+   *  for the same reason `agentBrief` is: not every payload shape that is
+   *  legitimately an Issue carries it. See TICKET_TYPES in ../constants.js. */
+  ticketType?: TicketType | null;
   workMode: IssueWorkMode;
   priority: IssuePriority;
   assigneeAgentId: string | null;
@@ -768,6 +825,10 @@ export interface Issue {
   currentExecutionWorkspace?: ExecutionWorkspace | null;
   workProducts?: IssueWorkProduct[];
   mentionedProjects?: Project[];
+  /** The processes this ticket is running on, resolved through the pipeline
+   *  case issue links — NOT the retired `flow*` columns above, which are null
+   *  for every pipeline case. Detail payload only. */
+  linkedCases?: IssueLinkedCase[];
   myLastTouchAt?: Date | null;
   lastExternalCommentAt?: Date | null;
   lastActivityAt?: Date | null;
@@ -787,6 +848,7 @@ export type CompactIssue = Pick<
   | "title"
   | "description"
   | "status"
+  | "ticketType"
   | "workMode"
   | "priority"
   | "assigneeAgentId"

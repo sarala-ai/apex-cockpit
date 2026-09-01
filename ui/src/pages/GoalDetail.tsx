@@ -10,12 +10,14 @@ import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { GoalProperties } from "../components/GoalProperties";
-import { GoalTree } from "../components/GoalTree";
+import { GoalHierarchyList } from "../components/GoalHierarchyList";
+import { InitiativeSummary } from "../components/InitiativeSummary";
 import { StatusBadge } from "../components/StatusBadge";
 import { InlineEditor } from "../components/InlineEditor";
 import { EntityRow } from "../components/EntityRow";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { cn, projectUrl } from "../lib/utils";
+import { goalDisplayStatus } from "../lib/goal-status";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Plus, SlidersHorizontal } from "lucide-react";
@@ -116,6 +118,28 @@ export function GoalDetail() {
     return p.goalId === goalId;
   });
 
+  // A fold link is only worth anything if the reader can follow it, so the
+  // destination is resolved to a name here, where the projects and goals are
+  // already loaded. Unresolvable ids are left out rather than rendered as a
+  // uuid — the summary says so in words when a destination is missing.
+  const foldDestinations = Object.fromEntries(
+    linkedProjects.flatMap((project) => {
+      if (project.foldedIntoProjectId) {
+        const target = (allProjects ?? []).find((p) => p.id === project.foldedIntoProjectId);
+        return target
+          ? [[project.id, { label: target.name, href: projectUrl(target) }] as const]
+          : [];
+      }
+      if (project.foldedIntoGoalId) {
+        const target = (allGoals ?? []).find((g) => g.id === project.foldedIntoGoalId);
+        return target
+          ? [[project.id, { label: target.title, href: `/goals/${target.id}` }] as const]
+          : [];
+      }
+      return [];
+    }),
+  );
+
   useEffect(() => {
     setBreadcrumbs([
       { label: "Goals", href: "/goals" },
@@ -146,7 +170,8 @@ export function GoalDetail() {
           <span className="text-xs uppercase text-muted-foreground">
             {goal.level}
           </span>
-          <StatusBadge status={goal.status} />
+          <StatusBadge status={goalDisplayStatus(goal)} />
+          {goal.closure && <StatusBadge status={goal.closure} />}
           <div className="ml-auto">
             <GoalPropertiesToggleButton
               panelVisible={panelVisible}
@@ -176,6 +201,12 @@ export function GoalDetail() {
         />
       </div>
 
+      <InitiativeSummary
+        goal={goal}
+        projects={linkedProjects}
+        foldDestinations={foldDestinations}
+      />
+
       <Tabs defaultValue="children">
         <TabsList>
           <TabsTrigger value="children">
@@ -200,7 +231,7 @@ export function GoalDetail() {
           {childGoals.length === 0 ? (
             <p className="text-sm text-muted-foreground">No sub-goals.</p>
           ) : (
-            <GoalTree goals={childGoals} goalLink={(g) => `/goals/${g.id}`} />
+            <GoalHierarchyList goals={childGoals} goalLink={(g) => `/goals/${g.id}`} />
           )}
         </TabsContent>
 

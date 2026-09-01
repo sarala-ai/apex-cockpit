@@ -26,6 +26,12 @@ export const projectWorkspaces = pgTable(
     visibility: text("visibility").notNull().default("default"),
     setupCommand: text("setup_command"),
     cleanupCommand: text("cleanup_command"),
+    // How THIS project's work is verified and shipped — read at dispatch time
+    // by lifecycle `contract` run targets (checks_pass / deployed), so a
+    // seeded lifecycle can name the contract without hardcoding a tool
+    // (pytest, cloud_run_deploy) that is wrong for every other stack.
+    checkCommand: text("check_command"),
+    deployWorkflow: text("deploy_workflow"),
     remoteProvider: text("remote_provider"),
     remoteWorkspaceRef: text("remote_workspace_ref"),
     sharedWorkspaceKey: text("shared_workspace_key"),

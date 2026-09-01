@@ -131,6 +131,7 @@ function makeAgent(overrides: Partial<Agent>): Agent {
     spentMonthlyCents: 0,
     pauseReason: null,
     pausedAt: null,
+    rosterKind: null,
     permissions: { canCreateAgents: false },
     lastHeartbeatAt: null,
     metadata: null,
@@ -381,6 +382,65 @@ describe("Agents", () => {
     const heartbeatCell = container.querySelector(".whitespace-nowrap.w-24");
     expect(heartbeatCell).not.toBeNull();
     expect(heartbeatCell?.textContent).not.toContain("\n");
+  });
+
+  it("marks a fixture agent, and says nothing about agents nobody has classified", async () => {
+    // A fixture looks identical to real staff on this row otherwise — same
+    // healthy status, same adapter. The badge is the only thing that tells a
+    // reader why it is missing from every assignment picker.
+    mockAgentsApi.org.mockResolvedValue([
+      { id: "agent-fixture", name: "Loop Probe", role: "engineer", status: "active", reports: [] },
+      { id: "agent-undeclared", name: "Alpha", role: "engineer", status: "active", reports: [] },
+    ]);
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ id: "agent-fixture", name: "Loop Probe", urlKey: "loop-probe", rosterKind: "fixture" }),
+      makeAgent({ id: "agent-undeclared", name: "Alpha", urlKey: "alpha", rosterKind: null }),
+    ]);
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <Agents />
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Loop Probe");
+    const badges = container.querySelectorAll("[data-testid=\"fixture-agent-badge\"]");
+    expect(badges.length).toBe(1);
+    // Undeclared renders NO claim at all — not "staff", not "fixture".
+    expect(container.textContent).not.toContain("Staff");
+  });
+
+  it("marks a fixture in the flat list view as well as the org chart", async () => {
+    // Two views of the same roster; a mark that only exists in one of them is
+    // a mark the reader cannot rely on.
+    mockRouterState.pathname = "/agents/active";
+    // The flat list is what mobile always gets (forceListView).
+    mockSidebarState.isMobile = true;
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ id: "agent-fixture", name: "Loop Probe", urlKey: "loop-probe", rosterKind: "fixture" }),
+    ]);
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <Agents />
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.querySelectorAll("[data-testid=\"fixture-agent-badge\"]").length).toBeGreaterThan(0);
   });
 
   it("gives mobile agent names the full row width after the leading status indicator", async () => {

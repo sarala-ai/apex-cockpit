@@ -17,10 +17,14 @@ import { ThemeProvider } from "./context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { initPluginBridge } from "./plugins/bridge-init";
 import { PluginLauncherProvider } from "./plugins/launchers";
+import { initTelemetry, setActiveCompanyIdProvider } from "./observe/telemetry";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
 
 initPluginBridge(React, ReactDOM);
+
+// No-op unless VITE_APEX_OTLP_ENDPOINT is set — see ./observe/telemetry.ts.
+initTelemetry();
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
@@ -39,6 +43,9 @@ const queryClient = new QueryClient({
 
 function CompanyAwareBreadcrumbProvider({ children }: { children: React.ReactNode }) {
   const { selectedCompany } = useCompany();
+  // Keep the telemetry module's client-span company id in sync with company
+  // selection. No-op when telemetry isn't initialized (env var unset).
+  setActiveCompanyIdProvider(() => selectedCompany?.id ?? null);
   return <BreadcrumbProvider companyName={selectedCompany?.name ?? null}>{children}</BreadcrumbProvider>;
 }
 

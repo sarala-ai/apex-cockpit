@@ -13,6 +13,11 @@ export interface RunForIssue {
   createdAt: string;
   invocationSource: string;
   responsibleUserId?: string | null;
+  /** The enforced permission stamp the step commissioner wrote on this run
+   *  (server/src/apex/steps/run-policy.ts). Null for runs it did not
+   *  commission — the fork's default bypass, and shown as such. */
+  permissionMode?: string | null;
+  permissionProfile?: string | null;
   errorCode?: string | null;
   usageJson: Record<string, unknown> | null;
   resultJson: Record<string, unknown> | null;

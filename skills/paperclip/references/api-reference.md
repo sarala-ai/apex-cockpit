@@ -1078,6 +1078,10 @@ Terminal states: `done`, `cancelled`
 | PUT    | `/api/issues/:issueId/documents/:key` | Create or update issue document (send `baseRevisionId` when updating)                |
 | GET    | `/api/issues/:issueId/documents/:key/revisions` | Document revision history                                                  |
 | DELETE | `/api/issues/:issueId/documents/:key` | Delete document (board-only)                                                         |
+| GET    | `/api/issues/:issueId/documents/:key/annotations` | List review annotation threads (`?status=open\|resolved\|all&includeComments=true`) |
+| GET    | `/api/issues/:issueId/documents/:key/annotations/:threadId` | Get one annotation thread with its comments                    |
+| POST   | `/api/issues/:issueId/documents/:key/annotations/:threadId/comments` | Reply inside an annotation thread                     |
+| PATCH  | `/api/issues/:issueId/documents/:key/annotations/:threadId` | Resolve or reopen a thread (`{"status":"resolved"\|"open"}`)    |
 | GET    | `/api/issues/:issueId/approvals`   | List approvals linked to issue                                                           |
 | POST   | `/api/issues/:issueId/approvals`   | Link approval to issue                                                                   |
 | DELETE | `/api/issues/:issueId/approvals/:approvalId` | Unlink approval from issue                                                     |

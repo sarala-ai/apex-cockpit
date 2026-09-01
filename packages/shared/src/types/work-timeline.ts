@@ -30,6 +30,8 @@ export interface WorkTimelineSpan {
   /** ISO timestamp of run finish, or null when the run is still in progress. */
   end: string | null;
   status: string;
+  /** Set when the run was cancelled; `"issue_dependencies_blocked"` means it was held pending blocker resolution. */
+  cancellationReason?: string | null;
   retryOfRunId?: string | null;
   continuationAttempt?: number;
   invocationSource?: string | null;

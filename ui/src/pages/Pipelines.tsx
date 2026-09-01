@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { groupWarningsByStage, LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
+import { groupWarningsByStage, LOW_TRUST_REVIEW_PRESET, stageEntryStepRef } from "@paperclipai/shared";
 import type {
   Agent,
   AskUserQuestionsAnswer,
@@ -109,6 +109,15 @@ import {
   pipelineConversationStarterAssigneeValue,
   splitPipelineItemFields,
 } from "../lib/pipeline-item-detail";
+import {
+  reviewDecisionActions,
+  reviewDecisionConfig,
+  reviewDecisionToastTitle,
+  reviewStageQuestion,
+  type ReviewDecisionAction,
+  type ReviewDecisionConfig,
+} from "../lib/review-decision";
+import { GateBrief } from "../components/GateBrief";
 import { extractWorkReferences, referenceFieldKeys } from "../lib/pipeline-references";
 import { pieceNounPlural, readStageBreakdown } from "../lib/pipeline-breakdown";
 import { hasBlockingShortcutDialog, isKeyboardShortcutTextInputTarget } from "../lib/keyboardShortcuts";
@@ -118,6 +127,10 @@ import { queryKeys } from "../lib/queryKeys";
 import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { shouldDisableRerunForPermission, type LivenessRetryKind } from "../lib/pipeline-liveness";
+import {
+  describeTransitionConflict,
+  type TransitionConflictCopy,
+} from "../lib/pipeline-transition-conflict";
 import { cn, formatNumber, relativeTime } from "../lib/utils";
 import { issueStatusText, issueStatusTextDefault } from "../lib/status-colors";
 import { formatBytes } from "../lib/issue-output";
@@ -228,13 +241,37 @@ function itemCountLabel(count: number) {
   return `${count} ${count === 1 ? "item" : "items"}`;
 }
 
-function currentStageAutomation(stage: PipelineStage) {
-  const onEnter = stage.config?.onEnter;
-  if (!onEnter || typeof onEnter !== "object" || Array.isArray(onEnter)) return null;
-  const config = onEnter as Record<string, unknown>;
-  return config.type === "run_routine" && typeof config.routineId === "string" && config.routineId.trim()
-    ? { routineId: config.routineId }
-    : null;
+/**
+ * The step this stage runs on entry, whatever kind it is — or null when it
+ * runs none.
+ *
+ * This used to match `routine` and nothing else, and that single omission is
+ * why "Re-run this step" was greyed out on exactly the steps that stop. A
+ * `run` step and an `agent` step go through the SAME ledger as a routine
+ * (`enqueueStageAutomationLedger` handles all three), fail the same way, and
+ * are what a hold is written about — so a menu item keyed on "is this a
+ * routine?" was disabled in the one state it was built for.
+ *
+ * The kind is returned rather than discarded so a caller can say something
+ * specific; today nothing needs to, and that is fine — what matters is that
+ * "is there something to re-run?" is now answered honestly.
+ */
+export type CurrentStageEntryStep =
+  | { kind: "routine"; routineId: string }
+  | { kind: "run" }
+  | { kind: "agent" };
+
+export function currentStageEntryStep(stage: PipelineStage): CurrentStageEntryStep | null {
+  // Delegates to the ONE shared spelling of "does this step run anything?"
+  // (`@paperclipai/shared/pipeline-stage-entry`) rather than keeping a local
+  // copy of the predicate. A local copy is exactly how this bug class
+  // propagated: each layer's spelling was updated independently, and the ones
+  // that were missed failed silently.
+  const entry = stageEntryStepRef(stage.config, stage.id);
+  if (!entry) return null;
+  return entry.kind === "routine"
+    ? { kind: "routine", routineId: entry.routineId! }
+    : { kind: entry.kind };
 }
 
 function readNonEmptyConfigString(value: unknown) {
@@ -1628,15 +1665,13 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
         queryClient.invalidateQueries({ queryKey: queryKeys.pipelines.cases(pipelineId) }),
       ]);
     },
-    onError: (error) => {
-      pushToast({
-        title: "Move blocked",
-        body:
-          error instanceof ApiError && error.status === 409
-            ? "This item changed while you were looking. The board has been refreshed."
-            : "The item could not be moved.",
-        tone: "error",
-      });
+    // Every 409 used to read "This item changed while you were looking", which
+    // is true for a version conflict and a fabrication for every other reason
+    // the server refuses — a held step above all. Same mapping as the item
+    // page, so a refusal reads the same wherever a person meets it.
+    onError: (error: unknown) => {
+      const copy = describeTransitionConflict(error, { verb: "move" });
+      pushToast({ title: copy.title, body: copy.body, tone: "error" });
       queryClient.invalidateQueries({ queryKey: queryKeys.pipelines.detail(pipelineId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.pipelines.cases(pipelineId) });
     },
@@ -1966,6 +2001,10 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
   const [retryTargetStageId, setRetryTargetStageId] = useState<string | null>(null);
   const [selectedRetryCleanupIds, setSelectedRetryCleanupIds] = useState<Set<string>>(() => new Set());
   const [retryDialogError, setRetryDialogError] = useState<string | null>(null);
+  // The server's reason for refusing a move or a removal, kept so the dialog
+  // can show it instead of discarding it behind a toast.
+  const [moveConflict, setMoveConflict] = useState<TransitionConflictCopy | null>(null);
+  const [removeConflict, setRemoveConflict] = useState<TransitionConflictCopy | null>(null);
 
   const pipeline = useQuery({
     queryKey: queryKeys.pipelines.detail(pipelineId),
@@ -2634,13 +2673,21 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
         force: true,
       });
     },
+    onMutate: () => setMoveConflict(null),
     onSuccess: async () => {
       setMoveDialogOpen(false);
       setMoveStageKey("");
       await invalidateItem();
       pushToast({ title: "Item moved", tone: "success" });
     },
-    onError: () => pushToast({ title: "Could not move the item", tone: "error" }),
+    // The server answers a refusal with a code and a reason. Keep the dialog
+    // open and put the reason where the person is already looking, rather than
+    // closing it behind a toast that says only that something went wrong.
+    onError: (error: unknown) => {
+      const copy = describeTransitionConflict(error, { verb: "move" });
+      setMoveConflict(copy);
+      pushToast({ title: copy.title, body: copy.body, tone: "error" });
+    },
   });
   const removeItem = useMutation({
     mutationFn: () => {
@@ -2651,13 +2698,18 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
         reason: "Removed from the item detail page.",
       });
     },
+    onMutate: () => setRemoveConflict(null),
     onSuccess: async () => {
       setRemoveDialogOpen(false);
       await invalidateItem();
       pushToast({ title: "Item removed", tone: "success" });
       navigate(`/pipelines/${pipelineId}`);
     },
-    onError: () => pushToast({ title: "Could not remove the item", tone: "error" }),
+    onError: (error: unknown) => {
+      const copy = describeTransitionConflict(error, { verb: "remove" });
+      setRemoveConflict(copy);
+      pushToast({ title: copy.title, body: copy.body, tone: "error" });
+    },
   });
 
   const reviewConfig = useMemo(
@@ -2730,11 +2782,23 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
   );
   const banner = getPendingTransitionBannerState(detail.case, stageLookup);
   const statusLabel = humanizePipelineItemStatus(detail.case.terminalKind ?? detail.stage.kind);
-  const stageAutomation = currentStageAutomation(detail.stage);
+  const stageEntryStep = currentStageEntryStep(detail.stage);
   const previousRetryPlan = previousRetryAvailability.data;
   // Don't let the operator re-run automation into the same 403 — they must get
   // the grant first. The banner's "Request access" path is the way out.
   const rerunBlockedByPermission = shouldDisableRerunForPermission(detail.liveness);
+  // THE ONE GENUINELY UNSAFE CASE. A commissioned agent step is running right
+  // now; a second commission would put two agents on the same work. Refused
+  // out loud, with the reason attached — never silently, which is how this
+  // affordance came to be dead in the state it exists for.
+  const rerunBlockedByRunInFlight = detail.liveness?.reason === "step_running";
+  const rerunDisabledReason = !stageEntryStep
+    ? "This step runs nothing on its own, so there is nothing to re-run."
+    : rerunBlockedByRunInFlight
+      ? "An agent is working on this step right now. Wait for that run to finish before starting another."
+      : rerunBlockedByPermission
+        ? "Permission still missing — request access first"
+        : null;
   const childRows = normalizePipelineChildRows(children.data);
   const eventRows = events.data?.items ?? [];
   const activeWork = detail.activeWork ?? null;
@@ -2779,6 +2843,8 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
       pendingDecision={decideReview.variables?.decision ?? null}
       pending={decideReview.isPending}
       nextItemTitle={nextReviewItem?.case.title ?? null}
+      gateApprovalId={detail.gateApprovalId ?? null}
+      gateQuestion={reviewStageQuestion(detail.stage)}
       onNoteChange={setReviewDecisionNote}
       onDecide={(decision) => decideReview.mutate({ decision })}
     />
@@ -2843,8 +2909,8 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem
-                  disabled={!stageAutomation || rerunCurrentStageAutomation.isPending || rerunBlockedByPermission}
-                  title={rerunBlockedByPermission ? "Permission still missing — request access first" : undefined}
+                  disabled={Boolean(rerunDisabledReason) || rerunCurrentStageAutomation.isPending}
+                  title={rerunDisabledReason ?? undefined}
                   onSelect={(event) => {
                     event.preventDefault();
                     setRetryTargetStageId(null);
@@ -2903,7 +2969,13 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
         </div>
       </div>
 
-      <Dialog open={moveDialogOpen} onOpenChange={setMoveDialogOpen}>
+      <Dialog
+        open={moveDialogOpen}
+        onOpenChange={(open) => {
+          setMoveDialogOpen(open);
+          if (!open) setMoveConflict(null);
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Move to stage</DialogTitle>
@@ -2937,6 +3009,16 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
                 </SelectContent>
               </Select>
             </label>
+            {moveConflict ? (
+              <div
+                role="alert"
+                data-testid="pipeline-move-conflict"
+                className="rounded-sm border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"
+              >
+                <p className="font-medium">{moveConflict.title}</p>
+                <p className="mt-1 opacity-90">{moveConflict.body}</p>
+              </div>
+            ) : null}
           </div>
           <DialogFooter>
             <Button
@@ -3417,7 +3499,13 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
         </aside>
       </div>
 
-      <Dialog open={removeDialogOpen} onOpenChange={setRemoveDialogOpen}>
+      <Dialog
+        open={removeDialogOpen}
+        onOpenChange={(open) => {
+          setRemoveDialogOpen(open);
+          if (!open) setRemoveConflict(null);
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Remove item</DialogTitle>
@@ -3425,6 +3513,16 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
               This moves the item out of active work. It stays visible in the pipeline history.
             </DialogDescription>
           </DialogHeader>
+          {removeConflict ? (
+            <div
+              role="alert"
+              data-testid="pipeline-remove-conflict"
+              className="rounded-sm border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"
+            >
+              <p className="font-medium">{removeConflict.title}</p>
+              <p className="mt-1 opacity-90">{removeConflict.body}</p>
+            </div>
+          ) : null}
           <DialogFooter>
             <Button variant="outline" onClick={() => setRemoveDialogOpen(false)}>Keep item</Button>
             <Button variant="destructive" onClick={() => removeItem.mutate()} disabled={removeItem.isPending || !removeStage}>
@@ -3537,91 +3635,6 @@ function WaitingChildRow({
   );
 }
 
-interface ReviewDecisionConfig {
-  approveToStageKey: string | null;
-  rejectToStageKey: string | null;
-  requestChangesToStageKey: string | null;
-  requireRejectReason: boolean;
-  requireRequestChangesReason: boolean;
-}
-
-interface ReviewDecisionAction {
-  decision: PipelineReviewDecision;
-  label: string;
-  targetStageName: string;
-  targetStageKey: string;
-  requireReason: boolean;
-  variant: "default" | "outline" | "destructive";
-}
-
-function configString(config: Record<string, unknown> | null | undefined, key: string) {
-  const value = config?.[key];
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
-
-function stageKeyForKind(stages: PipelineStage[], kind: string) {
-  return stages.find((stage) => stage.kind === kind)?.key ?? stages.find((stage) => stage.key === kind)?.key ?? null;
-}
-
-function reviewDecisionConfig(stage: PipelineStage, stages: PipelineStage[]): ReviewDecisionConfig | null {
-  if (stage.kind !== "review") return null;
-  const config = stage.config ?? {};
-  return {
-    approveToStageKey: configString(config, "approveToStageKey") ?? stageKeyForKind(stages, "done"),
-    rejectToStageKey: configString(config, "rejectToStageKey") ?? stageKeyForKind(stages, "cancelled"),
-    requestChangesToStageKey: configString(config, "requestChangesToStageKey"),
-    requireRejectReason: config.requireRejectReason !== false,
-    requireRequestChangesReason: config.requireRequestChangesReason !== false,
-  };
-}
-
-function reviewDecisionActions(
-  config: ReviewDecisionConfig,
-  stageLookup: Map<string, string>,
-): ReviewDecisionAction[] {
-  const actions: ReviewDecisionAction[] = [];
-  if (config.approveToStageKey) {
-    actions.push({
-      decision: "approve",
-      label: "Approve",
-      targetStageKey: config.approveToStageKey,
-      targetStageName: stageLookup.get(config.approveToStageKey) ?? humanizePipelineItemStatus(config.approveToStageKey),
-      requireReason: false,
-      variant: "default",
-    });
-  }
-  if (config.requestChangesToStageKey) {
-    actions.push({
-      decision: "request_changes",
-      label: "Request changes",
-      targetStageKey: config.requestChangesToStageKey,
-      targetStageName: stageLookup.get(config.requestChangesToStageKey) ?? humanizePipelineItemStatus(config.requestChangesToStageKey),
-      requireReason: config.requireRequestChangesReason,
-      variant: "outline",
-    });
-  }
-  if (config.rejectToStageKey) {
-    actions.push({
-      decision: "reject",
-      label: "Reject",
-      targetStageKey: config.rejectToStageKey,
-      targetStageName: stageLookup.get(config.rejectToStageKey) ?? humanizePipelineItemStatus(config.rejectToStageKey),
-      requireReason: config.requireRejectReason,
-      variant: "destructive",
-    });
-  }
-  return actions;
-}
-
-function reviewDecisionToastTitle(decision: PipelineReviewDecision, movedToNextItem: boolean) {
-  const prefix = decision === "approve"
-    ? "Item approved"
-    : decision === "request_changes"
-      ? "Changes requested"
-      : "Item rejected";
-  return movedToNextItem ? `${prefix}; moved to the next review` : prefix;
-}
-
 function ReviewDecisionPanel({
   actions,
   note,
@@ -3629,6 +3642,8 @@ function ReviewDecisionPanel({
   pending,
   pendingDecision,
   nextItemTitle,
+  gateApprovalId,
+  gateQuestion,
   onNoteChange,
   onDecide,
 }: {
@@ -3638,6 +3653,9 @@ function ReviewDecisionPanel({
   pending: boolean;
   pendingDecision: PipelineReviewDecision | null;
   nextItemTitle: string | null;
+  /** The open decision, which is how the brief is fetched. */
+  gateApprovalId: string | null;
+  gateQuestion: string | null;
   onNoteChange: (value: string) => void;
   onDecide: (decision: PipelineReviewDecision) => void;
 }) {
@@ -3657,6 +3675,15 @@ function ReviewDecisionPanel({
               </p>
             </div>
           </div>
+
+          {/*
+            WHAT is being decided. This panel used to offer three buttons and
+            a stage name, with nothing about the work behind them. The brief —
+            the SAME module the ticket renders, so one decision cannot read
+            two ways — hands over what the last step produced, what was
+            already checked, and what has happened here before.
+          */}
+          <GateBrief approvalId={gateApprovalId} fallbackQuestion={gateQuestion} />
 
           <label className="block space-y-1.5 text-sm font-medium">
             <span>Reason</span>
