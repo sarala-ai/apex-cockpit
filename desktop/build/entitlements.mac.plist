@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Minimal hardened-runtime entitlements for Electron on macOS.
+     allow-jit and allow-unsigned-executable-memory are required because
+     Electron's V8/Node runtime JIT-compiles code at runtime; without them
+     the hardened runtime blocks the app from starting at all.
+     allow-dyld-environment-variables and disable-library-validation are
+     required for Electron's helper process / native module loading.
+     inherit applies this same entitlement set to spawned helper processes. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.inherit</key>
+    <true/>
+  </dict>
+</plist>

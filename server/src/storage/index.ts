@@ -15,6 +15,9 @@ function signatureForConfig(config: Config): string {
     s3Endpoint: config.storageS3Endpoint,
     s3Prefix: config.storageS3Prefix,
     s3ForcePathStyle: config.storageS3ForcePathStyle,
+    gcsBucket: config.storageGcsBucket,
+    gcsPrefix: config.storageGcsPrefix,
+    gcsProjectId: config.storageGcsProjectId,
   });
 }
 

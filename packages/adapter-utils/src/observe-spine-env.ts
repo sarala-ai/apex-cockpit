@@ -118,6 +118,11 @@ export function mergeResourceAttributes(existing: string | undefined, spineAttrs
  * (if any spine values are present) OTEL_RESOURCE_ATTRIBUTES with the caller's
  * pre-existing value preserved.
  *
+ * RUNTIME-AGNOSTIC BY DESIGN: this helper emits only standard OTel variables
+ * that every acpx engine understands. Per-runtime switches (e.g. Claude Code's
+ * CLAUDE_CODE_ENABLE_TELEMETRY) belong at the launch site next to the engine
+ * they apply to, alongside the existing ANTHROPIC_MODEL handling — not here.
+ *
  * @param spine   the run's correlation spine
  * @param endpoint the configured OTLP endpoint (APEX_OTLP_ENDPOINT), or nullish
  * @param existingResourceAttributes any OTEL_RESOURCE_ATTRIBUTES already on the

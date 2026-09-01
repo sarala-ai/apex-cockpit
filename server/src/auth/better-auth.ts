@@ -2,16 +2,34 @@ import type { Request, RequestHandler } from "express";
 import type { IncomingHttpHeaders } from "node:http";
 import { betterAuth, type Auth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
+import { jwt } from "better-auth/plugins";
 import { toNodeHandler } from "better-auth/node";
 import type { Db } from "@paperclipai/db";
 import {
   authAccounts,
+  authJwks,
   authSessions,
   authUsers,
   authVerifications,
+  instanceUserRoles,
 } from "@paperclipai/db";
+import { APIError } from "better-auth/api";
+import { eq } from "drizzle-orm";
 import type { Config } from "../config.js";
 import { resolvePaperclipInstanceId } from "../home-paths.js";
+import { buildPrincipalClaims } from "./auth-client.js";
+import { logger } from "../middleware/logger.js";
+
+// Maps a better-auth social/OAuth providerId to the OIDC issuer we record in
+// user.idp_issuer. Only providers we federate to are listed.
+const IDP_ISSUER_BY_PROVIDER: Record<string, string> = {
+  google: "https://accounts.google.com",
+};
+
+function emailInDomain(email: string | null | undefined, domain: string): boolean {
+  const normalized = email?.trim().toLowerCase();
+  return Boolean(normalized && normalized.endsWith(`@${domain.toLowerCase()}`));
+}
 
 export type BetterAuthSessionUser = {
   id: string;
@@ -151,6 +169,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
         session: authSessions,
         account: authAccounts,
         verification: authVerifications,
+        jwks: authJwks,
       },
     }),
     emailAndPassword: {
@@ -158,6 +177,89 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       requireEmailVerification: false,
       disableSignUp: config.authDisableSignUp,
     },
+    // Sarala Google (Workspace) SSO. Opt-in: only registered when both client
+    // credentials are present (Secret Manager in cloud). idp_issuer/idp_subject
+    // are stamped on the linked account (databaseHooks.account.create.after);
+    // sign-up is restricted to the configured Workspace domain if set.
+    ...(config.authGoogleClientId && config.authGoogleClientSecret
+      ? {
+          socialProviders: {
+            google: {
+              clientId: config.authGoogleClientId,
+              clientSecret: config.authGoogleClientSecret,
+            },
+          },
+        }
+      : {}),
+    databaseHooks: {
+      user: {
+        create: {
+          before: async (user: { email: string }) => {
+            if (config.authGoogleAllowedDomain && !emailInDomain(user.email, config.authGoogleAllowedDomain)) {
+              throw new APIError("FORBIDDEN", {
+                message: `Sign-up is restricted to @${config.authGoogleAllowedDomain} accounts.`,
+              });
+            }
+            return { data: user };
+          },
+          // Bootstrapped org admins: a fresh instance is claimed by known people,
+          // not first-user-wins. If the new user's email is in the configured
+          // allowlist, grant instance_admin (idempotent) so they can bootstrap
+          // org/company and manage the instance.
+          after: async (user: { id: string; email: string }) => {
+            const email = user.email?.trim().toLowerCase();
+            if (email && config.authOrgAdminEmails.includes(email)) {
+              await db
+                .insert(instanceUserRoles)
+                .values({ userId: user.id, role: "instance_admin" })
+                .onConflictDoNothing({ target: [instanceUserRoles.userId, instanceUserRoles.role] });
+            }
+          },
+        },
+      },
+      account: {
+        create: {
+          after: async (account: { providerId: string; accountId: string; userId: string }) => {
+            const issuer = IDP_ISSUER_BY_PROVIDER[account.providerId];
+            if (!issuer) return;
+            await db
+              .update(authUsers)
+              .set({ idpIssuer: issuer, idpSubject: account.accountId })
+              .where(eq(authUsers.id, account.userId));
+          },
+        },
+      },
+    },
+    // Cockpit is the human-identity authority. The jwt plugin makes it mint
+    // short-lived APEX principal JWTs and publish its JWKS at /api/auth/jwks so
+    // the gateway can verify them locally and enforce (APEX-127 / auth-service.md).
+    // The claims ARE the principal contract (buildPrincipalClaims).
+    plugins: [
+      jwt({
+        // Do NOT auto-sign a JWT onto every response (better-auth's own guidance
+        // when an OAuth/social provider is in play). Auto-signing runs
+        // definePayload -> buildPrincipalClaims on the OAuth sign-in response and
+        // was crashing the process (503). The gateway gets JWTs on demand from
+        // /api/auth/token + JWKS instead.
+        disableSettingJwtHeader: true,
+        jwt: {
+          ...(publicUrl ? { issuer: publicUrl } : {}),
+          audience: "apex-gateway",
+          expirationTime: "15m",
+          getSubject: ({ user }) => user.id,
+          // Defensive: a claims-build failure must never crash the token
+          // response — fall back to minimal identity claims.
+          definePayload: async ({ user }) => {
+            try {
+              return await buildPrincipalClaims(db, user.id);
+            } catch (err) {
+              logger.error({ err, userId: user.id }, "buildPrincipalClaims failed; issuing minimal JWT claims");
+              return { email: user.email ?? null };
+            }
+          },
+        },
+      }),
+    ],
     advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies }),
   };
 

@@ -5,8 +5,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   acceptanceArtifactPath,
   acceptancePullRequestTarget,
+  acceptanceScanKind,
   buildAgentInstructionComment,
   evaluateAcceptanceV1,
+  isMachineEvaluableAcceptance,
   renderAgentPrompt,
   renderWorkflowParams,
 } from "../apex/steps/agent-step.js";
@@ -107,6 +109,61 @@ describe("acceptance v1 — pr_exists", () => {
       expect(result.message).toContain("acceptance pull request not found");
       expect(result.message).toContain("design/APE-7");
     }
+  });
+});
+
+describe("acceptance v1 — scan_clean", () => {
+  it("parses a closed set of scan kinds and rejects anything else", () => {
+    expect(acceptanceScanKind("scan_clean:secrets")).toBe("secrets");
+    expect(acceptanceScanKind("scan_clean: iac")).toBe("iac");
+    // A free-text kind would produce a contract nobody can evaluate. Refusing
+    // it here means the typo surfaces at authoring time, where a person can
+    // fix it, rather than at runtime where nobody is watching.
+    expect(acceptanceScanKind("scan_clean:sekrets")).toBeNull();
+    expect(acceptanceScanKind("scan_clean:")).toBeNull();
+    expect(acceptanceScanKind("the scan is clean")).toBeNull();
+  });
+
+  it("is machine-evaluable, so a stage may gate on it", () => {
+    expect(isMachineEvaluableAcceptance("scan_clean:secrets")).toBe(true);
+    expect(isMachineEvaluableAcceptance("scan_clean:sekrets")).toBe(false);
+    expect(isMachineEvaluableAcceptance("no secrets are committed")).toBe(false);
+  });
+
+  it("passes when the scan comes back clean, and records what was scanned", async () => {
+    const calls: string[] = [];
+    const result = await evaluateAcceptanceV1("scan_clean:secrets", {
+      checkScan: async (kind) => {
+        calls.push(kind);
+        return { clean: true, scanMode: "commit_range" };
+      },
+    });
+    expect(calls).toEqual(["secrets"]);
+    expect(result.ok).toBe(true);
+    expect(result.evaluation).toContain("scan_clean verified");
+    // "clean" means nothing without knowing what was looked at.
+    expect(result.evaluation).toContain("commit_range");
+  });
+
+  it("fails classified when the scan finds something", async () => {
+    const result = await evaluateAcceptanceV1("scan_clean:secrets", {
+      checkScan: async () => ({ clean: false, message: "3 secrets finding(s)." }),
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("acceptance security scan not clean");
+  });
+
+  it("fails — not passes — when the scan could not run at all", async () => {
+    // The whole point of the subsystem: a scanner that is missing, timed out
+    // or crashed leaves the contract UNCHECKED, and unchecked is not clean.
+    const result = await evaluateAcceptanceV1("scan_clean:secrets", {
+      checkScan: async () => ({
+        clean: false,
+        message: "the secrets scan did not complete, so this contract was NOT checked",
+      }),
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("NOT checked");
   });
 });
 

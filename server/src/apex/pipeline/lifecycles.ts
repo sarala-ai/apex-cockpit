@@ -52,7 +52,7 @@
  * to read, and the seeder says out loud that nothing enforces it, rather
  * than smuggling prose past the same guard that would reject it if a person
  * typed it into the editor. Only `design_change`'s `board_diff` node
- * (`pr_exists:sarala-ai/apex-design#design/{{identifier}}`) is a REAL
+ * (`pr_exists:{{design_repo}}#design/{{identifier}}`) is a REAL
  * enforcing contract as a result — every other agent/former-check node's
  * acceptance is descriptive only. This asymmetry is the honest state of the
  * v1 grammar, not an oversight, and it is computed here, not hand-picked, so
@@ -90,8 +90,8 @@
  * field is omitted rather than pointed at nothing.
  */
 
-import { and, eq } from "drizzle-orm";
-import { pipelineStages, pipelines } from "@paperclipai/db";
+import { and, asc, eq } from "drizzle-orm";
+import { pipelineStages, pipelineTransitions, pipelines } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
 import {
   pipelineService,
@@ -132,6 +132,24 @@ type LifecycleNode =
       check:
         | { tool: string; args: string[]; pass_criteria: string }
         | { contract: RunContract; pass_criteria: string };
+    }
+  | {
+      /**
+       * A deterministic MUTATION run through one apex tool — distinct from
+       * `check`, which also runs a tool but exists to ASSERT and therefore
+       * carries a pass_criteria. A command node changes something and its
+       * verdict is simply whether the tool succeeded, so it declares no
+       * acceptance: there is nothing to check beyond "it did the thing".
+       *
+       * This is the node kind for work that has no judgement content. Naming a
+       * branch is the founding example: the name is derivable from the ticket,
+       * every other node in the lifecycle already keys on it, and leaving it to
+       * an agent is what let APEX-88 mint a second pull request on a second
+       * branch that acceptance could never match.
+       */
+      id: string;
+      kind: "command";
+      command: { tool: string; args: string[] };
     }
   | {
       id: string;
@@ -262,6 +280,26 @@ function buildStagesAndTransitions(nodes: LifecycleNode[]): {
             onSuccessToStageKey: next,
           } as unknown as PipelineStageConfig["onEnter"],
           acceptance: acceptanceFor(node.check.pass_criteria),
+        },
+      });
+      transitions.push({ from: node.id, to: next });
+      return;
+    }
+
+    if (node.kind === "command") {
+      stages.push({
+        key: node.id,
+        name,
+        kind: "working",
+        config: {
+          onEnter: {
+            type: "run",
+            target: { type: "command", tool: node.command.tool, args: node.command.args },
+            onSuccessToStageKey: next,
+            // on_fail: pause -> no onFailureToStageKey. See file header.
+          } as unknown as PipelineStageConfig["onEnter"],
+          // No acceptance: the tool's own success IS the verdict. Adding a
+          // pass_criteria here would re-check what the runner already told us.
         },
       });
       transitions.push({ from: node.id, to: next });
@@ -404,7 +442,43 @@ const BUG_NODES: LifecycleNode[] = [
   { id: "deploy", kind: "workflow", workflow: { contract: "deployed" } },
 ];
 
+// ONE definition of the design-change coordinates. Four nodes key on the
+// branch name — the command that creates it, the prompt that hands it over,
+// the acceptance that looks for a pull request on it, and the merge that lands
+// it. Before this, the name was written out four times and an agent was free
+// to pick a fifth; it did, and the lifecycle deadlocked (APEX-88).
+//
+// The REPOSITORY is a token, not a literal, for the reason APEX-38 established
+// for checks and deploys: seeded lifecycles are company-shared and carry no
+// project, so a hardcoded repo means one company's design gets pushed into
+// another's. `{{design_repo}}` resolves at dispatch from the project's own
+// workspace config — a declared design repo, or the project's own repo when
+// design lives in a folder of a monorepo. A project that declares neither
+// leaves the token unresolved, and the step refuses rather than guessing.
+//
+// The BRANCH pattern stays a literal: it is this lifecycle's naming
+// convention, not a per-project fact.
+const DESIGN_REPO = "{{design_repo}}";
+const DESIGN_BRANCH = "design/{{identifier}}";
+
 const DESIGN_CHANGE_NODES: LifecycleNode[] = [
+  {
+    // Deterministic, zero tokens, and idempotent — `github_repo create-branch`
+    // treats an existing branch as success and leaves it alone, so a second
+    // dispatch lands on the same branch rather than failing at move one or
+    // rewinding a round a reviewer is reading.
+    //
+    // A branch name is derivable from the ticket and has no judgement content,
+    // which makes it machinery, not work. Handing the agent a branch that
+    // already exists removes the only coordinate it was previously free to
+    // invent.
+    id: "create_branch",
+    kind: "command",
+    command: {
+      tool: "github_repo create-branch",
+      args: ["--repo", DESIGN_REPO, "--branch", DESIGN_BRANCH],
+    },
+  },
   {
     id: "board_diff",
     kind: "agent",
@@ -412,19 +486,26 @@ const DESIGN_CHANGE_NODES: LifecycleNode[] = [
       prompt_template:
         'Author the design-board change requested by ticket {{identifier}} ("{{title}}") and open a pull request carrying the updated .penpot artifact. The ticket\'s agent brief specifies the target Penpot file, page/board, design repo, artifact path, and the exact change to make; the ticket body says what the change is for.\n\n\n' +
         "Work ONLY through the apex CLI so every step rides the audited tool path (prefix each write invocation with APEX_EXECUTION_MODE=apply and always pass --output json):\n\n" +
+        "YOUR BRANCH ALREADY EXISTS. It is `" + DESIGN_BRANCH + "` on `" + DESIGN_REPO + "`, " +
+        "created for you by a deterministic step before you were commissioned. Commit to it and " +
+        "open your pull request from it. Do NOT create a branch, do not pick a different name, and " +
+        "do not open a second pull request if one is already open for this branch — add a commit to " +
+        "the existing one instead. The branch name is the coordinate every later step keys on: the " +
+        "acceptance check, the review gate and the merge all look for exactly this branch, so a " +
+        "different name means your work is never found.\n\n" +
         "1. Apply the change to the live Penpot file:\n" +
         "`apex run penpot update-file` with the file id and a JSON array of Penpot update-file change operations (e.g. add-obj).\n\n" +
         "2. Export the updated file: `apex run penpot export-file` to a temporary local .penpot path.\n\n" +
-        "3. Create branch `design/{{identifier}}` on the design repo:\n" +
-        "`apex run github_repo create-branch`.\n\n" +
-        "4. Commit the export to that branch at the ticket's artifact path:\n" +
+        "3. Commit the export to `" + DESIGN_BRANCH + "` at the ticket's artifact path:\n" +
         "`apex run github_repo put-file` with content_file pointing at the exported .penpot (binary-safe).\n\n" +
-        "5. Open the pull request: `apex run github_repo\n" +
-        "open-pull-request` with head `design/{{identifier}}`, titled for the ticket, body linking back to {{identifier}}.\n\n\n" +
+        "4. Open the pull request: `apex run github_repo\n" +
+        "open-pull-request` with head `" + DESIGN_BRANCH + "`, titled for the ticket, body linking back to {{identifier}}. " +
+        "The pull request is your MERGE REQUEST — the moment you ask for the change to land — which is " +
+        "why it stays yours to open and word, while the branch does not.\n\n\n" +
         "Acceptance (machine-checked when this run completes):\n" +
         "{{acceptance}}\n",
       budget: { max_turns: 25, timeout_seconds: 1800 },
-      acceptance: "pr_exists:sarala-ai/apex-design#design/{{identifier}}",
+      acceptance: `pr_exists:${DESIGN_REPO}#${DESIGN_BRANCH}`,
       agent_key: APEX_AGENT_KEYS.designEngineer,
     },
   },
@@ -442,7 +523,7 @@ const DESIGN_CHANGE_NODES: LifecycleNode[] = [
     kind: "workflow",
     workflow: {
       workflow: "design-pr-merge",
-      params: { repo: "sarala-ai/apex-design", head: "design/{{identifier}}" },
+      params: { repo: DESIGN_REPO, head: DESIGN_BRANCH },
     },
   },
 ];
@@ -594,7 +675,16 @@ export const LIFECYCLE_DEFINITIONS: LifecycleDefinition[] = [
     description: `A bounded agent step authors a design-board change and opens a .penpot
       pull request on the design repo, a founder reviews it at a single gate,
       then the merge workflow lands it.`,
-    version: "1.2",
+    // 1.3: branch creation moved OUT of the agent step into a deterministic
+    // `command` node, and the branch name is handed to the agent rather than
+    // invented by it (APEX-88). The bump is what carries the fix to instances
+    // that seeded 1.2 — including the stranded case that opened two pull
+    // requests on two branches, neither matching the acceptance contract.
+    // 1.4: the design REPOSITORY is a `{{design_repo}}` token resolved from
+    // project workspace config instead of one company's hardcoded repo — the
+    // same generalisation APEX-38 made for checks and deploys. Supports both
+    // shapes: a dedicated design repo, and a design folder inside a monorepo.
+    version: "1.4",
     ticketType: "design-change",
     nodes: DESIGN_CHANGE_NODES,
   }),
@@ -658,6 +748,82 @@ function isOlderLifecycleVersion(stored: string | null, shipped: string): boolea
   return false;
 }
 
+/**
+ * Bring an already-seeded pipeline's SHAPE up to the definition: insert stages
+ * the definition has and the board does not, then add any transition the
+ * definition declares between two stages that now both exist.
+ *
+ * Deliberately additive. Stages the board has and the definition does not are
+ * left in place — an operator may have added them, and a seeder that deletes
+ * board columns on startup is a seeder nobody can trust with their board.
+ */
+async function materializeMissingStagesAndTransitions(
+  db: Db,
+  input: {
+    companyId: string;
+    pipelineId: string;
+    definition: LifecycleDefinition;
+    actor: PipelineActor;
+  },
+): Promise<void> {
+  const svc = pipelineService(db);
+  const current = async () =>
+    db
+      .select({ id: pipelineStages.id, key: pipelineStages.key, position: pipelineStages.position })
+      .from(pipelineStages)
+      .where(eq(pipelineStages.pipelineId, input.pipelineId))
+      .orderBy(asc(pipelineStages.position));
+
+  let stages = await current();
+  const defIndex = new Map(input.definition.stages.map((s, i) => [s.key, i]));
+
+  for (const [i, stage] of input.definition.stages.entries()) {
+    if (stages.some((s) => s.key === stage.key)) continue;
+
+    // Insert AT the position of the nearest already-present stage that the
+    // definition orders after this one; createStage shifts that stage and
+    // everything below it down, which preserves the declared order without
+    // renumbering rows nobody asked us to touch. No such successor (the new
+    // stage belongs at the end) -> append past the last position.
+    const successor = stages.find((s) => (defIndex.get(s.key) ?? -1) > i);
+    const position = successor
+      ? successor.position
+      : (stages.at(-1)?.position ?? 0) + 100;
+
+    await svc.createStage({
+      companyId: input.companyId,
+      pipelineId: input.pipelineId,
+      key: stage.key,
+      name: stage.name,
+      kind: stage.kind,
+      position,
+      config: stage.config,
+      actor: input.actor,
+    });
+    stages = await current();
+  }
+
+  const idByKey = new Map(stages.map((s) => [s.key, s.id]));
+  const existingEdges = await db
+    .select({ from: pipelineTransitions.fromStageId, to: pipelineTransitions.toStageId })
+    .from(pipelineTransitions)
+    .where(eq(pipelineTransitions.pipelineId, input.pipelineId));
+  const seen = new Set(existingEdges.map((e) => `${e.from}->${e.to}`));
+
+  for (const edge of input.definition.transitions) {
+    const from = idByKey.get(edge.from);
+    const to = idByKey.get(edge.to);
+    if (!from || !to || seen.has(`${from}->${to}`)) continue;
+    await svc.createTransition({
+      companyId: input.companyId,
+      pipelineId: input.pipelineId,
+      fromStageId: from,
+      toStageId: to,
+    });
+    seen.add(`${from}->${to}`);
+  }
+}
+
 export async function seedLifecyclePipelines(
   db: Db,
   input: { companyId: string; projectId?: string | null; actor?: PipelineActor },
@@ -694,12 +860,39 @@ export async function seedLifecyclePipelines(
               and(eq(pipelineStages.pipelineId, already.id), eq(pipelineStages.key, stage.key)),
             );
         }
+
         await db
           .update(pipelines)
           .set({ version: definition.version, ticketType: definition.ticketType })
           .where(eq(pipelines.id, already.id));
         upgraded.push(definition.key);
       }
+      // STRUCTURAL drift, on EVERY seed rather than only the upgrade path.
+      //
+      // The config rewrite above updates BY KEY, so a definition that grows a
+      // NEW node matches nothing and is skipped in silence — the pipeline keeps
+      // its old shape while reporting itself upgraded. That is exactly how
+      // design-change 1.4 delivered a board_diff prompt reading "your branch
+      // already exists" to a board where nothing created it: strictly worse
+      // than not upgrading at all.
+      //
+      // It runs unconditionally for the same reason APEX-81 moved the stranded
+      // gate repair out of the upgrade branch: reconciliation is idempotent, so
+      // making it self-healing beats making it depend on version bookkeeping
+      // being right. An instance whose version was already stamped current by a
+      // partially-applied upgrade would otherwise never converge.
+      //
+      // Missing stages are INSERTED — never re-created, since live cases
+      // reference stage ids. Extra stages an operator added are left alone:
+      // this reconciles what the definition declares, it does not claim
+      // ownership of the whole board.
+      await materializeMissingStagesAndTransitions(db, {
+        companyId: input.companyId,
+        pipelineId: already.id,
+        definition,
+        actor,
+      });
+
       // Re-enter any case that reached a gate node with step_status NULL — runs
       // on EVERY seed (both existing and upgraded paths). rematerializeStrandedGateCases
       // is idempotent: its query targets only cases whose step_status IS DISTINCT FROM

@@ -21,6 +21,9 @@ export const GatewayEntrySchema = z.object({
   description: z.string().nullable(),
   enabled: z.boolean(),
   reachable: z.boolean(),
+  // Auth *kind* only (e.g. "oauth"), never auth material — the UI needs it to
+  // know whether to offer the operator consent flow ("Connect").
+  authType: z.string().nullable(),
   createdAt: z.string().nullable(),
 });
 export type GatewayEntry = z.infer<typeof GatewayEntrySchema>;
@@ -111,3 +114,23 @@ export const GatewayMetricsSchema = z.object({
   error: z.string().nullable(),
 });
 export type GatewayMetrics = z.infer<typeof GatewayMetricsSchema>;
+
+// ── Prompts registry — MCP-protocol prompts surfaced by the gateway's
+// dormant prompt_service.py. These are the entries as they appear in the
+// gateway's database; cockpit owns its own versioning/labels layer on top.
+export const GatewayPromptArgumentSchema = z.object({
+  name: z.string(),
+  description: z.string().nullable(),
+  required: z.boolean(),
+});
+export type GatewayPromptArgument = z.infer<typeof GatewayPromptArgumentSchema>;
+
+export const GatewayPromptEntrySchema = z.object({
+  id: z.string().nullable(),
+  name: z.string(),
+  description: z.string().nullable(),
+  arguments: z.array(GatewayPromptArgumentSchema).default([]),
+  enabled: z.boolean(),
+  createdAt: z.string().nullable(),
+});
+export type GatewayPromptEntry = z.infer<typeof GatewayPromptEntrySchema>;

@@ -879,7 +879,7 @@ export const SECRET_ACCESS_OUTCOMES = [
 ] as const;
 export type SecretAccessOutcome = (typeof SECRET_ACCESS_OUTCOMES)[number];
 
-export const STORAGE_PROVIDERS = ["local_disk", "s3"] as const;
+export const STORAGE_PROVIDERS = ["local_disk", "s3", "gcs"] as const;
 export type StorageProvider = (typeof STORAGE_PROVIDERS)[number];
 
 export const BILLING_TYPES = [

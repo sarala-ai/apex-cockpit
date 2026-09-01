@@ -60,6 +60,13 @@ install() {
     <key>APEX_OTLP_ENDPOINT</key><string>http://localhost:8000</string>
     <key>APEX_GATEWAY_URL</key><string>http://localhost:4444</string>
     <key>APEX_PENPOT_URL</key><string>http://localhost:9001</string>
+    <!-- APEX_PENPOT_EMAIL / APEX_PENPOT_PASSWORD are NOT declared here on
+         purpose: a password in a checked-in plist is a committed credential.
+         The code no longer carries a dev fallback either, so Penpot board
+         previews and MCP token minting fail with a named-env-var error until
+         the operator adds APEX_PENPOT_PASSWORD to the INSTALLED plist
+         (~/Library/LaunchAgents) or exports it into the service environment. -->
+
     <!-- Attribution registry stage: the apex CLI the cockpit shells out to
          resolves its env from APEX_ENV; without it the inventory classifier
          skips the state-DAG registry lookup and the "by registry" column

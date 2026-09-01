@@ -92,6 +92,44 @@ describe("stepExecutor — a run step costs nothing, whichever target it has", (
     expect(runner.calls).toEqual(['workflow:open-pr:{"head":"design/APE-7","draft":true}']);
   });
 
+  // APEX-88: with nothing supplying `identifier`, `renderTemplate` left the
+  // token verbatim (which is right for prose) and the literal string
+  // `design/{{identifier}}` went to GitHub as a branch name. The run
+  // "succeeded" against a branch nobody would ever push, and the failure
+  // surfaced later as "pull request not found" — blaming the work for a
+  // configuration fault. A rendered string bound for a tool is not prose.
+  it("refuses a workflow param that still names a template token, without calling the runner", async () => {
+    const runner = runnerStub();
+    const outcome = await stepExecutor({
+      runner,
+      render: (template) => renderTemplate(template, { title: "unrelated" }),
+    }).execute({
+      kind: "run",
+      key: "merge",
+      config: {
+        target: { type: "workflow", workflow: "design-pr-merge", params: { head: "design/{{identifier}}" } },
+      },
+    });
+
+    expect(outcome.status).toBe("failed");
+    expect(outcome.status === "failed" && outcome.failure.errorType).toBe("step_template_unresolved");
+    expect(outcome.status === "failed" && outcome.failure.message).toContain("{{identifier}}");
+    expect(outcome.status === "failed" && outcome.failure.message).toContain("workflow param 'head'");
+    expect(runner.calls).toEqual([]);
+  });
+
+  it("refuses a tool arg that still names a template token", async () => {
+    const runner = runnerStub();
+    const outcome = await stepExecutor({ runner }).execute({
+      kind: "run",
+      key: "verify",
+      config: { target: { type: "command", tool: "github_repo get-pull-request", args: ["--head", "{{identifier}}"] } },
+    });
+
+    expect(outcome.status === "failed" && outcome.failure.errorType).toBe("step_template_unresolved");
+    expect(runner.calls).toEqual([]);
+  });
+
   it("runs a command target through the same runner, and still opens no agent door", async () => {
     const runner = runnerStub();
     const outcome = await stepExecutor({ runner, agent: forbiddenAgentPort() }).execute({
@@ -182,6 +220,18 @@ describe("stepExecutor — agent", () => {
     key: "author",
     config: { prompt_template: "do the thing", acceptance: "pr_exists:o/r#design/{{identifier}}", budget: null },
   };
+
+  // The acceptance and the prompt render against the same variable map, so an
+  // unresolved token in the acceptance means the instruction is broken too.
+  // Catching it here spends nothing: no park, no comment, no run.
+  it("refuses to commission a run whose acceptance still names a template token", async () => {
+    const { port, calls } = agentPort({ renderAcceptance: (template) => template });
+    const outcome = await stepExecutor({ runner: runnerStub(), agent: port }).execute(spec);
+
+    expect(outcome.status === "failed" && outcome.failure.errorType).toBe("step_template_unresolved");
+    expect(outcome.status === "failed" && outcome.failure.message).toContain("{{identifier}}");
+    expect(calls).toEqual(["resolve"]);
+  });
 
   it("parks, instructs, commissions — in that order — and waits", async () => {
     const { port, calls } = agentPort();

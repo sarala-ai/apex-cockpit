@@ -1,0 +1,13 @@
+# BuildKit is required — the Dockerfile uses COPY --parents. `gcloud builds
+# submit --tag` uses the legacy builder, so build via the docker builder with
+# DOCKER_BUILDKIT=1 instead.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    env: ['DOCKER_BUILDKIT=1']
+    args:
+      - build
+      - -t
+      - asia-south1-docker.pkg.dev/sarala-cicd/sarala-images/apex-cockpit:0.1.0
+      - .
+images:
+  - asia-south1-docker.pkg.dev/sarala-cicd/sarala-images/apex-cockpit:0.1.0

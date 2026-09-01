@@ -184,6 +184,17 @@ const RAW_APEX_AGENT_ROSTER: BuiltInAgentDefinition[] = [
         desiredSkills: ["pr-delivery", "review-response"],
       },
     },
+    // The implementer opens PRs (`pr-delivery`), so `git`/`gh` against a private
+    // repo needs a token. On a local machine `gh`'s keyring already answers, but
+    // a REMOTE sandbox has no ambient auth — the run carries only its per-run
+    // secret. Declared as the operator's own secret REFERENCE (never a value),
+    // NON-required so an already-authenticated local machine isn't blocked while
+    // a remote run resolves the responsible operator's GH_TOKEN at dispatch.
+    // (APEX_GATEWAY_TOKEN is deliberately NOT declared — it is minted per-run for
+    // the responsible operator at the adapterEnv seam, not a stored binding.)
+    defaultAdapterEnv: {
+      GH_TOKEN: { type: "user_secret_ref", key: "GH_TOKEN", required: false },
+    },
     allowedAdapterTypes: ROSTER_ADAPTER_TYPES,
     defaultBudgetMonthlyCents: 0,
     autoProvision: true,
@@ -234,8 +245,19 @@ const RAW_APEX_AGENT_ROSTER: BuiltInAgentDefinition[] = [
     defaultPermissions: { canCreateAgents: false, canCreateSkills: false },
     // REFERENCES, never values. See the module doc's credentials section.
     defaultAdapterEnv: {
-      PENPOT_PASSWORD: userSecret("PENPOT_PASSWORD"),
-      APEX_GATEWAY_TOKEN: userSecret("APEX_GATEWAY_TOKEN"),
+      // Access token, not the account password: apex-core's Penpot provider
+      // prefers `Authorization: Token <token>` and only falls back to
+      // email+password when no token is present. A token is revocable on its
+      // own and rotates without touching the account, so the password path is
+      // deliberately left unbound here.
+      PENPOT_ACCESS_TOKEN: userSecret("PENPOT_ACCESS_TOKEN"),
+      // APEX_GATEWAY_TOKEN is deliberately NOT declared here. It is the
+      // cockpit server's own credential for calling apex-gateway — its only
+      // readers are gateway-client.ts, apex-setup-state.ts and
+      // apex-gateway-observe.ts, all server-side. Nothing in apex/core (the
+      // CLI this agent shells) reads it, so binding it would hand a
+      // cockpit-scoped credential to an agent that has no call for it, and
+      // an unbound declaration blocks dispatch outright.
     },
     allowedAdapterTypes: ROSTER_ADAPTER_TYPES,
     defaultBudgetMonthlyCents: 0,

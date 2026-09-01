@@ -29,11 +29,14 @@ export function apexDesignRoutes(db: Db) {
     assertBoardOrAgent(req);
     const repo = typeof req.query.repo === "string" ? req.query.repo : "";
     const path = typeof req.query.path === "string" ? req.query.path : "";
+    // A DRAFT read passes the pull request's head branch. Omitted = what
+    // shipped on the default branch.
+    const ref = typeof req.query.ref === "string" && req.query.ref ? req.query.ref : undefined;
     if (!repo || !path) {
       res.status(400).json({ error: "repo and path are required" });
       return;
     }
-    const doc = await fetchDesignFile(repo, path);
+    const doc = await fetchDesignFile(repo, path, ref);
     if (!doc) {
       res.status(404).json({ error: "design file not found or not readable" });
       return;
@@ -74,12 +77,13 @@ export function apexDesignRoutes(db: Db) {
     const repo = typeof req.query.repo === "string" ? req.query.repo : "";
     const path = typeof req.query.path === "string" ? req.query.path : "";
     const boardId = typeof req.query.boardId === "string" ? req.query.boardId : "";
+    const ref = typeof req.query.ref === "string" && req.query.ref ? req.query.ref : undefined;
     if (!repo || !path || !isUuid(boardId)) {
       res.status(400).json({ error: "repo, path and a uuid boardId are required" });
       return;
     }
     try {
-      const buf = await fetchDesignArchive(repo, path);
+      const buf = await fetchDesignArchive(repo, path, ref);
       if (!buf) {
         res.status(404).json({ error: "design archive not found" });
         return;

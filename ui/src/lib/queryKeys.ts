@@ -346,4 +346,11 @@ export const queryKeys = {
   adapters: {
     all: ["adapters"] as const,
   },
+  companyPrompts: {
+    list: (companyId: string) => ["company-prompts", companyId] as const,
+    detail: (companyId: string, promptId: string) => ["company-prompts", companyId, promptId] as const,
+    versions: (companyId: string, promptId: string) => ["company-prompts", companyId, promptId, "versions"] as const,
+    labels: (companyId: string, promptId: string) => ["company-prompts", companyId, promptId, "labels"] as const,
+    gateway: (companyId: string) => ["company-prompts", companyId, "gateway"] as const,
+  },
 };

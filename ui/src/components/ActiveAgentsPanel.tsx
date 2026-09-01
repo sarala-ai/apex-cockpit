@@ -93,7 +93,33 @@ export function ActiveAgentsPanel({
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
 
   const runs = liveRuns ?? [];
-  const visibleRuns = useMemo(() => runs.slice(0, cardLimit), [cardLimit, runs]);
+  // One card per AGENT, not per run (APEX-110): an idle agent with four
+  // recent runs is still one agent. Each agent shows its active run if it
+  // has one, else its most recent run, with the fold count surfaced on the
+  // card; full history lives on the agent's Runs tab.
+  const agentGroups = useMemo(() => {
+    const byAgent = new Map<string, LiveRunForIssue[]>();
+    for (const run of runs) {
+      const list = byAgent.get(run.agentId) ?? [];
+      list.push(run);
+      byAgent.set(run.agentId, list);
+    }
+    const groups = [...byAgent.values()].map((agentRuns) => {
+      const sorted = [...agentRuns].sort((a, b) =>
+        (b.createdAt ?? "").localeCompare(a.createdAt ?? ""),
+      );
+      const active = sorted.find(isRunActive);
+      return { run: active ?? sorted[0], earlierRunCount: sorted.length - 1 };
+    });
+    groups.sort((a, b) => {
+      const activeDelta = Number(isRunActive(b.run)) - Number(isRunActive(a.run));
+      if (activeDelta !== 0) return activeDelta;
+      return (b.run.createdAt ?? "").localeCompare(a.run.createdAt ?? "");
+    });
+    return groups;
+  }, [runs]);
+  const visibleGroups = useMemo(() => agentGroups.slice(0, cardLimit), [agentGroups, cardLimit]);
+  const visibleRuns = useMemo(() => visibleGroups.map((group) => group.run), [visibleGroups]);
   const hiddenRunCount = Math.max(0, runs.length - visibleRuns.length);
   const visibleIssueIds = useMemo(
     () => [...new Set(visibleRuns.map((run) => run.issueId).filter((issueId): issueId is string => Boolean(issueId)))],
@@ -138,15 +164,16 @@ export function ActiveAgentsPanel({
         </div>
       ) : (
         <div className={cn("grid grid-cols-1 gap-2 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4", gridClassName)}>
-          {visibleRuns.map((run) => (
+          {visibleGroups.map(({ run, earlierRunCount }) => (
             <AgentRunCard
-              key={run.id}
+              key={run.agentId}
               companyId={companyId}
               run={run}
               issue={run.issueId ? issueById.get(run.issueId) : undefined}
               transcript={transcriptByRun.get(run.id) ?? EMPTY_TRANSCRIPT}
               hasOutput={hasOutputForRun(run.id)}
               isActive={isRunActive(run)}
+              earlierRunCount={earlierRunCount}
               className={cardClassName}
             />
           ))}
@@ -170,6 +197,7 @@ const AgentRunCard = memo(function AgentRunCard({
   transcript,
   hasOutput,
   isActive,
+  earlierRunCount = 0,
   className,
 }: {
   companyId: string;
@@ -178,6 +206,7 @@ const AgentRunCard = memo(function AgentRunCard({
   transcript: TranscriptEntry[];
   hasOutput: boolean;
   isActive: boolean;
+  earlierRunCount?: number;
   className?: string;
 }) {
   return (
@@ -204,6 +233,15 @@ const AgentRunCard = memo(function AgentRunCard({
             </div>
             <div className="mt-2 flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
               <span>{isActive ? "Live now" : run.finishedAt ? `Finished ${relativeTime(run.finishedAt)}` : `Started ${relativeTime(run.createdAt)}`}</span>
+              {earlierRunCount > 0 && (
+                <Link
+                  to={`/agents/${run.agentId}`}
+                  className="rounded-full border border-border/70 px-1.5 py-0.5 text-(length:--text-nano) hover:text-foreground"
+                  title={`${earlierRunCount} earlier run${earlierRunCount === 1 ? "" : "s"} — see the agent's run history`}
+                >
+                  +{earlierRunCount} run{earlierRunCount === 1 ? "" : "s"}
+                </Link>
+              )}
             </div>
           </div>
 

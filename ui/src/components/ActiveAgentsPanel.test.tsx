@@ -232,4 +232,44 @@ describe("ActiveAgentsPanel", () => {
       root.unmount();
     });
   });
+
+  it("renders one card per agent with a fold badge, not one card per run (APEX-110)", async () => {
+    // Four runs by the SAME agent + one by another: the strip must show two
+    // cards (one per agent), the repeat-runner folding its history into a
+    // "+3 runs" badge that links to the agent's page.
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
+      { ...createRun(1), agentId: "agent-de", agentName: "Design Engineer", status: "succeeded", finishedAt: "2026-04-24T12:10:00.000Z" },
+      { ...createRun(2), agentId: "agent-de", agentName: "Design Engineer", status: "succeeded", finishedAt: "2026-04-24T12:11:00.000Z" },
+      { ...createRun(3), agentId: "agent-de", agentName: "Design Engineer", status: "succeeded", finishedAt: "2026-04-24T12:12:00.000Z" },
+      { ...createRun(4), agentId: "agent-de", agentName: "Design Engineer", status: "succeeded", finishedAt: "2026-04-24T12:13:00.000Z" },
+      { ...createRun(5), agentId: "agent-impl", agentName: "Implementer" },
+    ]);
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ActiveAgentsPanel companyId="company-1" />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const designEngineerCards = (container.textContent?.match(/Design Engineer/g) ?? []).length;
+    expect(designEngineerCards).toBe(1);
+    expect(container.textContent).toContain("Implementer");
+
+    const foldBadge = [...container.querySelectorAll("a")].find((anchor) =>
+      anchor.textContent?.includes("+3 runs"),
+    );
+    expect(foldBadge?.getAttribute("href")).toBe("/agents/agent-de");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
 });

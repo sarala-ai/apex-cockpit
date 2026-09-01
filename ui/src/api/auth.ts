@@ -113,6 +113,37 @@ export const authApi = {
     await authPost("/sign-up/email", input);
   },
 
+  // Public discovery of which sign-in providers this instance offers. Minimal by
+  // design (provider types only); drives conditional rendering of social buttons.
+  getAuthConfig: async (): Promise<{ providers: string[] }> => {
+    const res = await fetch("/api/auth/config", {
+      headers: { Accept: "application/json" },
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to load auth config (${res.status})`);
+    }
+    const payload = await res.json().catch(() => null);
+    const raw = (payload as { providers?: unknown } | null)?.providers;
+    const providers = Array.isArray(raw) ? raw.filter((value): value is string => typeof value === "string") : [];
+    return { providers };
+  },
+
+  // Starts better-auth's social (OAuth) flow; returns the provider consent URL
+  // the caller redirects the browser to.
+  signInSocial: async (provider: string, callbackURL = "/"): Promise<{ url: string }> => {
+    // callbackURL is the post-OAuth return destination — this is what keeps
+    // different sign-in sources apart: a plain web login returns to "/" (or the
+    // page it wanted), while the desktop device-approval flow returns to its
+    // /cli-auth/:id approval page (passed as ?next=), so the challenge actually
+    // gets approved instead of dumping the user on the cockpit home.
+    const payload = await authPost("/sign-in/social", { provider, callbackURL });
+    const url = (payload as { url?: unknown } | null)?.url;
+    if (typeof url !== "string" || url.length === 0) {
+      throw new AuthApiError("Social sign-in did not return a redirect URL", 502, payload);
+    }
+    return { url };
+  },
+
   getProfile: async (): Promise<CurrentUserProfile> => {
     const res = await fetch("/api/auth/profile", {
       credentials: "include",

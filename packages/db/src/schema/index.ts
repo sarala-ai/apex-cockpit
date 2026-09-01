@@ -2,7 +2,7 @@ export { companies } from "./companies.js";
 export { orgs } from "./orgs.js";
 export { cloudScopeBindings } from "./cloud_scope_bindings.js";
 export { companyLogos } from "./company_logos.js";
-export { authUsers, authSessions, authAccounts, authVerifications } from "./auth.js";
+export { authUsers, authSessions, authAccounts, authVerifications, authJwks } from "./auth.js";
 export { instanceSettings } from "./instance_settings.js";
 export { cloudUpstreamConnections, cloudUpstreamRuns } from "./cloud_upstreams.js";
 export { instanceUserRoles } from "./instance_user_roles.js";
@@ -14,6 +14,8 @@ export { agentMemberships } from "./agent_memberships.js";
 export { boardApiKeys } from "./board_api_keys.js";
 export { cliAuthChallenges } from "./cli_auth_challenges.js";
 export { companyMemberships } from "./company_memberships.js";
+export { teams } from "./teams.js";
+export { teamMemberships } from "./team_memberships.js";
 export { orgMemberships } from "./org_memberships.js";
 export { companyUserSidebarPreferences } from "./company_user_sidebar_preferences.js";
 export { principalPermissionGrants } from "./principal_permission_grants.js";
@@ -47,6 +49,9 @@ export { issueReferenceMentions } from "./issue_reference_mentions.js";
 export { externalObjects } from "./external_objects.js";
 export { externalObjectMentions } from "./external_object_mentions.js";
 export { issueRelations } from "./issue_relations.js";
+export { lineageEdges } from "./lineage_edges.js";
+export { evalLessons } from "./eval_lessons.js";
+export { evalAmendments } from "./eval_amendments.js";
 export { routines, routineRevisions, routineTriggers, routineRuns } from "./routines.js";
 export { pipelines, pipelineStages, pipelineTransitions } from "./pipelines.js";
 export {
@@ -118,6 +123,11 @@ export {
   companySkillTestRunTemplates,
   companySkillTestRuns,
 } from "./company_skills.js";
+export {
+  companyPrompts,
+  companyPromptVersions,
+  companyPromptLabels,
+} from "./company_prompts.js";
 export { plugins } from "./plugins.js";
 export { pluginConfig } from "./plugin_config.js";
 export { pluginCompanySettings } from "./plugin_company_settings.js";

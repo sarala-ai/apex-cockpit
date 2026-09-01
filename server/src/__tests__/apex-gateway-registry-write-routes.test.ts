@@ -16,7 +16,7 @@ function appWith(client: GatewayClient) {
     (req as unknown as { actor: unknown }).actor = { type: "agent", agentId: "a1" };
     next();
   });
-  app.use(apexGatewayObserveRoutes(client));
+  app.use(apexGatewayObserveRoutes({ client }));
   app.use(errorHandler);
   return app;
 }

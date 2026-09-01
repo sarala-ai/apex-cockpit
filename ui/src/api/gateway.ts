@@ -21,4 +21,10 @@ export const gatewayApi = {
   // new tool entries, not just the new gateway.
   register: (input: GatewayRegisterInput) =>
     api.post<{ id: string | null; name: string }>("/gateway/registry", input),
+  // OAuth (authorization_code) upstreams: consent must be a full-page
+  // navigation — the server route 302s to the provider's consent page — so
+  // authorizeUrl is a URL to navigate to, not a fetch.
+  authorizeUrl: (gatewayId: string) => `/api/gateway/oauth/${gatewayId}/authorize`,
+  fetchTools: (gatewayId: string) =>
+    api.post<{ message: string }>(`/gateway/oauth/${gatewayId}/fetch-tools`, {}),
 };

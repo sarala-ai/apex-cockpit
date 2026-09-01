@@ -12,6 +12,7 @@ import {
 import type { CompanySkillFileInventoryEntry, CompanySkillSharingScope } from "@paperclipai/shared";
 import { agents } from "./agents.js";
 import { companies } from "./companies.js";
+import { heartbeatRuns } from "./heartbeat_runs.js";
 import { issues } from "./issues.js";
 
 export const companySkills = pgTable(
@@ -45,6 +46,12 @@ export const companySkills = pgTable(
     forkCount: integer("fork_count").notNull().default(0),
     currentVersionId: uuid("current_version_id").references((): AnyPgColumn => companySkillVersions.id, { onDelete: "set null" }),
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+    // APEX-146 cohesion invariant: nullable spine + provenance stamps.
+    // All additive; existing rows unaffected (migration 0176).
+    runId: uuid("run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    producerKind: text("producer_kind"),
+    producerId: uuid("producer_id"),
+    producerVersion: text("producer_version"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

@@ -1872,3 +1872,23 @@ export {
   type AddReleaseArtifact,
   type ConfoundQuery,
 } from "./validators/index.js";
+export type {
+  CompanyPromptVariable,
+  CompanyPrompt,
+  CompanyPromptListItem,
+  CompanyPromptDetail,
+  CompanyPromptVersion,
+  CompanyPromptLabel,
+  CompanyPromptCreateRequest,
+  CompanyPromptUpdateRequest,
+  CompanyPromptVersionCreateRequest,
+  CompanyPromptLabelSetRequest,
+  CompanyPromptResolveResult,
+} from "./types/company-prompt.js";
+export {
+  companyPromptVariableSchema,
+  companyPromptCreateSchema,
+  companyPromptUpdateSchema,
+  companyPromptVersionCreateSchema,
+  companyPromptLabelSetSchema,
+} from "./validators/company-prompt.js";

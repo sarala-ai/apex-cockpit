@@ -10,12 +10,16 @@ import { AuthPage } from "./Auth";
 const getSessionMock = vi.hoisted(() => vi.fn());
 const signInEmailMock = vi.hoisted(() => vi.fn());
 const signUpEmailMock = vi.hoisted(() => vi.fn());
+const getAuthConfigMock = vi.hoisted(() => vi.fn());
+const signInSocialMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../api/auth", () => ({
   authApi: {
     getSession: () => getSessionMock(),
     signInEmail: (input: unknown) => signInEmailMock(input),
     signUpEmail: (input: unknown) => signUpEmailMock(input),
+    getAuthConfig: () => getAuthConfigMock(),
+    signInSocial: (provider: string) => signInSocialMock(provider),
   },
 }));
 
@@ -23,6 +27,12 @@ vi.mock("../api/auth", () => ({
 // nothing to these assertions, so stub it out.
 vi.mock("@/components/AsciiArtAnimation", () => ({
   AsciiArtAnimation: () => null,
+}));
+
+// ThemeToggle reads a theme→icon map that these tests don't exercise; stub it so
+// its rendering can't crash the page under test (the auth form is what matters).
+vi.mock("@/components/ThemeToggle", () => ({
+  ThemeToggle: () => null,
 }));
 
 // The auth page renders a ThemeToggle, which reads ThemeContext. The provider
@@ -87,6 +97,9 @@ describe("AuthPage", () => {
     getSessionMock.mockResolvedValue(null);
     signInEmailMock.mockResolvedValue(undefined);
     signUpEmailMock.mockResolvedValue(undefined);
+    // Default: password only, so the pre-existing tests see no social button.
+    getAuthConfigMock.mockResolvedValue({ providers: ["password"] });
+    signInSocialMock.mockResolvedValue({ url: "https://accounts.google.com/o/oauth2/v2/auth?client_id=x" });
   });
 
   afterEach(() => {
@@ -165,6 +178,56 @@ describe("AuthPage", () => {
     expect(nameInput.getAttribute("autocomplete")).toBe("name");
     expect(nameInput.required).toBe(true);
     expect(passwordInput.getAttribute("autocomplete")).toBe("new-password");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows a Google button when the instance offers the google provider, and starts the social flow", async () => {
+    getAuthConfigMock.mockResolvedValue({ providers: ["password", "google"] });
+    const redirectUrl = "https://accounts.google.com/o/oauth2/v2/auth?client_id=apex";
+    signInSocialMock.mockResolvedValue({ url: redirectUrl });
+    // jsdom's window.location.assign is non-configurable, so replace the whole
+    // location with a mock for this test rather than spying on the method.
+    const assignMock = vi.fn();
+    const originalLocation = window.location;
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...originalLocation, assign: assignMock },
+    });
+
+    const root = await mount();
+
+    const googleButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Sign in with Google",
+    );
+    expect(googleButton).not.toBeUndefined();
+
+    await act(async () => {
+      googleButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(signInSocialMock).toHaveBeenCalledWith("google");
+    expect(assignMock).toHaveBeenCalledWith(redirectUrl);
+
+    Object.defineProperty(window, "location", { configurable: true, value: originalLocation });
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("hides the Google button when the provider is not offered", async () => {
+    getAuthConfigMock.mockResolvedValue({ providers: ["password"] });
+
+    const root = await mount();
+
+    const googleButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Sign in with Google",
+    );
+    expect(googleButton).toBeUndefined();
 
     await act(async () => {
       root.unmount();

@@ -446,6 +446,7 @@ export function NewIssueDialog() {
   const descriptionRef = useRef("");
   const [titleHasText, setTitleHasText] = useState(false);
   const [draftHasText, setDraftHasText] = useState(false);
+  const [debouncedTitle, setDebouncedTitle] = useState("");
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("");
   const [assigneeValue, setAssigneeValue] = useState("");
@@ -556,6 +557,17 @@ export function NewIssueDialog() {
     queryFn: () => instanceSettingsApi.getExperimental(),
     enabled: newIssueOpen,
     retry: false,
+  });
+  const intakeCheckEnabled = Boolean(effectiveCompanyId) && newIssueOpen && debouncedTitle.length >= 5;
+  const { data: intakeCheckResult } = useQuery({
+    queryKey: ["intake-check", effectiveCompanyId, debouncedTitle, projectId, newIssueDefaults.goalId ?? ""],
+    queryFn: () => issuesApi.intakeCheck(effectiveCompanyId!, {
+      title: debouncedTitle,
+      projectId: projectId || null,
+      goalId: (newIssueDefaults.goalId as string | null | undefined) ?? null,
+    }),
+    enabled: intakeCheckEnabled,
+    staleTime: 30_000,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const activeProjects = useMemo(
@@ -743,6 +755,7 @@ export function NewIssueDialog() {
     workMode,
   ]);
 
+  const intakeTitleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleTitleChange = useCallback((nextTitle: string) => {
     titleRef.current = nextTitle;
     const nextTitleHasText = nextTitle.trim().length > 0;
@@ -750,6 +763,10 @@ export function NewIssueDialog() {
     setTitleHasText((current) => current === nextTitleHasText ? current : nextTitleHasText);
     setDraftHasText((current) => current === nextDraftHasText ? current : nextDraftHasText);
     queueDraftSave({ title: nextTitle });
+    if (intakeTitleTimerRef.current) clearTimeout(intakeTitleTimerRef.current);
+    intakeTitleTimerRef.current = setTimeout(() => {
+      setDebouncedTitle(nextTitle.trim());
+    }, DEBOUNCE_MS);
   }, [queueDraftSave]);
 
   const handleDescriptionChange = useCallback((nextDescription: string) => {
@@ -961,15 +978,18 @@ export function NewIssueDialog() {
     assigneeModelLane,
   ]);
 
-  // Cleanup timer on unmount
+  // Cleanup timers on unmount
   useEffect(() => {
     return () => {
       if (draftTimer.current) clearTimeout(draftTimer.current);
+      if (intakeTitleTimerRef.current) clearTimeout(intakeTitleTimerRef.current);
     };
   }, []);
 
   function reset() {
     setIssueText("", "");
+    setDebouncedTitle("");
+    if (intakeTitleTimerRef.current) { clearTimeout(intakeTitleTimerRef.current); intakeTitleTimerRef.current = null; }
     setStatus("todo");
     setPriority("");
     setAssigneeValue("");
@@ -2439,6 +2459,38 @@ export function NewIssueDialog() {
             </PopoverContent>
           </Popover>
         </div>
+
+        {intakeCheckResult && (intakeCheckResult.duplicates.length > 0 || intakeCheckResult.goals.length > 0) ? (
+          <div
+            data-testid="new-issue-intake-suggestions"
+            className="mx-4 mb-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground space-y-2"
+          >
+            {intakeCheckResult.duplicates.length > 0 ? (
+              <div>
+                <div className="font-medium text-foreground mb-1">Similar open issues</div>
+                <ul className="space-y-0.5">
+                  {intakeCheckResult.duplicates.map((dup) => (
+                    <li key={dup.id} className="flex items-center gap-1.5">
+                      <span className="shrink-0 font-mono text-muted-foreground">{dup.identifier ?? dup.id.slice(0, 8)}</span>
+                      <span className="truncate">{dup.title}</span>
+                      <span className={cn("shrink-0 capitalize", dup.status === "done" ? "text-green-600" : "text-muted-foreground")}>{dup.status.replace("_", " ")}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {intakeCheckResult.goals.length > 0 && !newIssueDefaults.goalId ? (
+              <div>
+                <div className="font-medium text-foreground mb-1">Suggested goals — set on the ticket after creation</div>
+                <ul className="space-y-0.5">
+                  {intakeCheckResult.goals.slice(0, 3).map((g) => (
+                    <li key={g.id} className="truncate">{g.title}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
 
         {assigneeValue && status === "backlog" ? (
           <div

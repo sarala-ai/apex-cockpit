@@ -26,6 +26,44 @@
 // exit via `shutdownInstrumentation()`, which index.ts awaits in its signal
 // handler before `process.exit`.
 
+// index.ts imports this module FIRST so the bootstrap starts as early as
+// possible — which means `config.ts`, where dotenv is normally loaded, has not
+// run yet. Without loading the env files here the endpoint below is read before
+// `.env` exists in `process.env`, so configuring tracing via `.env` silently
+// does nothing and the feature looks broken while appearing configured.
+// Mirrors config.ts: the instance env file first, then the cwd `.env`, both
+// with `override: false` so a real environment variable always wins.
+loadEnvFilesForInstrumentation();
+function loadEnvFilesForInstrumentation(): void {
+  try {
+    // Required lazily: this file must stay importable in contexts (tests,
+    // tooling) where these modules are unavailable, and a failure to read
+    // optional config must never prevent the server from starting.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { existsSync, realpathSync } = require("node:fs") as typeof import("node:fs");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { resolve } = require("node:path") as typeof import("node:path");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { config: loadDotenv } = require("dotenv") as typeof import("dotenv");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { resolvePaperclipEnvPath } = require("./paths.js") as typeof import("./paths.js");
+
+    const instanceEnvPath = resolvePaperclipEnvPath();
+    if (existsSync(instanceEnvPath)) {
+      loadDotenv({ path: instanceEnvPath, override: false, quiet: true });
+    }
+    const cwdEnvPath = resolve(process.cwd(), ".env");
+    const sameFile = existsSync(cwdEnvPath) && existsSync(instanceEnvPath)
+      ? realpathSync(cwdEnvPath) === realpathSync(instanceEnvPath)
+      : cwdEnvPath === instanceEnvPath;
+    if (!sameFile && existsSync(cwdEnvPath)) {
+      loadDotenv({ path: cwdEnvPath, override: false, quiet: true });
+    }
+  } catch {
+    // Env files are optional; a real OTEL_EXPORTER_OTLP_ENDPOINT still works.
+  }
+}
+
 const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
 
 let sdkShutdown: (() => Promise<void>) | null = null;
@@ -135,7 +173,15 @@ async function bootstrapOtel(endpoint: string): Promise<void> {
 
     const { NodeSDK } = sdkNode;
     const { getNodeAutoInstrumentations } = autoInstr;
-    const { OTLPTraceExporter } = traceExporter;
+    // The exporter modules are imported with @ts-ignore as optional peer deps,
+    // so they arrive untyped. NodeSDK IS typed once the packages are installed
+    // and rejects an `unknown` traceExporter, so give the constructor a shape
+    // here rather than casting at the use site.
+    const { OTLPTraceExporter } = traceExporter as {
+      OTLPTraceExporter: new (options?: { url?: string }) => NonNullable<
+        ConstructorParameters<typeof sdkNode.NodeSDK>[0]
+      >["traceExporter"];
+    };
     const { resourceFromAttributes } = resources;
     const { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } = semconv;
 

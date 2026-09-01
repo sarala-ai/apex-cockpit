@@ -8,6 +8,7 @@
  * Gateway tool-call METRICS are NOT here — they're operational health, so they
  * live under /observe/gateway-metrics in apex-observe.ts instead.
  */
+import type { Request } from "express";
 import { Router } from "express";
 import { GatewayClient } from "../gateway/gateway-client.js";
 import { EvalIngestClient } from "../observe/eval-ingest-client.js";
@@ -40,15 +41,40 @@ function markSeen(id: string): boolean {
   return false;
 }
 
-export function apexGatewayObserveRoutes(client: GatewayClient = new GatewayClient()) {
+export function apexGatewayObserveRoutes(
+  opts: {
+    /** Default/fallback client — used whenever `mintOperatorToken` is absent
+     *  or resolves to null (e.g. agent/board callers with no operator
+     *  session). Defaults to a fresh env-token-backed GatewayClient, same as
+     *  before this option existed. Also the seam tests inject a mock client
+     *  through. */
+    client?: GatewayClient;
+    /**
+     * Mints the signed-in operator's cockpit principal JWT for this
+     * request, so the gateway authorizes from the operator's own claims
+     * instead of the static APEX_GATEWAY_TOKEN. Returns null when there's no
+     * operator session (agent/board callers) — those fall back to `client`.
+     */
+    mintOperatorToken?: (req: Request) => Promise<string | null>;
+  } = {},
+) {
   const router = Router();
   const evalIngestClient = new EvalIngestClient();
+  const defaultClient = opts.client ?? new GatewayClient();
+
+  // Resolves the GatewayClient to use for a single request: the operator's
+  // own token when available, else the shared default/fallback client.
+  async function clientFor(req: Request): Promise<GatewayClient> {
+    const operatorToken = (await opts.mintOperatorToken?.(req)) ?? null;
+    return operatorToken ? new GatewayClient(operatorToken) : defaultClient;
+  }
 
   // GET /gateway/registry — everything callable: upstream gateways, tools,
   // virtual servers. Grouped together since they answer the same question
   // ("what's registered/callable"), distinct from the agent registry below.
   router.get("/gateway/registry", async (req, res) => {
     assertBoardOrAgent(req);
+    const client = await clientFor(req);
     const reachable = await client.reachable();
     if (!reachable) {
       res.json({ gateways: [], tools: [], servers: [], error: "gateway unreachable" });
@@ -87,6 +113,7 @@ export function apexGatewayObserveRoutes(client: GatewayClient = new GatewayClie
       // meaningful from a browser form, so reject before even calling out.
       throw badRequest("STDIO transport requires a command and cannot be registered from the cockpit UI");
     }
+    const client = await clientFor(req);
     const result = await client.registerGateway(input);
     if (result.ok) {
       res.status(201).json({ id: result.id, name: result.name });
@@ -109,11 +136,50 @@ export function apexGatewayObserveRoutes(client: GatewayClient = new GatewayClie
     throw badRequest(result.message);
   });
 
+  // GET /gateway/oauth/:gatewayId/authorize — start the OAuth consent flow for
+  // an authorization_code upstream, as the signed-in operator. The cockpit is
+  // the gateway's only operator surface (its admin UI is gone), so consent has
+  // to ride the cockpit session: mint the operator's principal JWT, ask the
+  // gateway for the provider's authorization URL, and send the browser there.
+  // Full-page navigation, not fetch — the provider's consent page must render.
+  router.get("/gateway/oauth/:gatewayId/authorize", async (req, res) => {
+    assertBoardOrAgent(req);
+    const operatorToken = (await opts.mintOperatorToken?.(req)) ?? null;
+    if (!operatorToken) {
+      // No env-token fallback here on purpose: the provider token that comes
+      // back is stored keyed to the initiating identity's email, and later MCP
+      // calls look it up by the calling user's email — consent minted under a
+      // service identity would never be found for any human operator.
+      throw badRequest("OAuth consent requires a signed-in operator session");
+    }
+    const result = await new GatewayClient(operatorToken).oauthAuthorizeLocation(req.params.gatewayId);
+    if (!result.ok) {
+      throw new HttpError(result.status >= 500 ? 502 : result.status, `apex-gateway refused to start the OAuth flow: ${result.message}`);
+    }
+    res.redirect(result.url);
+  });
+
+  // POST /gateway/oauth/:gatewayId/fetch-tools — sync the upstream's tools
+  // after consent lands. Same operator-only rule as authorize above.
+  router.post("/gateway/oauth/:gatewayId/fetch-tools", async (req, res) => {
+    assertBoardOrAgent(req);
+    const operatorToken = (await opts.mintOperatorToken?.(req)) ?? null;
+    if (!operatorToken) {
+      throw badRequest("OAuth tool sync requires a signed-in operator session");
+    }
+    const result = await new GatewayClient(operatorToken).oauthFetchTools(req.params.gatewayId);
+    if (!result.ok) {
+      throw new HttpError(result.status >= 500 ? 502 : result.status, `tool sync failed: ${result.message}`);
+    }
+    res.json({ message: result.message });
+  });
+
   // GET /gateway/agents — the A2A agent registry, a distinct governance object
   // from the tool/server registry above.
   router.get("/gateway/agents", async (req, res) => {
     assertBoardOrAgent(req);
     try {
+      const client = await clientFor(req);
       res.json(await client.listAgents());
     } catch (e) {
       console.error("[gateway] agents", e);
@@ -130,6 +196,7 @@ export function apexGatewayObserveRoutes(client: GatewayClient = new GatewayClie
     assertBoardOrAgent(req);
     const limit = typeof req.query.limit === "string" ? Number(req.query.limit) || 100 : 100;
     try {
+      const client = await clientFor(req);
       const entries = await client.listAudit(limit);
       res.json(entries);
       for (const entry of entries) {

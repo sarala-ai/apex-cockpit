@@ -17,7 +17,7 @@
  *  - a stored lifecycle already at the shipped version is left untouched and
  *    reported as `existing`, same as before.
  */
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   approvals,
@@ -161,6 +161,91 @@ describeEmbeddedPostgres("reseeding upgrades a pre-APEX-38 lifecycle in place", 
     // The shipped definition must actually be newer than the pre-APEX-38 row,
     // or no live instance ever takes this upgrade path.
     expect(shipped.version).not.toBe("1.0");
+  });
+
+  it("inserts a stage the definition grew, in declared order — structural drift, not just config drift", async () => {
+    // The upgrade loop updates BY KEY, so a definition that grows a NEW node
+    // used to match nothing and be skipped in silence: the pipeline reported
+    // itself upgraded while keeping its old shape. That shipped a design-change
+    // board_diff prompt reading "your branch already exists" to a board where
+    // nothing created it — strictly worse than not upgrading at all.
+    const companyId = await seedCompany();
+    await seedLifecyclePipelines(db, { companyId });
+
+    const [pipeline] = await db
+      .select({ id: pipelines.id })
+      .from(pipelines)
+      .where(and(eq(pipelines.companyId, companyId), eq(pipelines.key, "design-change")));
+    const pipelineId = pipeline!.id;
+
+    const boardDiffIdBefore = (
+      await db
+        .select({ id: pipelineStages.id })
+        .from(pipelineStages)
+        .where(and(eq(pipelineStages.pipelineId, pipelineId), eq(pipelineStages.key, "board_diff")))
+    )[0]!.id;
+
+    // Rewind to a board that never had the deterministic branch step.
+    await db
+      .delete(pipelineStages)
+      .where(and(eq(pipelineStages.pipelineId, pipelineId), eq(pipelineStages.key, "create_branch")));
+    await db.update(pipelines).set({ version: "1.2" }).where(eq(pipelines.id, pipelineId));
+
+    const result = await seedLifecyclePipelines(db, { companyId });
+    expect(result.upgraded).toContain("design-change");
+
+    const stages = await db
+      .select({ id: pipelineStages.id, key: pipelineStages.key, position: pipelineStages.position })
+      .from(pipelineStages)
+      .where(eq(pipelineStages.pipelineId, pipelineId))
+      .orderBy(asc(pipelineStages.position));
+    const keys = stages.map((s) => s.key);
+
+    expect(keys).toContain("create_branch");
+    // Declared order preserved: the branch is created BEFORE the agent runs,
+    // which is the entire point — the agent is handed a branch, not asked for one.
+    expect(keys.indexOf("create_branch")).toBeLessThan(keys.indexOf("board_diff"));
+
+    // Existing stage rows keep their ids; live cases reference them.
+    const boardDiffIdAfter = stages.find((s) => s.key === "board_diff")!.id;
+    expect(boardDiffIdAfter).toBe(boardDiffIdBefore);
+
+    // And the edge into the agent stage exists, or the case can never advance.
+    const idByKey = Object.fromEntries(stages.map((s) => [s.key, s.id]));
+    const edges = await db
+      .select({ from: pipelineTransitions.fromStageId, to: pipelineTransitions.toStageId })
+      .from(pipelineTransitions)
+      .where(eq(pipelineTransitions.pipelineId, pipelineId));
+    expect(edges).toContainEqual({ from: idByKey.create_branch, to: idByKey.board_diff });
+  });
+
+  it("is idempotent: a second upgrade neither duplicates the stage nor its transition", async () => {
+    const companyId = await seedCompany();
+    await seedLifecyclePipelines(db, { companyId });
+    const [pipeline] = await db
+      .select({ id: pipelines.id })
+      .from(pipelines)
+      .where(and(eq(pipelines.companyId, companyId), eq(pipelines.key, "design-change")));
+    const pipelineId = pipeline!.id;
+
+    // NOTE: the version is left CURRENT on purpose. Reconciliation must be
+    // self-healing rather than conditional on version bookkeeping — an
+    // instance whose row was stamped current by a partially-applied upgrade
+    // (which is exactly what happened to design-change 1.4) would otherwise
+    // never converge, because it no longer qualifies for the upgrade path.
+    await db
+      .delete(pipelineStages)
+      .where(and(eq(pipelineStages.pipelineId, pipelineId), eq(pipelineStages.key, "create_branch")));
+
+    const first = await seedLifecyclePipelines(db, { companyId });
+    expect(first.existing).toContain("design-change");
+    await seedLifecyclePipelines(db, { companyId });
+
+    const created = await db
+      .select({ id: pipelineStages.id })
+      .from(pipelineStages)
+      .where(and(eq(pipelineStages.pipelineId, pipelineId), eq(pipelineStages.key, "create_branch")));
+    expect(created).toHaveLength(1);
   });
 
   it("preserves stage IDs across the upgrade — live cases reference them", async () => {

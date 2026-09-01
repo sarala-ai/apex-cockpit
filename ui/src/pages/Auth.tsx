@@ -32,6 +32,25 @@ export function AuthPage() {
     retry: false,
   });
 
+  // Which sign-in providers this instance offers (public discovery). A failed
+  // fetch simply leaves social buttons hidden — email/password always works.
+  const { data: authConfig } = useQuery({
+    queryKey: ["auth", "config"],
+    queryFn: () => authApi.getAuthConfig(),
+    retry: false,
+  });
+  const googleEnabled = authConfig?.providers.includes("google") ?? false;
+
+  const socialMutation = useMutation({
+    mutationFn: (provider: string) => authApi.signInSocial(provider, nextPath),
+    onSuccess: ({ url }) => {
+      window.location.assign(url);
+    },
+    onError: (err) => {
+      setError(err instanceof Error ? err.message : "Google sign-in failed");
+    },
+  });
+
   useEffect(() => {
     if (session) {
       navigate(nextPath, { replace: true });
@@ -96,8 +115,33 @@ export function AuthPage() {
               : "Create an account for this instance. Email confirmation is not required in v1."}
           </p>
 
+          {googleEnabled && (
+            <div className="mt-6">
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                disabled={socialMutation.isPending}
+                onClick={() => {
+                  setError(null);
+                  socialMutation.mutate("google");
+                }}
+              >
+                {socialMutation.isPending ? "Redirecting…" : "Sign in with Google"}
+              </Button>
+              <div className="relative my-4">
+                <div className="absolute inset-0 flex items-center" aria-hidden="true">
+                  <span className="w-full border-t border-border" />
+                </div>
+                <div className="relative flex justify-center text-xs">
+                  <span className="bg-background px-2 text-muted-foreground">or</span>
+                </div>
+              </div>
+            </div>
+          )}
+
           <form
-            className="mt-6 space-y-4"
+            className={googleEnabled ? "space-y-4" : "mt-6 space-y-4"}
             method="post"
             action={mode === "sign_up" ? "/api/auth/sign-up/email" : "/api/auth/sign-in/email"}
             onSubmit={(event) => {

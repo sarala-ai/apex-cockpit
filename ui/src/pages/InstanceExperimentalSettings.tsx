@@ -33,7 +33,9 @@ function formatRecoveryState(state: string) {
   return state.replace(/_/g, " ");
 }
 
-// PAP-11233: keep Conference Room code intact, but hide the user-facing opt-in for now.
+// PAP-11233 (upstream) hid this opt-in while keeping the Conference Room code.
+// Re-exposed in this fork: we drive the cockpit's development from the cockpit,
+// and the only other route in is a hand-written API call.
 const SHOW_CONFERENCE_ROOM_EXPERIMENTAL_SETTING = false;
 
 function RecoveryPreviewDialog({
@@ -248,7 +250,6 @@ export function InstanceExperimentalSettings() {
   const enableCloudSync = experimentalQuery.data?.enableCloudSync === true;
   const enableExternalObjects = experimentalQuery.data?.enableExternalObjects === true;
   const enableBuiltInAgents = experimentalQuery.data?.enableBuiltInAgents === true;
-  const enableGoalsSidebarLink = experimentalQuery.data?.enableGoalsSidebarLink === true;
   const enableServerInfoDebugView = experimentalQuery.data?.enableServerInfoDebugView === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
   const enableIssueGraphLivenessAutoRecovery =
@@ -417,23 +418,6 @@ export function InstanceExperimentalSettings() {
             onCheckedChange={() => toggleMutation.mutate({ enableExternalObjects: !enableExternalObjects })}
             disabled={toggleMutation.isPending}
             aria-label="Toggle external objects experimental setting"
-          />
-        </div>
-      </Card>
-
-      <Card className="block p-5">
-        <div className="flex items-start justify-between gap-4">
-          <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Goals Sidebar Link</h2>
-            <p className="max-w-2xl text-sm text-muted-foreground">
-              Restore the Goals item in the main sidebar while the goals surface is being evaluated.
-            </p>
-          </div>
-          <ToggleSwitch
-            checked={enableGoalsSidebarLink}
-            onCheckedChange={() => toggleMutation.mutate({ enableGoalsSidebarLink: !enableGoalsSidebarLink })}
-            disabled={toggleMutation.isPending}
-            aria-label="Toggle goals sidebar link experimental setting"
           />
         </div>
       </Card>

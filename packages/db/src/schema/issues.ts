@@ -58,7 +58,11 @@ export const issues = pgTable(
     identifier: text("identifier"),
     originKind: text("origin_kind").notNull().default("manual"),
     originId: text("origin_id"),
-    originRunId: text("origin_run_id"),
+    // APEX-146: promoted from text to uuid (migration 0177). No FK — value is
+    // polymorphic: heartbeat_runs.id for heartbeat_run origins, routine_runs.id
+    // for routine_execution origins. Use originRunKind as the discriminator.
+    originRunId: uuid("origin_run_id"),
+    originRunKind: text("origin_run_kind"),
     originFingerprint: text("origin_fingerprint").notNull().default("default"),
     requestDepth: integer("request_depth").notNull().default(0),
     billingCode: text("billing_code"),

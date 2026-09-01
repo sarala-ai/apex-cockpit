@@ -34,8 +34,24 @@ async function loadCurrentUserProfile(db: Db, userId: string) {
   });
 }
 
-export function authRoutes(db: Db) {
+export interface AuthRoutesOptions {
+  googleAuthEnabled: boolean;
+}
+
+export function authRoutes(db: Db, opts: AuthRoutesOptions) {
   const router = Router();
+
+  // Public pre-auth discovery — deliberately MINIMAL. It exposes only which
+  // sign-in provider types this instance offers, so the desktop can render the
+  // right sign-in control. Nothing else: no deployment mode, no bootstrap/empty
+  // state, no org metadata (all of which would leak instance posture to an
+  // unauthenticated caller). Org/company/team context comes AFTER auth from the
+  // principal (get-session / the principal JWT).
+  router.get("/config", (_req, res) => {
+    const providers: string[] = ["password"];
+    if (opts.googleAuthEnabled) providers.push("google");
+    res.json({ providers });
+  });
 
   router.get("/get-session", async (req, res) => {
     if (req.actor.type !== "board" || !req.actor.userId) {

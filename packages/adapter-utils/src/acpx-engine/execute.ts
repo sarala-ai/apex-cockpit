@@ -1027,6 +1027,16 @@ async function buildRuntime(input: {
   for (const [key, value] of Object.entries(otelVars)) {
     env[key] = value;
   }
+  // Claude Code emits no telemetry unless CLAUDE_CODE_ENABLE_TELEMETRY is set,
+  // so without this the endpoint + spine injected above are decorative and the
+  // emitter side stays silently dark (APEX-73). It is a Claude-specific runtime
+  // switch, so it is set here — bound to the claude engine, at the launch site,
+  // like ANTHROPIC_MODEL below — rather than inside the runtime-agnostic spine
+  // helper. Gated on otelVars being non-empty so telemetry-off changes nothing,
+  // and an explicitly configured value always wins.
+  if (acpxAgent === "claude" && otelVars.OTEL_EXPORTER_OTLP_ENDPOINT && !env.CLAUDE_CODE_ENABLE_TELEMETRY) {
+    env.CLAUDE_CODE_ENABLE_TELEMETRY = "1";
+  }
   // For the claude agent, set model via ANTHROPIC_MODEL at startup rather than
   // via session/set_config_option — the ACP server's set_config_option handler
   // validates the value against its internal available-models list and rejects

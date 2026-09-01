@@ -74,6 +74,15 @@ export const storageS3ConfigSchema = z.object({
   forcePathStyle: z.boolean().default(false),
 });
 
+// Native GCS provider: authenticates via Application Default Credentials
+// (Workload Identity on Cloud Run, `gcloud auth application-default` locally) —
+// no static keys/HMAC. projectId is optional; ADC infers it.
+export const storageGcsConfigSchema = z.object({
+  bucket: z.string().min(1).default("paperclip"),
+  prefix: z.string().default(""),
+  projectId: z.string().optional(),
+});
+
 export const storageConfigSchema = z.object({
   provider: z.enum(STORAGE_PROVIDERS).default("local_disk"),
   localDisk: storageLocalDiskConfigSchema.default({
@@ -84,6 +93,10 @@ export const storageConfigSchema = z.object({
     region: "us-east-1",
     prefix: "",
     forcePathStyle: false,
+  }),
+  gcs: storageGcsConfigSchema.default({
+    bucket: "paperclip",
+    prefix: "",
   }),
 });
 
@@ -125,6 +138,10 @@ export const paperclipConfigSchema = z
         region: "us-east-1",
         prefix: "",
         forcePathStyle: false,
+      },
+      gcs: {
+        bucket: "paperclip",
+        prefix: "",
       },
     }),
     secrets: secretsConfigSchema.default({

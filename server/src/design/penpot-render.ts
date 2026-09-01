@@ -3,19 +3,21 @@
  * instance and renders a single board (frame) to PNG via its exporter service.
  *
  * Powers the Design tab's visual previews: the committed .penpot export tells
- * us the file/page/board ids; the live instance renders the pixels. Dev-only
- * credentials default to the compose "design" profile's standing account
- * (documented in docker-compose.yml); override via env for anything else.
+ * us the file/page/board ids; the live instance renders the pixels. Credentials
+ * come from APEX_PENPOT_* (see ./penpot-config.ts). Reading prefers
+ * APEX_PENPOT_ACCESS_TOKEN and falls back to the password; either way there is
+ * no dev fallback, so a misconfigured instance fails loudly instead of
+ * silently authenticating as the compose dev account.
  *
  * Format notes (verified against Penpot 2.16 by probing, same as the CLI
  * resource server): /api/export wants transit+json with keyword enums
  * (~:export-shapes, ~:png) and uuid-tagged ids (~u<uuid>); the response
- * carries a "~#uri" asset URL that must be fetched with the auth cookie.
+ * carries a "~#uri" asset URL that must be fetched with the same auth headers.
  */
 
-const BASE = (process.env.APEX_PENPOT_URL ?? "http://localhost:9001").replace(/\/$/, "");
-const EMAIL = process.env.APEX_PENPOT_EMAIL ?? "apex-dev@penpot.local";
-const PASSWORD = process.env.APEX_PENPOT_PASSWORD ?? "apex-penpot-dev-2026";
+import { PENPOT_ENV_KEYS, penpotAccessToken, penpotBaseUrl, penpotCredentials } from "./penpot-config.js";
+
+const BASE = penpotBaseUrl();
 
 const CACHE_TTL_MS = 5 * 60_000;
 const CACHE_MAX = 200;
@@ -27,7 +29,22 @@ interface CacheEntry {
 
 const cache = new Map<string, CacheEntry>();
 
-let session: { cookie: string; profileId: string } | null = null;
+/**
+ * How we authenticate to Penpot for READING. `headers` is spread onto every
+ * request rather than a bare cookie, because the two credentials present
+ * themselves differently: a token as `Authorization: Token …`, a password
+ * session as `Cookie: …`.
+ *
+ * The token path is preferred and the password is the fallback. Rendering is
+ * entirely data-plane work, and a token covers all of it — only minting a new
+ * token requires the password (see penpot-config.ts for the measured
+ * boundary). Keeping the password out of the read path means the standing
+ * credential on this server is revocable on its own and rotates without
+ * touching the account.
+ */
+type PenpotAuth = { headers: Record<string, string>; profileId: string };
+
+let session: PenpotAuth | null = null;
 
 const kw = (s: string) => `~:${s}`;
 const uid = (s: string) => `~u${s}`;
@@ -38,11 +55,31 @@ function tmap(...kv: unknown[]): unknown[] {
   return out;
 }
 
-async function login(): Promise<{ cookie: string; profileId: string }> {
+/** Token auth: no login round-trip; `get-profile` only resolves the id. */
+async function tokenAuth(token: string): Promise<PenpotAuth> {
+  const headers = { Authorization: `Token ${token}` };
+  const res = await fetch(`${BASE}/api/rpc/command/get-profile`, {
+    method: "POST",
+    headers: { ...headers, "Content-Type": "application/json", Accept: "application/json" },
+    body: "{}",
+  });
+  if (!res.ok) {
+    throw new Error(
+      `penpot token auth failed: ${res.status} — check ${PENPOT_ENV_KEYS.accessToken}; ` +
+        `the token may have been revoked at ${BASE}`,
+    );
+  }
+  const profile = (await res.json()) as { id?: string };
+  if (!profile.id) throw new Error("penpot get-profile returned no profile id");
+  return { headers, profileId: profile.id };
+}
+
+async function login(): Promise<PenpotAuth> {
+  const { email, password } = penpotCredentials();
   const res = await fetch(`${BASE}/api/rpc/command/login-with-password`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ email: EMAIL, password: PASSWORD }),
+    body: JSON.stringify({ email, password }),
   });
   if (!res.ok) throw new Error(`penpot login failed: ${res.status}`);
   const setCookie = res.headers.get("set-cookie");
@@ -50,12 +87,13 @@ async function login(): Promise<{ cookie: string; profileId: string }> {
   if (!cookie) throw new Error("penpot login returned no session cookie");
   const profile = (await res.json()) as { id?: string };
   if (!profile.id) throw new Error("penpot login returned no profile id");
-  return { cookie, profileId: profile.id };
+  return { headers: { Cookie: cookie }, profileId: profile.id };
 }
 
-async function ensureSession(): Promise<{ cookie: string; profileId: string }> {
+async function ensureSession(): Promise<PenpotAuth> {
   if (session) return session;
-  session = await login();
+  const token = penpotAccessToken();
+  session = token ? await tokenAuth(token) : await login();
   return session;
 }
 
@@ -66,7 +104,7 @@ export function isUuid(s: string): boolean {
 }
 
 async function renderOnce(
-  auth: { cookie: string; profileId: string },
+  auth: PenpotAuth,
   fileId: string,
   pageId: string,
   objectId: string,
@@ -89,7 +127,7 @@ async function renderOnce(
   );
   const res = await fetch(`${BASE}/api/export`, {
     method: "POST",
-    headers: { "Content-Type": "application/transit+json", Cookie: auth.cookie },
+    headers: { "Content-Type": "application/transit+json", ...auth.headers },
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error(`penpot export failed: ${res.status} ${(await res.text()).slice(0, 200)}`);
@@ -97,7 +135,7 @@ async function renderOnce(
   const m = /"~#uri":"([^"]+)"/.exec(text);
   if (!m) throw new Error("penpot export returned no asset uri");
   const assetPath = m[1].replace(BASE, "").replace(/^https?:\/\/[^/]+/, "");
-  const img = await fetch(`${BASE}${assetPath}`, { headers: { Cookie: auth.cookie } });
+  const img = await fetch(`${BASE}${assetPath}`, { headers: auth.headers });
   if (!img.ok) throw new Error(`penpot asset fetch failed: ${img.status}`);
   return Buffer.from(await img.arrayBuffer());
 }
@@ -127,7 +165,8 @@ export async function renderBoard(
   try {
     buf = await renderOnce(auth, fileId, pageId, objectId, scale, format);
   } catch (e) {
-    // One retry with a fresh session — the standing cookie may have expired.
+    // One retry with fresh auth — a cookie may have expired, or a token
+    // may have been revoked and replaced by a rotation.
     session = null;
     auth = await ensureSession();
     buf = await renderOnce(auth, fileId, pageId, objectId, scale, format);

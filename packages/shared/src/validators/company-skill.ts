@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { CompanySkill } from "../types/company-skill.js";
 
 export const companySkillSourceTypeSchema = z.enum(["local_path", "github", "url", "catalog", "skills_sh"]);
 export const companySkillTrustLevelSchema = z.enum(["markdown_only", "assets", "scripts_executables"]);
@@ -46,9 +47,17 @@ export const companySkillSchema = z.object({
   forkCount: z.number().int().nonnegative(),
   currentVersionId: z.string().uuid().nullable(),
   metadata: z.record(z.string(), z.unknown()).nullable(),
+  // APEX-146 cohesion invariant: nullable spine + provenance stamps.
+  runId: z.string().uuid().nullable(),
+  producerKind: z.string().nullable(),
+  producerId: z.string().uuid().nullable(),
+  producerVersion: z.string().nullable(),
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
 });
+
+// Compile-time drift guard: schema must remain a subtype of the CompanySkill interface.
+declare const _companySkillSchemaBridge: z.infer<typeof companySkillSchema> extends CompanySkill ? true : never;
 
 export const companySkillListItemSchema = companySkillSchema.extend({
   attachedAgentCount: z.number().int().nonnegative(),

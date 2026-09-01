@@ -170,6 +170,19 @@ export function Gateway() {
     queryFn: () => gatewayApi.audit(100),
     refetchInterval: 15_000,
   });
+  const queryClient = useQueryClient();
+  const syncTools = useMutation({
+    mutationFn: (gatewayId: string) => gatewayApi.fetchTools(gatewayId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["gateway", "registry"] });
+    },
+  });
+  const syncError =
+    syncTools.error instanceof ApiError
+      ? syncTools.error.message
+      : syncTools.error
+        ? "Tool sync failed."
+        : null;
 
   const reg = registry.data;
 
@@ -187,6 +200,13 @@ export function Gateway() {
         <Card>
           <CardContent className="py-3 text-xs text-rose-600 dark:text-rose-400">
             {reg.error}
+          </CardContent>
+        </Card>
+      )}
+      {syncError && (
+        <Card>
+          <CardContent className="py-3 text-xs text-rose-600 dark:text-rose-400">
+            {syncError}
           </CardContent>
         </Card>
       )}
@@ -231,6 +251,33 @@ export function Gateway() {
                         <span className="min-w-0 flex-1 truncate font-medium" title={g.name}>
                           {g.name}
                         </span>
+                        {g.authType === "oauth" && g.id && (
+                          <>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-6 px-2 text-xs"
+                              onClick={() => {
+                                window.location.href = gatewayApi.authorizeUrl(g.id!);
+                              }}
+                            >
+                              Connect
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 px-2 text-xs"
+                              disabled={syncTools.isPending}
+                              onClick={() => syncTools.mutate(g.id!)}
+                            >
+                              {syncTools.isPending && syncTools.variables === g.id ? (
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                              ) : (
+                                "Sync tools"
+                              )}
+                            </Button>
+                          </>
+                        )}
                         <EnabledBadge enabled={g.enabled} reachable={g.reachable} />
                       </li>
                     ))}

@@ -17,6 +17,8 @@ import { type Db, orgs, companies, cloudScopeBindings, orgMemberships } from "@p
 import { checkAuth } from "../apex/setup/cloud.js";
 import { run } from "../apex/exec.js";
 import { assertBoardOrAgent } from "./authz.js";
+import { readModelAccessState, type ModelAccessState } from "../apex/model-access/index.js";
+import { GatewayClient } from "../gateway/gateway-client.js";
 
 type Health = "ok" | "missing" | "expired";
 
@@ -46,6 +48,11 @@ export interface SetupState {
   oauthClient: { configured: boolean; note?: string };
   gateway: { reachable: boolean };
   mcpServers: { registered: string[] };
+  /** Model access — how model calls are paid for and routed. Covers both
+   *  provider detection (is claude logged in? is OpenRouter configured?) and
+   *  generated artifact presence (is the subscription bridge registered in the
+   *  gateway? are the apex-* aliases seeded?). */
+  models: ModelAccessState;
 }
 
 export interface SetupStateProbes {
@@ -58,6 +65,7 @@ export interface SetupStateProbes {
   oauthClient: () => Promise<SetupState["oauthClient"]>;
   gateway: () => Promise<SetupState["gateway"]>;
   mcpServers: (gatewayReachable: boolean) => Promise<SetupState["mcpServers"]>;
+  models: () => Promise<SetupState["models"]>;
 }
 
 const gatewayUrl = (): string =>
@@ -72,6 +80,8 @@ async function timedFetch(url: string, init?: RequestInit, timeoutMs = 3000): Pr
     clearTimeout(t);
   }
 }
+
+const _sharedGatewayClient = new GatewayClient();
 
 /** Real probes over the live DB / gcloud / gateway. Each is self-contained. */
 export function defaultProbes(db: Db): SetupStateProbes {
@@ -164,6 +174,9 @@ export function defaultProbes(db: Db): SetupStateProbes {
         .filter((n): n is string => typeof n === "string");
       return { registered };
     },
+    async models() {
+      return readModelAccessState(_sharedGatewayClient);
+    },
   };
 }
 
@@ -199,11 +212,18 @@ export function apexSetupStateRoutes(db: Db, overrides?: Partial<SetupStateProbe
     ]);
     // companies + membership are org-scoped once the org is known; mcpServers
     // depends on gateway. Membership resolves the signed-in actor's row.
+    // models probe runs in parallel with the secondary probes.
     const resolvedOrgId = orgId ?? org.id;
-    const [companiesState, mcpServers, membership] = await Promise.all([
+    const defaultModelsState: ModelAccessState = {
+      claude: { mode: "none", installed: false, subscriptionProviderRegistered: false, apiKeyProviderRegistered: false },
+      openrouter: { configured: false },
+      aliasesRegistered: [],
+    };
+    const [companiesState, mcpServers, membership, models] = await Promise.all([
       safe(() => probes.companies(resolvedOrgId), { count: 0, ids: [] }),
       safe(() => probes.mcpServers(gateway.reachable), { registered: [] }),
       safe(() => probes.membership(req.actor?.userId ?? null, resolvedOrgId), { present: false }),
+      safe(() => probes.models(), defaultModelsState),
     ]);
 
     const state: SetupState = {
@@ -216,6 +236,7 @@ export function apexSetupStateRoutes(db: Db, overrides?: Partial<SetupStateProbe
       oauthClient,
       gateway,
       mcpServers,
+      models,
     };
     res.json(state);
   });

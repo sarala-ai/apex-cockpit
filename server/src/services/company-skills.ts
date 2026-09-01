@@ -401,6 +401,10 @@ function selectCompanySkillColumns() {
     forkCount: companySkills.forkCount,
     currentVersionId: companySkills.currentVersionId,
     metadata: companySkills.metadata,
+    runId: companySkills.runId,
+    producerKind: companySkills.producerKind,
+    producerId: companySkills.producerId,
+    producerVersion: companySkills.producerVersion,
     createdAt: companySkills.createdAt,
     updatedAt: companySkills.updatedAt,
   };
@@ -1466,6 +1470,10 @@ function toCompanySkill(row: CompanySkillRow): CompanySkill {
     forkCount: Math.max(0, row.forkCount ?? 0),
     currentVersionId: row.currentVersionId ?? null,
     metadata: isPlainRecord(row.metadata) ? row.metadata : null,
+    runId: row.runId ?? null,
+    producerKind: row.producerKind ?? null,
+    producerId: row.producerId ?? null,
+    producerVersion: row.producerVersion ?? null,
   };
 }
 
@@ -4564,6 +4572,10 @@ export function companySkillService(db: Db) {
         catalogId: catalogSkill.id,
         originHash: catalogSkill.contentHash,
       },
+      runId: null,
+      producerKind: null,
+      producerId: null,
+      producerVersion: null,
       createdAt: new Date(),
       updatedAt: new Date(),
     });

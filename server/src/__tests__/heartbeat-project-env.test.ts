@@ -712,3 +712,106 @@ describe("applyRunScopedMentionedSkillKeys", () => {
     });
   });
 });
+
+describe("resolveExecutionRunAdapterConfig operator-attributed gateway token", () => {
+  function makeSecretsSvc(agentEnv: Record<string, unknown> = {}) {
+    return {
+      resolveAdapterConfigForRuntime: vi.fn().mockResolvedValue({
+        config: { env: { ...agentEnv } },
+        secretKeys: new Set<string>(),
+        manifest: [],
+      }),
+      resolveEnvBindings: vi.fn().mockResolvedValue({
+        env: {},
+        secretKeys: new Set<string>(),
+        manifest: [],
+      }),
+    } as any;
+  }
+
+  it("mints an operator token and injects APEX_GATEWAY_TOKEN + URL for a claude run", async () => {
+    const mintGatewayToken = vi.fn().mockResolvedValue("minted.principal.jwt");
+    const result = await resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      adapterType: "claude_local",
+      responsibleUserId: "operator-9",
+      executionRunConfig: { env: {} },
+      projectEnv: null,
+      secretsSvc: makeSecretsSvc(),
+      mintGatewayToken,
+      gatewayUrl: "https://gateway.example",
+    });
+
+    expect(mintGatewayToken).toHaveBeenCalledWith("operator-9");
+    const env = result.resolvedConfig.env as Record<string, unknown>;
+    expect(env.APEX_GATEWAY_TOKEN).toBe("minted.principal.jwt");
+    expect(env.APEX_GATEWAY_URL).toBe("https://gateway.example");
+    // The minted token must be redacted like any other secret.
+    expect(result.secretKeys.has("APEX_GATEWAY_TOKEN")).toBe(true);
+  });
+
+  it("does not mint when no gateway is configured", async () => {
+    const mintGatewayToken = vi.fn().mockResolvedValue("minted.principal.jwt");
+    const result = await resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      responsibleUserId: "operator-9",
+      executionRunConfig: { env: {} },
+      projectEnv: null,
+      secretsSvc: makeSecretsSvc(),
+      mintGatewayToken,
+      gatewayUrl: null,
+    });
+    expect(mintGatewayToken).not.toHaveBeenCalled();
+    expect((result.resolvedConfig.env as Record<string, unknown>).APEX_GATEWAY_TOKEN).toBeUndefined();
+  });
+
+  it("does not mint when the run has no responsible operator (no one to attribute to)", async () => {
+    const mintGatewayToken = vi.fn().mockResolvedValue("minted.principal.jwt");
+    const result = await resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      responsibleUserId: null,
+      executionRunConfig: { env: {} },
+      projectEnv: null,
+      secretsSvc: makeSecretsSvc(),
+      mintGatewayToken,
+      gatewayUrl: "https://gateway.example",
+    });
+    expect(mintGatewayToken).not.toHaveBeenCalled();
+    expect((result.resolvedConfig.env as Record<string, unknown>).APEX_GATEWAY_TOKEN).toBeUndefined();
+  });
+
+  it("never overwrites an explicit APEX_GATEWAY_TOKEN binding (backward-compat)", async () => {
+    const mintGatewayToken = vi.fn().mockResolvedValue("minted.principal.jwt");
+    const result = await resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      responsibleUserId: "operator-9",
+      executionRunConfig: { env: {} },
+      projectEnv: null,
+      secretsSvc: makeSecretsSvc({ APEX_GATEWAY_TOKEN: "explicit-bound-token" }),
+      mintGatewayToken,
+      gatewayUrl: "https://gateway.example",
+    });
+    expect(mintGatewayToken).not.toHaveBeenCalled();
+    expect((result.resolvedConfig.env as Record<string, unknown>).APEX_GATEWAY_TOKEN).toBe("explicit-bound-token");
+  });
+
+  it("does not inject a gateway token for non-claude adapters", async () => {
+    const mintGatewayToken = vi.fn().mockResolvedValue("minted.principal.jwt");
+    const result = await resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      adapterType: "opencode_local",
+      responsibleUserId: "operator-9",
+      executionRunConfig: { env: {} },
+      projectEnv: null,
+      secretsSvc: makeSecretsSvc(),
+      mintGatewayToken,
+      gatewayUrl: "https://gateway.example",
+    });
+    expect(mintGatewayToken).not.toHaveBeenCalled();
+    expect((result.resolvedConfig.env as Record<string, unknown>).APEX_GATEWAY_TOKEN).toBeUndefined();
+  });
+});

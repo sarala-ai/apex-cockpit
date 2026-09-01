@@ -44,8 +44,6 @@ const STREAMLINED_TOGGLE_SELECTOR =
   'button[aria-label="Toggle streamlined left navigation experimental setting"]';
 const TASK_WATCHDOGS_TOGGLE_SELECTOR =
   'button[aria-label="Toggle task watchdogs experimental setting"]';
-const GOALS_SIDEBAR_LINK_TOGGLE_SELECTOR =
-  'button[aria-label="Toggle goals sidebar link experimental setting"]';
 const SERVER_INFO_TOGGLE_SELECTOR =
   'button[aria-label="Toggle server info debug view experimental setting"]';
 const BUILT_IN_AGENTS_TOGGLE_SELECTOR =
@@ -223,26 +221,10 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     });
   });
 
-  it("renders and patches the Goals Sidebar Link experimental toggle", async () => {
+  it("no longer renders the Goals Sidebar Link toggle (Goals is now always in the sidebar)", async () => {
     await renderPage();
 
-    expect(container.textContent).toContain("Goals Sidebar Link");
-    expect(container.textContent).toContain(
-      "Restore the Goals item in the main sidebar while the goals surface is being evaluated.",
-    );
-
-    const toggle = container.querySelector<HTMLButtonElement>(GOALS_SIDEBAR_LINK_TOGGLE_SELECTOR);
-    expect(toggle?.getAttribute("aria-checked")).toBe("false");
-
-    await act(async () => {
-      toggle?.click();
-    });
-    await flushReact();
-
-    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
-      enableGoalsSidebarLink: true,
-    });
-    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+    expect(container.textContent).not.toContain("Goals Sidebar Link");
   });
 
   it("hides the worktree run-execution toggle when not running in a worktree", async () => {

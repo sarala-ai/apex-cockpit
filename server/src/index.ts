@@ -4,6 +4,7 @@
 // instrumentationReady before opening DB connections or constructing the
 // HTTP server, so trace coverage does not depend on incidental timing.
 import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
+import type { PrincipalJwtSigner } from "./auth/mint-principal-jwt.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
@@ -575,6 +576,15 @@ export async function startServer(): Promise<StartedServer> {
   let resolveSessionFromHeaders:
     | ((headers: Headers) => Promise<BetterAuthSessionResult | null>)
     | undefined;
+  // Mints an operator-attributed principal JWT for a userId (closure over the
+  // better-auth instance). Only wired in authenticated mode; feeds the heartbeat
+  // so claude runs carry APEX_GATEWAY_TOKEN minted for the responsible operator.
+  let mintGatewayToken: ((userId: string) => Promise<string | null>) | undefined;
+  // Mints the signed-in operator's principal JWT per HTTP request (APEX-127
+  // cockpit half). Only wired in authenticated mode; feeds
+  // apexGatewayObserveRoutes so gateway governance calls made from the UI
+  // authenticate as the operator, not the static APEX_GATEWAY_TOKEN.
+  let mintOperatorToken: ((req: ExpressRequest) => Promise<string | null>) | undefined;
   if (config.deploymentMode === "local_trusted") {
     await ensureLocalTrustedBoardPrincipal(db as any);
   }
@@ -590,6 +600,7 @@ export async function startServer(): Promise<StartedServer> {
       resolveBetterAuthSession,
       resolveBetterAuthSessionFromHeaders,
     } = await import("./auth/better-auth.js");
+    const { mintPrincipalJwtForUser } = await import("./auth/mint-principal-jwt.js");
     const derivedTrustedOrigins = deriveAuthTrustedOrigins(config, { listenPort });
     const envTrustedOrigins = (process.env.BETTER_AUTH_TRUSTED_ORIGINS ?? "")
       .split(",")
@@ -610,7 +621,21 @@ export async function startServer(): Promise<StartedServer> {
     );
     const auth = createBetterAuthInstance(db as any, config, effectiveTrustedOrigins);
     betterAuthHandler = createBetterAuthHandler(auth);
+    // The concrete instance is typed narrowly but carries `.api.signJWT` (a
+    // serverOnly endpoint) at runtime — the mint helper's structural type.
+    mintGatewayToken = (userId) =>
+      mintPrincipalJwtForUser(auth as unknown as PrincipalJwtSigner, db as any, userId);
     resolveSession = (req) => resolveBetterAuthSession(auth, req);
+    mintOperatorToken = async (req) => {
+      const session = await resolveBetterAuthSession(auth, req);
+      const userId = session?.user?.id;
+      if (!userId) return null;
+      try {
+        return await mintPrincipalJwtForUser(auth as unknown as PrincipalJwtSigner, db as any, userId);
+      } catch {
+        return null;
+      }
+    };
     resolveSessionFromHeaders = (headers) => resolveBetterAuthSessionFromHeaders(auth, headers);
     await initializeBoardClaimChallenge(db as any, { deploymentMode: config.deploymentMode });
     authReady = true;
@@ -734,6 +759,9 @@ export async function startServer(): Promise<StartedServer> {
     pluginMigrationDb: pluginMigrationDb as any,
     betterAuthHandler,
     resolveSession,
+    mintOperatorToken,
+    googleAuthEnabled: Boolean(config.authGoogleClientId && config.authGoogleClientSecret),
+    authPublicBaseUrl: config.authPublicBaseUrl ?? null,
     pluginWorkerManager,
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
@@ -884,7 +912,7 @@ export async function startServer(): Promise<StartedServer> {
   };
 
   if (config.heartbeatSchedulerEnabled) {
-    const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
+    const heartbeat = heartbeatService(db as any, { pluginWorkerManager, mintGatewayToken });
     drainHeartbeatRunsForShutdown = heartbeat.drainRunningRunsForShutdown;
     heartbeatWakeup = heartbeat.wakeup;
     const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });

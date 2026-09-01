@@ -24,6 +24,7 @@ import {
   Network,
   Workflow,
   Rocket,
+  BookOpen,
 } from "lucide-react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -80,8 +81,6 @@ export function Sidebar() {
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
   const liveRunCount = liveRuns?.length ?? 0;
   const showWorkspacesLink = experimentalSettings?.enableIsolatedWorkspaces === true;
-  const goalsLinkPending = experimentalSettings === undefined;
-  const showGoalsLink = experimentalSettings?.enableGoalsSidebarLink === true;
   // Streamlined left navigation (top-level Projects link + starred children) is
   // now the standard product sidebar (PAP-12472). The former experimental
   // opt-out was retired; classic per-project collapsible mode is no longer
@@ -245,18 +244,7 @@ export function Sidebar() {
 
         <SidebarSection label="Product" collapsible={{ open: companyOpen, onOpenChange: setCompanyOpen }}>
           <SidebarNavItem to="/design" label="Design" icon={PenTool} />
-          {showGoalsLink ? (
-            <SidebarNavItem to="/goals" label="Goals" icon={Target} />
-          ) : goalsLinkPending ? (
-            <div
-              data-testid="sidebar-goals-placeholder"
-              className="h-8 pointer-coarse:h-7"
-              aria-hidden="true"
-            />
-          ) : null}
-          {/* Target surfaces (Shell board IA panel): Docs, Issues — the
-              issue browser lands with multi-source tickets; promoting an
-              issue is a state transition into Work, never a copy. */}
+          <SidebarNavItem to="/goals" label="Goals" icon={Target} />
         </SidebarSection>
 
         <SidebarSection label="Operations">
@@ -271,6 +259,7 @@ export function Sidebar() {
         <SidebarSection label="AI Governance">
           <SidebarNavItem to="/gateway" label="Gateway" icon={Network} />
           <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
+          <SidebarNavItem to="/prompts" label="Prompts" icon={BookOpen} />
           <SidebarNavItem to="/workflows" label="Workflows" icon={Workflow} />
         </SidebarSection>
 

@@ -63,6 +63,14 @@ RUN pnpm --filter @paperclipai/ui build
 RUN pnpm --filter @paperclipai/plugin-sdk build
 RUN pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
+# Bundled kubernetes sandbox-provider plugin. Excluded from the pnpm workspace,
+# so it needs its own install + build; the server auto-installs it at boot from
+# this path only when dist/manifest.js exists (see ensureBundledKubernetesPlugin).
+RUN cd packages/plugins/sandbox-providers/kubernetes \
+  && pnpm install --ignore-workspace \
+  && pnpm build \
+  && test -f dist/manifest.js && test -f dist/worker.js \
+  || (echo "ERROR: kubernetes plugin build output missing" && exit 1)
 
 FROM base AS production
 ARG USER_UID=1000

@@ -1165,4 +1165,50 @@ describe("shared ACP engine execution timeouts", () => {
     expect(result.errorMessage).toBe(expectedMessage);
     expect(cancelReasons).toContain(expectedMessage);
   }, 15_000);
+
+  // APEX-73. Pointing a Claude Code child at an OTLP endpoint is not enough —
+  // it emits nothing unless CLAUDE_CODE_ENABLE_TELEMETRY is set, so the flag is
+  // a Claude-specific runtime switch applied at the launch site (not in the
+  // runtime-agnostic spine helper). These cover the three states that matter:
+  // on for claude, absent for other engines, and absent when telemetry is off.
+  describe("Claude Code telemetry switch", () => {
+    async function wrapperEnvFor(agentConfig: Record<string, unknown>, endpoint?: string) {
+      const root = await makeTempRoot();
+      const stateDir = path.join(root, "state");
+      const previous = process.env.APEX_OTLP_ENDPOINT;
+      try {
+        if (endpoint === undefined) delete process.env.APEX_OTLP_ENDPOINT;
+        else process.env.APEX_OTLP_ENDPOINT = endpoint;
+        await runExecutor({ agentCommand: "node ./fake-acp.js", stateDir, ...agentConfig });
+      } finally {
+        if (previous === undefined) delete process.env.APEX_OTLP_ENDPOINT;
+        else process.env.APEX_OTLP_ENDPOINT = previous;
+      }
+      const wrappers = await fs.readdir(path.join(stateDir, "wrappers"));
+      const envFile = wrappers.find((name) => name.endsWith(".env"));
+      return envFile ? fs.readFile(path.join(stateDir, "wrappers", envFile), "utf8") : "";
+    }
+
+    it("enables telemetry and stamps the correlation spine for the claude engine", async () => {
+      const env = await wrapperEnvFor({ agent: "claude" }, "http://localhost:8000");
+      expect(env).toContain("CLAUDE_CODE_ENABLE_TELEMETRY='1'");
+      expect(env).toContain("OTEL_EXPORTER_OTLP_ENDPOINT='http://localhost:8000'");
+      // Without a run id on the resource, apex-eval cannot index the trace to a
+      // run and the spans land unreachable — see APEX-73.
+      expect(env).toContain("apex.run.id=run-1");
+    });
+
+    it("does not set the Claude-specific flag for other engines", async () => {
+      const env = await wrapperEnvFor({ agent: "custom" }, "http://localhost:8000");
+      expect(env).not.toContain("CLAUDE_CODE_ENABLE_TELEMETRY");
+      // The standard OTel vars are runtime-agnostic and still injected.
+      expect(env).toContain("OTEL_EXPORTER_OTLP_ENDPOINT='http://localhost:8000'");
+    });
+
+    it("injects nothing when no OTLP endpoint is configured", async () => {
+      const env = await wrapperEnvFor({ agent: "claude" }, undefined);
+      expect(env).not.toContain("CLAUDE_CODE_ENABLE_TELEMETRY");
+      expect(env).not.toContain("OTEL_EXPORTER_OTLP_ENDPOINT");
+    });
+  });
 });

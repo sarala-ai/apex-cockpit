@@ -14,6 +14,7 @@ import { applyTrustProxy, parseTrustProxyEnv } from "./middleware/trust-proxy.js
 import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
+import { companyPromptRoutes } from "./routes/company-prompts.js";
 import { builtInAgentRoutes } from "./routes/built-in-agents.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
@@ -21,6 +22,8 @@ import { projectRoutes } from "./routes/projects.js";
 import { apexSetupRoutes } from "./routes/apex-setup.js";
 import { apexScopingRoutes } from "./routes/apex-scoping.js";
 import { apexSetupStateRoutes } from "./routes/apex-setup-state.js";
+import { apexSetupModelsRoutes } from "./routes/apex-setup-models.js";
+import { subscriptionBridgeRouter, bridgeAuthMiddleware } from "./apex/model-access/subscription-bridge.js";
 import { apexObserveRoutes } from "./routes/apex-observe.js";
 import { apexGatewayObserveRoutes } from "./routes/apex-gateway-observe.js";
 import { apexWorkflowsRoutes } from "./routes/apex-workflows.js";
@@ -175,6 +178,16 @@ export async function createApp(
     pluginWorkerManager?: PluginWorkerManager;
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
+    // Mints the signed-in operator's cockpit principal JWT per
+    // request, so apex-gateway calls made on the operator's behalf (the
+    // apex-gateway-observe routes) authenticate as that operator instead of
+    // the static APEX_GATEWAY_TOKEN. Only wired in authenticated mode.
+    mintOperatorToken?: (req: ExpressRequest) => Promise<string | null>;
+    googleAuthEnabled?: boolean;
+    // The configured public URL (== the JWT `iss`). When set, this instance
+    // serves OIDC/OAuth discovery so an external verifier (apex-gateway) can
+    // resolve its JWKS from the issuer.
+    authPublicBaseUrl?: string | null;
   },
 ) {
   const app = express();
@@ -198,6 +211,41 @@ export async function createApp(
   }));
   app.use("/api", apiCompression());
   app.use(httpLogger);
+
+  // OIDC/OAuth discovery — lets an external verifier (the apex-gateway's
+  // API-bearer path) resolve this instance's JWKS from its ISSUER. That path
+  // fetches <issuer>/.well-known/openid-configuration (NOT the raw jwks path)
+  // and enforces a same-origin https `jwks_uri`. The issuer MUST equal the JWT
+  // `iss` (the configured public URL), so we serve the CONFIGURED value, never a
+  // request-derived origin. Only mounted when a public URL is configured.
+  const discoveryIssuer = opts.authPublicBaseUrl?.replace(/\/+$/, "") || null;
+  if (discoveryIssuer) {
+    const discoveryDoc = {
+      issuer: discoveryIssuer,
+      jwks_uri: `${discoveryIssuer}/api/auth/jwks`,
+      response_types_supported: ["token"],
+      subject_types_supported: ["public"],
+      id_token_signing_alg_values_supported: ["EdDSA"],
+      scopes_supported: ["openid", "email", "profile"],
+      token_endpoint_auth_methods_supported: ["none"],
+    };
+    app.get(
+      ["/.well-known/openid-configuration", "/.well-known/oauth-authorization-server"],
+      (_req, res) => {
+        res.json(discoveryDoc);
+      },
+    );
+  }
+
+  // Subscription bridge — OpenAI-compatible shim backed by the Claude Agent SDK.
+  // Mounted BEFORE the privateHostnameGuard because /bridge/v1 is a machine-to-
+  // machine endpoint: the gateway (potentially containerised) calls it with
+  // Host: host.docker.internal, which the browser-threat-model guard would
+  // otherwise block with 403. Auth is caller-identity via APEX_BRIDGE_SECRET
+  // (a shared bearer token), not hostname-based. No session cookie or actor
+  // context is needed here — the bridge validates the gateway's bearer token only.
+  app.use("/bridge/v1", bridgeAuthMiddleware(), subscriptionBridgeRouter());
+
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
     deploymentMode: opts.deploymentMode,
     deploymentExposure: opts.deploymentExposure,
@@ -219,7 +267,7 @@ export async function createApp(
       resolveSession: opts.resolveSession,
     }),
   );
-  app.use("/api/auth", authRoutes(db));
+  app.use("/api/auth", authRoutes(db, { googleAuthEnabled: opts.googleAuthEnabled ?? false }));
   if (opts.betterAuthHandler) {
     app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
   }
@@ -245,6 +293,7 @@ export async function createApp(
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(llmRoutes(db));
   api.use(companySkillRoutes(db));
+  api.use(companyPromptRoutes(db));
   api.use(builtInAgentRoutes(db));
   api.use(teamsCatalogRoutes(db));
   api.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
@@ -253,8 +302,9 @@ export async function createApp(
   api.use(apexSetupRoutes());
   api.use(apexScopingRoutes(db));
   api.use(apexSetupStateRoutes(db));
+  api.use(apexSetupModelsRoutes());
   api.use(apexObserveRoutes(db));
-  api.use(apexGatewayObserveRoutes());
+  api.use(apexGatewayObserveRoutes({ mintOperatorToken: opts.mintOperatorToken }));
   api.use(apexWorkflowsRoutes(db));
   api.use(apexCapabilitiesRoutes());
   api.use(apexDesignRoutes(db));

@@ -1,0 +1,54 @@
+# electron-builder configuration for the APEX desktop client.
+#
+# NOTE: macOS code signing + notarization requires an Apple Developer ID
+# certificate and an app-specific/notarization API key, supplied by CI via
+# environment variables (CSC_LINK / CSC_KEY_PASSWORD / APPLE_ID /
+# APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID). This file intentionally
+# carries no identities or certs — builds run through this config are
+# unsigned until the operator wires those in.
+# Windows code signing similarly requires an operator-supplied cert
+# (CSC_LINK / CSC_KEY_PASSWORD) — absent here for the same reason.
+
+appId: com.sarala.apex
+productName: APEX
+directories:
+  output: out
+  buildResources: build
+files:
+  - dist/**/*
+  - package.json
+
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch:
+        - arm64
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+    - target: deb
+      arch:
+        - x64
+  category: Development
+
+publish:
+  # Installers + update feed live in a GCS bucket served over HTTPS (generic
+  # provider = a base URL, no provider-specific auth). Secretless and GCP-native,
+  # and works for a private org since installers are not secret. Provision the
+  # bucket (public-read) with the gcp-storage-setup workflow before first ship.
+  provider: generic
+  url: https://storage.googleapis.com/sarala-apex-desktop

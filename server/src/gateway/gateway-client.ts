@@ -18,13 +18,14 @@ import type {
   GatewayAgentEntry,
   GatewayAuditEntry,
   GatewayMetrics,
+  GatewayPromptEntry,
 } from "@paperclipai/shared";
 
 const gatewayUrl = (): string =>
   (process.env.APEX_GATEWAY_URL ?? "http://127.0.0.1:4444").replace(/\/$/, "");
 
-async function timedFetch(url: string, timeoutMs = 5000): Promise<Response | null> {
-  const token = process.env.APEX_GATEWAY_TOKEN;
+async function timedFetch(url: string, operatorToken?: string | null, timeoutMs = 5000): Promise<Response | null> {
+  const token = operatorToken ?? process.env.APEX_GATEWAY_TOKEN;
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -70,9 +71,10 @@ function extractMessage(body: unknown, fallback: string): string {
 async function timedWrite(
   url: string,
   init: RequestInit,
+  operatorToken?: string | null,
   timeoutMs = 8000,
 ): Promise<{ status: number; body: unknown } | null> {
-  const token = process.env.APEX_GATEWAY_TOKEN;
+  const token = operatorToken ?? process.env.APEX_GATEWAY_TOKEN;
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -105,8 +107,17 @@ function num(v: unknown): number | null {
 }
 
 export class GatewayClient {
+  /**
+   * @param operatorToken Per-request operator principal JWT. When
+   * provided, every call from this instance authenticates as that operator
+   * instead of the static `APEX_GATEWAY_TOKEN`. `undefined`/`null` (the
+   * default) falls back to `APEX_GATEWAY_TOKEN`, so existing callers with no
+   * operator context (agents/board) are unaffected.
+   */
+  constructor(private readonly operatorToken?: string | null) {}
+
   async reachable(): Promise<boolean> {
-    return (await timedFetch(`${gatewayUrl()}/health`)) !== null;
+    return (await timedFetch(`${gatewayUrl()}/health`, this.operatorToken)) !== null;
   }
 
   // NOTE: gateways/tools/a2a/servers all extend ContextForge's
@@ -116,7 +127,7 @@ export class GatewayClient {
   // AuditTrailResponse below is a plain BaseModel (no such conversion),
   // confirmed to stay snake_case.
   async listGateways(): Promise<GatewayEntry[]> {
-    const res = await timedFetch(`${gatewayUrl()}/gateways`);
+    const res = await timedFetch(`${gatewayUrl()}/gateways`, this.operatorToken);
     if (!res) return [];
     const raw = await res.json().catch(() => []);
     const rows = Array.isArray(raw) ? raw : [];
@@ -129,13 +140,71 @@ export class GatewayClient {
         description: str(g.description),
         enabled: bool(g.enabled, true),
         reachable: bool(g.reachable, true),
+        authType: str(g.authType),
         createdAt: str(g.createdAt),
       }),
     );
   }
 
+  /**
+   * Resolve the provider authorization URL for an OAuth (authorization_code)
+   * gateway, WITHOUT following it — the gateway answers with a redirect to the
+   * provider's consent page, bound server-side to the identity in the bearer
+   * token. Callers must pass an operator-minted client (never the env token):
+   * the consent token the provider hands back is stored keyed to this
+   * identity's email, and MCP calls later look tokens up by the CALLING
+   * user's email — an env-token identity here would strand the consent.
+   */
+  async oauthAuthorizeLocation(gatewayId: string): Promise<{ ok: true; url: string } | { ok: false; status: number; message: string }> {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 10_000);
+    try {
+      const res = await fetch(`${gatewayUrl()}/oauth/authorize/${encodeURIComponent(gatewayId)}`, {
+        redirect: "manual",
+        signal: controller.signal,
+        headers: this.operatorToken ? { authorization: `Bearer ${this.operatorToken}` } : {},
+      });
+      if (res.status >= 300 && res.status < 400) {
+        const location = res.headers.get("location");
+        if (location) return { ok: true, url: location };
+        return { ok: false, status: 502, message: "gateway redirected without a Location header" };
+      }
+      const detail = await res
+        .json()
+        .then((b: Record<string, unknown>) => String(b.detail ?? b.message ?? res.statusText))
+        .catch(() => res.statusText);
+      return { ok: false, status: res.status, message: detail };
+    } catch {
+      return { ok: false, status: 502, message: "apex-gateway is unreachable" };
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
+  /** Trigger a tool sync for an OAuth gateway after consent completes. */
+  async oauthFetchTools(gatewayId: string): Promise<{ ok: boolean; status: number; message: string }> {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 30_000);
+    try {
+      const res = await fetch(`${gatewayUrl()}/oauth/fetch-tools/${encodeURIComponent(gatewayId)}`, {
+        method: "POST",
+        signal: controller.signal,
+        headers: this.operatorToken ? { authorization: `Bearer ${this.operatorToken}` } : {},
+      });
+      const message = await res
+        .json()
+        .then((b: Record<string, unknown>) => String(b.detail ?? b.message ?? res.statusText))
+        .catch(() => res.statusText);
+      return { ok: res.ok, status: res.status, message };
+    } catch {
+      return { ok: false, status: 502, message: "apex-gateway is unreachable" };
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
   async listTools(): Promise<GatewayToolEntry[]> {
-    const res = await timedFetch(`${gatewayUrl()}/tools`);
+    const res = await timedFetch(`${gatewayUrl()}/tools`, this.operatorToken);
     if (!res) return [];
     const raw = await res.json().catch(() => []);
     const rows = Array.isArray(raw) ? raw : [];
@@ -151,7 +220,7 @@ export class GatewayClient {
   }
 
   async listServers(): Promise<GatewayServerEntry[]> {
-    const res = await timedFetch(`${gatewayUrl()}/servers`);
+    const res = await timedFetch(`${gatewayUrl()}/servers`, this.operatorToken);
     if (!res) return [];
     const raw = await res.json().catch(() => []);
     const rows = Array.isArray(raw) ? raw : [];
@@ -167,7 +236,7 @@ export class GatewayClient {
   }
 
   async listAgents(): Promise<GatewayAgentEntry[]> {
-    const res = await timedFetch(`${gatewayUrl()}/a2a`);
+    const res = await timedFetch(`${gatewayUrl()}/a2a`, this.operatorToken);
     if (!res) return [];
     const raw = await res.json().catch(() => []);
     const rows = Array.isArray(raw) ? raw : [];
@@ -187,7 +256,7 @@ export class GatewayClient {
   }
 
   async listAudit(limit = 100): Promise<GatewayAuditEntry[]> {
-    const res = await timedFetch(`${gatewayUrl()}/api/logs/audit-trails?limit=${limit}`);
+    const res = await timedFetch(`${gatewayUrl()}/api/logs/audit-trails?limit=${limit}`, this.operatorToken);
     if (!res) return [];
     const raw = await res.json().catch(() => []);
     const rows = Array.isArray(raw) ? raw : [];
@@ -209,7 +278,7 @@ export class GatewayClient {
   }
 
   async metrics(): Promise<GatewayMetrics> {
-    const res = await timedFetch(`${gatewayUrl()}/metrics`);
+    const res = await timedFetch(`${gatewayUrl()}/metrics`, this.operatorToken);
     if (!res) {
       return { reachable: false, tools: null, servers: null, a2aAgents: null, error: "gateway unreachable" };
     }
@@ -283,7 +352,7 @@ export class GatewayClient {
         transport: input.transport,
         ...(input.description ? { description: input.description } : {}),
       }),
-    });
+    }, this.operatorToken);
     if (!res) {
       return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
     }
@@ -310,7 +379,7 @@ export class GatewayClient {
    * render an inline message the same way registerGateway does.
    */
   async deleteGateway(id: string): Promise<GatewayWriteResult> {
-    const res = await timedWrite(`${gatewayUrl()}/gateways/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const res = await timedWrite(`${gatewayUrl()}/gateways/${encodeURIComponent(id)}`, { method: "DELETE" }, this.operatorToken);
     if (!res) {
       return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
     }
@@ -320,6 +389,196 @@ export class GatewayClient {
     // delete_gateway raises plain HTTPException(detail=...), not {message: ...}
     const body = res.body as Record<string, unknown> | null;
     const message = typeof body?.detail === "string" ? body.detail : extractMessage(res.body, `Delete failed (${res.status})`);
+    return { ok: false, status: "error", message };
+  }
+
+  // ── LLM model-plane API (/llm/providers, /llm/models) ──────────────────
+  // These endpoints are on the gateway's LLM routing layer (not the MCP
+  // tool gateway). They manage the set of LLM providers and the model
+  // aliases (apex-*) that consumers call without knowing which backend serves
+  // them. The gateway's LLM plane is intentionally separate from its MCP tool
+  // plane — different concern, different object graph.
+
+  /** POST /llm/providers — register an LLM provider. */
+  async createLLMProvider(input: {
+    name: string;
+    providerType: "openai_compatible" | "openai" | "anthropic";
+    apiBase?: string;
+    apiKey?: string;
+    defaultModel?: string;
+    description?: string;
+    /** Per-provider SSRF bypass for private/docker-internal hosts. Silently ignored
+     *  by gateway versions that do not support this field — use the gateway-level
+     *  SSRF_ALLOW_PRIVATE_NETWORKS env var as the fallback in that case. */
+    ssrfAllowPrivateNetworks?: boolean;
+  }): Promise<GatewayWriteResult> {
+    const body: Record<string, unknown> = {
+      name: input.name,
+      provider_type: input.providerType,
+      enabled: true,
+    };
+    if (input.apiBase) body.api_base = input.apiBase;
+    if (input.apiKey) body.api_key = input.apiKey;
+    if (input.defaultModel) body.default_model = input.defaultModel;
+    if (input.description) body.description = input.description;
+    if (input.ssrfAllowPrivateNetworks) body.ssrf_allow_private_networks = true;
+
+    const res = await timedWrite(`${gatewayUrl()}/llm/providers`, { method: "POST", body: JSON.stringify(body) }, this.operatorToken);
+    if (!res) return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
+    if (res.status >= 200 && res.status < 300) {
+      const b = (res.body ?? {}) as Record<string, unknown>;
+      return { ok: true, id: str(b.id), name: String(b.name ?? input.name) };
+    }
+    if (res.status === 409) return { ok: false, status: "conflict", message: extractMessage(res.body, "Provider already exists") };
+    if (res.status === 422) return { ok: false, status: "validation", message: extractMessage(res.body, "Validation failed") };
+    return { ok: false, status: "error", message: extractMessage(res.body, `Create provider failed (${res.status})`) };
+  }
+
+  /** GET /llm/providers — list registered LLM providers. */
+  async listLLMProviders(): Promise<Array<{ id: string; name: string; providerType: string; apiBase: string | null; enabled: boolean }>> {
+    const res = await timedFetch(`${gatewayUrl()}/llm/providers`, this.operatorToken);
+    if (!res) return [];
+    const raw = await res.json().catch(() => null);
+    // Response is either a list or a {providers: [...]} envelope depending on gateway version
+    const rows = Array.isArray(raw) ? raw : Array.isArray((raw as Record<string, unknown>)?.providers) ? (raw as Record<string, unknown>).providers as unknown[] : [];
+    return (rows as Record<string, unknown>[]).map((p) => ({
+      id: String(p.id ?? ""),
+      name: String(p.name ?? ""),
+      providerType: String(p.provider_type ?? ""),
+      apiBase: str(p.api_base),
+      enabled: bool(p.enabled, true),
+    }));
+  }
+
+  /** DELETE /llm/providers/{id} — remove an LLM provider and all its models. */
+  async deleteLLMProvider(id: string): Promise<GatewayWriteResult> {
+    const res = await timedWrite(`${gatewayUrl()}/llm/providers/${encodeURIComponent(id)}`, { method: "DELETE" }, this.operatorToken);
+    if (!res) return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
+    if (res.status >= 200 && res.status < 300) return { ok: true, id, name: id };
+    const body = res.body as Record<string, unknown> | null;
+    const message = typeof body?.detail === "string" ? body.detail : extractMessage(res.body, `Delete provider failed (${res.status})`);
+    return { ok: false, status: "error", message };
+  }
+
+  /** POST /llm/models — register a model (with optional routing alias). */
+  async createLLMModel(input: {
+    providerId: string;
+    modelId: string;
+    modelName: string;
+    modelAlias?: string;
+    supportsChat?: boolean;
+    supportsStreaming?: boolean;
+  }): Promise<GatewayWriteResult> {
+    const body: Record<string, unknown> = {
+      provider_id: input.providerId,
+      model_id: input.modelId,
+      model_name: input.modelName,
+      enabled: true,
+      supports_chat: input.supportsChat ?? true,
+      supports_streaming: input.supportsStreaming ?? true,
+    };
+    if (input.modelAlias) body.model_alias = input.modelAlias;
+
+    const res = await timedWrite(`${gatewayUrl()}/llm/models`, { method: "POST", body: JSON.stringify(body) }, this.operatorToken);
+    if (!res) return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
+    if (res.status >= 200 && res.status < 300) {
+      const b = (res.body ?? {}) as Record<string, unknown>;
+      return { ok: true, id: str(b.id), name: String(b.model_alias ?? b.model_name ?? input.modelAlias ?? input.modelName) };
+    }
+    if (res.status === 409) return { ok: false, status: "conflict", message: extractMessage(res.body, "Model already exists") };
+    if (res.status === 422) return { ok: false, status: "validation", message: extractMessage(res.body, "Validation failed") };
+    return { ok: false, status: "error", message: extractMessage(res.body, `Create model failed (${res.status})`) };
+  }
+
+  /** GET /llm/models — list registered LLM models (including aliases). */
+  async listLLMModels(): Promise<Array<{ id: string; modelId: string; modelName: string; modelAlias: string | null; providerId: string; enabled: boolean }>> {
+    const res = await timedFetch(`${gatewayUrl()}/llm/models`, this.operatorToken);
+    if (!res) return [];
+    const raw = await res.json().catch(() => null);
+    const rows = Array.isArray(raw) ? raw : Array.isArray((raw as Record<string, unknown>)?.models) ? (raw as Record<string, unknown>).models as unknown[] : [];
+    return (rows as Record<string, unknown>[]).map((m) => ({
+      id: String(m.id ?? ""),
+      modelId: String(m.model_id ?? ""),
+      modelName: String(m.model_name ?? ""),
+      modelAlias: str(m.model_alias),
+      providerId: String(m.provider_id ?? ""),
+      enabled: bool(m.enabled, true),
+    }));
+  }
+
+  /** DELETE /llm/models/{id} — remove a model/alias. */
+  async deleteLLMModel(id: string): Promise<GatewayWriteResult> {
+    const res = await timedWrite(`${gatewayUrl()}/llm/models/${encodeURIComponent(id)}`, { method: "DELETE" }, this.operatorToken);
+    if (!res) return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
+    if (res.status >= 200 && res.status < 300) return { ok: true, id, name: id };
+    const body = res.body as Record<string, unknown> | null;
+    const message = typeof body?.detail === "string" ? body.detail : extractMessage(res.body, `Delete model failed (${res.status})`);
+    return { ok: false, status: "error", message };
+  }
+
+  // ── Prompts registry (/prompts) ──────────────────────────────────────────
+  // The gateway's ContextForge fork ships prompt_service.py and a prompts
+  // table but the cockpit never called these endpoints. Wiring them here
+  // lets the Prompt Library page show what the gateway already knows about,
+  // so operators can adopt rather than rebuild.
+
+  /** GET /prompts — list all MCP prompts the gateway knows about. */
+  async listGatewayPrompts(): Promise<GatewayPromptEntry[]> {
+    const res = await timedFetch(`${gatewayUrl()}/prompts`, this.operatorToken);
+    if (!res) return [];
+    const raw = await res.json().catch(() => []);
+    const rows = Array.isArray(raw) ? raw : [];
+    return rows.map(
+      (p: Record<string, unknown>): GatewayPromptEntry => ({
+        id: str(p.id),
+        name: String(p.name ?? "prompt"),
+        description: str(p.description),
+        arguments: Array.isArray(p.arguments)
+          ? (p.arguments as Record<string, unknown>[]).map((a) => ({
+              name: String(a.name ?? ""),
+              description: str(a.description),
+              required: bool(a.required, false),
+            }))
+          : [],
+        enabled: bool(p.enabled, true),
+        createdAt: str(p.createdAt ?? p.created_at),
+      }),
+    );
+  }
+
+  /** POST /prompts — register a new MCP prompt in the gateway registry. */
+  async createGatewayPrompt(input: {
+    name: string;
+    description?: string | null;
+    arguments?: Array<{ name: string; description?: string | null; required?: boolean }>;
+    template?: string;
+  }): Promise<GatewayWriteResult> {
+    const body: Record<string, unknown> = {
+      name: input.name,
+      enabled: true,
+    };
+    if (input.description) body.description = input.description;
+    if (input.arguments?.length) body.arguments = input.arguments;
+    if (input.template) body.template = input.template;
+
+    const res = await timedWrite(`${gatewayUrl()}/prompts`, { method: "POST", body: JSON.stringify(body) }, this.operatorToken);
+    if (!res) return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
+    if (res.status >= 200 && res.status < 300) {
+      const b = (res.body ?? {}) as Record<string, unknown>;
+      return { ok: true, id: str(b.id), name: String(b.name ?? input.name) };
+    }
+    if (res.status === 409) return { ok: false, status: "conflict", message: extractMessage(res.body, "Prompt name already exists") };
+    if (res.status === 422) return { ok: false, status: "validation", message: extractMessage(res.body, "Validation failed") };
+    return { ok: false, status: "error", message: extractMessage(res.body, `Create prompt failed (${res.status})`) };
+  }
+
+  /** DELETE /prompts/{id} — remove a prompt from the gateway registry. */
+  async deleteGatewayPrompt(id: string): Promise<GatewayWriteResult> {
+    const res = await timedWrite(`${gatewayUrl()}/prompts/${encodeURIComponent(id)}`, { method: "DELETE" }, this.operatorToken);
+    if (!res) return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
+    if (res.status >= 200 && res.status < 300) return { ok: true, id, name: id };
+    const body = res.body as Record<string, unknown> | null;
+    const message = typeof body?.detail === "string" ? body.detail : extractMessage(res.body, `Delete prompt failed (${res.status})`);
     return { ok: false, status: "error", message };
   }
 }

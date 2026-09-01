@@ -599,6 +599,13 @@ export async function resolveExecutionRunAdapterConfig(input: {
     reason: string;
     remediation: string;
   };
+  // Operator-attributed gateway credential. When a gateway is
+  // configured (`gatewayUrl`) and a claude run has a responsible operator,
+  // `mintGatewayToken` mints a short-lived principal JWT FOR THAT OPERATOR that
+  // is injected as `APEX_GATEWAY_TOKEN`. Injected here (not stored) so it is
+  // per-run, redacted, and gone at run end — never a static/faceless token.
+  mintGatewayToken?: (userId: string) => Promise<string | null>;
+  gatewayUrl?: string | null;
 }) {
   const executionRunConfig = stripPaperclipRuntimeEnvFromAdapterConfig(input.executionRunConfig);
   const environmentEnv = stripPaperclipRuntimeEnvBindings(input.environmentEnv);
@@ -849,6 +856,36 @@ export async function resolveExecutionRunAdapterConfig(input: {
     };
     for (const key of routineEnvResolution.secretKeys) {
       secretKeys.add(key);
+    }
+  }
+  // Operator-attributed gateway credential. When a gateway is
+  // configured for this deployment and a claude run carries a responsible
+  // operator, mint a short-lived principal JWT FOR THAT OPERATOR and inject it
+  // as APEX_GATEWAY_TOKEN so the claude adapter's buildGatewayMcpConfig points
+  // MCP at the gateway AS the operator (gateway verifies via cockpit JWKS). This
+  // replaces the static/faceless gateway token pattern: the token is minted per
+  // run, redacted (secretKeys), never written to disk, and gone at run end. An
+  // explicit APEX_GATEWAY_TOKEN binding still wins (backward-compat); a run with
+  // no responsible operator gets no gateway identity (no one to attribute to).
+  if (
+    input.mintGatewayToken &&
+    readNonEmptyString(input.gatewayUrl) &&
+    (input.adapterType ?? "").startsWith("claude")
+  ) {
+    const gatewayEnv = parseObject(resolvedConfig.env);
+    if (!readNonEmptyString(gatewayEnv.APEX_GATEWAY_TOKEN)) {
+      const operatorId = input.responsibleUserId?.trim() || null;
+      if (operatorId) {
+        const gatewayToken = await input.mintGatewayToken(operatorId);
+        if (gatewayToken) {
+          gatewayEnv.APEX_GATEWAY_TOKEN = gatewayToken;
+          if (!readNonEmptyString(gatewayEnv.APEX_GATEWAY_URL)) {
+            gatewayEnv.APEX_GATEWAY_URL = input.gatewayUrl as string;
+          }
+          resolvedConfig.env = gatewayEnv;
+          secretKeys.add("APEX_GATEWAY_TOKEN");
+        }
+      }
     }
   }
   // Pre-dispatch credential gate for codex_local: a managed Codex home with no
@@ -5154,6 +5191,10 @@ export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
   runtimeEnv?: Record<string, string | undefined>;
+  // Mints a short-lived, operator-attributed APEX principal JWT for a userId
+  // (closure over the better-auth instance). Wired at server bootstrap where the
+  // auth instance lives; used to inject APEX_GATEWAY_TOKEN into claude runs.
+  mintGatewayToken?: (userId: string) => Promise<string | null>;
 }
 
 function isTruthyRuntimeEnvValue(value: string | undefined) {
@@ -11293,6 +11334,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       routineEnv: routineEnvContext.env,
       secretsSvc,
       trustPreset,
+      mintGatewayToken: options.mintGatewayToken,
+      gatewayUrl: readNonEmptyString(runtimeEnv.APEX_GATEWAY_URL) ?? null,
       requiredScopedEnvBinding: pushCapabilityPreflightRequired
         ? {
             keys: [...PUSH_CAPABILITY_ENV_KEYS],

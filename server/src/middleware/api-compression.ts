@@ -119,6 +119,16 @@ export function apiCompression(options: ApiCompressionOptions = {}): RequestHand
   const thresholdBytes = options.thresholdBytes ?? API_COMPRESSION_THRESHOLD_BYTES;
 
   return (req, res, next) => {
+    // better-auth owns its own response framing (OAuth sign-in returns 200 with a
+    // Location header + Set-Cookie; it sets its own Content-Length). Re-encoding
+    // those here produces a malformed response that Cloud Run rejects with 503 —
+    // which broke every browser Google sign-in (browsers always send
+    // Accept-Encoding: gzip). Never compress the auth routes.
+    if (req.originalUrl.startsWith("/api/auth")) {
+      next();
+      return;
+    }
+
     const selectedEncoding = selectEncoding(req.headers["accept-encoding"]);
     if (!selectedEncoding || req.method === "HEAD") {
       next();

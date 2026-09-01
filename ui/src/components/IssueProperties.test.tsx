@@ -23,6 +23,10 @@ const mockAgentsApi = vi.hoisted(() => ({
   adapterModelProfiles: vi.fn(),
 }));
 
+const mockGoalsApi = vi.hoisted(() => ({
+  list: vi.fn(),
+}));
+
 const mockProjectsApi = vi.hoisted(() => ({
   list: vi.fn(),
 }));
@@ -59,6 +63,10 @@ vi.mock("../context/CompanyContext", () => ({
 
 vi.mock("../api/agents", () => ({
   agentsApi: mockAgentsApi,
+}));
+
+vi.mock("../api/goals", () => ({
+  goalsApi: mockGoalsApi,
 }));
 
 vi.mock("../api/projects", () => ({
@@ -431,6 +439,7 @@ describe("IssueProperties", () => {
     mockAgentsApi.adapterModels.mockResolvedValue([]);
     mockAgentsApi.adapterModelProfiles.mockResolvedValue([]);
     mockProjectsApi.list.mockResolvedValue([]);
+    mockGoalsApi.list.mockResolvedValue([]);
     mockExecutionWorkspacesApi.controlRuntimeCommands.mockReset();
     mockIssuesApi.list.mockResolvedValue([]);
     mockIssuesApi.listLabels.mockResolvedValue([]);
@@ -2387,6 +2396,120 @@ describe("IssueProperties", () => {
     expect(pullRequestLink?.className).not.toContain("paperclip-mention-chip");
     expect(pullRequestLink?.className).not.toContain("rounded-full");
     expect(pullRequestLink?.className).not.toContain("border");
+
+    act(() => root.unmount());
+  });
+
+  it("renders the Goal field in the Triage section and shows the current goal title", async () => {
+    mockGoalsApi.list.mockResolvedValue([
+      { id: "goal-1", title: "Ship APEX v1", companyId: "company-1", level: "initiative", status: "in_progress", parentId: null, ownerAgentId: null, description: null },
+      { id: "goal-2", title: "Improve onboarding", companyId: "company-1", level: "initiative", status: "in_progress", parentId: null, ownerAgentId: null, description: null },
+    ]);
+    const root = renderProperties(container, {
+      issue: createIssue({ goalId: "goal-1" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Goal");
+      expect(findRowTrigger(container, "Goal")?.textContent).toContain("Ship APEX v1");
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("shows 'None' in the Goal field when the issue has no goalId", async () => {
+    mockGoalsApi.list.mockResolvedValue([
+      { id: "goal-1", title: "Ship APEX v1", companyId: "company-1", level: "initiative", status: "in_progress", parentId: null, ownerAgentId: null, description: null },
+    ]);
+    const root = renderProperties(container, {
+      issue: createIssue({ goalId: null }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Goal");
+      expect(findRowTrigger(container, "Goal")?.textContent).toContain("None");
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("calls onUpdate with goalId when a goal is selected from the picker", async () => {
+    mockGoalsApi.list.mockResolvedValue([
+      { id: "goal-1", title: "Ship APEX v1", companyId: "company-1", level: "initiative", status: "in_progress", parentId: null, ownerAgentId: null, description: null },
+    ]);
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({ goalId: null }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+    await flush();
+
+    // Open the goal picker by clicking its trigger
+    const goalTrigger = findRowTrigger(container, "Goal");
+    await act(async () => {
+      goalTrigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      const goalButton = Array.from(container.querySelectorAll("button"))
+        .find((btn) => btn.textContent?.trim() === "Ship APEX v1");
+      expect(goalButton).not.toBeUndefined();
+    });
+
+    const goalButton = Array.from(container.querySelectorAll("button"))
+      .find((btn) => btn.textContent?.trim() === "Ship APEX v1");
+
+    await act(async () => {
+      goalButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({ goalId: "goal-1" });
+
+    act(() => root.unmount());
+  });
+
+  it("calls onUpdate with null goalId when 'No goal' is selected", async () => {
+    mockGoalsApi.list.mockResolvedValue([
+      { id: "goal-1", title: "Ship APEX v1", companyId: "company-1", level: "initiative", status: "in_progress", parentId: null, ownerAgentId: null, description: null },
+    ]);
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({ goalId: "goal-1" }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+    await flush();
+
+    // Open the goal picker by clicking its trigger
+    const goalTrigger = findRowTrigger(container, "Goal");
+    await act(async () => {
+      goalTrigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("No goal");
+    });
+
+    const noGoalButton = Array.from(container.querySelectorAll("button"))
+      .find((btn) => btn.textContent?.trim() === "No goal");
+    expect(noGoalButton).not.toBeUndefined();
+
+    await act(async () => {
+      noGoalButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({ goalId: null });
 
     act(() => root.unmount());
   });

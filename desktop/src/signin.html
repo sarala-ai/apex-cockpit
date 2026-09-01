@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline';"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>APEX — Sign in</title>
+    <style>
+      :root { color-scheme: dark; }
+      html, body { margin: 0; height: 100%; }
+      body {
+        display: flex; align-items: center; justify-content: center;
+        background: #18181b; color: #e4e4e7;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+        -webkit-user-select: none; user-select: none;
+      }
+      .card { width: 340px; padding: 32px; text-align: center; }
+      .logo { font-size: 15px; letter-spacing: 0.3em; color: #a1a1aa; margin-bottom: 20px; }
+      h1 { font-size: 20px; margin: 0 0 8px; font-weight: 600; }
+      p { color: #a1a1aa; font-size: 13.5px; line-height: 1.5; margin: 0 0 24px; }
+      button {
+        width: 100%; padding: 11px 16px; font-size: 14.5px; font-weight: 600;
+        color: #18181b; background: #e4e4e7; border: none; border-radius: 8px; cursor: pointer;
+      }
+      button:hover:not(:disabled) { background: #fafafa; }
+      button:disabled { opacity: 0.55; cursor: default; }
+      .status { margin-top: 18px; font-size: 12.5px; color: #a1a1aa; min-height: 18px; line-height: 1.4; }
+      .status.error { color: #f87171; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="logo">APEX</div>
+      <h1>Sign in to your cockpit</h1>
+      <p>This opens your browser to approve access, then returns you here signed in.</p>
+      <button id="signin">Sign in with APEX</button>
+      <div class="status" id="status"></div>
+    </div>
+    <script>
+      const btn = document.getElementById("signin");
+      const status = document.getElementById("status");
+      const setStatus = (msg, isError) => {
+        status.textContent = msg || "";
+        status.className = isError ? "status error" : "status";
+      };
+      const api = window.apexDesktop && window.apexDesktop.auth;
+      if (!api) {
+        setStatus("Desktop bridge unavailable.", true);
+        btn.disabled = true;
+      } else {
+        api.onProgress((m) => setStatus(m, false));
+        btn.addEventListener("click", async () => {
+          btn.disabled = true;
+          setStatus("Starting sign-in…", false);
+          try {
+            const r = await api.login();
+            if (!r || !r.ok) {
+              setStatus((r && r.error) || "Sign-in failed.", true);
+              btn.disabled = false;
+            }
+            // On success the main process navigates to the cockpit; keep disabled.
+          } catch (e) {
+            setStatus(String((e && e.message) || e), true);
+            btn.disabled = false;
+          }
+        });
+      }
+    </script>
+  </body>
+</html>

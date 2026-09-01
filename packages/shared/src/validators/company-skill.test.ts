@@ -7,6 +7,7 @@ import {
   companySkillInstallCatalogSchema,
   companySkillInstallUpdateSchema,
   companySkillResetSchema,
+  companySkillSchema,
   companySkillUpdateStatusSchema,
 } from "./company-skill.js";
 
@@ -73,9 +74,39 @@ const companySkill = {
     catalogId: catalogSkill.id,
     originHash: catalogSkill.contentHash,
   },
+  runId: null,
+  producerKind: null,
+  producerId: null,
+  producerVersion: null,
   createdAt: "2026-05-26T00:00:00.000Z",
   updatedAt: "2026-05-26T00:00:00.000Z",
 };
+
+describe("companySkillSchema provenance round-trip", () => {
+  it("preserves runId/producerKind/producerId/producerVersion through parse (no silent strip)", () => {
+    const runId = "00000000-0000-4000-8000-000000000099";
+    const producerId = "00000000-0000-4000-8000-000000000098";
+    const result = companySkillSchema.parse({
+      ...companySkill,
+      runId,
+      producerKind: "heartbeat_agent",
+      producerId,
+      producerVersion: "1.2.3",
+    });
+    expect(result.runId).toBe(runId);
+    expect(result.producerKind).toBe("heartbeat_agent");
+    expect(result.producerId).toBe(producerId);
+    expect(result.producerVersion).toBe("1.2.3");
+  });
+
+  it("accepts null for all provenance fields", () => {
+    const result = companySkillSchema.parse(companySkill);
+    expect(result.runId).toBeNull();
+    expect(result.producerKind).toBeNull();
+    expect(result.producerId).toBeNull();
+    expect(result.producerVersion).toBeNull();
+  });
+});
 
 describe("company skill catalog validators", () => {
   it("accepts catalog list and install request shapes", () => {

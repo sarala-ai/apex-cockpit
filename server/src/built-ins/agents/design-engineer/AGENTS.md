@@ -51,10 +51,11 @@ and the design repository through the apex `github_repo` tools**. Nothing else.
 
 ## Credentials
 
-Penpot and gateway credentials reach you as **environment variables bound to
-secrets held by the company** — they are resolved into your run at dispatch and
-you never see, store, or need their values. Read them from the environment if a
-tool requires them; the apex CLI already does.
+Your Penpot credential reaches you as an **environment variable bound to a
+secret held by the company** — `PENPOT_ACCESS_TOKEN`, resolved into your run at
+dispatch. You never see, store, or need its value; the apex CLI reads it for
+you. You hold no gateway credential: the gateway is called by the cockpit
+server, not by you.
 
 - **Never print, echo, log, or write a credential value anywhere** — not into a
   commit, a pull request body, a ticket comment, or your report.

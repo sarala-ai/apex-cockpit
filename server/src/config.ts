@@ -60,6 +60,17 @@ export interface Config {
   authBaseUrlMode: AuthBaseUrlMode;
   authPublicBaseUrl: string | undefined;
   authDisableSignUp: boolean;
+  // Google (Workspace) SSO. Opt-in: the provider is only enabled when both
+  // client id and secret are set (secrets come from Secret Manager in cloud).
+  // authGoogleAllowedDomain, when set, restricts sign-up to that Workspace
+  // domain (e.g. "sarala.ai").
+  authGoogleClientId: string | undefined;
+  authGoogleClientSecret: string | undefined;
+  authGoogleAllowedDomain: string | undefined;
+  // Bootstrapped org admins: emails granted instance_admin on sign-in, so a
+  // fresh (empty) instance can be claimed and org/company bootstrapped by known
+  // people rather than first-user-wins. Lowercased.
+  authOrgAdminEmails: string[];
   databaseMode: DatabaseMode;
   databaseUrl: string | undefined;
   databaseMigrationUrl: string | undefined;
@@ -81,6 +92,9 @@ export interface Config {
   storageS3Endpoint: string | undefined;
   storageS3Prefix: string;
   storageS3ForcePathStyle: boolean;
+  storageGcsBucket: string;
+  storageGcsPrefix: string;
+  storageGcsProjectId: string | undefined;
   feedbackExportBackendUrl: string | undefined;
   feedbackExportBackendToken: string | undefined;
   heartbeatSchedulerEnabled: boolean;
@@ -148,6 +162,10 @@ export function loadConfig(): Config {
     process.env.PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE !== undefined
       ? process.env.PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE === "true"
       : (fileStorage?.s3?.forcePathStyle ?? false);
+  const storageGcsBucket = process.env.PAPERCLIP_STORAGE_GCS_BUCKET ?? fileStorage?.gcs?.bucket ?? "paperclip";
+  const storageGcsPrefix = process.env.PAPERCLIP_STORAGE_GCS_PREFIX ?? fileStorage?.gcs?.prefix ?? "";
+  const storageGcsProjectId =
+    process.env.PAPERCLIP_STORAGE_GCS_PROJECT_ID ?? fileStorage?.gcs?.projectId ?? undefined;
   const feedbackExportBackendUrl =
     process.env.PAPERCLIP_FEEDBACK_EXPORT_BACKEND_URL?.trim() ||
     process.env.PAPERCLIP_TELEMETRY_BACKEND_URL?.trim() ||
@@ -213,6 +231,13 @@ export function loadConfig(): Config {
     disableSignUpFromEnv !== undefined
       ? disableSignUpFromEnv === "true"
       : (fileConfig?.auth?.disableSignUp ?? false);
+  const authGoogleClientId = process.env.GOOGLE_CLIENT_ID?.trim() || undefined;
+  const authGoogleClientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim() || undefined;
+  const authGoogleAllowedDomain = process.env.AUTH_GOOGLE_ALLOWED_DOMAIN?.trim() || undefined;
+  const authOrgAdminEmails = (process.env.AUTH_ORG_ADMIN_EMAILS ?? "")
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter((value) => value.length > 0);
   const allowedHostnamesFromEnvRaw = process.env.PAPERCLIP_ALLOWED_HOSTNAMES;
   const allowedHostnamesFromEnv = allowedHostnamesFromEnvRaw
     ? allowedHostnamesFromEnvRaw
@@ -297,6 +322,10 @@ export function loadConfig(): Config {
     authBaseUrlMode,
     authPublicBaseUrl,
     authDisableSignUp,
+    authGoogleClientId,
+    authGoogleClientSecret,
+    authGoogleAllowedDomain,
+    authOrgAdminEmails,
     databaseMode: fileDatabaseMode,
     databaseUrl: process.env.DATABASE_URL ?? fileDbUrl,
     databaseMigrationUrl: process.env.DATABASE_MIGRATION_URL,
@@ -328,6 +357,9 @@ export function loadConfig(): Config {
     storageS3Endpoint,
     storageS3Prefix,
     storageS3ForcePathStyle,
+    storageGcsBucket,
+    storageGcsPrefix,
+    storageGcsProjectId,
     feedbackExportBackendUrl,
     feedbackExportBackendToken,
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",

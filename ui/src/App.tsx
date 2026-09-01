@@ -60,6 +60,7 @@ import { CompanyAccess, CompanyAccessLegacyRoute } from "./pages/CompanyAccess";
 import { CompanyInvites } from "./pages/CompanyInvites";
 import { CompanySkills } from "./pages/CompanySkills";
 import { SkillStudio } from "./pages/SkillStudio";
+import { PromptLibrary } from "./pages/PromptLibrary";
 import { Secrets } from "./pages/Secrets";
 import { CompanyExport } from "./pages/CompanyExport";
 import { CompanyImport } from "./pages/CompanyImport";
@@ -135,6 +136,8 @@ function boardRoutes() {
       <Route path="skills/studio/:skillId" element={<SkillStudio />} />
       <Route path="skills/:skillId/studio" element={<LegacySkillStudioRedirect />} />
       <Route path="skills/*" element={<CompanySkills />} />
+      <Route path="prompts" element={<PromptLibrary />} />
+      <Route path="prompts/:promptId" element={<PromptLibrary />} />
       <Route path="settings" element={<LegacySettingsRedirect />} />
       <Route path="settings/*" element={<LegacySettingsRedirect />} />
       <Route path="plugins/:pluginId" element={<PluginPage />} />
@@ -486,6 +489,8 @@ export function App() {
           <Route path="skills/studio/:skillId" element={<UnprefixedBoardRedirect />} />
           <Route path="skills/:skillId/studio" element={<LegacySkillStudioRedirect />} />
           <Route path="skills/*" element={<UnprefixedBoardRedirect />} />
+          <Route path="prompts" element={<UnprefixedBoardRedirect />} />
+          <Route path="prompts/:promptId" element={<UnprefixedBoardRedirect />} />
           <Route path="settings" element={<LegacySettingsRedirect />} />
           <Route path="settings/*" element={<LegacySettingsRedirect />} />
           <Route path="agents" element={<UnprefixedBoardRedirect />} />

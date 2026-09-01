@@ -16,6 +16,11 @@ describe("sensitive env key detection", () => {
     "APEX_GATEWAY_TOKEN",
     "GITHUB_TOKEN",
     "PENPOT_PASSWORD",
+    // The two names the Penpot mint path touches: the service-account password
+    // it reads and the credential it writes. Both must be sensitive on the
+    // storage side too, not just on display.
+    "APEX_PENPOT_PASSWORD",
+    "PENPOT_ACCESS_TOKEN",
     "OPENAI_API_KEY",
     "SOME_SECRET",
     "DB_CONNECTIONSTRING",

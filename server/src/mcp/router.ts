@@ -25,12 +25,35 @@ import { verifyCockpitMcpJwt, type CockpitMcpJwtClaims } from "./cockpit-mcp-jwt
 import { GatewayClient } from "../gateway/gateway-client.js";
 import { logger } from "../middleware/logger.js";
 import { issueService } from "../services/issues.js";
+import { logActivity, secretService } from "../services/index.js";
+import {
+  CAP_BOARD_READ,
+  CAP_BOARD_WRITE,
+  CAP_DRAFT_WRITE,
+  CAP_SECRETS_WRITE,
+  CapabilityDeniedError,
+  requireCapability,
+} from "./capabilities.js";
+import {
+  listSecretDefinitions,
+  provisionSecret,
+  MINT_PROVIDERS,
+  SECRETS_LIST_DEFINITIONS_TOOL,
+  SECRETS_PROVISION_TOOL,
+  type SecretsPort,
+} from "./secrets-tools.js";
 
 // ─── Capabilities ────────────────────────────────────────────────────────────
+// Defined in ./capabilities.ts (cockpit-mcp-jwt.ts needs them too and cannot
+// import this module without closing a cycle); re-exported here because that is
+// where every existing importer looks for them.
 
-export const CAP_BOARD_READ = "board:read";
-export const CAP_BOARD_WRITE = "board:write";
-export const CAP_DRAFT_WRITE = "draft:write";
+export {
+  CAP_BOARD_READ,
+  CAP_BOARD_WRITE,
+  CAP_DRAFT_WRITE,
+  CAP_SECRETS_WRITE,
+};
 
 // ─── Audit ───────────────────────────────────────────────────────────────────
 
@@ -77,21 +100,6 @@ async function writeAuditRow(
 
 // ─── Capability gate ─────────────────────────────────────────────────────────
 
-class CapabilityDeniedError extends Error {
-  constructor(
-    public readonly tool: string,
-    public readonly required: string,
-  ) {
-    super(`capability ${required} required for tool ${tool}`);
-  }
-}
-
-function requireCapability(claims: CockpitMcpJwtClaims, cap: string, tool: string): void {
-  if (!claims.granted_capabilities.includes(cap)) {
-    throw new CapabilityDeniedError(tool, cap);
-  }
-}
-
 /**
  * Board writes attribute to an agent + run (FK columns); user-scoped OAuth
  * tokens carry neither, so writes stay denied even if such a token were ever
@@ -110,6 +118,12 @@ function requireRunIdentity(
 // draft:write auto-attenuation: tools excluded from draft-write sessions
 const DRAFT_WRITE_EXCLUDED_TOOLS = new Set([
   "updateIssue", // status transitions require board:write
+  // Credential provisioning is never part of a draft-write (chat-panel)
+  // session, whatever else that session was granted. Hiding them from
+  // tools/list is cosmetic — the capability gate is the real lock — but a tool
+  // the model cannot see is a tool it does not try to talk its way into.
+  SECRETS_LIST_DEFINITIONS_TOOL,
+  SECRETS_PROVISION_TOOL,
 ]);
 
 function isToolVisibleForClaims(toolName: string, claims: CockpitMcpJwtClaims): boolean {
@@ -360,6 +374,87 @@ function buildMcpServer(db: Db, claims: CockpitMcpJwtClaims): McpServer {
           const issue = await svc.update(issueId, patch);
           return {
             content: [{ type: "text" as const, text: JSON.stringify({ issue }) }],
+          };
+        });
+      },
+    );
+  }
+
+  // Secret provisioning (secrets:write)
+  //
+  // Registered on the same terms as every other tool — the capability gate
+  // inside the handler is the lock, and an ungranted call must produce the
+  // standard "capability … required for tool …" denial plus its audit row, not
+  // a confusing "unknown tool". Visibility is attenuated only for draft-write
+  // sessions (DRAFT_WRITE_EXCLUDED_TOOLS above).
+  if (
+    isToolVisibleForClaims(SECRETS_LIST_DEFINITIONS_TOOL, claims) &&
+    isToolVisibleForClaims(SECRETS_PROVISION_TOOL, claims)
+  ) {
+    const secretsPort: SecretsPort = secretService(db);
+    const secretsDeps = {
+      claims,
+      secrets: secretsPort,
+      recordActivity: (input: Parameters<typeof logActivity>[1]) => logActivity(db, input),
+    };
+
+    server.tool(
+      SECRETS_LIST_DEFINITIONS_TOOL,
+      "List the company's user-secret definitions and whether YOU have a value stored for each. Never returns secret values.",
+      {
+        companyId: z.string().uuid().describe("Company ID (must match the session's company)"),
+      },
+      async ({ companyId }) => {
+        return handleWithAudit(db, claims, SECRETS_LIST_DEFINITIONS_TOOL, CAP_SECRETS_WRITE, async () => {
+          const result = await listSecretDefinitions(secretsDeps, { companyId });
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify(result) }],
+          };
+        });
+      },
+    );
+
+    server.tool(
+      SECRETS_PROVISION_TOOL,
+      "Mint a credential at its provider AND store it in the secret store in one server-side step. " +
+        "Returns metadata only — the value never leaves the server. Provisioning a definition that " +
+        "already has a value rotates it to a new version.",
+      {
+        companyId: z.string().uuid().describe("Company ID (must match the session's company)"),
+        definitionKey: z
+          .string()
+          .min(1)
+          .describe("User-secret definition key, e.g. PENPOT_ACCESS_TOKEN"),
+        provider: z
+          .enum(MINT_PROVIDERS)
+          .optional()
+          .describe("Mint provider; inferred from the definition key when omitted"),
+        tokenName: z
+          .string()
+          .min(1)
+          .optional()
+          .describe("Label shown on the provider side; defaults to an identifiable cockpit label"),
+        expiresAt: z
+          .string()
+          .optional()
+          .describe(
+            "ISO-8601 expiry. Omit (the default) for a non-expiring, revocable credential — " +
+              "an agent credential that expires mid-run fails as a confusing 401 inside somebody else's work.",
+          ),
+      },
+      async ({ companyId, definitionKey, provider, tokenName, expiresAt }) => {
+        return handleWithAudit(db, claims, SECRETS_PROVISION_TOOL, CAP_SECRETS_WRITE, async () => {
+          const result = await provisionSecret(secretsDeps, {
+            companyId,
+            definitionKey,
+            provider,
+            tokenName,
+            expiresAt,
+          });
+          // `result` is a ProvisionResult and nothing else — see its doc
+          // comment. Do not widen this to spread a service row.
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify(result) }],
           };
         });
       },

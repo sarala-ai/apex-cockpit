@@ -15,6 +15,7 @@ import {
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
+import { InProcessAuthClient } from "../auth/auth-client.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
@@ -139,6 +140,7 @@ interface ActorMiddlewareOptions {
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
+  const authClient = opts.resolveSession ? new InProcessAuthClient(db, opts.resolveSession) : null;
   return async (req, _res, next) => {
     req.actor =
       opts.deploymentMode === "local_trusted"
@@ -156,7 +158,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
 
     const authHeader = req.header("authorization");
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {
-      if (opts.deploymentMode === "authenticated" && opts.resolveSession) {
+      if (opts.deploymentMode === "authenticated" && authClient) {
         const cloudTenantActor = await resolveCloudTenantActor(db, req);
         if (cloudTenantActor) {
           req.actor = {
@@ -167,46 +169,16 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           return;
         }
 
-        let session: BetterAuthSessionResult | null = null;
-        try {
-          session = await opts.resolveSession(req);
-        } catch (err) {
-          logger.warn(
-            { err, method: req.method, url: req.originalUrl },
-            "Failed to resolve auth session from request headers",
-          );
-        }
-        if (session?.user?.id) {
-          const userId = session.user.id;
-          const [roleRow, memberships] = await Promise.all([
-            db
-              .select({ id: instanceUserRoles.id })
-              .from(instanceUserRoles)
-              .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")))
-              .then((rows) => rows[0] ?? null),
-            db
-              .select({
-                companyId: companyMemberships.companyId,
-                membershipRole: companyMemberships.membershipRole,
-                status: companyMemberships.status,
-              })
-              .from(companyMemberships)
-              .where(
-                and(
-                  eq(companyMemberships.principalType, "user"),
-                  eq(companyMemberships.principalId, userId),
-                  eq(companyMemberships.status, "active"),
-                ),
-              ),
-          ]);
+        const human = await authClient.resolveHuman(req);
+        if (human) {
           req.actor = {
             type: "board",
-            userId,
-            userName: session.user.name ?? null,
-            userEmail: session.user.email ?? null,
-            companyIds: memberships.map((row) => row.companyId),
-            memberships,
-            isInstanceAdmin: Boolean(roleRow),
+            userId: human.userId,
+            userName: human.userName,
+            userEmail: human.userEmail,
+            companyIds: human.companyIds,
+            memberships: human.memberships,
+            isInstanceAdmin: human.isInstanceAdmin,
             runId: runIdHeader ?? undefined,
             source: "session",
           };

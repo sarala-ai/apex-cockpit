@@ -89,6 +89,42 @@ export const ToolAttr = {
   success: "apex.tool.success",
 } as const;
 
+/**
+ * Provenance — producer identity carried by every artifact (APEX-146).
+ * Emitted on the artifact span and stored in the DB row. Answers Q2 of the
+ * cohesion invariant evaluator: "does the artifact carry provenance?"
+ */
+export const Provenance = {
+  producerKind: "apex.provenance.producer_kind", // 'agent' | 'user' | 'workflow'
+  producerId: "apex.provenance.producer_id",
+  producerVersion: "apex.provenance.producer_version",
+} as const;
+
+/**
+ * Lineage — derivation edge attributes.
+ * Written to the `lineage_edges` table and emitted as span events on the
+ * producing run. Answers Q3 of the cohesion invariant evaluator: "does the
+ * artifact emit a lineage edge?"
+ *
+ * DIRECTION: every edge points source -> derived. `from` is the artifact that
+ * came first (the cause/input); `to` is what was derived from it. So a run
+ * walks its provenance forward by chasing from->to, and answers "where did
+ * this come from?" by chasing to->from. Emitting an edge reversed strands the
+ * walk. `edgeType` names the relation from the source's side:
+ *   prompt_version --evaluated--> eval_result
+ *   eval_result    --caused_by--> eval_lesson
+ *   eval_lesson    --amends-----> eval_amendment  (read: the amendment amends in response to the lesson)
+ *   issue          --spawned----> heartbeat_run
+ *   heartbeat_run  --produced---> <artifact>
+ */
+export const LineageEdge = {
+  fromKind: "apex.lineage.from_kind",
+  fromId: "apex.lineage.from_id",
+  toKind: "apex.lineage.to_kind",
+  toId: "apex.lineage.to_id",
+  edgeType: "apex.lineage.edge_type",
+} as const;
+
 /** eval attributes. */
 export const EvalAttr = {
   scenario: "apex.eval.scenario",
