@@ -9,6 +9,22 @@ export const kubernetesProviderConfigSchema = z
     inCluster: z.boolean().default(false),
     kubeconfig: z.string().optional(),
 
+    /**
+     * Credential-free GKE access: connect with the server's own Google
+     * identity (Cloud Run/GCE service account) via short-lived tokens from
+     * the metadata server. Nothing here is a secret — endpoint and CA are
+     * public cluster facts; authorization lives in IAM/RBAC grants to the
+     * service account. Mutually exclusive with `kubeconfig`/`inCluster`.
+     */
+    gkeCluster: z
+      .object({
+        /** GKE control-plane endpoint (host or https URL). */
+        endpoint: z.string().min(1),
+        /** Base64 cluster CA certificate (clusterCaCertificate). */
+        caData: z.string().min(1),
+      })
+      .optional(),
+
     namespacePrefix: z.string().regex(/^[a-z0-9-]{1,32}$/).default("paperclip-"),
     companySlug: z.string().regex(/^[a-z0-9-]{1,32}$/).optional(),
 
@@ -68,10 +84,10 @@ export const kubernetesProviderConfigSchema = z
     backend: z.enum(["sandbox-cr", "job"]).default("sandbox-cr"),
   })
   .refine(
-    (cfg) => cfg.inCluster || cfg.kubeconfig,
+    (cfg) => cfg.inCluster || cfg.kubeconfig || cfg.gkeCluster,
     {
       message:
-        "kubernetes provider requires one of `inCluster` or `kubeconfig`",
+        "kubernetes provider requires one of `inCluster`, `kubeconfig`, or `gkeCluster`",
     },
   );
 

@@ -163,9 +163,10 @@ const plugin = definePlugin({
     const namespace = deriveTenantNamespace(config, params.companyId);
 
     try {
-      const kc = createKubeConfig({
+      const kc = await createKubeConfig({
         inCluster: config.inCluster,
         kubeconfig: config.kubeconfig,
+        gkeCluster: config.gkeCluster,
       });
       const clients = makeKubeClients(kc);
       // Reachability check: list pods in the tenant namespace. If the namespace
@@ -231,9 +232,10 @@ const plugin = definePlugin({
       }
     }
 
-    const kc = createKubeConfig({
+    const kc = await createKubeConfig({
       inCluster: config.inCluster,
       kubeconfig: config.kubeconfig,
+      gkeCluster: config.gkeCluster,
     });
     const clients = makeKubeClients(kc);
 
@@ -362,9 +364,10 @@ const plugin = definePlugin({
         ? params.leaseMetadata.secretName
         : `${params.providerLeaseId}-env`;
 
-    const kc = createKubeConfig({
+    const kc = await createKubeConfig({
       inCluster: config.inCluster,
       kubeconfig: config.kubeconfig,
+      gkeCluster: config.gkeCluster,
     });
     const clients = makeKubeClients(kc);
 
@@ -444,9 +447,10 @@ const plugin = definePlugin({
         ? params.leaseMetadata.namespace
         : deriveTenantNamespace(config, params.companyId);
 
-    const kc = createKubeConfig({
+    const kc = await createKubeConfig({
       inCluster: config.inCluster,
       kubeconfig: config.kubeconfig,
+      gkeCluster: config.gkeCluster,
     });
     const clients = makeKubeClients(kc);
 
@@ -501,9 +505,10 @@ const plugin = definePlugin({
     uploadInterceptorsByLease.delete(params.providerLeaseId);
     readySandboxesByLease.delete(params.providerLeaseId);
 
-    const kc = createKubeConfig({
+    const kc = await createKubeConfig({
       inCluster: config.inCluster,
       kubeconfig: config.kubeconfig,
+      gkeCluster: config.gkeCluster,
     });
     const clients = makeKubeClients(kc);
 
@@ -544,9 +549,10 @@ const plugin = definePlugin({
         ? (lease.metadata.backend as "sandbox-cr" | "job")
         : config.backend;
 
-    const kc = createKubeConfig({
+    const kc = await createKubeConfig({
       inCluster: config.inCluster,
       kubeconfig: config.kubeconfig,
+      gkeCluster: config.gkeCluster,
     });
     const clients = makeKubeClients(kc);
 

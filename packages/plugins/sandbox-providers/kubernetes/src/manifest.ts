@@ -31,6 +31,16 @@ const manifest: PaperclipPluginManifestV1 = {
             description:
               "When true, the plugin uses the in-pod ServiceAccount credentials. Requires paperclip-server to be running inside the target cluster.",
           },
+          gkeCluster: {
+            type: "object",
+            description:
+              "Credential-free GKE access using the server's own Google service-account identity (short-lived metadata-server tokens). Endpoint + CA are public cluster facts, not secrets; authorization is the IAM/RBAC grant to the service account.",
+            properties: {
+              endpoint: { type: "string", description: "GKE control-plane endpoint (host or https URL)." },
+              caData: { type: "string", description: "Base64 cluster CA certificate (clusterCaCertificate)." },
+            },
+            required: ["endpoint", "caData"],
+          },
           kubeconfig: {
             type: "string",
             format: "secret-ref",
@@ -112,6 +122,7 @@ const manifest: PaperclipPluginManifestV1 = {
         anyOf: [
           { required: ["inCluster"] },
           { required: ["kubeconfig"] },
+          { required: ["gkeCluster"] },
         ],
       },
     },
