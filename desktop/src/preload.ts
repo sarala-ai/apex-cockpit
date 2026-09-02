@@ -83,6 +83,20 @@ const apexDesktop = {
     },
   },
 
+  // The annual Claude subscription ceremony, desktop-triggered: main spawns
+  // `apex claude connect` and opens its guided page in-app. Consents stay
+  // with the human; everything around them is choreography.
+  claudeConnect: {
+    start: (opts: { companyId: string; definitionKey?: string }): Promise<RunnerStartResult> =>
+      ipcRenderer.invoke("claude:connect", opts),
+    onOutput: (listener: (chunk: string) => void): void => {
+      ipcRenderer.on("claude:connect:output", (_event, chunk: string) => listener(chunk));
+    },
+    onExit: (listener: (info: { code: number | null }) => void): void => {
+      ipcRenderer.on("claude:connect:exit", (_event, info: { code: number | null }) => listener(info));
+    },
+  },
+
   runner: {
     start: (opts?: { command?: string; args?: string[] }): Promise<RunnerStartResult> =>
       ipcRenderer.invoke("runner:start", opts),

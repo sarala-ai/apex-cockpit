@@ -548,9 +548,68 @@ function StepBody({
       return <GuidedStep done={done} onRecheck={onRecheck} rechecking={rechecking} />;
     case "models":
       return <ModelsStep onRecheck={onRecheck} rechecking={rechecking} />;
+    case "claudeSession":
+      return (
+        <ClaudeSessionStep
+          companyId={selectedCompanyId}
+          done={done}
+          onRecheck={onRecheck}
+          rechecking={rechecking}
+        />
+      );
     case "governance":
       return <GuidedStep done={done} onRecheck={onRecheck} rechecking={rechecking} />;
   }
+}
+
+/** The desktop bridge, when the cockpit renders inside the APEX desktop app. */
+type ApexDesktopBridge = {
+  claudeConnect?: {
+    start: (opts: { companyId: string }) => Promise<{ ok: boolean; error?: string }>;
+  };
+};
+
+/**
+ * The annual Claude-subscription ceremony step. Inside the desktop app the
+ * button triggers the whole guided flow in-app (main process spawns
+ * `apex claude connect`, opens its page); in a plain browser it falls back to
+ * the copy-paste command. The two consent acts stay human either way.
+ */
+function ClaudeSessionStep({
+  companyId,
+  done,
+  onRecheck,
+  rechecking,
+}: {
+  companyId: string | null;
+  done: boolean;
+  onRecheck: () => void;
+  rechecking: boolean;
+}) {
+  const bridge = (window as unknown as { apexDesktop?: ApexDesktopBridge }).apexDesktop;
+  const canTrigger = Boolean(bridge?.claudeConnect && companyId);
+  const [startError, setStartError] = useState<string | null>(null);
+  const command = `apex claude connect --cockpit-url ${window.location.origin} --company-id ${companyId ?? "<company>"}`;
+  return (
+    <div className="space-y-3">
+      {canTrigger && (
+        <Button
+          size="sm"
+          variant={done ? "outline" : "default"}
+          onClick={() => {
+            setStartError(null);
+            void bridge!.claudeConnect!.start({ companyId: companyId! }).then((r) => {
+              if (!r.ok) setStartError(r.error ?? "failed to start");
+            });
+          }}
+        >
+          Connect Claude subscription…
+        </Button>
+      )}
+      {startError && <p className="text-xs text-rose-500">{startError}</p>}
+      <GuidedStep command={canTrigger ? undefined : command} done={done} onRecheck={onRecheck} rechecking={rechecking} />
+    </div>
+  );
 }
 
 /**

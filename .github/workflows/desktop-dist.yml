@@ -1,0 +1,38 @@
+name: Desktop distributables
+
+# Builds the APEX desktop app installers. UNSIGNED until the operator supplies
+# signing material (Apple Developer ID cert + notarization key, Windows cert)
+# as the secrets electron-builder.yml documents — the workflow passes them
+# through when present and skips signing when absent.
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "desktop-v*"
+
+jobs:
+  dist:
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build distributable
+        working-directory: desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: |
+          npm ci
+          npm run dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apex-desktop-${{ matrix.os }}
+          path: |
+            desktop/out/*.dmg
+            desktop/out/*.AppImage
+            desktop/out/*.deb
+          if-no-files-found: error

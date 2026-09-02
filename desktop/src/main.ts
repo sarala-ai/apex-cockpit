@@ -344,6 +344,76 @@ function installCockpitBearerInjector(): void {
   });
 }
 
+// ---- Claude session ceremony --------------------------------------------
+// Triggered from the cockpit's setup wizard when it runs inside the desktop:
+// spawns `apex claude connect` (the browser-completion flow) and opens its
+// localhost page in an in-app window. Cockpit-origin links inside that page
+// stay in-app (this session injects the board Bearer, so the CLI-access
+// approval is a signed-in one-click); Anthropic links go to the system
+// browser where the operator's claude.ai session lives. The two consent acts
+// stay human — this only removes every step around them.
+let claudeConnectProcess: ChildProcessWithoutNullStreams | null = null;
+
+ipcMain.handle(
+  "claude:connect",
+  (_event: IpcMainInvokeEvent, opts: { companyId: string; definitionKey?: string }) => {
+    if (claudeConnectProcess) {
+      return { ok: false, error: "A connect ceremony is already in progress." };
+    }
+    if (!opts?.companyId) {
+      return { ok: false, error: "companyId is required." };
+    }
+    const cfg = loadConfig();
+    const args = [
+      "claude",
+      "connect",
+      "--cockpit-url",
+      cfg.cockpitUrl,
+      "--company-id",
+      opts.companyId,
+      ...(opts.definitionKey ? ["--definition-key", opts.definitionKey] : []),
+    ];
+    try {
+      const child = spawn("apex", args, { stdio: "pipe" });
+      claudeConnectProcess = child;
+      let opened = false;
+      const watch = (chunk: Buffer) => {
+        const text = chunk.toString("utf-8");
+        mainWindow?.webContents.send("claude:connect:output", text);
+        const m = text.match(/http:\/\/127\.0\.0\.1:\d+\//);
+        if (m && !opened) {
+          opened = true;
+          const flowWindow = new BrowserWindow({
+            width: 760,
+            height: 640,
+            title: "Connect Claude subscription",
+            webPreferences: { contextIsolation: true, nodeIntegration: false },
+          });
+          const cockpitOrigin = new URL(cfg.cockpitUrl).origin;
+          flowWindow.webContents.setWindowOpenHandler(({ url }) => {
+            if (new URL(url).origin === cockpitOrigin) {
+              return { action: "allow" }; // in-app: session carries the board Bearer
+            }
+            void shell.openExternal(url); // Anthropic → system browser (claude.ai session)
+            return { action: "deny" };
+          });
+          void flowWindow.loadURL(m[0]);
+        }
+      };
+      child.stdout.on("data", watch);
+      child.stderr.on("data", watch);
+      child.on("exit", (code: number | null) => {
+        mainWindow?.webContents.send("claude:connect:exit", { code });
+        claudeConnectProcess = null;
+      });
+      return { ok: true, pid: child.pid };
+    } catch (err) {
+      claudeConnectProcess = null;
+      return { ok: false, error: `Failed to start ceremony: ${(err as Error).message}` };
+    }
+  }
+);
+
 // ---- Runner supervision --------------------------------------------------
 // The runner is a single supervised child process. Only one instance is
 // tracked at a time; starting a new one while a previous one is alive is
