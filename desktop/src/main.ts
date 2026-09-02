@@ -344,6 +344,27 @@ function installCockpitBearerInjector(): void {
   });
 }
 
+// GUI-launched macOS apps don't inherit the shell PATH, so bare "apex" is
+// ENOENT even when pipx installed it. Resolve against the usual install
+// locations, falling back to PATH for dev-shell launches.
+function resolveApexBinary(): string {
+  const home = app.getPath("home");
+  const candidates = [
+    path.join(home, ".local", "bin", "apex"),
+    "/opt/homebrew/bin/apex",
+    "/usr/local/bin/apex",
+  ];
+  for (const candidate of candidates) {
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {
+      /* try next */
+    }
+  }
+  return "apex";
+}
+
 // ---- Claude session ceremony --------------------------------------------
 // Triggered from the cockpit's setup wizard when it runs inside the desktop:
 // spawns `apex claude connect` (the browser-completion flow) and opens its
@@ -374,8 +395,23 @@ ipcMain.handle(
       ...(opts.definitionKey ? ["--definition-key", opts.definitionKey] : []),
     ];
     try {
-      const child = spawn("apex", args, { stdio: "pipe" });
+      // The app already holds the operator's board session — hand it to the
+      // child so the ceremony has no cockpit-approval hop (the CLI skips its
+      // device challenge when a token is present). Anthropic's approve+paste
+      // remain: that consent is theirs by design.
+      const env = { ...process.env, ...(cachedBoardToken ? { PAPERCLIP_API_TOKEN: cachedBoardToken } : {}) };
+      const child = spawn(resolveApexBinary(), args, { stdio: "pipe", env });
       claudeConnectProcess = child;
+      // spawn failures (ENOENT etc.) surface as an async "error" event — an
+      // unhandled one crashes the whole app.
+      child.on("error", (err: Error) => {
+        mainWindow?.webContents.send(
+          "claude:connect:output",
+          `failed to start apex: ${err.message} — is apex-core installed (pipx install apex-core)?\n`,
+        );
+        mainWindow?.webContents.send("claude:connect:exit", { code: -1 });
+        claudeConnectProcess = null;
+      });
       let opened = false;
       const watch = (chunk: Buffer) => {
         const text = chunk.toString("utf-8");
@@ -429,8 +465,13 @@ ipcMain.handle(
     const args = opts?.args ?? [];
 
     try {
-      const child = spawn(command, args, { stdio: "pipe" });
+      const child = spawn(command === "apex" ? resolveApexBinary() : command, args, { stdio: "pipe" });
       runnerProcess = child;
+      child.on("error", (err: Error) => {
+        mainWindow?.webContents.send("runner:stderr", `failed to start ${command}: ${err.message}\n`);
+        mainWindow?.webContents.send("runner:exit", { code: -1, signal: null });
+        runnerProcess = null;
+      });
 
       child.stdout.on("data", (chunk: Buffer) => {
         mainWindow?.webContents.send("runner:stdout", chunk.toString("utf-8"));
