@@ -40,6 +40,7 @@ export type StepKey =
   | "mcpServers"
   | "connect"
   | "models"
+  | "claudeSession"
   | "governance";
 
 interface StepDef {
@@ -104,6 +105,11 @@ const STEPS: StepDef[] = [
       (s.models.claude.subscriptionProviderRegistered || s.models.claude.apiKeyProviderRegistered) &&
       s.models.aliasesRegistered.length > 0,
   },
+  {
+    key: "claudeSession",
+    title: "Connect Claude subscription (remote sessions)",
+    done: (s) => s.claudeSession?.connected === true,
+  },
   { key: "governance", title: "Per-tool governance", optional: true, done: () => false },
 ];
 
@@ -124,6 +130,7 @@ const CLOUD_STEP_KEYS = new Set<StepKey>([
   "gateway",
   "mcpServers",
   "connect",
+  "claudeSession",
 ]);
 
 /** Roles that DON'T provision/execute → cloud steps don't apply.

@@ -71,6 +71,7 @@ function toIndicators(s: SetupState): Indicator[] {
     { key: "oauth", label: "OAuth", tone: s.oauthClient.configured ? "ok" : "warn" },
     { key: "gateway", label: "Gateway", tone: s.gateway.reachable ? "ok" : "warn" },
     { key: "mcp", label: "MCP", value: String(mcpCount), tone: mcpCount > 0 ? "ok" : "muted" },
+    { key: "claude", label: "Claude", tone: s.claudeSession?.connected ? "ok" : "warn" },
   ];
 }
 

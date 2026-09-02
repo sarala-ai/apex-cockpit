@@ -47,6 +47,10 @@ export interface SetupState {
   mcpServers: { registered: string[] };
   /** Model access — how model calls are paid for and routed (APEX-115). */
   models: ModelAccessState;
+  /** Remote-claude credential presence for the signed-in operator (annual
+   *  subscription ceremony, or a company API key). Detection only — the
+   *  consent itself is manual by Anthropic design. */
+  claudeSession: { connected: boolean; source: "subscription_token" | "company_api_key" | null; setAt: string | null };
 }
 
 export const setupStateApi = {

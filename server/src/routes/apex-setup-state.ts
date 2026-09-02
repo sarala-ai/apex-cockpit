@@ -13,7 +13,7 @@
 
 import { Router } from "express";
 import { and, eq } from "drizzle-orm";
-import { type Db, orgs, companies, cloudScopeBindings, orgMemberships } from "@paperclipai/db";
+import { type Db, orgs, companies, cloudScopeBindings, orgMemberships, companySecrets, userSecretDefinitions } from "@paperclipai/db";
 import { checkAuth } from "../apex/setup/cloud.js";
 import { run } from "../apex/exec.js";
 import { assertBoardOrAgent } from "./authz.js";
@@ -53,6 +53,11 @@ export interface SetupState {
    *  generated artifact presence (is the subscription bridge registered in the
    *  gateway? are the apex-* aliases seeded?). */
   models: ModelAccessState;
+  /** Whether the signed-in operator can power remote claude sessions: their
+   *  per-user CLAUDE_CODE_OAUTH_TOKEN slot is filled (subscription ceremony —
+   *  see .apex/GUIDE-claude-session-setup.md) or a company ANTHROPIC_API_KEY
+   *  exists. Consent is manual by Anthropic design; this only DETECTS it. */
+  claudeSession: { connected: boolean; source: "subscription_token" | "company_api_key" | null; setAt: string | null };
 }
 
 export interface SetupStateProbes {
@@ -66,6 +71,7 @@ export interface SetupStateProbes {
   gateway: () => Promise<SetupState["gateway"]>;
   mcpServers: (gatewayReachable: boolean) => Promise<SetupState["mcpServers"]>;
   models: () => Promise<SetupState["models"]>;
+  claudeSession: (userId: string | null) => Promise<SetupState["claudeSession"]>;
 }
 
 const gatewayUrl = (): string =>
@@ -86,6 +92,36 @@ const _sharedGatewayClient = new GatewayClient();
 /** Real probes over the live DB / gcloud / gateway. Each is self-contained. */
 export function defaultProbes(db: Db): SetupStateProbes {
   return {
+    async claudeSession(userId) {
+      if (!userId) return { connected: false, source: null, setAt: null };
+      const sub = await db
+        .select({ updatedAt: companySecrets.updatedAt })
+        .from(companySecrets)
+        .innerJoin(userSecretDefinitions, eq(companySecrets.userSecretDefinitionId, userSecretDefinitions.id))
+        .where(and(
+          eq(companySecrets.scope, "user"),
+          eq(companySecrets.ownerUserId, userId),
+          eq(companySecrets.status, "active"),
+          eq(userSecretDefinitions.key, "CLAUDE_CODE_OAUTH_TOKEN"),
+        ))
+        .limit(1);
+      if (sub.length > 0) {
+        return { connected: true, source: "subscription_token", setAt: sub[0].updatedAt ? new Date(sub[0].updatedAt).toISOString() : null };
+      }
+      const apiKey = await db
+        .select({ updatedAt: companySecrets.updatedAt })
+        .from(companySecrets)
+        .where(and(
+          eq(companySecrets.scope, "company"),
+          eq(companySecrets.key, "ANTHROPIC_API_KEY"),
+          eq(companySecrets.status, "active"),
+        ))
+        .limit(1);
+      if (apiKey.length > 0) {
+        return { connected: true, source: "company_api_key", setAt: apiKey[0].updatedAt ? new Date(apiKey[0].updatedAt).toISOString() : null };
+      }
+      return { connected: false, source: null, setAt: null };
+    },
     async auth() {
       const status = await checkAuth();
       const gcloud: Health = status.google.live
@@ -219,11 +255,12 @@ export function apexSetupStateRoutes(db: Db, overrides?: Partial<SetupStateProbe
       openrouter: { configured: false },
       aliasesRegistered: [],
     };
-    const [companiesState, mcpServers, membership, models] = await Promise.all([
+    const [companiesState, mcpServers, membership, models, claudeSession] = await Promise.all([
       safe(() => probes.companies(resolvedOrgId), { count: 0, ids: [] }),
       safe(() => probes.mcpServers(gateway.reachable), { registered: [] }),
       safe(() => probes.membership(req.actor?.userId ?? null, resolvedOrgId), { present: false }),
       safe(() => probes.models(), defaultModelsState),
+      safe(() => probes.claudeSession(req.actor?.userId ?? null), { connected: false, source: null, setAt: null } as const),
     ]);
 
     const state: SetupState = {
@@ -237,6 +274,7 @@ export function apexSetupStateRoutes(db: Db, overrides?: Partial<SetupStateProbe
       gateway,
       mcpServers,
       models,
+      claudeSession,
     };
     res.json(state);
   });

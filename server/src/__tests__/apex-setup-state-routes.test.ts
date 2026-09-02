@@ -37,10 +37,19 @@ function appWith(overrides: Partial<SetupStateProbes>) {
 
 describe("GET /setup/state", () => {
   it("returns the full assembled snapshot when every probe succeeds", async () => {
-    const res = await request(appWith({})).get("/setup/state");
+    const res = await request(
+      appWith({
+        models: async () => ({
+          claude: { mode: "none", installed: false, subscriptionProviderRegistered: false, apiKeyProviderRegistered: false },
+          openrouter: { configured: false },
+          aliasesRegistered: [],
+        }),
+      }),
+    ).get("/setup/state");
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       auth: { gcloud: "ok", gh: "ok", adc: "ok" },
+      claudeSession: { connected: false, source: null, setAt: null },
       org: { present: true, id: "org-1", posture: "individual" },
       membership: { present: true, role: "owner", status: "active" },
       companies: { count: 2, ids: ["c1", "c2"] },
@@ -54,6 +63,11 @@ describe("GET /setup/state", () => {
       oauthClient: { configured: true },
       gateway: { reachable: true },
       mcpServers: { registered: ["gworkspace"] },
+      models: {
+        claude: { mode: "none", installed: false, subscriptionProviderRegistered: false, apiKeyProviderRegistered: false },
+        openrouter: { configured: false },
+        aliasesRegistered: [],
+      },
     });
   });
 
