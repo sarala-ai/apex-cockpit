@@ -100,7 +100,9 @@ function createWindow(): void {
   mainWindow.webContents.on("console-message", (_e, level, message, line, sourceId) => {
     if (level >= 2) console.error(`[renderer] ${message} (${sourceId}:${line})`);
   });
-  if (!app.isPackaged) {
+  // Dev-launch DevTools are opt-in — auto-opening them on every start reads
+  // as a broken app to anyone not actively debugging the renderer.
+  if (!app.isPackaged && process.env.APEX_DESKTOP_DEVTOOLS === "1") {
     mainWindow.webContents.openDevTools({ mode: "detach" });
   }
 
