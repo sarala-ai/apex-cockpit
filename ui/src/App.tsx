@@ -452,8 +452,18 @@ export function App() {
           <Route path="onboarding" element={<OnboardingRoutePage />} />
           {/* Top-level setup wizard — reachable with zero companies/org (the
               identity-first bootstrap entry). The company-scoped
-              `/{issuePrefix}/setup` mount still exists for in-company setup. */}
-          <Route path="setup" element={<SetupWizard />} />
+              `/{issuePrefix}/setup` mount still exists for in-company setup.
+              Standalone mounts get their own scroll container: the app shell
+              sets body{overflow:hidden} and outside <Layout> nothing else
+              scrolls — without this wrapper the wizard is unscrollable. */}
+          <Route
+            path="setup"
+            element={
+              <div className="h-screen overflow-y-auto">
+                <SetupWizard />
+              </div>
+            }
+          />
           <Route path="instance" element={<LegacySettingsRedirect />} />
           <Route path="instance/settings" element={<LegacySettingsRedirect />} />
           <Route path="instance/settings/*" element={<LegacySettingsRedirect />} />
