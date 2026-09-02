@@ -448,7 +448,10 @@ function StepBody({
 }) {
   // Identity is the hard gate — every org/cloud-scoped step is blocked until
   // gcloud + gh are both green. The identity step itself is never gated.
-  if (stepKey !== "auth" && !authReady) {
+  // The Claude ceremony's identity requirement is the signed-in cockpit
+  // session itself (the device-auth approval proves it) — not the machine's
+  // gcloud/gh state, which on a cloud cockpit describes the SERVER anyway.
+  if (stepKey !== "auth" && stepKey !== "claudeSession" && !authReady) {
     return (
       <div
         className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-600"
