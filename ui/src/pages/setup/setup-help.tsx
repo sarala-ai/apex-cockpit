@@ -41,7 +41,7 @@ export const STEP_HELP: Record<StepKey, StepHelp> = {
     purpose:
       "Remote sandbox sessions run claude AS YOU, on your Claude subscription. Anthropic requires a human consent for that credential — a ~60-second ceremony, once a year.",
     whatYoullDo: [
-      "In your own terminal, from `apex/`: run `bash .apex/scripts/mint-claude-session.sh`.",
+      "In your own terminal: run `apex claude connect --cockpit-url <this cockpit> --company-id <company>`.",
       "Approve the cockpit CLI-access page it opens (the browser profile where you're signed in here).",
       "Approve the Anthropic authorization page, and paste the shown code back into the terminal.",
       "This page flips to done automatically — the token lands in YOUR per-user secret slot and is injected per-run, then destroyed with each session.",
