@@ -691,6 +691,27 @@ export function secretService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
+  // Instance-wide fallback for OPERATOR credentials: a per-user secret value
+  // (e.g. CLAUDE_CODE_OAUTH_TOKEN — the operator's subscription token) belongs
+  // to the operator, not a company. When a run in one company needs it but the
+  // operator filled the slot under a different company, resolve their value for
+  // the same definition KEY from anywhere. Returns the value's own company so
+  // decryption uses the right key context.
+  async function getUserSecretValueAnyCompany(ownerUserId: string, definitionKey: string) {
+    return db
+      .select({ secret: companySecrets })
+      .from(companySecrets)
+      .innerJoin(userSecretDefinitions, eq(companySecrets.userSecretDefinitionId, userSecretDefinitions.id))
+      .where(and(
+        eq(companySecrets.scope, "user"),
+        eq(companySecrets.ownerUserId, ownerUserId),
+        eq(userSecretDefinitions.key, definitionKey),
+        ne(companySecrets.status, "deleted"),
+        ne(userSecretDefinitions.status, "deleted"),
+      ))
+      .then((rows) => rows[0]?.secret ?? null);
+  }
+
   async function getUserSecretValueById(companyId: string, ownerUserId: string, secretId: string) {
     const secret = await getById(secretId);
     if (!secret || secret.status === "deleted" || secret.scope !== "user") {
@@ -2600,11 +2621,16 @@ export function secretService(db: Db) {
           { code: "binding_not_allowed" },
         );
       }
-      const secret = await getUserSecretValue({
+      let secret = await getUserSecretValue({
         companyId,
         ownerUserId: responsibleUserId,
         definitionId: definition.id,
       });
+      // Operator-credential fallback: the value may live under another of the
+      // operator's companies (per-user secrets are instance-scoped in spirit).
+      if (!secret) {
+        secret = await getUserSecretValueAnyCompany(responsibleUserId, definition.key);
+      }
       if (!secret) {
         if (optionalBinding) return null;
         throw unprocessable("User secret value is not configured", {
@@ -2614,7 +2640,7 @@ export function secretService(db: Db) {
         });
       }
       const resolution = await resolveSecretValueInternal(
-        companyId,
+        secret.companyId,
         secret.id,
         input.version ?? "latest",
         {
