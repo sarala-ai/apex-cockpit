@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
+import { StatusBadge } from "@/apex/status-badge";
 import { secretsApi, type MyUserSecretEntry } from "../../api/secrets";
 import { queryKeys } from "../../lib/queryKeys";
 import { SetMyUserSecretDialog } from "./SetMyUserSecretDialog";
@@ -74,6 +75,11 @@ export function MissingUserSecretsBanner({
                 <span className="min-w-0 truncate">
                   <span className="font-medium text-foreground">{entry.definition.name}</span>{" "}
                   <code className="text-(length:--text-micro) text-muted-foreground">{entry.definition.key}</code>
+                  {entry.definition.scope === "org" ? (
+                    <StatusBadge variant="info" className="ml-1.5 text-(length:--text-nano)">
+                      Org
+                    </StatusBadge>
+                  ) : null}
                 </span>
                 <Button size="sm" onClick={() => setDialogFor(entry)}>
                   Set value

@@ -21,6 +21,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { StatusBadge } from "@/apex/status-badge";
 import { EmptyState } from "../../components/EmptyState";
 import { secretsApi } from "../../api/secrets";
 import { ApiError } from "../../api/client";
@@ -198,6 +199,11 @@ export function UserSecretDefinitionsTab({ companyId }: { companyId: string }) {
                       {definition.key}
                     </code>
                     <UserSecretChip />
+                    {definition.scope === "org" ? (
+                      <StatusBadge variant="info" className="text-(length:--text-nano)">
+                        Org
+                      </StatusBadge>
+                    ) : null}
                     <Badge
                       variant="outline"
                       className={cn("text-(length:--text-micro)", secretStatusTone(definition.status))}

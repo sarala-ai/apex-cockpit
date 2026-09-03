@@ -104,7 +104,8 @@ export function isSecretProviderClientError(error: unknown): error is SecretProv
 }
 
 export interface SecretProviderRuntimeContext {
-  companyId: string;
+  // Null for org-homed user values (no company to attribute the vault to).
+  companyId: string | null;
   secretId: string;
   secretKey: string;
   version: number;
@@ -118,7 +119,7 @@ export interface SecretProviderVaultRuntimeConfig {
 }
 
 export interface SecretProviderWriteContext {
-  companyId: string;
+  companyId: string | null;
   secretKey: string;
   secretName: string;
   version: number;

@@ -4,12 +4,16 @@ import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 import { companySecretProviderConfigs } from "./company_secret_provider_configs.js";
 import { userSecretDefinitions } from "./user_secret_definitions.js";
+import { orgs } from "./orgs.js";
 
 export const companySecrets = pgTable(
   "company_secrets",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
+    // Company secrets are company-homed. A user value lives in its
+    // definition's home: company, or org (companyId null, orgId set).
+    companyId: uuid("company_id").references(() => companies.id),
+    orgId: uuid("org_id").references(() => orgs.id, { onDelete: "cascade" }),
     scope: text("scope").notNull().default("company"),
     ownerUserId: text("owner_user_id"),
     userSecretDefinitionId: uuid("user_secret_definition_id").references(() => userSecretDefinitions.id, { onDelete: "set null" }),
@@ -48,19 +52,24 @@ export const companySecrets = pgTable(
     companyKeyUq: uniqueIndex("company_secrets_company_key_uq")
       .on(table.companyId, table.key)
       .where(sql`${table.scope} = 'company' and ${table.deletedAt} is null`),
+    orgOwnerIdx: index("company_secrets_org_owner_idx").on(table.orgId, table.ownerUserId),
     userDefinitionOwnerUq: uniqueIndex("company_secrets_user_definition_owner_uq")
-      .on(table.companyId, table.userSecretDefinitionId, table.ownerUserId)
+      .on(table.userSecretDefinitionId, table.ownerUserId)
       .where(sql`${table.scope} = 'user' and ${table.deletedAt} is null`),
     scopeShapeCheck: check(
       "company_secrets_scope_shape_check",
       sql`(
         ${table.scope} = 'company'
+        and ${table.companyId} is not null
+        and ${table.orgId} is null
         and ${table.ownerUserId} is null
         and ${table.userSecretDefinitionId} is null
       ) or (
         ${table.scope} = 'user'
         and ${table.ownerUserId} is not null
         and ${table.userSecretDefinitionId} is not null
+        and ((${table.companyId} is not null and ${table.orgId} is null)
+          or (${table.companyId} is null and ${table.orgId} is not null))
       )`,
     ),
   }),

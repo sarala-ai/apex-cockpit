@@ -63,6 +63,7 @@ export class SecretsToolError extends Error {
 export interface UserSecretDefinitionView {
   id: string;
   key: string;
+  scope?: string;
   name: string;
   description: string | null;
   status: string;
@@ -155,6 +156,8 @@ function requireOwnCompany(claims: CockpitMcpJwtClaims, companyId: string, tool:
 
 export interface SecretDefinitionSummary {
   key: string;
+  /** "org" slots are shared by every company in the org; "company" slots are local. */
+  scope: "company" | "org";
   name: string;
   description: string | null;
   status: string;
@@ -190,6 +193,7 @@ export async function listSecretDefinitions(
   return {
     definitions: rows.map(({ definition, secret }) => ({
       key: definition.key,
+      scope: definition.scope === "org" ? "org" : "company",
       name: definition.name,
       description: definition.description ?? null,
       status: definition.status,

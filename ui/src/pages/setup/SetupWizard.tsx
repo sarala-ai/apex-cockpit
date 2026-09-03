@@ -405,6 +405,7 @@ export function SetupWizard() {
                         <StepBody
                           stepKey={step.key}
                           selectedCompanyId={selectedCompanyId}
+                          orgId={state.org.id ?? null}
                           orgPresent={state.org.present}
                           done={step.done(state)}
                           authReady={authReady}
@@ -432,6 +433,7 @@ export function SetupWizard() {
 function StepBody({
   stepKey,
   selectedCompanyId,
+  orgId,
   orgPresent,
   done,
   authReady,
@@ -440,6 +442,7 @@ function StepBody({
 }: {
   stepKey: StepKey;
   selectedCompanyId: string | null;
+  orgId: string | null;
   orgPresent: boolean;
   done: boolean;
   authReady: boolean;
@@ -554,6 +557,7 @@ function StepBody({
     case "claudeSession":
       return (
         <ClaudeSessionStep
+          orgId={orgId}
           companyId={selectedCompanyId}
           done={done}
           onRecheck={onRecheck}
@@ -578,7 +582,7 @@ type ClaudeConnectState = {
 /** The desktop bridge, when the cockpit renders inside the APEX desktop app. */
 type ApexDesktopBridge = {
   claudeConnect?: {
-    start: (opts: { companyId: string }) => Promise<{ ok: boolean; error?: string }>;
+    start: (opts: { orgId?: string; companyId?: string }) => Promise<{ ok: boolean; error?: string }>;
     submitCode?: (code: string) => Promise<{ ok: boolean; error?: string }>;
     cancel?: () => Promise<{ ok: boolean }>;
     onState?: (listener: (state: ClaudeConnectState) => void) => () => void;
@@ -595,11 +599,13 @@ type ApexDesktopBridge = {
  * the copy-paste command. The two consent acts stay human either way.
  */
 export function ClaudeSessionStep({
+  orgId,
   companyId,
   done,
   onRecheck,
   rechecking,
 }: {
+  orgId?: string | null;
   companyId: string | null;
   done: boolean;
   onRecheck: () => void;
@@ -607,13 +613,15 @@ export function ClaudeSessionStep({
 }) {
   const bridge = (window as unknown as { apexDesktop?: ApexDesktopBridge }).apexDesktop;
   const connect = bridge?.claudeConnect;
-  const inline = Boolean(connect?.submitCode && connect?.onState && companyId);
+  const inline = Boolean(connect?.submitCode && connect?.onState && (orgId || companyId));
   const [phase, setPhase] = useState<"idle" | "running" | "delivered" | "failed">("idle");
   const [state, setState] = useState<ClaudeConnectState | null>(null);
   const [code, setCode] = useState("");
   const [submitted, setSubmitted] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
-  const command = `apex claude connect --cockpit-url ${window.location.origin} --company-id ${companyId ?? "<company>"}`;
+  const command = orgId
+    ? `apex claude connect --cockpit-url ${window.location.origin} --org-id ${orgId}`
+    : `apex claude connect --cockpit-url ${window.location.origin} --company-id ${companyId ?? "<company>"}`;
 
   useEffect(() => {
     if (!inline) return;
@@ -642,7 +650,7 @@ export function ClaudeSessionStep({
     setCode("");
     setSubmitted(false);
     setPhase("running");
-    void connect!.start({ companyId: companyId! }).then((r) => {
+    void connect!.start(orgId ? { orgId } : { companyId: companyId! }).then((r) => {
       if (!r.ok) {
         setStartError(r.error ?? "failed to start");
         setPhase("failed");

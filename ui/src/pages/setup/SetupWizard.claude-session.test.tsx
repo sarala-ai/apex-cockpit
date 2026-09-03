@@ -38,12 +38,19 @@ async function flushReact() {
 
 async function renderStep(
   container: HTMLDivElement,
-  props: { companyId: string | null; done: boolean; onRecheck: () => void; rechecking: boolean },
+  props: {
+    orgId?: string | null;
+    companyId: string | null;
+    done: boolean;
+    onRecheck: () => void;
+    rechecking: boolean;
+  },
 ): Promise<Root> {
   const root = createRoot(container);
   await act(async () => {
     root.render(
       <ClaudeSessionStep
+        orgId={props.orgId ?? null}
         companyId={props.companyId}
         done={props.done}
         onRecheck={props.onRecheck}
@@ -94,7 +101,25 @@ describe("ClaudeSessionStep", () => {
       });
 
       expect(container.textContent).toContain("apex claude connect --cockpit-url");
+      expect(container.textContent).toContain("--company-id company-1");
       expect(container.querySelector('[data-testid="claude-connect-start"]')).toBeNull();
+
+      await act(async () => {
+        root.unmount();
+      });
+    });
+
+    it("prefers --org-id over --company-id in the fallback command when an org is present", async () => {
+      const root = await renderStep(container, {
+        orgId: "org-1",
+        companyId: "company-1",
+        done: false,
+        onRecheck,
+        rechecking: false,
+      });
+
+      expect(container.textContent).toContain("--org-id org-1");
+      expect(container.textContent).not.toContain("--company-id");
 
       await act(async () => {
         root.unmount();
@@ -177,6 +202,25 @@ describe("ClaudeSessionStep", () => {
         .querySelector('[data-testid="claude-connect-anthropic"]')
         ?.closest("a");
       expect(link?.getAttribute("href")).toBe("https://claude.ai/oauth/x");
+
+      await act(async () => {
+        root.unmount();
+      });
+    });
+
+    it("calls start({ orgId }) instead of companyId when an org is present", async () => {
+      const root = await renderStep(container, {
+        orgId: "org-1",
+        companyId: "company-1",
+        done: false,
+        onRecheck,
+        rechecking: false,
+      });
+
+      click(container.querySelector('[data-testid="claude-connect-start"]'));
+      await flushReact();
+
+      expect(start).toHaveBeenCalledWith({ orgId: "org-1" });
 
       await act(async () => {
         root.unmount();

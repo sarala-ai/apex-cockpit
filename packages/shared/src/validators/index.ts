@@ -539,6 +539,7 @@ export {
   envConfigSchema,
   createSecretSchema,
   createUserSecretDefinitionSchema,
+  createOrgUserSecretDefinitionSchema,
   updateUserSecretDefinitionSchema,
   createUserSecretValueSchema,
   updateUserSecretValueSchema,

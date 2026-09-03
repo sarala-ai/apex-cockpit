@@ -230,4 +230,22 @@ export const secretsApi = {
     ),
   remoteImport: (companyId: string, data: RemoteImportInput) =>
     api.post<RemoteSecretImportResult>(`/companies/${companyId}/secrets/remote-import`, data),
+
+  // --- Org-scoped user secrets --------------------------------------------
+  // Same shapes as the company-scoped user-secret routes above, scoped to
+  // the org directly (definitions shared across every company in the org).
+  listOrgUserSecretDefinitions: (orgId: string) =>
+    api.get<UserSecretDefinition[]>(`/orgs/${orgId}/user-secret-definitions`),
+  createOrgUserSecretDefinition: (orgId: string, data: CreateUserSecretDefinitionInput) =>
+    api.post<UserSecretDefinition>(`/orgs/${orgId}/user-secret-definitions`, data),
+  listMyOrgUserSecrets: (orgId: string) =>
+    api.get<MyUserSecretEntry[]>(`/orgs/${orgId}/me/user-secrets`),
+  createMyOrgUserSecret: (orgId: string, data: UpsertMyUserSecretInput) =>
+    api.post<CompanySecret>(`/orgs/${orgId}/me/user-secrets`, data),
+  rotateMyOrgUserSecret: (orgId: string, secretId: string, value: string) =>
+    api.patch<CompanySecret>(`/orgs/${orgId}/me/user-secrets/${secretId}`, { value }),
+  deleteMyOrgUserSecret: (orgId: string, secretId: string) =>
+    api.patch<CompanySecret>(`/orgs/${orgId}/me/user-secrets/${secretId}`, {
+      status: "deleted" satisfies SecretStatus,
+    }),
 };

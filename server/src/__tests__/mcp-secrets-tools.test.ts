@@ -280,6 +280,7 @@ describe("secrets_list_definitions", () => {
     expect(result.definitions).toEqual([
       {
         key: "PENPOT_ACCESS_TOKEN",
+        scope: "company",
         name: "Penpot access token",
         description: "Design Engineer's Penpot credential",
         status: "active",
@@ -292,6 +293,7 @@ describe("secrets_list_definitions", () => {
       },
       {
         key: "SOME_MANUAL_TOKEN",
+        scope: "company",
         name: "Manual token",
         description: null,
         status: "active",

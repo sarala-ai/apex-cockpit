@@ -23,6 +23,8 @@ const storybookUserSecretDefinitions: UserSecretDefinition[] = [
   {
     id: "def-storybook-github",
     companyId: COMPANY_ID,
+    scope: "company",
+    orgId: null,
     key: "PERSONAL_GH_TOKEN",
     name: "Personal GitHub token",
     description: "Used when the responsible user's own repos must be reached.",
@@ -43,6 +45,8 @@ const storybookUserSecretDefinitions: UserSecretDefinition[] = [
   {
     id: "def-storybook-openai",
     companyId: COMPANY_ID,
+    scope: "company",
+    orgId: null,
     key: "USER_OPENAI_API_KEY",
     name: "User OpenAI API key",
     description: "Each member bills agent experiments to their own account.",

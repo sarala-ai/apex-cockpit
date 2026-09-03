@@ -153,6 +153,16 @@ export const createUserSecretDefinitionSchema = z.object({
 
 export type CreateUserSecretDefinition = z.infer<typeof createUserSecretDefinitionSchema>;
 
+// Org-scoped slots always use the instance provider: no vault selection.
+export const createOrgUserSecretDefinitionSchema = createUserSecretDefinitionSchema.pick({
+  key: true,
+  name: true,
+  description: true,
+  usageGuidance: true,
+});
+
+export type CreateOrgUserSecretDefinition = z.infer<typeof createOrgUserSecretDefinitionSchema>;
+
 export const updateUserSecretDefinitionSchema = z.object({
   name: z.string().trim().min(1).max(160).optional(),
   description: z.string().trim().max(500).optional().nullable(),

@@ -48,9 +48,14 @@ export type EnvBinding = string | EnvPlainBinding | EnvSecretRefBinding | EnvUse
 
 export type AgentEnvConfig = Record<string, EnvBinding>;
 
+/** Where a user secret definition (and its values) lives. */
+export type UserSecretDefinitionScope = "company" | "org";
+
 export interface CompanySecret {
   id: string;
-  companyId: string;
+  // Null for user values homed on an org-scoped definition (orgId set).
+  companyId: string | null;
+  orgId: string | null;
   scope: SecretScope;
   ownerUserId: string | null;
   userSecretDefinitionId: string | null;
@@ -76,7 +81,9 @@ export interface CompanySecret {
 
 export interface UserSecretDefinition {
   id: string;
-  companyId: string;
+  scope: UserSecretDefinitionScope;
+  companyId: string | null;
+  orgId: string | null;
   key: string;
   name: string;
   description: string | null;

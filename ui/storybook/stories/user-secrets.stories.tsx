@@ -25,7 +25,9 @@ if (typeof window !== "undefined") {
 function makeDefinition(overrides: Partial<UserSecretDefinition>): UserSecretDefinition {
   return {
     id: "def-x",
+    scope: "company",
     companyId: COMPANY_ID,
+    orgId: null,
     key: "USER_SECRET",
     name: "User secret",
     description: null,
@@ -50,6 +52,7 @@ function makeValue(definitionId: string): CompanySecret {
   return {
     id: `sec-${definitionId}`,
     companyId: COMPANY_ID,
+    orgId: null,
     scope: "user",
     ownerUserId: "user-me",
     userSecretDefinitionId: definitionId,

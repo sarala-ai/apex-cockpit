@@ -1,9 +1,11 @@
 import { Router } from "express";
-import type { Db } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
+import { type Db, orgMemberships } from "@paperclipai/db";
 import {
   createSecretProviderConfigSchema,
   createSecretSchema,
   createUserSecretDefinitionSchema,
+  createOrgUserSecretDefinitionSchema,
   createUserSecretValueSchema,
   remoteSecretImportPreviewSchema,
   remoteSecretImportSchema,
@@ -51,8 +53,10 @@ function userSecretDefinitionActivityActor(req: Parameters<typeof assertBoard>[0
   return { actorType: "system" as const, actorId: req.actor.source ?? "board" };
 }
 
-function isCompanyScopedSecret(secret: { scope?: string | null }) {
-  return (secret.scope ?? "company") === "company";
+function isCompanyScopedSecret<T extends { scope?: string | null; companyId: string | null }>(
+  secret: T,
+): secret is T & { companyId: string } {
+  return (secret.scope ?? "company") === "company" && secret.companyId !== null;
 }
 
 export function secretRoutes(db: Db) {
@@ -730,7 +734,7 @@ export function secretRoutes(db: Db) {
     );
 
     await logActivity(db, {
-      companyId: rotated.companyId,
+      companyId: existing.companyId,
       actorType: "user",
       actorId: req.actor.userId ?? "board",
       action: "secret.rotated",
@@ -776,7 +780,7 @@ export function secretRoutes(db: Db) {
     }
 
     await logActivity(db, {
-      companyId: updated.companyId,
+      companyId: existing.companyId,
       actorType: "user",
       actorId: req.actor.userId ?? "board",
       action: "secret.updated",
@@ -843,7 +847,7 @@ export function secretRoutes(db: Db) {
     }
 
     await logActivity(db, {
-      companyId: removed.companyId,
+      companyId: existing.companyId,
       actorType: "user",
       actorId: req.actor.userId ?? "board",
       action: "secret.deleted",
@@ -854,6 +858,112 @@ export function secretRoutes(db: Db) {
 
     res.json({ ok: true });
   });
+
+  // ---- Org-scoped operator credentials -------------------------------------
+  // Slots every company in the org resolves from (e.g. the Claude subscription
+  // token). Filled during org setup, before any company exists.
+
+  router.get("/orgs/:orgId/user-secret-definitions", async (req, res) => {
+    const orgId = req.params.orgId as string;
+    await assertOrgMember(req, orgId);
+    res.json(await svc.listOrgUserSecretDefinitions(orgId));
+  });
+
+  router.post(
+    "/orgs/:orgId/user-secret-definitions",
+    validate(createOrgUserSecretDefinitionSchema),
+    async (req, res) => {
+      const orgId = req.params.orgId as string;
+      await assertOrgMember(req, orgId, { admin: true });
+      const created = await svc.createOrgUserSecretDefinition(
+        orgId,
+        {
+          key: req.body.key,
+          name: req.body.name,
+          description: req.body.description,
+          usageGuidance: req.body.usageGuidance,
+        },
+        boardActorUser(req),
+      );
+      res.status(201).json(created);
+    },
+  );
+
+  router.get("/orgs/:orgId/me/user-secrets", async (req, res) => {
+    assertBoard(req);
+    const orgId = req.params.orgId as string;
+    await assertOrgMember(req, orgId);
+    res.json(await svc.listCurrentOrgUserSecretValues(orgId, currentUserId(req)));
+  });
+
+  router.post(
+    "/orgs/:orgId/me/user-secrets",
+    validate(createUserSecretValueSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const orgId = req.params.orgId as string;
+      await assertOrgMember(req, orgId);
+      const ownerUserId = currentUserId(req);
+      const created = await svc.createCurrentOrgUserSecretValue(
+        orgId,
+        ownerUserId,
+        { definitionKey: req.body.definitionKey, definitionId: req.body.definitionId, value: req.body.value },
+        { userId: ownerUserId, agentId: null },
+      );
+      res.status(201).json(created);
+    },
+  );
+
+  router.patch(
+    "/orgs/:orgId/me/user-secrets/:secretId",
+    validate(updateUserSecretValueSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const orgId = req.params.orgId as string;
+      const secretId = req.params.secretId as string;
+      await assertOrgMember(req, orgId);
+      const ownerUserId = currentUserId(req);
+      if (req.body.status === "deleted") {
+        res.json(await svc.removeCurrentOrgUserSecretValue(orgId, ownerUserId, secretId));
+        return;
+      }
+      if (req.body.value == null) {
+        res.status(422).json({ error: "Org-scoped user secrets accept a new value or status=deleted" });
+        return;
+      }
+      res.json(
+        await svc.rotateCurrentOrgUserSecretValue(
+          orgId,
+          ownerUserId,
+          secretId,
+          { value: req.body.value },
+          { userId: ownerUserId, agentId: null },
+        ),
+      );
+    },
+  );
+
+  // Org membership is the access boundary for org-scoped slots: any active
+  // member may fill their own value; owners/admins define slots.
+  async function assertOrgMember(
+    req: Parameters<typeof assertBoard>[0],
+    orgId: string,
+    options: { admin?: boolean } = {},
+  ) {
+    assertBoard(req);
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+    const userId = req.actor.userId;
+    if (!userId) throw unauthorized("Board session has no user identity");
+    const [row] = await db
+      .select({ role: orgMemberships.role, status: orgMemberships.status })
+      .from(orgMemberships)
+      .where(and(eq(orgMemberships.orgId, orgId), eq(orgMemberships.userId, userId)))
+      .limit(1);
+    if (row?.status !== "active") throw forbidden("Not a member of this org");
+    if (options.admin && row.role !== "owner" && row.role !== "admin") {
+      throw forbidden("Org owner or admin required");
+    }
+  }
 
   return router;
 }

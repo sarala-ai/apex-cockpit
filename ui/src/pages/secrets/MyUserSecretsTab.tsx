@@ -4,6 +4,7 @@ import type { CompanySecret } from "@paperclipai/shared";
 import { AlertCircle, KeyRound, Trash2, UserRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { StatusBadge } from "@/apex/status-badge";
 import { EmptyState } from "../../components/EmptyState";
 import { secretsApi, type MyUserSecretEntry } from "../../api/secrets";
 import { queryKeys } from "../../lib/queryKeys";
@@ -140,6 +141,11 @@ function MyUserSecretRow({
           <code className="rounded bg-muted px-1.5 py-0.5 text-(length:--text-micro) text-muted-foreground">
             {definition.key}
           </code>
+          {definition.scope === "org" ? (
+            <StatusBadge variant="info" className="text-(length:--text-nano)">
+              Org
+            </StatusBadge>
+          ) : null}
           {disabledDefinition ? (
             <Badge variant="outline" className="text-(length:--text-nano)">
               {definition.status}

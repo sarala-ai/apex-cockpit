@@ -99,7 +99,7 @@ const apexDesktop = {
   // the human; everything around them is choreography. The minted token never
   // crosses this bridge — the CLI delivers it to the cockpit slot directly.
   claudeConnect: {
-    start: (opts: { companyId: string; definitionKey?: string }): Promise<RunnerStartResult> =>
+    start: (opts: { orgId?: string; companyId?: string; definitionKey?: string }): Promise<RunnerStartResult> =>
       ipcRenderer.invoke("claude:connect", opts),
     submitCode: (code: string): Promise<OkResult> => ipcRenderer.invoke("claude:connect:code", code),
     cancel: (): Promise<OkResult> => ipcRenderer.invoke("claude:connect:cancel"),

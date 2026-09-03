@@ -410,12 +410,12 @@ function sendClaudeConnectState(state: Partial<ClaudeConnectState>): void {
 
 ipcMain.handle(
   "claude:connect",
-  (_event: IpcMainInvokeEvent, opts: { companyId: string; definitionKey?: string }) => {
+  (_event: IpcMainInvokeEvent, opts: { orgId?: string; companyId?: string; definitionKey?: string }) => {
     if (claudeConnectProcess) {
       return { ok: false, error: "A connect ceremony is already in progress." };
     }
-    if (!opts?.companyId) {
-      return { ok: false, error: "companyId is required." };
+    if (!opts?.orgId && !opts?.companyId) {
+      return { ok: false, error: "orgId or companyId is required." };
     }
     const cfg = loadConfig();
     const args = [
@@ -424,8 +424,7 @@ ipcMain.handle(
       "--emit-json",
       "--cockpit-url",
       cfg.cockpitUrl,
-      "--company-id",
-      opts.companyId,
+      ...(opts.orgId ? ["--org-id", opts.orgId] : ["--company-id", opts.companyId as string]),
       ...(opts.definitionKey ? ["--definition-key", opts.definitionKey] : []),
     ];
     try {

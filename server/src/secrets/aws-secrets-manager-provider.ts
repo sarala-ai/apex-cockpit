@@ -426,6 +426,13 @@ function loadAwsSecretsManagerConfig(): AwsSecretsManagerConfig {
   };
 }
 
+// Vault paths and tags are company-keyed; org-homed user values never reach a
+// vault provider (they use the instance provider), so a null here is a bug.
+function requireCompanyScopedContext(companyId: string | null): string {
+  if (!companyId) throw new Error("AWS Secrets Manager secrets are company-scoped; org-homed values are not supported");
+  return companyId;
+}
+
 function sanitizePathSegment(input: string) {
   return input
     .trim()
@@ -444,7 +451,7 @@ function buildManagedSecretName(
   return [
     sanitizePathSegment(config.prefix),
     sanitizePathSegment(config.deploymentId),
-    sanitizePathSegment(context.companyId),
+    sanitizePathSegment(requireCompanyScopedContext(context.companyId)),
     sanitizePathSegment(context.secretKey),
   ]
     .filter(Boolean)
@@ -536,7 +543,7 @@ function buildManagedSecretTags(
     { Key: "paperclip:managed-by", Value: "paperclip" },
     { Key: "paperclip:provider-owner", Value: config.providerOwnerTag },
     { Key: "paperclip:deployment-id", Value: config.deploymentId },
-    { Key: "paperclip:company-id", Value: context.companyId },
+    { Key: "paperclip:company-id", Value: requireCompanyScopedContext(context.companyId) },
     { Key: "paperclip:secret-key", Value: context.secretKey },
     { Key: "paperclip:environment", Value: config.environmentTag },
   ];

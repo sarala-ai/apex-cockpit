@@ -14,6 +14,7 @@ function secret(
     id,
     companyId: "company-storybook",
     scope: "company",
+    orgId: null,
     ownerUserId: null,
     userSecretDefinitionId: null,
     key: name.toLowerCase(),

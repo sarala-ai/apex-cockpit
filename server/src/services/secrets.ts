@@ -7,6 +7,7 @@ import {
   companySecretProviderConfigs,
   companySecrets,
   companySecretVersions,
+  companies,
   companyMemberships,
   environments,
   heartbeatRuns,
@@ -75,7 +76,10 @@ const COMING_SOON_SECRET_PROVIDERS: ReadonlySet<SecretProvider> = new Set([
 const FALLBACK_ADAPTER_SCHEMA_SECRET_FIELDS: Readonly<Record<string, readonly string[]>> = {
   hermes_gateway: ["apiKey"],
 };
-const USER_SECRET_DEFINITION_KEY_UNIQUE_CONSTRAINT = "user_secret_definitions_company_key_uq";
+const USER_SECRET_DEFINITION_KEY_UNIQUE_CONSTRAINTS = [
+  "user_secret_definitions_company_key_uq",
+  "user_secret_definitions_org_key_uq",
+];
 const USER_SECRET_VALUE_UNIQUE_CONSTRAINT = "company_secrets_user_definition_owner_uq";
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type SecretBindingDb = Pick<Db | DbTransaction, "select" | "delete" | "insert">;
@@ -99,7 +103,7 @@ function isUniqueConstraintViolation(error: unknown, constraintName: string) {
 }
 
 function remoteProviderHttpError(error: unknown, context: {
-  companyId: string;
+  companyId: string | null;
   provider: SecretProvider;
   providerConfigId: string;
   operation: string;
@@ -135,7 +139,7 @@ function remoteProviderHttpError(error: unknown, context: {
 }
 
 function remoteProviderWriteHttpError(error: unknown, context: {
-  companyId: string;
+  companyId: string | null;
   provider: SecretProvider;
   providerConfigId?: string | null;
   providerConfig: SecretProviderVaultRuntimeConfig | null;
@@ -153,7 +157,7 @@ function remoteProviderWriteHttpError(error: unknown, context: {
 async function throwProviderWriteOrReservedRowRollbackError(input: {
   error: unknown;
   rollbackReservedRow: () => Promise<unknown>;
-  companyId: string;
+  companyId: string | null;
   provider: SecretProvider;
   providerConfigId?: string | null;
   providerConfig: SecretProviderVaultRuntimeConfig | null;
@@ -200,7 +204,7 @@ function providerConfigIdentifier(input: {
 async function deleteLocalSecretCreateReservationOrThrow(input: {
   db: Pick<Db, "delete">;
   secretId: string;
-  companyId: string;
+  companyId: string | null;
   provider: SecretProvider;
   providerConfigId?: string | null;
   providerConfig: SecretProviderVaultRuntimeConfig | null;
@@ -231,7 +235,7 @@ async function deleteLocalSecretCreateReservationOrThrow(input: {
 }
 
 function throwProviderCleanupFailedAfterCreateRollback(input: {
-  companyId: string;
+  companyId: string | null;
   provider: SecretProvider;
   providerConfigId?: string | null;
   providerConfig: SecretProviderVaultRuntimeConfig | null;
@@ -623,19 +627,38 @@ export function secretService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
+  // A company resolves slots from two homes: its own, then its org's. Org
+  // slots hold operator credentials (e.g. the Claude subscription token) that
+  // every company in the org runs with.
+  async function companyOrgId(companyId: string, source: Pick<Db | DbTransaction, "select"> = db) {
+    return source
+      .select({ orgId: companies.orgId })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .then((rows) => rows[0]?.orgId ?? null);
+  }
+
+  function definitionBelongsTo(
+    definition: typeof userSecretDefinitions.$inferSelect,
+    home: { companyId: string; orgId: string | null },
+  ) {
+    if (definition.scope === "org") return definition.orgId !== null && definition.orgId === home.orgId;
+    return definition.companyId === home.companyId;
+  }
+
   async function getUserSecretDefinitionById(
     companyId: string,
     definitionId: string,
     source: Pick<Db | DbTransaction, "select"> = db,
   ) {
-    return source
+    const definition = await source
       .select()
       .from(userSecretDefinitions)
-      .where(and(
-        eq(userSecretDefinitions.companyId, companyId),
-        eq(userSecretDefinitions.id, definitionId),
-      ))
+      .where(eq(userSecretDefinitions.id, definitionId))
       .then((rows) => rows[0] ?? null);
+    if (!definition) return null;
+    const orgId = definition.scope === "org" ? await companyOrgId(companyId, source) : null;
+    return definitionBelongsTo(definition, { companyId, orgId }) ? definition : null;
   }
 
   async function getUserSecretDefinitionByKey(
@@ -643,13 +666,51 @@ export function secretService(db: Db) {
     key: string,
     source: Pick<Db | DbTransaction, "select"> = db,
   ) {
+    const own = await source
+      .select()
+      .from(userSecretDefinitions)
+      .where(and(
+        eq(userSecretDefinitions.scope, "company"),
+        eq(userSecretDefinitions.companyId, companyId),
+        eq(userSecretDefinitions.key, key),
+        ne(userSecretDefinitions.status, "deleted"),
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (own) return own;
+    const orgId = await companyOrgId(companyId, source);
+    if (!orgId) return null;
+    return getOrgUserSecretDefinitionByKey(orgId, key, source);
+  }
+
+  async function getOrgUserSecretDefinitionByKey(
+    orgId: string,
+    key: string,
+    source: Pick<Db | DbTransaction, "select"> = db,
+  ) {
     return source
       .select()
       .from(userSecretDefinitions)
       .where(and(
-        eq(userSecretDefinitions.companyId, companyId),
+        eq(userSecretDefinitions.scope, "org"),
+        eq(userSecretDefinitions.orgId, orgId),
         eq(userSecretDefinitions.key, key),
         ne(userSecretDefinitions.status, "deleted"),
+      ))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function getOrgUserSecretDefinitionById(
+    orgId: string,
+    definitionId: string,
+    source: Pick<Db | DbTransaction, "select"> = db,
+  ) {
+    return source
+      .select()
+      .from(userSecretDefinitions)
+      .where(and(
+        eq(userSecretDefinitions.scope, "org"),
+        eq(userSecretDefinitions.orgId, orgId),
+        eq(userSecretDefinitions.id, definitionId),
       ))
       .then((rows) => rows[0] ?? null);
   }
@@ -667,22 +728,33 @@ export function secretService(db: Db) {
     if (!definition || definition.deletedAt || definition.status === "deleted") {
       throw notFound("User secret definition not found");
     }
-    if (definition.companyId !== companyId) {
-      throw unprocessable("User secret definition must belong to same company");
+    return definition;
+  }
+
+  async function resolveOrgUserSecretDefinition(
+    orgId: string,
+    input: { definitionId?: string | null; definitionKey?: string | null },
+    source: Pick<Db | DbTransaction, "select"> = db,
+  ) {
+    const definition = input.definitionId
+      ? await getOrgUserSecretDefinitionById(orgId, input.definitionId, source)
+      : input.definitionKey
+        ? await getOrgUserSecretDefinitionByKey(orgId, input.definitionKey, source)
+        : null;
+    if (!definition || definition.deletedAt || definition.status === "deleted") {
+      throw notFound("User secret definition not found");
     }
     return definition;
   }
 
-  async function getUserSecretValue(input: {
-    companyId: string;
-    ownerUserId: string;
-    definitionId: string;
-  }) {
+  // A definition implies its home, so an owner's value is unique per
+  // definition — no company predicate, which is what lets every company in an
+  // org resolve the operator's org-scoped credential.
+  async function getUserSecretValue(input: { ownerUserId: string; definitionId: string }) {
     return db
       .select()
       .from(companySecrets)
       .where(and(
-        eq(companySecrets.companyId, input.companyId),
         eq(companySecrets.scope, "user"),
         eq(companySecrets.ownerUserId, input.ownerUserId),
         eq(companySecrets.userSecretDefinitionId, input.definitionId),
@@ -691,33 +763,29 @@ export function secretService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
-  // Instance-wide fallback for OPERATOR credentials: a per-user secret value
-  // (e.g. CLAUDE_CODE_OAUTH_TOKEN — the operator's subscription token) belongs
-  // to the operator, not a company. When a run in one company needs it but the
-  // operator filled the slot under a different company, resolve their value for
-  // the same definition KEY from anywhere. Returns the value's own company so
-  // decryption uses the right key context.
-  async function getUserSecretValueAnyCompany(ownerUserId: string, definitionKey: string) {
-    return db
-      .select({ secret: companySecrets })
-      .from(companySecrets)
-      .innerJoin(userSecretDefinitions, eq(companySecrets.userSecretDefinitionId, userSecretDefinitions.id))
-      .where(and(
-        eq(companySecrets.scope, "user"),
-        eq(companySecrets.ownerUserId, ownerUserId),
-        eq(userSecretDefinitions.key, definitionKey),
-        ne(companySecrets.status, "deleted"),
-        ne(userSecretDefinitions.status, "deleted"),
-      ))
-      .then((rows) => rows[0]?.secret ?? null);
-  }
-
   async function getUserSecretValueById(companyId: string, ownerUserId: string, secretId: string) {
     const secret = await getById(secretId);
     if (!secret || secret.status === "deleted" || secret.scope !== "user") {
       throw notFound("User secret value not found");
     }
-    if (secret.companyId !== companyId || secret.ownerUserId !== ownerUserId) {
+    if (secret.ownerUserId !== ownerUserId) {
+      throw notFound("User secret value not found");
+    }
+    const homeMatches = secret.companyId !== null
+      ? secret.companyId === companyId
+      : secret.orgId !== null && secret.orgId === (await companyOrgId(companyId));
+    if (!homeMatches) {
+      throw notFound("User secret value not found");
+    }
+    return secret;
+  }
+
+  async function getOrgUserSecretValueById(orgId: string, ownerUserId: string, secretId: string) {
+    const secret = await getById(secretId);
+    if (!secret || secret.status === "deleted" || secret.scope !== "user") {
+      throw notFound("User secret value not found");
+    }
+    if (secret.ownerUserId !== ownerUserId || secret.orgId !== orgId) {
       throw notFound("User secret value not found");
     }
     return secret;
@@ -983,7 +1051,11 @@ export function secretService(db: Db) {
     const accessContext = options?.accessContext ?? bindingContext;
     const secret = await getById(secretId);
     if (!secret) throw notFound("Secret not found");
-    if (secret.companyId !== companyId) throw unprocessable("Secret must belong to same company");
+    // Org-homed user values (companyId null) are resolvable from any company in
+    // the org; the caller's company is the consumer recorded on the access trail.
+    if (secret.companyId !== null && secret.companyId !== companyId) {
+      throw unprocessable("Secret must belong to same company");
+    }
     if (secret.scope !== "company" && !options?.allowUserSecretScope) {
       throw unprocessable("User-scoped secrets must be resolved through user secret declarations", {
         code: "secret_scope_invalid",
@@ -1657,8 +1729,46 @@ export function secretService(db: Db) {
     return { providerConfig, provider, runtimeConfig: toProviderVaultRuntimeConfig(providerConfig) };
   }
 
+  async function listDefinitionsVisibleToCompany(companyId: string) {
+    const orgId = await companyOrgId(companyId);
+    return db
+      .select()
+      .from(userSecretDefinitions)
+      .where(and(
+        ne(userSecretDefinitions.status, "deleted"),
+        orgId
+          ? or(
+              and(eq(userSecretDefinitions.scope, "company"), eq(userSecretDefinitions.companyId, companyId)),
+              and(eq(userSecretDefinitions.scope, "org"), eq(userSecretDefinitions.orgId, orgId)),
+            )
+          : and(eq(userSecretDefinitions.scope, "company"), eq(userSecretDefinitions.companyId, companyId)),
+      ))
+      .orderBy(desc(userSecretDefinitions.createdAt));
+  }
+
+  async function pairDefinitionsWithOwnerValues(
+    definitions: Array<typeof userSecretDefinitions.$inferSelect>,
+    ownerUserId: string,
+  ) {
+    if (definitions.length === 0) return [];
+    const values = await db
+      .select()
+      .from(companySecrets)
+      .where(and(
+        eq(companySecrets.scope, "user"),
+        eq(companySecrets.ownerUserId, ownerUserId),
+        inArray(companySecrets.userSecretDefinitionId, definitions.map((definition) => definition.id)),
+        ne(companySecrets.status, "deleted"),
+      ));
+    const valuesByDefinitionId = new Map(values.map((value) => [value.userSecretDefinitionId, value]));
+    return definitions.map((definition) => ({
+      definition,
+      secret: valuesByDefinitionId.get(definition.id) ?? null,
+    }));
+  }
+
   async function createUserSecretValueInternal(
-    companyId: string,
+    home: { companyId: string; orgId?: undefined } | { orgId: string; companyId?: undefined },
     ownerUserId: string,
     input: {
       definitionId?: string | null;
@@ -1670,16 +1780,19 @@ export function secretService(db: Db) {
     },
     actor?: { userId?: string | null; agentId?: string | null },
   ) {
-    const definition = await resolveUserSecretDefinition(companyId, input);
+    const definition = home.companyId !== undefined
+      ? await resolveUserSecretDefinition(home.companyId, input)
+      : await resolveOrgUserSecretDefinition(home.orgId, input);
     if (definition.status !== "active") {
       throw unprocessable("User secret definition is not active");
     }
-    const existing = await getUserSecretValue({
-      companyId,
-      ownerUserId,
-      definitionId: definition.id,
-    });
+    const existing = await getUserSecretValue({ ownerUserId, definitionId: definition.id });
     if (existing) throw conflict("User secret value already exists");
+    // The value lives where its definition lives. Org-homed values have no
+    // company to select a vault from, so they use the instance provider.
+    const valueHome = definition.scope === "org"
+      ? { companyId: null, orgId: definition.orgId as string }
+      : { companyId: definition.companyId as string, orgId: null };
 
     const providerId = definition.provider as SecretProvider;
     const managedMode = definition.managedMode as "paperclip_managed" | "external_reference";
@@ -1696,16 +1809,21 @@ export function secretService(db: Db) {
     const providerConfigId =
       input.providerConfigId === undefined ? definition.providerConfigId : input.providerConfigId;
     const provider = getSecretProvider(providerId);
-    const providerConfig = await getSelectableRuntimeProviderConfig({
-      companyId,
-      provider: providerId,
-      providerConfigId,
-    });
+    if (valueHome.companyId === null && providerConfigId) {
+      throw unprocessable("Org-scoped user secrets use the instance provider; a vault cannot be selected");
+    }
+    const providerConfig = valueHome.companyId === null
+      ? null
+      : await getSelectableRuntimeProviderConfig({
+          companyId: valueHome.companyId,
+          provider: providerId,
+          providerConfigId,
+        });
     const idSuffix = randomUUID();
     const key = normalizeSecretKey(`user.${definition.key}.${idSuffix}`);
     const name = `${definition.name} (${ownerUserId})`;
     const providerWriteContext = {
-      companyId,
+      companyId: valueHome.companyId,
       secretKey: key,
       secretName: definition.name,
       version: 1,
@@ -1715,7 +1833,8 @@ export function secretService(db: Db) {
       reservedSecret = await db
         .insert(companySecrets)
         .values({
-          companyId,
+          companyId: valueHome.companyId,
+          orgId: valueHome.orgId,
           scope: "user",
           ownerUserId,
           userSecretDefinitionId: definition.id,
@@ -1761,7 +1880,7 @@ export function secretService(db: Db) {
       throw await throwProviderWriteOrReservedRowRollbackError({
         error,
         rollbackReservedRow: () => db.delete(companySecrets).where(eq(companySecrets.id, reservedSecret.id)),
-        companyId,
+        companyId: valueHome.companyId,
         provider: provider.id,
         providerConfigId,
         providerConfig,
@@ -1809,7 +1928,7 @@ export function secretService(db: Db) {
         });
         if (!cleaned) {
           throwProviderCleanupFailedAfterCreateRollback({
-            companyId,
+            companyId: valueHome.companyId,
             provider: provider.id,
             providerConfigId,
             providerConfig,
@@ -1820,7 +1939,7 @@ export function secretService(db: Db) {
       await deleteLocalSecretCreateReservationOrThrow({
         db,
         secretId: reservedSecret.id,
-        companyId,
+        companyId: valueHome.companyId,
         provider: provider.id,
         providerConfigId,
         providerConfig,
@@ -1889,9 +2008,8 @@ export function secretService(db: Db) {
       .select({ id: companySecrets.id })
       .from(companySecrets)
       .where(and(
-        eq(companySecrets.companyId, companyId),
         eq(companySecrets.scope, "user"),
-        eq(companySecrets.userSecretDefinitionId, definitionId),
+        eq(companySecrets.userSecretDefinitionId, existing.id),
       ));
     for (const value of values) {
       await removeSecretInternal(value.id);
@@ -1906,10 +2024,7 @@ export function secretService(db: Db) {
         updatedByUserId: actor?.userId ?? null,
         updatedAt: new Date(),
       })
-      .where(and(
-        eq(userSecretDefinitions.companyId, companyId),
-        eq(userSecretDefinitions.id, definitionId),
-      ))
+      .where(eq(userSecretDefinitions.id, existing.id))
       .returning()
       .then((rows) => rows[0] ?? null);
   }
@@ -2226,12 +2341,91 @@ export function secretService(db: Db) {
         .where(and(eq(secretAccessEvents.companyId, companyId), eq(secretAccessEvents.secretId, secretId)))
         .orderBy(desc(secretAccessEvents.createdAt)),
 
-    listUserSecretDefinitions: (companyId: string) =>
+    listUserSecretDefinitions: (companyId: string) => listDefinitionsVisibleToCompany(companyId),
+
+    listOrgUserSecretDefinitions: (orgId: string) =>
       db
         .select()
         .from(userSecretDefinitions)
-        .where(and(eq(userSecretDefinitions.companyId, companyId), ne(userSecretDefinitions.status, "deleted")))
+        .where(and(
+          eq(userSecretDefinitions.scope, "org"),
+          eq(userSecretDefinitions.orgId, orgId),
+          ne(userSecretDefinitions.status, "deleted"),
+        ))
         .orderBy(desc(userSecretDefinitions.createdAt)),
+
+    createOrgUserSecretDefinition: async (
+      orgId: string,
+      input: { key: string; name: string; description?: string | null; usageGuidance?: string | null },
+      actor?: { userId?: string | null; agentId?: string | null },
+    ) => {
+      const key = input.key.trim();
+      const duplicate = await getOrgUserSecretDefinitionByKey(orgId, key);
+      if (duplicate) throw conflict(`User secret definition already exists: ${key}`);
+      try {
+        return await db
+          .insert(userSecretDefinitions)
+          .values({
+            scope: "org",
+            orgId,
+            companyId: null,
+            key,
+            name: input.name.trim(),
+            description: input.description ?? null,
+            status: "active",
+            provider: "local_encrypted",
+            managedMode: "paperclip_managed",
+            usageGuidance: input.usageGuidance ?? null,
+            createdByAgentId: actor?.agentId ?? null,
+            createdByUserId: actor?.userId ?? null,
+            updatedByAgentId: actor?.agentId ?? null,
+            updatedByUserId: actor?.userId ?? null,
+          })
+          .returning()
+          .then((rows) => rows[0]);
+      } catch (error) {
+        if (USER_SECRET_DEFINITION_KEY_UNIQUE_CONSTRAINTS.some((name) => isUniqueConstraintViolation(error, name))) {
+          throw conflict(`User secret definition already exists: ${key}`);
+        }
+        throw error;
+      }
+    },
+
+    listCurrentOrgUserSecretValues: async (orgId: string, ownerUserId: string) => {
+      const definitions = await db
+        .select()
+        .from(userSecretDefinitions)
+        .where(and(
+          eq(userSecretDefinitions.scope, "org"),
+          eq(userSecretDefinitions.orgId, orgId),
+          ne(userSecretDefinitions.status, "deleted"),
+        ))
+        .orderBy(desc(userSecretDefinitions.createdAt));
+      return pairDefinitionsWithOwnerValues(definitions, ownerUserId);
+    },
+
+    createCurrentOrgUserSecretValue: (
+      orgId: string,
+      ownerUserId: string,
+      input: { definitionId?: string | null; definitionKey?: string | null; value?: string | null },
+      actor?: { userId?: string | null; agentId?: string | null },
+    ) => createUserSecretValueInternal({ orgId }, ownerUserId, input, actor),
+
+    rotateCurrentOrgUserSecretValue: async (
+      orgId: string,
+      ownerUserId: string,
+      secretId: string,
+      input: { value?: string | null },
+      actor?: { userId?: string | null; agentId?: string | null },
+    ) => {
+      const secret = await getOrgUserSecretValueById(orgId, ownerUserId, secretId);
+      return secretService(db).rotate(secret.id, input, actor);
+    },
+
+    removeCurrentOrgUserSecretValue: async (orgId: string, ownerUserId: string, secretId: string) => {
+      const secret = await getOrgUserSecretValueById(orgId, ownerUserId, secretId);
+      return secretService(db).remove(secret.id);
+    },
 
     getUserSecretDefinitionById: (companyId: string, definitionId: string) =>
       getUserSecretDefinitionById(companyId, definitionId),
@@ -2277,7 +2471,7 @@ export function secretService(db: Db) {
           .returning()
           .then((rows) => rows[0]);
       } catch (error) {
-        if (isUniqueConstraintViolation(error, USER_SECRET_DEFINITION_KEY_UNIQUE_CONSTRAINT)) {
+        if (USER_SECRET_DEFINITION_KEY_UNIQUE_CONSTRAINTS.some((name) => isUniqueConstraintViolation(error, name))) {
           throw conflict(`User secret definition already exists: ${key}`);
         }
         throw error;
@@ -2363,7 +2557,6 @@ export function secretService(db: Db) {
           .select({ status: companySecrets.status, ownerUserId: companySecrets.ownerUserId })
           .from(companySecrets)
           .where(and(
-            eq(companySecrets.companyId, companyId),
             eq(companySecrets.scope, "user"),
             eq(companySecrets.userSecretDefinitionId, definitionId),
             ne(companySecrets.status, "deleted"),
@@ -2384,29 +2577,15 @@ export function secretService(db: Db) {
       };
     },
 
-    listCurrentUserSecretValues: async (companyId: string, ownerUserId: string) => {
-      const definitions = await db
-        .select()
-        .from(userSecretDefinitions)
-        .where(and(eq(userSecretDefinitions.companyId, companyId), ne(userSecretDefinitions.status, "deleted")))
-        .orderBy(desc(userSecretDefinitions.createdAt));
-      const values = await db
-        .select()
-        .from(companySecrets)
-        .where(and(
-          eq(companySecrets.companyId, companyId),
-          eq(companySecrets.scope, "user"),
-          eq(companySecrets.ownerUserId, ownerUserId),
-          ne(companySecrets.status, "deleted"),
-        ));
-      const valuesByDefinitionId = new Map(values.map((value) => [value.userSecretDefinitionId, value]));
-      return definitions.map((definition) => ({
-        definition,
-        secret: valuesByDefinitionId.get(definition.id) ?? null,
-      }));
-    },
+    listCurrentUserSecretValues: async (companyId: string, ownerUserId: string) =>
+      pairDefinitionsWithOwnerValues(await listDefinitionsVisibleToCompany(companyId), ownerUserId),
 
-    createCurrentUserSecretValue: createUserSecretValueInternal,
+    createCurrentUserSecretValue: (
+      companyId: string,
+      ownerUserId: string,
+      input: Parameters<typeof createUserSecretValueInternal>[2],
+      actor?: { userId?: string | null; agentId?: string | null },
+    ) => createUserSecretValueInternal({ companyId }, ownerUserId, input, actor),
 
     rotateCurrentUserSecretValue: async (
       companyId: string,
@@ -2621,16 +2800,10 @@ export function secretService(db: Db) {
           { code: "binding_not_allowed" },
         );
       }
-      let secret = await getUserSecretValue({
-        companyId,
+      const secret = await getUserSecretValue({
         ownerUserId: responsibleUserId,
         definitionId: definition.id,
       });
-      // Operator-credential fallback: the value may live under another of the
-      // operator's companies (per-user secrets are instance-scoped in spirit).
-      if (!secret) {
-        secret = await getUserSecretValueAnyCompany(responsibleUserId, definition.key);
-      }
       if (!secret) {
         if (optionalBinding) return null;
         throw unprocessable("User secret value is not configured", {
@@ -2640,7 +2813,7 @@ export function secretService(db: Db) {
         });
       }
       const resolution = await resolveSecretValueInternal(
-        secret.companyId,
+        companyId,
         secret.id,
         input.version ?? "latest",
         {
@@ -3189,11 +3362,16 @@ export function secretService(db: Db) {
       const provider = getSecretProvider(providerId);
       const providerConfigId =
         input.providerConfigId === undefined ? secret.providerConfigId : input.providerConfigId;
-      const providerConfig = await getSelectableRuntimeProviderConfig({
-        companyId: secret.companyId,
-        provider: providerId,
-        providerConfigId,
-      });
+      if (secret.companyId === null && providerConfigId) {
+        throw unprocessable("Org-scoped user secrets use the instance provider; a vault cannot be selected");
+      }
+      const providerConfig = secret.companyId === null
+        ? null
+        : await getSelectableRuntimeProviderConfig({
+            companyId: secret.companyId,
+            provider: providerId,
+            providerConfigId,
+          });
       const nextVersion = secret.latestVersion + 1;
       if (secret.managedMode === "external_reference" && !(input.externalRef ?? secret.externalRef)?.trim()) {
         throw unprocessable("External reference secrets require externalRef");
@@ -3335,7 +3513,7 @@ export function secretService(db: Db) {
       if (!secret) throw notFound("Secret not found");
       if (secret.status === "deleted") throw notFound("Secret not found");
 
-      if (patch.name && patch.name !== secret.name) {
+      if (secret.companyId !== null && patch.name && patch.name !== secret.name) {
         const duplicate = await getByName(secret.companyId, patch.name);
         if (duplicate && duplicate.id !== secret.id) {
           throw conflict(`Secret already exists: ${patch.name}`);
@@ -3343,7 +3521,7 @@ export function secretService(db: Db) {
       }
       const nextKey = patch.key ? normalizeSecretKey(patch.key) : secret.key;
       if (!nextKey) throw unprocessable("Secret key is required");
-      if (nextKey !== secret.key) {
+      if (secret.companyId !== null && nextKey !== secret.key) {
         const duplicateKey = await db
           .select()
           .from(companySecrets)
@@ -3393,7 +3571,10 @@ export function secretService(db: Db) {
         );
       }
       if (patch.providerConfigId !== undefined) {
-        await assertProviderConfigForSecret(
+        if (secret.companyId === null && patch.providerConfigId) {
+          throw unprocessable("Org-scoped user secrets use the instance provider; a vault cannot be selected");
+        }
+        if (secret.companyId !== null) await assertProviderConfigForSecret(
           secret.companyId,
           secret.provider as SecretProvider,
           patch.providerConfigId,
@@ -3911,17 +4092,10 @@ export function secretService(db: Db) {
           continue;
         }
 
-        let secret = await getUserSecretValue({
-          companyId,
+        const secret = await getUserSecretValue({
           ownerUserId: context.responsibleUserId,
           definitionId: definition.id,
         });
-        // Operator-credential fallback (matches resolveUserSecretValue): the
-        // value may live under another of the operator's companies.
-        if (!secret || secret.status !== "active") {
-          const anyCo = await getUserSecretValueAnyCompany(context.responsibleUserId, definition.key);
-          if (anyCo && anyCo.status === "active") secret = anyCo;
-        }
         if (!secret || secret.status !== "active") {
           missingUserSecretBindings.push({
             consumerType: context.consumerType,
@@ -4074,17 +4248,10 @@ export function secretService(db: Db) {
           continue;
         }
 
-        let secret = await getUserSecretValue({
-          companyId,
+        const secret = await getUserSecretValue({
           ownerUserId: context.responsibleUserId,
           definitionId: definition.id,
         });
-        // Operator-credential fallback (matches resolveUserSecretValue): the
-        // value may live under another of the operator's companies.
-        if (!secret || secret.status !== "active") {
-          const anyCo = await getUserSecretValueAnyCompany(context.responsibleUserId, definition.key);
-          if (anyCo && anyCo.status === "active") secret = anyCo;
-        }
         if (!secret || secret.status !== "active") {
           missingUserSecretBindings.push({
             consumerType: context.consumerType,

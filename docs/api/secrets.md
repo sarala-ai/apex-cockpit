@@ -377,6 +377,47 @@ Creates a new version of the secret. Agents referencing `"version": "latest"`
 automatically get the new value on next heartbeat. Pin to a specific version
 when a bad `latest` rollout would affect many agents at once.
 
+## User Secrets
+
+Definitions are shared slots (e.g. "GitHub token"); each member fills in their
+own value. Definitions can be scoped to a company or, for credentials every
+company in the org resolves from (such as the Claude subscription token),
+directly to the org — before any company exists.
+
+```
+GET /api/orgs/{orgId}/user-secret-definitions
+POST /api/orgs/{orgId}/user-secret-definitions
+{
+  "key": "claude_subscription_token",
+  "name": "Claude subscription token",
+  "description": "Annual Claude Code subscription ceremony"
+}
+```
+
+Any active org member can list definitions; creating one requires org admin.
+Company-scoped `GET /api/companies/{companyId}/user-secret-definitions` also
+returns the org's definitions, so existing company-scoped surfaces show both
+without a separate call.
+
+```
+GET /api/orgs/{orgId}/me/user-secrets
+POST /api/orgs/{orgId}/me/user-secrets
+{
+  "definitionKey": "claude_subscription_token",
+  "value": "sk-ant-oat01-..."
+}
+PATCH /api/orgs/{orgId}/me/user-secrets/{secretId}
+{
+  "value": "sk-ant-oat01-new-value..."
+}
+```
+
+`GET` lists every org definition paired with the current user's own value
+state (never another member's value). `POST` sets the caller's value for a
+definition (by `definitionKey` or `definitionId`). `PATCH` rotates the value,
+or removes it with `{"status": "deleted"}`. Org membership is the access
+boundary: any active member manages their own value.
+
 ## Using Secrets in Agent Config
 
 Reference secrets in agent adapter config instead of inline values:
