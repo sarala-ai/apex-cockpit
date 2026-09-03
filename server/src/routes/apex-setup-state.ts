@@ -14,8 +14,7 @@
 import { Router } from "express";
 import { and, eq } from "drizzle-orm";
 import { type Db, orgs, companies, cloudScopeBindings, orgMemberships, companySecrets, userSecretDefinitions } from "@paperclipai/db";
-import { checkAuth } from "../apex/setup/cloud.js";
-import { run } from "../apex/exec.js";
+import { resolveOperatorAuth } from "../apex/setup/operator-auth.js";
 import { assertBoardOrAgent } from "./authz.js";
 import { readModelAccessState, type ModelAccessState } from "../apex/model-access/index.js";
 import { GatewayClient } from "../gateway/gateway-client.js";
@@ -23,7 +22,10 @@ import { GatewayClient } from "../gateway/gateway-client.js";
 type Health = "ok" | "missing" | "expired";
 
 export interface SetupState {
-  auth: { gcloud: Health; gh: Health; adc: Health };
+  /** Operator-scoped: `source` says who answered — the server probing itself
+   *  (local instance) or the operator's workstation report (hosted); `none`
+   *  means no report yet. `reportedAt` carries the report's staleness. */
+  auth: { gcloud: Health; gh: Health; adc: Health; source: "server" | "workstation" | "none"; reportedAt: string | null };
   /** `posture` is the governance dial (default `individual`) — drives which
    *  hardening steps the wizard requires (see SetupWizard.requiredSteps). */
   org: { present: boolean; id?: string; posture?: "individual" | "team" | "enterprise" };
@@ -61,7 +63,7 @@ export interface SetupState {
 }
 
 export interface SetupStateProbes {
-  auth: () => Promise<SetupState["auth"]>;
+  auth: (userId: string | null) => Promise<SetupState["auth"]>;
   org: () => Promise<SetupState["org"]>;
   membership: (userId?: string | null, orgId?: string) => Promise<SetupState["membership"]>;
   companies: (orgId?: string) => Promise<SetupState["companies"]>;
@@ -122,17 +124,9 @@ export function defaultProbes(db: Db): SetupStateProbes {
       }
       return { connected: false, source: null, setAt: null };
     },
-    async auth() {
-      const status = await checkAuth();
-      const gcloud: Health = status.google.live
-        ? "ok"
-        : status.google.authed
-          ? "expired"
-          : "missing";
-      const gh: Health = status.github.live ? "ok" : "missing";
-      const adcRes = await run("gcloud", ["auth", "application-default", "print-access-token"], 10000);
-      const adc: Health = adcRes.status === "ok" && adcRes.stdout.trim().length > 0 ? "ok" : "missing";
-      return { gcloud, gh, adc };
+    async auth(userId) {
+      const status = await resolveOperatorAuth(db, userId);
+      return { gcloud: status.gcloud, gh: status.gh, adc: status.adc, source: status.source, reportedAt: status.reportedAt };
     },
     async org() {
       const [row] = await db
@@ -234,7 +228,13 @@ export function apexSetupStateRoutes(db: Db, overrides?: Partial<SetupStateProbe
     const orgId = typeof req.query.orgId === "string" ? req.query.orgId : undefined;
 
     const [auth, org, scoping, orgGithub, oauthClient, gateway] = await Promise.all([
-      safe(() => probes.auth(), { gcloud: "missing", gh: "missing", adc: "missing" } as const),
+      safe(() => probes.auth(req.actor?.userId ?? null), {
+        gcloud: "missing",
+        gh: "missing",
+        adc: "missing",
+        source: "none",
+        reportedAt: null,
+      } as const),
       safe(() => probes.org(), { present: false }),
       safe(() => probes.scoping(), {
         orgProjectsBound: false,

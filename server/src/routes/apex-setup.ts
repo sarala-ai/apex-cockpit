@@ -17,22 +17,52 @@
  */
 
 import { Router } from "express";
+import { type Db, operatorWorkstationReports } from "@paperclipai/db";
+import { submitWorkstationReportSchema } from "@paperclipai/shared";
 import {
-  checkAuth,
   listGcpOrgs,
   listGcpProjects,
   listGithubOrgs,
   listGithubRepos,
 } from "../apex/setup/cloud.js";
-import { assertBoardOrAgent } from "./authz.js";
+import { readWorkstationReport, resolveOperatorAuth } from "../apex/setup/operator-auth.js";
+import { validate } from "../middleware/validate.js";
+import { assertBoard, assertBoardOrAgent } from "./authz.js";
+import { unauthorized } from "../errors.js";
 
-export function apexSetupRoutes() {
+export function apexSetupRoutes(db: Db) {
   const router = Router();
 
-  // GET /setup/auth — gcloud/gh auth status. Never throws.
+  // GET /setup/auth — the operator's gcloud/gh/ADC state. Never throws.
   router.get("/setup/auth", async (req, res) => {
     assertBoardOrAgent(req);
-    res.json(await checkAuth());
+    res.json(await resolveOperatorAuth(db, req.actor?.userId ?? null));
+  });
+
+  // The operator's workstation (desktop app, `apex doctor --report`) is the
+  // only party that can truthfully answer operator-scoped setup questions on a
+  // hosted cockpit. One row per operator, replaced on each report.
+  router.put("/setup/workstation-report", validate(submitWorkstationReportSchema), async (req, res) => {
+    assertBoard(req);
+    const userId = req.actor.userId;
+    if (!userId) throw unauthorized("Board session has no user identity");
+    const reportedAt = new Date();
+    await db
+      .insert(operatorWorkstationReports)
+      .values({ userId, source: req.body.source, report: req.body.report, reportedAt })
+      .onConflictDoUpdate({
+        target: operatorWorkstationReports.userId,
+        set: { source: req.body.source, report: req.body.report, reportedAt },
+      });
+    res.json({ ok: true, reportedAt: reportedAt.toISOString() });
+  });
+
+  router.get("/setup/workstation-report", async (req, res) => {
+    assertBoard(req);
+    const userId = req.actor.userId;
+    if (!userId) throw unauthorized("Board session has no user identity");
+    const row = await readWorkstationReport(db, userId);
+    res.json(row ? { report: row.report, reportedAt: row.reportedAt.toISOString() } : { report: null, reportedAt: null });
   });
 
   // GET /setup/gcp/projects — GCP projects the authed account can see.

@@ -16,11 +16,21 @@
 import type { AgentEnvConfig } from "@paperclipai/shared";
 import { api } from "./client";
 
+type AuthHealth = "ok" | "missing" | "expired";
+
 export interface AuthStatus {
   // `authed` = account configured; `live` = token currently usable (not expired).
   // authed-but-not-live drives the UI's "session expired, re-authenticate" prompt.
   google: { authed: boolean; account: string | null; live: boolean };
   github: { authed: boolean; user: string | null; live: boolean };
+  gcloud: AuthHealth;
+  gh: AuthHealth;
+  adc: AuthHealth;
+  // "server" = cockpit runs on the operator's own machine and probed itself;
+  // "workstation" = the desktop app / `apex doctor --report` last reported;
+  // "none" = hosted cockpit, this operator has never reported (unknown, not failing).
+  source: "server" | "workstation" | "none";
+  reportedAt: string | null;
 }
 export interface GcpProject {
   projectId: string;
@@ -44,6 +54,8 @@ export interface GhRepo {
 
 export const apexSetupApi = {
   auth: () => api.get<AuthStatus>("/setup/auth"),
+  workstationReport: () =>
+    api.get<{ report: unknown; reportedAt: string | null }>("/setup/workstation-report"),
   gcpProjects: () =>
     api.get<{ projects: GcpProject[]; source: string; note?: string }>("/setup/gcp/projects"),
   gcpOrgs: () => api.get<{ orgs: GcpOrg[]; source: string; note?: string }>("/setup/gcp/orgs"),

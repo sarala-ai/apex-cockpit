@@ -1275,6 +1275,13 @@
       "when": 1788410407005,
       "tag": "0183_user_secret_org_scope",
       "breakpoints": true
+    },
+    {
+      "idx": 184,
+      "version": "7",
+      "when": 1788411645072,
+      "tag": "0184_operator_workstation_reports",
+      "breakpoints": true
     }
   ]
 }

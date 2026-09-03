@@ -299,7 +299,7 @@ export async function createApp(
   api.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
-  api.use(apexSetupRoutes());
+  api.use(apexSetupRoutes(db));
   api.use(apexScopingRoutes(db));
   api.use(apexSetupStateRoutes(db));
   api.use(apexSetupModelsRoutes());

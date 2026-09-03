@@ -737,3 +737,11 @@ export {
   type AddReleaseArtifact,
   type ConfoundQuery,
 } from "./release.js";
+export {
+  workstationReportSchema,
+  submitWorkstationReportSchema,
+  WORKSTATION_REPORT_SOURCES,
+  type WorkstationReport,
+  type WorkstationReportSource,
+  type SubmitWorkstationReport,
+} from "./workstation-report.js";

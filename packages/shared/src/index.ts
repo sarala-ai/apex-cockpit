@@ -1893,3 +1893,11 @@ export {
   companyPromptVersionCreateSchema,
   companyPromptLabelSetSchema,
 } from "./validators/company-prompt.js";
+export {
+  workstationReportSchema,
+  submitWorkstationReportSchema,
+  WORKSTATION_REPORT_SOURCES,
+  type WorkstationReport,
+  type WorkstationReportSource,
+  type SubmitWorkstationReport,
+} from "./validators/workstation-report.js";

@@ -17,6 +17,7 @@ export { companyMemberships } from "./company_memberships.js";
 export { teams } from "./teams.js";
 export { teamMemberships } from "./team_memberships.js";
 export { orgMemberships } from "./org_memberships.js";
+export { operatorWorkstationReports } from "./operator_workstation_reports.js";
 export { companyUserSidebarPreferences } from "./company_user_sidebar_preferences.js";
 export { principalPermissionGrants } from "./principal_permission_grants.js";
 export { invites } from "./invites.js";

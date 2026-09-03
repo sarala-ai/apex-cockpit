@@ -23,7 +23,15 @@ export interface ModelAccessState {
 }
 
 export interface SetupState {
-  auth: { gcloud: Health; gh: Health; adc: Health };
+  auth: {
+    gcloud: Health;
+    gh: Health;
+    adc: Health;
+    // "server" = the cockpit probed itself; "workstation" = the operator's
+    // desktop app / `apex doctor --report` last reported; "none" = unknown.
+    source: "server" | "workstation" | "none";
+    reportedAt: string | null;
+  };
   /** `posture` is the governance dial (default `individual`) — drives which
    *  hardening steps the wizard requires. */
   org: { present: boolean; id?: string; posture?: "individual" | "team" | "enterprise" };

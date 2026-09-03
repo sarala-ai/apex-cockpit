@@ -51,9 +51,9 @@ export const STEP_HELP: Record<StepKey, StepHelp> = {
     purpose:
       "APEX is tied to your Google Cloud and GitHub identities — connect both to begin.",
     whatYoullDo: [
-      "Run `gcloud auth login` — this is your Google / Gmail sign-in (same account); there is no separate login page.",
-      "Run `gh auth login` to connect your GitHub identity.",
-      "Run `gcloud auth application-default login` — ADC is required to install and run APEX workflows.",
+      "Open the APEX desktop app: it reports your gcloud/GitHub/ADC state and offers Sign in to Google Cloud.",
+      "Terminal-first? Run `apex doctor --report` to send the same report from the command line.",
+      "GitHub connect isn't in-app yet — run `apex connect github`.",
     ],
     note: "Discovery and the Artifact Registry pull read your local gcloud / gh credentials.",
   },

@@ -20,6 +20,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Rocket, X } from "lucide-react";
 import { useLocation, useNavigate } from "@/lib/router";
 import { setupStateApi, type SetupState } from "../api/apex-setup-state";
+import { timeAgo } from "../lib/timeAgo";
 import { isSetupComplete, setupStepsProgress } from "../pages/setup/SetupWizard";
 
 /** Surfaces where the bar must stay hidden (unauthenticated / pre-company). */
@@ -28,7 +29,7 @@ const HIDDEN_PATH_PREFIXES = ["/auth", "/cli-auth", "/invite", "/board-claim", "
 /** Session key so the startup prompt nags at most once per session. */
 const PROMPT_DISMISS_KEY = "apex.setupStartupPromptDismissed";
 
-type Tone = "ok" | "warn" | "bad" | "muted";
+type Tone = "ok" | "warn" | "bad" | "muted" | "unknown";
 
 interface Indicator {
   key: string;
@@ -36,6 +37,7 @@ interface Indicator {
   /** Optional terse value shown after the label (e.g. an MCP count). */
   value?: string;
   tone: Tone;
+  title?: string;
 }
 
 type Health = SetupState["auth"]["gcloud"];
@@ -51,6 +53,7 @@ const DOT_CLASS: Record<Tone, string> = {
   warn: "bg-amber-500",
   bad: "bg-red-500",
   muted: "bg-muted-foreground/40",
+  unknown: "bg-muted-foreground/40",
 };
 
 const TEXT_CLASS: Record<Tone, string> = {
@@ -58,15 +61,29 @@ const TEXT_CLASS: Record<Tone, string> = {
   warn: "text-amber-600 dark:text-amber-400",
   bad: "text-red-600 dark:text-red-400",
   muted: "text-muted-foreground/60",
+  unknown: "text-muted-foreground/60",
 };
+
+/** Auth-pill tone + title: "none" source means the workstation hasn't reported
+ *  yet (unknown, not failing); "workstation" source annotates when it did. */
+function authIndicator(key: string, label: string, health: Health, auth: SetupState["auth"]): Indicator {
+  if (auth.source === "none") {
+    return { key, label, tone: "unknown", title: "workstation not reported yet" };
+  }
+  const title =
+    auth.source === "workstation" && auth.reportedAt
+      ? `reported by your workstation ${timeAgo(auth.reportedAt)}`
+      : undefined;
+  return { key, label, tone: healthTone(health), title };
+}
 
 /** Flatten the detector snapshot into the bar's ordered indicators. */
 function toIndicators(s: SetupState): Indicator[] {
   const mcpCount = s.mcpServers.registered.length;
   return [
-    { key: "gcloud", label: "gcloud", tone: healthTone(s.auth.gcloud) },
-    { key: "github", label: "GitHub", tone: healthTone(s.auth.gh) },
-    { key: "adc", label: "ADC", tone: healthTone(s.auth.adc) },
+    authIndicator("gcloud", "gcloud", s.auth.gcloud, s.auth),
+    authIndicator("github", "GitHub", s.auth.gh, s.auth),
+    authIndicator("adc", "ADC", s.auth.adc, s.auth),
     { key: "org", label: "Org", value: s.org.present ? "set" : "not set", tone: s.org.present ? "ok" : "warn" },
     { key: "oauth", label: "OAuth", tone: s.oauthClient.configured ? "ok" : "warn" },
     { key: "gateway", label: "Gateway", tone: s.gateway.reachable ? "ok" : "warn" },
@@ -76,14 +93,14 @@ function toIndicators(s: SetupState): Indicator[] {
 }
 
 function StatusItem({ indicator, onClick }: { indicator: Indicator; onClick: () => void }) {
-  const { label, value, tone } = indicator;
+  const { label, value, tone, title } = indicator;
   return (
     <button
       type="button"
       data-testid={`setup-status-${indicator.key}`}
       data-tone={tone}
       onClick={onClick}
-      title={`${label}: ${value ?? tone} — open setup`}
+      title={title ? `${label}: ${title}` : `${label}: ${value ?? tone} — open setup`}
       className="flex shrink-0 items-center gap-1.5 rounded px-1.5 py-0.5 transition hover:bg-muted/60"
     >
       <span className={`inline-block size-2 rounded-full ${DOT_CLASS[tone]}`} aria-hidden />

@@ -6,7 +6,7 @@ import { apexSetupStateRoutes, type SetupStateProbes } from "../routes/apex-setu
 import { errorHandler } from "../middleware/index.js";
 
 const healthy: SetupStateProbes = {
-  auth: async () => ({ gcloud: "ok", gh: "ok", adc: "ok" }),
+  auth: async () => ({ gcloud: "ok", gh: "ok", adc: "ok", source: "server", reportedAt: null }),
   org: async () => ({ present: true, id: "org-1", posture: "individual" }),
   membership: async () => ({ present: true, role: "owner", status: "active" }),
   companies: async () => ({ count: 2, ids: ["c1", "c2"] }),
@@ -48,7 +48,7 @@ describe("GET /setup/state", () => {
     ).get("/setup/state");
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
-      auth: { gcloud: "ok", gh: "ok", adc: "ok" },
+      auth: { gcloud: "ok", gh: "ok", adc: "ok", source: "server", reportedAt: null },
       claudeSession: { connected: false, source: null, setAt: null },
       org: { present: true, id: "org-1", posture: "individual" },
       membership: { present: true, role: "owner", status: "active" },
@@ -86,7 +86,7 @@ describe("GET /setup/state", () => {
       }),
     ).get("/setup/state");
     expect(res.status).toBe(200);
-    expect(res.body.auth).toEqual({ gcloud: "missing", gh: "missing", adc: "missing" });
+    expect(res.body.auth).toEqual({ gcloud: "missing", gh: "missing", adc: "missing", source: "none", reportedAt: null });
     expect(res.body.gateway).toEqual({ reachable: false });
     expect(res.body.mcpServers).toEqual({ registered: [] });
     // Unaffected probes still report their real values.

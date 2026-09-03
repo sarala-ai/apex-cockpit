@@ -141,6 +141,7 @@ function loadAppropriateView(): void {
   if (hasToken) {
     mainWindow
       .loadURL(loadConfig().cockpitUrl)
+      .then(() => void submitWorkstationReport())
       .catch((err) => console.error(`[desktop] cockpit load failed: ${(err as Error).message}`));
   } else {
     mainWindow
@@ -658,11 +659,77 @@ ipcMain.handle("cloudauth:status", async () => {
 ipcMain.handle("cloudauth:login", async () => {
   try {
     const { code } = await runStreamed("gcloud", ["auth", "application-default", "login"]);
-    return code === 0 ? { ok: true } : { ok: false, error: `gcloud login exited with code ${code}` };
+    if (code !== 0) return { ok: false, error: `gcloud login exited with code ${code}` };
+    void submitWorkstationReport();
+    return { ok: true };
   } catch (err) {
     return { ok: false, error: `Failed to start gcloud login: ${(err as Error).message}` };
   }
 });
+
+// ---- Workstation report --------------------------------------------------
+// This app IS the operator's local agent: a hosted cockpit cannot see the
+// operator's gcloud/gh/ADC/claude/apex, so the app reports them. Only
+// presence, identity, and liveness cross the wire — never a credential value.
+interface WorkstationReport {
+  gcloud: { installed: boolean; account: string | null; live: boolean };
+  adc: { live: boolean };
+  gh: { installed: boolean; user: string | null };
+  claude: { installed: boolean };
+  apex: { installed: boolean; version: string | null };
+}
+
+async function probeCommand(command: string, args: string[]): Promise<{ installed: boolean; ok: boolean; stdout: string }> {
+  try {
+    const r = await runCaptured(command, args);
+    return { installed: true, ok: r.code === 0, stdout: r.stdout.trim() };
+  } catch {
+    return { installed: false, ok: false, stdout: "" };
+  }
+}
+
+async function collectWorkstationReport(): Promise<WorkstationReport> {
+  const [account, token, adc, gh, claude, apex] = await Promise.all([
+    probeCommand("gcloud", ["config", "get-value", "account", "--quiet"]),
+    probeCommand("gcloud", ["auth", "print-access-token", "--quiet"]),
+    probeCommand("gcloud", ["auth", "application-default", "print-access-token", "--quiet"]),
+    probeCommand("gh", ["api", "user", "--jq", ".login"]),
+    probeCommand("claude", ["--version"]),
+    probeCommand(resolveApexBinary(), ["--help"]),
+  ]);
+  const gcloudAccount = account.ok && account.stdout && account.stdout !== "(unset)" ? account.stdout : null;
+  return {
+    gcloud: { installed: account.installed, account: gcloudAccount, live: token.ok && token.stdout.length > 0 },
+    adc: { live: adc.ok && adc.stdout.length > 0 },
+    gh: { installed: gh.installed, user: gh.ok && gh.stdout ? gh.stdout : null },
+    claude: { installed: claude.installed },
+    apex: { installed: apex.installed && apex.ok, version: null },
+  };
+}
+
+async function submitWorkstationReport(): Promise<{ ok: boolean; reportedAt?: string; error?: string }> {
+  if (!cachedBoardToken) return { ok: false, error: "Not signed in to the cockpit." };
+  try {
+    const report = await collectWorkstationReport();
+    const res = await fetch(`${loadConfig().cockpitUrl.replace(/\/+$/, "")}/api/setup/workstation-report`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${cachedBoardToken}` },
+      body: JSON.stringify({ source: "desktop", report }),
+    });
+    if (!res.ok) {
+      const body = (await res.text()).slice(0, 200);
+      console.error(`[desktop] workstation report rejected: ${res.status} ${body}`);
+      return { ok: false, error: `cockpit rejected the report (${res.status})` };
+    }
+    const json = (await res.json()) as { reportedAt?: string };
+    return { ok: true, reportedAt: json.reportedAt };
+  } catch (err) {
+    console.error(`[desktop] workstation report failed: ${(err as Error).message}`);
+    return { ok: false, error: (err as Error).message };
+  }
+}
+
+ipcMain.handle("workstation:report", () => submitWorkstationReport());
 
 // Single-instance: a second launch focuses the existing window instead of
 // spawning a duplicate app instance.

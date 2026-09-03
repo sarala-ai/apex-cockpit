@@ -74,6 +74,14 @@ const apexDesktop = {
     },
   },
 
+  // The app is the operator's local agent: it reports the workstation's
+  // toolchain state (presence/identity/liveness only) to the cockpit at launch,
+  // after a cloud sign-in, and on demand from the setup wizard.
+  workstation: {
+    report: (): Promise<{ ok: boolean; reportedAt?: string; error?: string }> =>
+      ipcRenderer.invoke("workstation:report"),
+  },
+
   token: {
     set: (token: string): Promise<OkResult> => ipcRenderer.invoke("token:set", token),
     get: (): Promise<TokenResult> => ipcRenderer.invoke("token:get"),
