@@ -187,7 +187,10 @@ export async function buildPrincipalClaims(db: Db, userId: string): Promise<Prin
     // Verified if better-auth marked it so, OR if an IdP authenticated the user
     // (Google Workspace domain-restricted sign-in verifies the address).
     email_verified: Boolean(userRow?.emailVerified) || Boolean(userRow?.idpIssuer),
-    name: userRow?.name ?? null,
+    // The IdP display name never leaves the cockpit: a principal JWT travels
+    // into sandboxes, gateway logs, and upstream audit trails, and the operator
+    // is identified there by email alone.
+    name: null,
     idp:
       userRow?.idpIssuer && userRow?.idpSubject
         ? { issuer: userRow.idpIssuer, sub: userRow.idpSubject }
