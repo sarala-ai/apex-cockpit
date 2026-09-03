@@ -42,6 +42,7 @@ import {
   bootstrapExecutionPolicyFromEnv,
   environmentCustomImageService,
   heartbeatService,
+  registerGatewayTokenMinter,
   instanceSettingsService,
   reconcileBuiltInAgentsOnStartup,
   reconcileCloudUpstreamRunsOnStartup,
@@ -625,6 +626,7 @@ export async function startServer(): Promise<StartedServer> {
     // serverOnly endpoint) at runtime — the mint helper's structural type.
     mintGatewayToken = (userId) =>
       mintPrincipalJwtForUser(auth as unknown as PrincipalJwtSigner, db as any, userId);
+    registerGatewayTokenMinter(mintGatewayToken);
     resolveSession = (req) => resolveBetterAuthSession(auth, req);
     mintOperatorToken = async (req) => {
       const session = await resolveBetterAuthSession(auth, req);

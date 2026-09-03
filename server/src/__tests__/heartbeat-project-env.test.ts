@@ -6,7 +6,9 @@ import { buildSkillMentionHref } from "@paperclipai/shared";
 import {
   LOW_TRUST_REVIEW_PRESET,
   applyRunScopedMentionedSkillKeys,
+  effectiveGatewayTokenMinter,
   extractMentionedSkillIdsFromSources,
+  registerGatewayTokenMinter,
   resolveExecutionRunAdapterConfig,
 } from "../services/heartbeat.ts";
 
@@ -728,6 +730,19 @@ describe("resolveExecutionRunAdapterConfig operator-attributed gateway token", (
       }),
     } as any;
   }
+
+  it("falls back to the process-registered minter when a service is built without one", () => {
+    const registered = vi.fn().mockResolvedValue("registered.jwt");
+    registerGatewayTokenMinter(registered);
+    try {
+      expect(effectiveGatewayTokenMinter({})).toBe(registered);
+      const explicit = vi.fn();
+      expect(effectiveGatewayTokenMinter({ mintGatewayToken: explicit })).toBe(explicit);
+    } finally {
+      registerGatewayTokenMinter(undefined);
+    }
+    expect(effectiveGatewayTokenMinter({})).toBeUndefined();
+  });
 
   it("mints an operator token and injects APEX_GATEWAY_TOKEN + URL for a claude run", async () => {
     const mintGatewayToken = vi.fn().mockResolvedValue("minted.principal.jwt");

@@ -5217,7 +5217,26 @@ export function resolveHeartbeatSchedulingSuppression(
   return { suppressed: false, reason: null };
 }
 
+// The gateway token minter is a process-level dependency: the better-auth
+// instance that signs principal JWTs exists once, at bootstrap, while
+// heartbeat services are built per route module. A service built without an
+// explicit minter must still inject the operator's gateway identity, or runs
+// dispatched from route handlers (recovery resolve, wakeup, approvals) get no
+// MCP surface while scheduler-dispatched runs do.
+let registeredGatewayTokenMinter: HeartbeatServiceOptions["mintGatewayToken"];
+
+export function registerGatewayTokenMinter(minter: HeartbeatServiceOptions["mintGatewayToken"]): void {
+  registeredGatewayTokenMinter = minter;
+}
+
+export function effectiveGatewayTokenMinter(
+  options: Pick<HeartbeatServiceOptions, "mintGatewayToken">,
+): HeartbeatServiceOptions["mintGatewayToken"] {
+  return options.mintGatewayToken ?? registeredGatewayTokenMinter;
+}
+
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
+  const mintGatewayToken = effectiveGatewayTokenMinter(options);
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -11334,7 +11353,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       routineEnv: routineEnvContext.env,
       secretsSvc,
       trustPreset,
-      mintGatewayToken: options.mintGatewayToken,
+      mintGatewayToken,
       gatewayUrl: readNonEmptyString(runtimeEnv.APEX_GATEWAY_URL) ?? null,
       requiredScopedEnvBinding: pushCapabilityPreflightRequired
         ? {
