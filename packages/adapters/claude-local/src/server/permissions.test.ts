@@ -80,3 +80,32 @@ describe("claude-local remote permission args", () => {
     });
   });
 });
+
+describe("injected MCP server grants", () => {
+  it("pre-approves the injected server's tools next to the governed grant", () => {
+    expect(
+      buildClaudeExecutionPermissionArgs({
+        dangerouslySkipPermissions: false,
+        targetIsRemote: true,
+        allowedToolsOverride: "Read Bash",
+        mcpServerGrants: ["apex-gateway"],
+      }),
+    ).toEqual(["--allowedTools", "Read Bash mcp__apex-gateway"]);
+  });
+
+  it("pre-approves the injected server's tools next to the broad remote whitelist", () => {
+    const [, allowedTools] = buildClaudeExecutionPermissionArgs({
+      dangerouslySkipPermissions: true,
+      targetIsRemote: true,
+      mcpServerGrants: ["apex-gateway"],
+    });
+    expect(allowedTools.endsWith(" mcp__apex-gateway")).toBe(true);
+  });
+
+  it("does not turn a prompting run into a grant", () => {
+    expect(
+      buildClaudeExecutionPermissionArgs({ dangerouslySkipPermissions: false, targetIsRemote: true, mcpServerGrants: ["apex-gateway"] }),
+    ).toEqual([]);
+  });
+});
+

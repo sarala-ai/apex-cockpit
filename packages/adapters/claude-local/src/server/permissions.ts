@@ -111,13 +111,21 @@ export function buildClaudeExecutionPermissionArgs(input: {
    * unattended run — nothing can answer the prompt).
    */
   allowedToolsOverride?: string | null;
+  /**
+   * MCP servers injected by the adapter for this run (e.g. "apex-gateway").
+   * Their tools are pre-approved alongside whatever native grant applies —
+   * an injected server whose tools still prompt is unusable unattended.
+   */
+  mcpServerGrants?: string[];
 }): string[] {
+  const mcpGrants = (input.mcpServerGrants ?? []).map((server) => `mcp__${server}`);
+  const withMcp = (grant: string) => [grant, ...mcpGrants].join(" ");
   if (input.allowedToolsOverride) {
-    return ["--allowedTools", input.allowedToolsOverride];
+    return ["--allowedTools", withMcp(input.allowedToolsOverride)];
   }
   if (!input.dangerouslySkipPermissions) return [];
   if (input.targetIsRemote) {
-    return ["--allowedTools", SANDBOX_ALLOWED_TOOLS];
+    return ["--allowedTools", withMcp(SANDBOX_ALLOWED_TOOLS)];
   }
   return ["--dangerously-skip-permissions"];
 }

@@ -794,6 +794,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       dangerouslySkipPermissions,
       targetIsRemote: executionTargetIsRemote,
       allowedToolsOverride,
+      mcpServerGrants: gatewayMcpConfigArgPath ? ["apex-gateway"] : [],
     }));
     if (chrome) args.push("--chrome");
     // For Bedrock: only pass --model when the ID is a Bedrock-native identifier
