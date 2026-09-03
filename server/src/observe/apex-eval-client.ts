@@ -12,6 +12,7 @@
  * owning store), just without its trace. So getTrace NEVER throws; any failure
  * degrades to empty arrays plus a logged warning with enough context to debug.
  */
+import { evalAuthorization } from "./eval-auth.js";
 import { z } from "zod";
 import { TraceSpanSchema, ToolCallSchema, EvalRecordSchema } from "@paperclipai/shared";
 import type { TraceSpan, ToolCall, EvalRecord } from "@paperclipai/shared";
@@ -59,7 +60,7 @@ export class ApexEvalTraceClient implements TraceEnricher, AgentRunReader {
     try {
       const qs = new URLSearchParams({ agentName, limit: String(limit) });
       if (companyId) qs.set("companyId", companyId);
-      const res = await fetch(`${this.baseUrl}/runs?${qs.toString()}`);
+      const res = await fetch(`${this.baseUrl}/runs?${qs.toString()}`, { headers: await evalAuthorization(this.baseUrl) });
       if (!res.ok) {
         console.warn(
           `[observe] apex-eval runs fetch failed for agent ${agentName}: ${res.status}`,
@@ -76,8 +77,8 @@ export class ApexEvalTraceClient implements TraceEnricher, AgentRunReader {
   async getTrace(runId: string): Promise<{ spans: TraceSpan[]; toolCalls: ToolCall[]; evals: EvalRecord[] }> {
     try {
       const [traceRes, evalsRes] = await Promise.all([
-        fetch(`${this.baseUrl}/runs/${encodeURIComponent(runId)}/trace`),
-        fetch(`${this.baseUrl}/evals?runId=${encodeURIComponent(runId)}`),
+        fetch(`${this.baseUrl}/runs/${encodeURIComponent(runId)}/trace`, { headers: await evalAuthorization(this.baseUrl) }),
+        fetch(`${this.baseUrl}/evals?runId=${encodeURIComponent(runId)}`, { headers: await evalAuthorization(this.baseUrl) }),
       ]);
 
       if (!traceRes.ok || !evalsRes.ok) {

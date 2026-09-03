@@ -23,6 +23,7 @@
  * fetch) — every failure is caught and logged, never thrown.
  */
 import { randomBytes } from "node:crypto";
+import { evalAuthorization } from "./eval-auth.js";
 
 const EVAL_URL = (): string => (process.env.APEX_EVAL_URL ?? "http://localhost:8000").replace(/\/$/, "");
 
@@ -73,26 +74,6 @@ function spineKeyValues(spine: SpineAttrs): Array<{ key: string; value: { string
   if (spine.actorOnBehalfOf)
     kv.push({ key: "apex.actor.on_behalf_of", value: { stringValue: spine.actorOnBehalfOf } });
   return kv;
-}
-
-// apex-eval is a private Cloud Run service: calls from a hosted cockpit carry
-// a Google ID token for the eval URL's audience, minted by the runtime's
-// metadata server. Off GCP (local dev, tests) the client talks plain HTTP.
-const METADATA_IDENTITY_URL =
-  "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity";
-
-async function evalAuthorization(evalUrl: string): Promise<Record<string, string>> {
-  if (!process.env.K_SERVICE || !evalUrl.startsWith("https://")) return {};
-  try {
-    const res = await fetch(`${METADATA_IDENTITY_URL}?audience=${encodeURIComponent(new URL(evalUrl).origin)}`, {
-      headers: { "Metadata-Flavor": "Google" },
-      signal: AbortSignal.timeout(2000),
-    });
-    if (!res.ok) return {};
-    return { authorization: `Bearer ${await res.text()}` };
-  } catch {
-    return {};
-  }
 }
 
 async function postJson(url: string, body: unknown, timeoutMs = 5000): Promise<boolean> {
