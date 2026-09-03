@@ -629,8 +629,11 @@ export async function startServer(): Promise<StartedServer> {
     registerGatewayTokenMinter(mintGatewayToken);
     resolveSession = (req) => resolveBetterAuthSession(auth, req);
     mintOperatorToken = async (req) => {
-      const session = await resolveBetterAuthSession(auth, req);
-      const userId = session?.user?.id;
+      // Identity is the operator's however they reached the cockpit: a
+      // browser session or a user-attributed board key (the desktop app, the
+      // CLI). Both name the same user; the principal JWT is minted for them.
+      const actorUserId = req.actor?.type === "board" ? req.actor.userId ?? null : null;
+      const userId = actorUserId ?? (await resolveBetterAuthSession(auth, req))?.user?.id;
       if (!userId) return null;
       try {
         return await mintPrincipalJwtForUser(auth as unknown as PrincipalJwtSigner, db as any, userId);
