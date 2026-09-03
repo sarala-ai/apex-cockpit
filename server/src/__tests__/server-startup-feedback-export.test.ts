@@ -168,6 +168,13 @@ vi.mock("@paperclipai/db", () => ({
   // Reached transitively: the flow coordinator now imports the case tables.
   pipelineCases: {},
   pipelineCaseIssueLinks: {},
+  // Reached transitively: services/documents.ts (imported by company-skills.ts) selects from these.
+  documents: {},
+  documentRevisions: {},
+  issueDocuments: {},
+  // Reached transitively: services/routines.ts (imported via services/index.js) builds
+  // module-level select columns off the heartbeat run table.
+  heartbeatRuns: {},
 }));
 
 vi.mock("../app.js", () => ({

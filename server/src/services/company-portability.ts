@@ -4440,10 +4440,20 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       if (mode === "agent_safe" && !options?.sourceCompanyId) {
         throw unprocessable("Safe new-company imports require a source company context.");
       }
+      // The company's default responsible user is the human its seeded
+      // routines answer to; it is stamped at creation because memberships are
+      // attached only afterwards. Same contract as POST /companies: the
+      // importing user, else the owner the copied memberships would resolve to.
+      const ownerPrincipalId = actorUserId ?? "board";
+      let defaultResponsibleUserId: string = ownerPrincipalId;
       if (mode === "agent_safe" && options?.sourceCompanyId) {
         const sourceMemberships = await access.listActiveUserMemberships(options.sourceCompanyId);
         if (sourceMemberships.length === 0) {
           throw unprocessable("Safe new-company import requires at least one active user membership on the source company.");
+        }
+        if (!actorUserId) {
+          const sourceOwner = sourceMemberships.find((membership) => membership.membershipRole === "owner");
+          defaultResponsibleUserId = (sourceOwner ?? sourceMemberships[0]).principalId;
         }
       }
       const companyName =
@@ -4453,6 +4463,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         "Imported Company";
       const created = await companies.create({
         name: companyName,
+        defaultResponsibleUserId,
         description: include.company ? (sourceManifest.company?.description ?? null) : null,
         brandColor: include.company ? (sourceManifest.company?.brandColor ?? null) : null,
         attachmentMaxBytes: include.company
@@ -4477,7 +4488,6 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       if (mode === "agent_safe" && options?.sourceCompanyId) {
         await access.copyActiveUserMemberships(options.sourceCompanyId, created.id);
       } else {
-        const ownerPrincipalId = actorUserId ?? "board";
         await access.ensureMembership(created.id, "user", ownerPrincipalId, "owner", "active");
         await access.ensureRoleDefaultGrants(
           created.id,

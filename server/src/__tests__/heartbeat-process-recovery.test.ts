@@ -99,11 +99,26 @@ import {
   redactDetectedSuccessfulRunProgressSummaryForBoard,
 } from "../services/heartbeat.ts";
 import { secretService } from "../services/secrets.ts";
+import { nativeToolsForProfile } from "../apex/steps/run-policy.ts";
 import {
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
 } from "../services/recovery/index.ts";
+
+/**
+ * The grant a governed read-only roster agent launches under (the read-repos
+ * profile). Every run in this suite is a mocked adapter call on an issue with
+ * no project workspace: nothing here changes a checkout, so the agent's grant
+ * carries no write verb and no codebase has to be bound. A coding adapter
+ * expressing no grant at all is an ungoverned writer, and the dispatch
+ * preconditions refuse one with no codebase before launch.
+ */
+const READ_ONLY_ADAPTER_CONFIG = {
+  dangerouslySkipPermissions: false,
+  allowedTools: nativeToolsForProfile("read-repos"),
+};
+
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -478,7 +493,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       role: "engineer",
       status: input?.agentStatus ?? "paused",
       adapterType: input?.adapterType ?? "codex_local",
-      adapterConfig: {},
+      adapterConfig: READ_ONLY_ADAPTER_CONFIG,
       runtimeConfig: {},
       permissions: {},
     });
@@ -678,7 +693,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       role: "engineer",
       status: "idle",
       adapterType: "codex_local",
-      adapterConfig: {},
+      adapterConfig: READ_ONLY_ADAPTER_CONFIG,
       runtimeConfig: {},
       permissions: {},
     });
@@ -803,7 +818,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       role: "engineer",
       status: "idle",
       adapterType: "codex_local",
-      adapterConfig: {},
+      adapterConfig: READ_ONLY_ADAPTER_CONFIG,
       runtimeConfig: {},
       permissions: {},
     });
@@ -896,7 +911,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       role: "engineer",
       status: input?.agentStatus ?? "idle",
       adapterType: "codex_local",
-      adapterConfig: {},
+      adapterConfig: READ_ONLY_ADAPTER_CONFIG,
       runtimeConfig: {},
       permissions: {},
     });
@@ -936,7 +951,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       role: "engineer",
       status: "idle",
       adapterType: "codex_local",
-      adapterConfig: {},
+      adapterConfig: READ_ONLY_ADAPTER_CONFIG,
       runtimeConfig: {
         heartbeat: {
           enabled: true,
@@ -1104,7 +1119,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       role: "engineer",
       status: "idle",
       adapterType: "codex_local",
-      adapterConfig: {},
+      adapterConfig: READ_ONLY_ADAPTER_CONFIG,
       runtimeConfig: {
         heartbeat: {
           wakeOnDemand: true,
@@ -3031,7 +3046,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       role: "engineer",
       status: "idle",
       adapterType: "codex_local",
-      adapterConfig: {},
+      adapterConfig: READ_ONLY_ADAPTER_CONFIG,
       runtimeConfig: {},
       permissions: {},
     });
@@ -3112,7 +3127,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       role: "engineer",
       status: "idle",
       adapterType: "codex_local",
-      adapterConfig: {},
+      adapterConfig: READ_ONLY_ADAPTER_CONFIG,
       runtimeConfig: {},
       permissions: {},
     });
@@ -3154,7 +3169,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       role: "engineer",
       status: "idle",
       adapterType: "codex_local",
-      adapterConfig: {},
+      adapterConfig: READ_ONLY_ADAPTER_CONFIG,
       runtimeConfig: {},
       permissions: {},
     });
@@ -3319,7 +3334,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       role: "engineer",
       status: "idle",
       adapterType: "codex_local",
-      adapterConfig: {},
+      adapterConfig: READ_ONLY_ADAPTER_CONFIG,
       runtimeConfig: {},
       permissions: {},
     });
@@ -3661,7 +3676,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         role: "engineer",
         status: "idle",
         adapterType: "codex_local",
-        adapterConfig: {},
+        adapterConfig: READ_ONLY_ADAPTER_CONFIG,
         runtimeConfig: {},
         permissions: {},
       },
@@ -3672,7 +3687,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         role: "engineer",
         status: "idle",
         adapterType: "codex_local",
-        adapterConfig: {},
+        adapterConfig: READ_ONLY_ADAPTER_CONFIG,
         runtimeConfig: {},
         permissions: {},
       },
@@ -3790,7 +3805,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       role: "engineer",
       status: "idle",
       adapterType: "codex_local",
-      adapterConfig: {},
+      adapterConfig: READ_ONLY_ADAPTER_CONFIG,
       runtimeConfig: {},
       permissions: {},
     });

@@ -72,6 +72,14 @@ import {
   updateUserSecretDefinitionSchema,
   createUserSecretValueSchema,
   updateUserSecretValueSchema,
+  createOrgUserSecretDefinitionSchema,
+  // Company prompts
+  companyPromptCreateSchema,
+  companyPromptUpdateSchema,
+  companyPromptVersionCreateSchema,
+  companyPromptLabelSetSchema,
+  // Operator workstation report
+  submitWorkstationReportSchema,
   // Approval
   createApprovalSchema,
   resolveApprovalSchema,
@@ -644,6 +652,7 @@ const AUTHENTICATED_SECURITY: Array<Record<string, string[]>> = [
 const PUBLIC_OPERATIONS = new Set([
   "GET /api/health",
   "GET /api/openapi.json",
+  "GET /api/auth/config",
   "GET /api/board-claim/{token}",
   "POST /api/cli-auth/challenges",
   "GET /api/cli-auth/challenges/{id}",
@@ -713,6 +722,15 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "PATCH /api/companies/{companyId}/me/user-secrets/{secretId}",
   "POST /api/companies/{companyId}/me/user-secrets/{secretId}/rotate",
   "DELETE /api/companies/{companyId}/me/user-secrets/{secretId}",
+  "GET /api/orgs/{orgId}/user-secret-definitions",
+  "POST /api/orgs/{orgId}/user-secret-definitions",
+  "GET /api/orgs/{orgId}/me/user-secrets",
+  "POST /api/orgs/{orgId}/me/user-secrets",
+  "PATCH /api/orgs/{orgId}/me/user-secrets/{secretId}",
+  "GET /api/setup/workstation-report",
+  "PUT /api/setup/workstation-report",
+  "GET /api/ui-preferences/me",
+  "PUT /api/ui-preferences/me",
   "POST /api/companies/{companyId}/secrets/remote-import",
   "POST /api/companies/{companyId}/secrets/remote-import/preview",
   "GET /api/secrets/{id}/usage",
@@ -6019,6 +6037,241 @@ registerCurrentRoute({
   tags: ["apex"],
   summary:
     "Owner-only destructive erasure of company, project or initiative data. Dry run by default; writing requires `confirm` equal to the company's slug",
+});
+
+// ─── Auth config ──────────────────────────────────────────────────────────────
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/auth/config",
+  tags: ["auth"],
+  summary: "Get the enabled sign-in providers",
+  responses: { 200: r.ok() },
+});
+
+// ─── Ticket types ─────────────────────────────────────────────────────────────
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/ticket-types",
+  tags: ["issues"],
+  summary: "List the ticket types this company can file and what each costs",
+});
+
+// ─── Governed intake ──────────────────────────────────────────────────────────
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/issues/intake-check",
+  tags: ["issues"],
+  summary: "Check a prospective ticket for duplicates and missing project/goal linkage",
+  body: z.object({
+    title: z.string().min(1),
+    projectId: z.string().uuid().optional().nullable(),
+    goalId: z.string().uuid().optional().nullable(),
+  }),
+});
+
+// ─── Company prompts ──────────────────────────────────────────────────────────
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/prompts",
+  tags: ["prompts"],
+  summary: "List company prompts",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/prompts",
+  tags: ["prompts"],
+  summary: "Create a company prompt",
+  body: companyPromptCreateSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/prompts/resolve/{labelName}",
+  tags: ["prompts"],
+  summary: "Resolve the prompt version currently bound to a label",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/prompts/gateway",
+  tags: ["prompts"],
+  summary: "List prompts as seen by the gateway",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/prompts/{promptId}",
+  tags: ["prompts"],
+  summary: "Get a company prompt",
+});
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/companies/{companyId}/prompts/{promptId}",
+  tags: ["prompts"],
+  summary: "Update a company prompt",
+  body: companyPromptUpdateSchema,
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/companies/{companyId}/prompts/{promptId}",
+  tags: ["prompts"],
+  summary: "Delete a company prompt",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/prompts/{promptId}/versions",
+  tags: ["prompts"],
+  summary: "List versions of a company prompt",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/prompts/{promptId}/versions",
+  tags: ["prompts"],
+  summary: "Create a new version of a company prompt",
+  body: companyPromptVersionCreateSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/prompts/{promptId}/labels",
+  tags: ["prompts"],
+  summary: "List labels on a company prompt",
+});
+
+registerCurrentRoute({
+  method: "put",
+  path: "/api/companies/{companyId}/prompts/{promptId}/labels/{labelName}",
+  tags: ["prompts"],
+  summary: "Point a label at a prompt version",
+  body: companyPromptLabelSetSchema,
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/companies/{companyId}/prompts/{promptId}/labels/{labelName}",
+  tags: ["prompts"],
+  summary: "Remove a label from a company prompt",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/prompt-versions/{versionId}",
+  tags: ["prompts"],
+  summary: "Get a company prompt version",
+});
+
+// ─── Stopped steps ────────────────────────────────────────────────────────────
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/stopped-steps",
+  tags: ["issues"],
+  summary: "List steps stopped for operator review across a company",
+});
+
+// ─── Operator workstation report ─────────────────────────────────────────────
+
+registerCurrentRoute({
+  method: "put",
+  path: "/api/setup/workstation-report",
+  tags: ["apex"],
+  summary: "Submit the operator's workstation setup report (apex doctor --report)",
+  body: submitWorkstationReportSchema,
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/setup/workstation-report",
+  tags: ["apex"],
+  summary: "Get the operator's most recently submitted workstation report",
+});
+
+// ─── Model access setup ───────────────────────────────────────────────────────
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/setup/models",
+  tags: ["apex"],
+  summary: "Get a live snapshot of model access state",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/setup/models/claude/provision",
+  tags: ["apex"],
+  summary: "Provision the Claude subscription bridge from a locally authenticated claude CLI",
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 428: r.badRequest, 502: r.badRequest },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/setup/models/claude/api-key",
+  tags: ["apex"],
+  summary: "Provision Claude via an explicit API key",
+  body: z.object({ apiKey: z.string().min(1) }),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 502: r.badRequest },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/setup/models/openrouter",
+  tags: ["apex"],
+  summary: "Provision OpenRouter as a BYO model plane",
+  body: z.object({ apiKey: z.string().min(1) }),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 502: r.badRequest },
+});
+
+// ─── Org-scoped operator secrets ─────────────────────────────────────────────
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/orgs/{orgId}/user-secret-definitions",
+  tags: ["secrets"],
+  summary: "List org-scoped user secret definitions",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/orgs/{orgId}/user-secret-definitions",
+  tags: ["secrets"],
+  summary: "Create an org-scoped user secret definition",
+  body: createOrgUserSecretDefinitionSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/orgs/{orgId}/me/user-secrets",
+  tags: ["secrets"],
+  summary: "List my org-scoped user secret values",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/orgs/{orgId}/me/user-secrets",
+  tags: ["secrets"],
+  summary: "Create my org-scoped user secret value",
+  body: createUserSecretValueSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/orgs/{orgId}/me/user-secrets/{secretId}",
+  tags: ["secrets"],
+  summary: "Update or delete my org-scoped user secret value",
+  body: updateUserSecretValueSchema,
 });
 
 // ─── Spec builder ─────────────────────────────────────────────────────────────

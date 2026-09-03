@@ -86,8 +86,14 @@ describeEmbeddedPostgres("DELETE /api/companies/:companyId", () => {
     await tempDb?.cleanup();
   });
 
+  // POST /companies always stamps the creating user as the company default
+  // responsible user before seeding; the seeded routine is accountable to it.
+  function createCompany(data: Parameters<ReturnType<typeof companyService>["create"]>[0]) {
+    return companyService(db).create({ defaultResponsibleUserId: "user-1", ...data });
+  }
+
   it("(a) deletes an empty company — including one with only the seeded agent+routine — cleanly", async () => {
-    const created = await companyService(db).create({ name: "Empty Co" });
+    const created = await createCompany({ name: "Empty Co" });
 
     // Sanity: the seeded bundle exists before delete.
     const seededAgents = await db.select().from(agents).where(eq(agents.companyId, created.id));
@@ -106,7 +112,7 @@ describeEmbeddedPostgres("DELETE /api/companies/:companyId", () => {
   });
 
   it("(b) blocks deletion with 409 + counts when the company has substantive data, and does not delete", async () => {
-    const created = await companyService(db).create({ name: "Company With Issue" });
+    const created = await createCompany({ name: "Company With Issue" });
 
     await db.insert(issues).values({
       id: randomUUID(),
@@ -127,7 +133,7 @@ describeEmbeddedPostgres("DELETE /api/companies/:companyId", () => {
   });
 
   it("(c) deletes successfully when confirm=true is passed for a company with data", async () => {
-    const created = await companyService(db).create({ name: "Company With Issue Confirmed" });
+    const created = await createCompany({ name: "Company With Issue Confirmed" });
 
     await db.insert(issues).values({
       id: randomUUID(),
@@ -147,7 +153,7 @@ describeEmbeddedPostgres("DELETE /api/companies/:companyId", () => {
   });
 
   it("(c-alt) also accepts confirm:true in the JSON body", async () => {
-    const created = await companyService(db).create({ name: "Company With Issue Body Confirm" });
+    const created = await createCompany({ name: "Company With Issue Body Confirm" });
 
     await db.insert(issues).values({
       id: randomUUID(),
@@ -169,7 +175,7 @@ describeEmbeddedPostgres("DELETE /api/companies/:companyId", () => {
   });
 
   it("(d) cleans up cloud_scope_bindings rows for the company after a successful delete", async () => {
-    const created = await companyService(db).create({ name: "Company With Scope Binding" });
+    const created = await createCompany({ name: "Company With Scope Binding" });
 
     await db.insert(cloudScopeBindings).values({
       id: randomUUID(),

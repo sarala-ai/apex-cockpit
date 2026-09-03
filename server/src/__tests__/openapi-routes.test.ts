@@ -19,6 +19,7 @@ const apiPrefixes: Record<string, string> = {
   "apex-pipeline.ts": "/api",
   "apex-scoping.ts": "/api",
   "apex-setup.ts": "/api",
+  "apex-setup-models.ts": "/api",
   "apex-setup-state.ts": "/api",
   "approvals.ts": "/api",
   "assets.ts": "/api",
@@ -27,6 +28,7 @@ const apiPrefixes: Record<string, string> = {
   "built-in-agents.ts": "/api",
   "cloud-upstreams.ts": "/api",
   "companies.ts": "/api/companies",
+  "company-prompts.ts": "/api",
   "company-skills.ts": "/api",
   "costs.ts": "/api",
   "dashboard.ts": "/api",
@@ -52,7 +54,9 @@ const apiPrefixes: Record<string, string> = {
   "secrets.ts": "/api",
   "sidebar-badges.ts": "/api",
   "sidebar-preferences.ts": "/api",
+  "stopped-steps.ts": "/api",
   "teams-catalog.ts": "/api",
+  "ui-preferences.ts": "/api",
   "user-profiles.ts": "/api",
 };
 

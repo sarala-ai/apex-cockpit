@@ -304,14 +304,17 @@ describeEmbeddedPostgres("permissions upgrade visibility and route boundaries", 
     });
     const app = await createApp(db, agentActor(company.id, actorAgent.id));
 
+    // Governed intake gate would otherwise 422 these agent-created tickets before
+    // reaching the assignment boundary this test exercises; acknowledge it since
+    // intake due-diligence isn't what's under test here.
     const openAssignment = await request(app)
       .post(`/api/companies/${company.id}/issues`)
-      .send({ title: "Assignable after upgrade", assigneeAgentId: openTargetAgent.id });
+      .send({ title: "Assignable after upgrade", assigneeAgentId: openTargetAgent.id, intakeAcknowledged: true });
     expect(openAssignment.status, JSON.stringify(openAssignment.body)).toBe(201);
 
     const deniedPrivateAssignment = await request(app)
       .post(`/api/companies/${company.id}/issues`)
-      .send({ title: "Private target needs scope", assigneeAgentId: privateTargetAgent.id });
+      .send({ title: "Private target needs scope", assigneeAgentId: privateTargetAgent.id, intakeAcknowledged: true });
     expect(deniedPrivateAssignment.status).toBe(403);
     expect(deniedPrivateAssignment.body.error).toContain("private");
 
@@ -333,7 +336,7 @@ describeEmbeddedPostgres("permissions upgrade visibility and route boundaries", 
 
     const allowedPrivateAssignment = await request(app)
       .post(`/api/companies/${company.id}/issues`)
-      .send({ title: "Private target has explicit scope", assigneeAgentId: privateTargetAgent.id });
+      .send({ title: "Private target has explicit scope", assigneeAgentId: privateTargetAgent.id, intakeAcknowledged: true });
     expect(allowedPrivateAssignment.status, JSON.stringify(allowedPrivateAssignment.body)).toBe(201);
 
     const otherPrivateTargetAgent = await seedAgent(db, company.id, {
@@ -341,7 +344,7 @@ describeEmbeddedPostgres("permissions upgrade visibility and route boundaries", 
     });
     const deniedOutsideScope = await request(app)
       .post(`/api/companies/${company.id}/issues`)
-      .send({ title: "Different private target stays denied", assigneeAgentId: otherPrivateTargetAgent.id });
+      .send({ title: "Different private target stays denied", assigneeAgentId: otherPrivateTargetAgent.id, intakeAcknowledged: true });
     expect(deniedOutsideScope.status).toBe(403);
     expect(deniedOutsideScope.body.error).toContain("private");
   });

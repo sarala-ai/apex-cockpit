@@ -70,13 +70,19 @@ describeEmbeddedPostgres("companyService", () => {
     await tempDb?.cleanup();
   });
 
+  // POST /companies always stamps the creating user as the company default
+  // responsible user before seeding; the seeded routine is accountable to it.
+  function createCompany(data: Parameters<ReturnType<typeof companyService>["create"]>[0]) {
+    return companyService(db).create({ defaultResponsibleUserId: "user-1", ...data });
+  }
+
   it("retries generated issue prefixes when Drizzle wraps the unique constraint error", async () => {
     await db.insert(companies).values({
       name: "Aron Existing",
       issuePrefix: "ARON",
     });
 
-    const created = await companyService(db).create({
+    const created = await createCompany({
       name: "Aron & Sharon",
     });
 
@@ -87,7 +93,7 @@ describeEmbeddedPostgres("companyService", () => {
   });
 
   it("derives a slug from the company NAME (not the allocated issue prefix) when none is supplied at creation", async () => {
-    const created = await companyService(db).create({
+    const created = await createCompany({
       name: "Aron & Sharon",
     });
 
@@ -96,7 +102,7 @@ describeEmbeddedPostgres("companyService", () => {
   });
 
   it("preserves a 3-letter company name verbatim as the issue prefix", async () => {
-    const created = await companyService(db).create({ name: "Ink" });
+    const created = await createCompany({ name: "Ink" });
     expect(created.issuePrefix).toBe("INK");
     expect(created.slug).toBe("ink");
   });
@@ -110,7 +116,7 @@ describeEmbeddedPostgres("companyService", () => {
     ["Prosperity", "PROS", "prosperity"],
     ["Ab", "AB", "ab"],
   ])("derives prefix and (decoupled) slug for %s -> prefix %s, slug %s", async (name, expectedPrefix, expectedSlug) => {
-    const created = await companyService(db).create({ name });
+    const created = await createCompany({ name });
     expect(created.issuePrefix).toBe(expectedPrefix);
     expect(created.slug).toBe(expectedSlug);
   });
@@ -118,7 +124,7 @@ describeEmbeddedPostgres("companyService", () => {
   it("retries a verbatim 4-letter prefix on collision the same way as any other base", async () => {
     await db.insert(companies).values({ name: "Existing Apex", issuePrefix: "APEX" });
 
-    const created = await companyService(db).create({ name: "APEX" });
+    const created = await createCompany({ name: "APEX" });
 
     expect(created.issuePrefix).toBe("APEXA");
 
@@ -131,7 +137,7 @@ describeEmbeddedPostgres("companyService", () => {
     // completely different issue prefix — only the slug axis collides.
     await db.insert(companies).values({ name: "Some Other Co", issuePrefix: "ZZZZ", slug: "finpilot" });
 
-    const created = await companyService(db).create({ name: "FinPilot" });
+    const created = await createCompany({ name: "FinPilot" });
 
     expect(created.issuePrefix).toBe("FINP");
     expect(created.slug).toBe("finpilot-2");
@@ -142,14 +148,14 @@ describeEmbeddedPostgres("companyService", () => {
     // a completely different slug — only the prefix axis collides.
     await db.insert(companies).values({ name: "Some Other Co", issuePrefix: "FINP", slug: "something-else" });
 
-    const created = await companyService(db).create({ name: "FinPilot" });
+    const created = await createCompany({ name: "FinPilot" });
 
     expect(created.issuePrefix).toBe("FINPA");
     expect(created.slug).toBe("finpilot");
   });
 
   it("falls back to a co-prefixed slug when the cleaned name can't stand alone (digit-leading)", async () => {
-    const created = await companyService(db).create({ name: "123 Inc" });
+    const created = await createCompany({ name: "123 Inc" });
     // "123 Inc" -> cleaned "123inc" starts with a digit, which
     // companySlugSchema rejects (must start with a letter) — the fallback
     // prepends "co-" so the slug is still derived purely from the name.
@@ -157,14 +163,14 @@ describeEmbeddedPostgres("companyService", () => {
   });
 
   it("falls back to a co-prefixed slug when the cleaned name is a single character", async () => {
-    const created = await companyService(db).create({ name: "A" });
+    const created = await createCompany({ name: "A" });
     // "A" -> cleaned "a" is only 1 character, below companySlugSchema's
     // 2-character minimum.
     expect(created.slug).toBe("co-a");
   });
 
   it("accepts an explicit slug at creation", async () => {
-    const created = await companyService(db).create({
+    const created = await createCompany({
       name: "Aron & Sharon",
       slug: "custom-slug",
     });
@@ -180,12 +186,12 @@ describeEmbeddedPostgres("companyService", () => {
     });
 
     await expect(
-      companyService(db).create({ name: "New Co", slug: "taken" }),
+      createCompany({ name: "New Co", slug: "taken" }),
     ).rejects.toMatchObject({ status: 409, details: { code: "slug_conflict" } });
   });
 
   it("accepts an explicit issuePrefix at creation, winning over derivation", async () => {
-    const created = await companyService(db).create({
+    const created = await createCompany({
       name: "Totally Unrelated Name",
       issuePrefix: "CUSTOM",
     });
@@ -197,7 +203,7 @@ describeEmbeddedPostgres("companyService", () => {
   });
 
   it("honors both an explicit issuePrefix and an explicit slug together", async () => {
-    const created = await companyService(db).create({
+    const created = await createCompany({
       name: "Whatever",
       issuePrefix: "CUSTOM",
       slug: "custom-slug",
@@ -211,7 +217,7 @@ describeEmbeddedPostgres("companyService", () => {
     await db.insert(companies).values({ name: "Existing", issuePrefix: "TAKEN" });
 
     await expect(
-      companyService(db).create({ name: "New Co", issuePrefix: "TAKEN" }),
+      createCompany({ name: "New Co", issuePrefix: "TAKEN" }),
     ).rejects.toMatchObject({ status: 409, details: { code: "issue_prefix_conflict" } });
 
     // Confirms no "TAKENA"-style silent retry happened.
@@ -293,7 +299,7 @@ describeEmbeddedPostgres("companyService", () => {
 
     it("never drifts from create()'s own allocation for the same name", async () => {
       const previewed = await companyService(db).identityPreview("FinPilot");
-      const created = await companyService(db).create({ name: "FinPilot" });
+      const created = await createCompany({ name: "FinPilot" });
 
       expect(created.issuePrefix).toBe(previewed.issuePrefix);
       expect(created.slug).toBe(previewed.slug);
@@ -322,7 +328,7 @@ describeEmbeddedPostgres("companyService", () => {
   });
 
   it("rejects any update to a company slug once it is already set, even to the same value", async () => {
-    const created = await companyService(db).create({
+    const created = await createCompany({
       name: "Sluggish Co",
     });
     expect(created.slug).toBeTruthy();
@@ -374,7 +380,7 @@ describeEmbeddedPostgres("companyService", () => {
     const actor = { actorType: "user" as const, actorId: "test-admin", agentId: null, runId: null };
 
     it("returns a consequences preview without writing when confirm is absent", async () => {
-      const created = await companyService(db).create({ name: "Preview Co" });
+      const created = await createCompany({ name: "Preview Co" });
       const result = await companyService(db).breakGlassChangeSlug(created.id, "new-alias", { actor });
 
       expect(result.preview).toBe(true);
@@ -392,7 +398,7 @@ describeEmbeddedPostgres("companyService", () => {
     });
 
     it("still validates the shape of the new slug on preview", async () => {
-      const created = await companyService(db).create({ name: "Bad Slug Co" });
+      const created = await createCompany({ name: "Bad Slug Co" });
       await expect(
         companyService(db).breakGlassChangeSlug(created.id, "Not Valid!", { actor }),
       ).rejects.toMatchObject({ status: 422, details: { code: "slug_invalid" } });
@@ -413,7 +419,7 @@ describeEmbeddedPostgres("companyService", () => {
     });
 
     it("rejects execution when confirm does not match the current slug", async () => {
-      const created = await companyService(db).create({ name: "Mismatch Co" });
+      const created = await createCompany({ name: "Mismatch Co" });
       await expect(
         companyService(db).breakGlassChangeSlug(created.id, "new-alias", {
           confirm: "wrong-slug",
@@ -426,7 +432,7 @@ describeEmbeddedPostgres("companyService", () => {
     });
 
     it("performs the change transactionally and records an audit entry with the consequences snapshot when confirm matches the current slug", async () => {
-      const created = await companyService(db).create({ name: "Confirmed Co" });
+      const created = await createCompany({ name: "Confirmed Co" });
       const oldSlug = created.slug!;
 
       const result = await companyService(db).breakGlassChangeSlug(created.id, "brand-new-alias", {
@@ -465,7 +471,7 @@ describeEmbeddedPostgres("companyService", () => {
 
     it("rejects executing a conflicting slug already used by another company", async () => {
       await db.insert(companies).values({ name: "Taken Co", issuePrefix: "TKC", slug: "taken-alias" });
-      const created = await companyService(db).create({ name: "Conflicted Co" });
+      const created = await createCompany({ name: "Conflicted Co" });
 
       await expect(
         companyService(db).breakGlassChangeSlug(created.id, "taken-alias", {
@@ -476,7 +482,7 @@ describeEmbeddedPostgres("companyService", () => {
     });
 
     it("lists bound repos in the consequences report so the operator knows which committed configs go stale", async () => {
-      const created = await companyService(db).create({ name: "Bound Repo Co" });
+      const created = await createCompany({ name: "Bound Repo Co" });
       await db.insert(cloudScopeBindings).values({
         scopeType: "company",
         scopeId: created.id,
@@ -489,7 +495,7 @@ describeEmbeddedPostgres("companyService", () => {
     });
 
     it("never allows a break-glass change through the normal update() path", async () => {
-      const created = await companyService(db).create({ name: "Normal Path Co" });
+      const created = await createCompany({ name: "Normal Path Co" });
       await expect(
         companyService(db).update(
           created.id,
@@ -504,7 +510,7 @@ describeEmbeddedPostgres("companyService", () => {
     const actor = { actorType: "user" as const, actorId: "test-admin", agentId: null, runId: null };
 
     it("returns a consequences preview without writing when confirm is absent", async () => {
-      const created = await companyService(db).create({ name: "Preview Prefix Co" });
+      const created = await createCompany({ name: "Preview Prefix Co" });
       const result = await companyService(db).breakGlassChangeIssuePrefix(created.id, "NEWP", { actor });
 
       expect(result.preview).toBe(true);
@@ -521,14 +527,14 @@ describeEmbeddedPostgres("companyService", () => {
     });
 
     it("still validates the shape of the new prefix on preview", async () => {
-      const created = await companyService(db).create({ name: "Bad Prefix Co" });
+      const created = await createCompany({ name: "Bad Prefix Co" });
       await expect(
         companyService(db).breakGlassChangeIssuePrefix(created.id, "not valid!", { actor }),
       ).rejects.toMatchObject({ status: 422, details: { code: "issue_prefix_invalid" } });
     });
 
     it("rejects execution when confirm does not match the current prefix", async () => {
-      const created = await companyService(db).create({ name: "Mismatch Prefix Co" });
+      const created = await createCompany({ name: "Mismatch Prefix Co" });
       await expect(
         companyService(db).breakGlassChangeIssuePrefix(created.id, "NEWP", {
           confirm: "wrong-prefix",
@@ -541,7 +547,7 @@ describeEmbeddedPostgres("companyService", () => {
     });
 
     it("performs the change transactionally, rewrites existing issue identifiers, and records an audit entry", async () => {
-      const created = await companyService(db).create({ name: "Confirmed Prefix Co" });
+      const created = await createCompany({ name: "Confirmed Prefix Co" });
       const oldPrefix = created.issuePrefix;
 
       // Simulate a couple of existing issues under the old prefix, the way
@@ -604,7 +610,7 @@ describeEmbeddedPostgres("companyService", () => {
 
     it("rejects executing a conflicting prefix already used by another company", async () => {
       await db.insert(companies).values({ name: "Taken Prefix Co", issuePrefix: "TAKN" });
-      const created = await companyService(db).create({ name: "Conflicted Prefix Co" });
+      const created = await createCompany({ name: "Conflicted Prefix Co" });
 
       await expect(
         companyService(db).breakGlassChangeIssuePrefix(created.id, "TAKN", {
@@ -615,14 +621,14 @@ describeEmbeddedPostgres("companyService", () => {
     });
 
     it("reports a purely forward-looking warning when the company has no existing issues", async () => {
-      const created = await companyService(db).create({ name: "Empty Prefix Co" });
+      const created = await createCompany({ name: "Empty Prefix Co" });
       const result = await companyService(db).breakGlassChangeIssuePrefix(created.id, "EMPT", { actor });
       expect(result.consequences.existingIssueCount).toBe(0);
       expect(result.consequences.warning).toContain("forward-looking");
     });
 
     it("flags stale GitHub mirror issue titles when GitHub projection is enabled", async () => {
-      const created = await companyService(db).create({ name: "Projected Prefix Co" });
+      const created = await createCompany({ name: "Projected Prefix Co" });
       await companyService(db).update(
         created.id,
         { githubProjectionEnabled: true, githubProjectionRepo: "acme/projected-prefix-co" },
@@ -660,7 +666,7 @@ describeEmbeddedPostgres("companyService", () => {
    * actually commissions.
    */
   it("auto-provisions exactly the roster for a freshly created company", async () => {
-    const created = await companyService(db).create({
+    const created = await createCompany({
       name: "Fresh Company",
     });
 
@@ -1450,7 +1456,7 @@ describeEmbeddedPostgres("companyService", () => {
   });
 
   it("github projection is off by default, can be enabled with no fallback repo, and round-trips", async () => {
-    const created = await companyService(db).create({ name: "Projection Co" });
+    const created = await createCompany({ name: "Projection Co" });
     expect(created.githubProjectionEnabled).toBe(false);
     expect(created.githubProjectionRepo).toBeNull();
 

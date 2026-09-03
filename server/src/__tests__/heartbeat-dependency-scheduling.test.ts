@@ -28,7 +28,21 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { nativeToolsForProfile } from "../apex/steps/run-policy.ts";
 import { runningProcesses } from "../adapters/index.ts";
+
+/**
+ * The grant a governed read-only roster agent launches under (the read-repos
+ * profile). Every run in this suite is a mocked adapter call on an issue with
+ * no project workspace: nothing here changes a checkout, so the agent's grant
+ * carries no write verb and no codebase has to be bound. A coding adapter
+ * expressing no grant at all is an ungoverned writer, and the dispatch
+ * preconditions refuse one with no codebase before launch.
+ */
+const READ_ONLY_ADAPTER_CONFIG = {
+  dangerouslySkipPermissions: false,
+  allowedTools: nativeToolsForProfile("read-repos"),
+};
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -186,7 +200,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       role: "engineer",
       status: "active",
       adapterType: "codex_local",
-      adapterConfig: {},
+      adapterConfig: READ_ONLY_ADAPTER_CONFIG,
       runtimeConfig: {
         heartbeat: {
           wakeOnDemand: true,
@@ -435,7 +449,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       role: "engineer",
       status: "active",
       adapterType: "codex_local",
-      adapterConfig: {},
+      adapterConfig: READ_ONLY_ADAPTER_CONFIG,
       runtimeConfig: {
         heartbeat: {
           wakeOnDemand: true,
@@ -568,7 +582,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       role: "engineer",
       status: "active",
       adapterType: "codex_local",
-      adapterConfig: {},
+      adapterConfig: READ_ONLY_ADAPTER_CONFIG,
       runtimeConfig: {
         heartbeat: {
           wakeOnDemand: true,
@@ -705,7 +719,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       role: "qa",
       status: "active",
       adapterType: "codex_local",
-      adapterConfig: {},
+      adapterConfig: READ_ONLY_ADAPTER_CONFIG,
       runtimeConfig: {
         heartbeat: {
           wakeOnDemand: true,
@@ -905,7 +919,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       role: "engineer",
       status: "active",
       adapterType: "codex_local",
-      adapterConfig: {},
+      adapterConfig: READ_ONLY_ADAPTER_CONFIG,
       runtimeConfig: {
         heartbeat: {
           wakeOnDemand: true,
@@ -1037,7 +1051,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       role: "engineer",
       status: "active",
       adapterType: "codex_local",
-      adapterConfig: {},
+      adapterConfig: READ_ONLY_ADAPTER_CONFIG,
       runtimeConfig: {
         heartbeat: {
           wakeOnDemand: true,

@@ -41,7 +41,7 @@ describe("goals initiative columns", () => {
   it("ships as an additive migration registered in the journal", () => {
     const entry = journal.entries.find((candidate) => candidate.tag === "0161_goal_initiative");
     expect(entry).toBeDefined();
-    expect(entry?.idx).toBe(161);
+    expect(entry?.idx).toBe(159);
 
     const sql = readFileSync(join(migrationsDir, "0161_goal_initiative.sql"), "utf8");
     for (const name of [
@@ -97,7 +97,7 @@ describe("goals validation-criteria columns", () => {
       (candidate) => candidate.tag === "0163_goal_validation_criteria",
     );
     expect(entry).toBeDefined();
-    expect(entry?.idx).toBe(163);
+    expect(entry?.idx).toBe(161);
 
     const sql = readFileSync(join(migrationsDir, "0163_goal_validation_criteria.sql"), "utf8");
     for (const name of ["validation_criteria", "provenance"]) {

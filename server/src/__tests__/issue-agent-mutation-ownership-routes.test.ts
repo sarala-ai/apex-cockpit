@@ -161,6 +161,18 @@ function registerRouteMocks() {
     issueService: () => mockIssueService,
   }));
 
+  // Governed intake dedup runs on issue create/import; this file's fixtures don't
+  // exercise intake, so bypass it (no duplicates/suggestions, nothing missing).
+  vi.doMock("../services/issue-intake.js", () => ({
+    runIntakeCheck: vi.fn(async () => ({
+      duplicates: [],
+      projects: [],
+      goals: [],
+      epicCandidates: [],
+      missing: [],
+    })),
+  }));
+
   vi.doMock("../services/work-products.js", () => ({
     workProductService: () => mockWorkProductService,
   }));
@@ -287,7 +299,14 @@ function createRunContextDb(
   };
   const buildQuery = (selection: Record<string, unknown>) => {
     const whereResult = {
-      orderBy: vi.fn(async () => []),
+      // Most callers await .orderBy(...) directly; governed intake dedup
+      // (findDuplicates) additionally chains .limit() off it. Support both by
+      // making the orderBy result thenable (resolves to []) as well as
+      // exposing an async .limit().
+      orderBy: vi.fn(() => ({
+        then: async (resolve: (rows: unknown[]) => unknown) => resolve([]),
+        limit: vi.fn(async () => []),
+      })),
       then: async (resolve: (rows: unknown[]) => unknown) => resolve(rowsForSelection(selection)),
     };
     const query = {
@@ -368,6 +387,7 @@ describe("agent issue mutation checkout ownership", () => {
     vi.doUnmock("../services/external-objects.js");
     vi.doUnmock("../services/index.js");
     vi.doUnmock("../services/issues.js");
+    vi.doUnmock("../services/issue-intake.js");
     vi.doUnmock("../services/work-products.js");
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../routes/authz.js");

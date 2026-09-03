@@ -45,6 +45,7 @@ import { environmentService } from "./environments.js";
 import { heartbeatService } from "./heartbeat.js";
 import { logActivity } from "./activity-log.js";
 import { builtInAgentService } from "./built-in-agents.js";
+import { usableResponsibleUserIdOrNull } from "./service-actor-markers.js";
 import { detachIssueRunReferences } from "./db-lock-order.js";
 
 export interface CompanyActivityActor {
@@ -632,12 +633,22 @@ export function companyService(db: Db) {
       data: typeof companies.$inferInsert,
       opts?: { seedBundledAgents?: boolean },
     ) => {
+      const seedBundledAgents = opts?.seedBundledAgents !== false;
+      // Every routine must resolve to an accountable human. Seeded routines are
+      // created here, before any owner membership exists, so the only rung of
+      // the responsible-user ladder they can reach is the company default —
+      // it must be a real user, never a service marker.
+      if (seedBundledAgents && !usableResponsibleUserIdOrNull(data.defaultResponsibleUserId)) {
+        throw unprocessable(
+          "Creating a company with bundled agents requires defaultResponsibleUserId (the owning user)",
+        );
+      }
       const created = await createCompanyWithUniquePrefix(data);
       await environmentsSvc.ensureLocalEnvironment(created.id);
       // Bundled built-in agents (e.g. the Reflection Coach) are auto-provisioned by
       // default (the fork's onboarding behavior). The apex-tower setup flow creates
       // companies clean — pass { seedBundledAgents: false } to skip the seed.
-      if (opts?.seedBundledAgents !== false) {
+      if (seedBundledAgents) {
         await builtInAgents.autoProvisionBundledAgents(created.id);
       }
       const row = await getCompanyQuery(db)

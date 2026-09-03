@@ -458,9 +458,11 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
       .where(and(eq(issues.companyId, companyId), eq(issues.title, "Denied watchdog issue child")));
     expect(deniedVisibleProbeIssues).toHaveLength(0);
 
+    // Acknowledge governed intake so it doesn't 422 before the watchdog scope
+    // check under test here has a chance to run.
     const deniedParentCreate = await request(app)
       .post(`/api/companies/${companyId}/issues`)
-      .send({ title: "Denied parent create", parentId: unrelatedRootId });
+      .send({ title: "Denied parent create", parentId: unrelatedRootId, intakeAcknowledged: true });
     expect(deniedParentCreate.status, JSON.stringify(deniedParentCreate.body)).toBe(403);
     expect(deniedParentCreate.body.error).toBe("Task-watchdog runs can only mutate the watched issue subtree.");
 

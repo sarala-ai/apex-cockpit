@@ -7,12 +7,13 @@
  *
  * Defect (a) — the terminal notification outruns the linkage, every time.
  *
- *   When the stage's declared executor is not the ticket's assignee (the
- *   ticket is non-null — carried over from a previous stage — so the
- *   fill-a-vacuum rule correctly refuses to re-route), the commission's
- *   `enqueueWakeup` creates the queued step run and the claim gate cancels it
- *   INSIDE the same call chain: `issue_assignee_changed`, "the new owner will
- *   be woken instead". The cancel goes through `setRunStatus` →
+ *   When the ticket's assignee is not the run's agent by the time the queued
+ *   step run is claimed (live: the assignee carried over from a previous
+ *   stage and the fill-a-vacuum rule refused to re-route; since APEX-34 a
+ *   declared executor re-routes at commission, so the remaining route is a
+ *   ticket that changes hands while the run is still queued), the claim gate
+ *   cancels it: `issue_assignee_changed`, "the new owner will be woken
+ *   instead". The cancel goes through `setRunStatus` →
  *   `notifyStepHostOfTerminalRun`, which looks the case up by
  *   `pipelineCases.stepRunId = run.id` — but `recordCommissioned` has not run
  *   yet, so nothing maps run→case-step and the hook returns without firing.
@@ -81,6 +82,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { pipelineService, type PipelineActor } from "../services/pipelines.ts";
+import { heartbeatService } from "../services/heartbeat.ts";
 import { issueService } from "../services/issues.ts";
 import { withBuiltInAgentMarker } from "../services/built-in-agent-metadata.ts";
 import { APEX_AGENT_KEYS, apexAgentPermissionProfile } from "../services/apex-agent-roster.ts";
@@ -174,7 +176,7 @@ describeEmbeddedPostgres("APEX-31 probe: agent step exit vs the ticket", () => {
         role: "engineering",
         adapterType: "codex_local",
         adapterConfig: { model: "gpt-5.4" },
-        runtimeConfig: {},
+        runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
         permissions: { profile: apexAgentPermissionProfile(APEX_AGENT_KEYS.specifier) },
         metadata: withBuiltInAgentMarker(null, {
           key: APEX_AGENT_KEYS.specifier,
@@ -194,12 +196,25 @@ describeEmbeddedPostgres("APEX-31 probe: agent step exit vs the ticket", () => {
         role: "engineering",
         adapterType: "codex_local",
         adapterConfig: { model: "gpt-5.4" },
-        runtimeConfig: {},
+        runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
         permissions: { profile: apexAgentPermissionProfile(key) },
         metadata: withBuiltInAgentMarker(null, { key, featureKeys: [key] }),
       })
       .returning();
     return agent!;
+  }
+
+  /** A run already holding the agent's only slot (`maxConcurrentRuns: 1`).
+   *  While it runs, a wake for the agent stays queued instead of being claimed
+   *  on the spot: the only window in which a ticket can still change hands
+   *  under a commissioned step run, and the reason no adapter ever launches
+   *  in this probe. */
+  async function seedRunningRun(companyId: string, agentId: string) {
+    const [run] = await db
+      .insert(heartbeatRuns)
+      .values({ companyId, agentId, invocationSource: "on_demand", status: "running", startedAt: new Date() })
+      .returning();
+    return run!;
   }
 
   /** The APEX-14 shape: an agent stage whose declared acceptance is prose the
@@ -287,12 +302,15 @@ describeEmbeddedPostgres("APEX-31 probe: agent step exit vs the ticket", () => {
     async () => {
       const company = await seedCompany();
       const specifier = await seedSpecifier(company.id);
-      await seedRosterAgent(company.id, APEX_AGENT_KEYS.implementer, "Implementer");
+      const implementer = await seedRosterAgent(company.id, APEX_AGENT_KEYS.implementer, "Implementer");
       // The stage names the IMPLEMENTER as executor while the ticket belongs
-      // to the SPECIFIER — the live APEX-27 shape at the `tasks` stage: the
-      // assignee carried over from the previous stage, the fill-a-vacuum rule
-      // correctly refuses to re-route a non-null assignee, and the claim gate
-      // then cancels every run commissioned for the executor.
+      // to the SPECIFIER — the live APEX-27 shape at the `tasks` stage. A
+      // declared executor RE-ROUTES the ticket at commission time (APEX-34),
+      // so a commissioned step run is stale at the claim gate only in the
+      // shape the gate exists for: a human reassigns the ticket while the run
+      // is still queued. The run stays queued only while the executor's single
+      // slot is held, so the Implementer is mid-flight on other work first.
+      const busyRun = await seedRunningRun(company.id, implementer.id);
       const pipeline = await seedSpecPipeline(company.id, APEX_AGENT_KEYS.implementer);
       const seeded = await seedCaseWithWorkTicket(company.id, pipeline.id);
       await db
@@ -322,9 +340,32 @@ describeEmbeddedPostgres("APEX-31 probe: agent step exit vs the ticket", () => {
         actor: userActor,
       });
 
+      // The ledger recorded the commission as a clean success, and the case is
+      // parked waiting for a run that has not started.
+      const ledgers = await db
+        .select()
+        .from(pipelineAutomationExecutions)
+        .where(eq(pipelineAutomationExecutions.caseId, seeded.case.id));
+      expect(ledgers.some((row) => row.kind === "agent" && row.status === "succeeded")).toBe(true);
+      const parked = await caseDetail(company.id, seeded.case.id);
+      expect(parked.case.stepStatus).toBe("waiting_agent");
+
+      // The ticket changes hands while the step runs are still queued; then
+      // the Implementer's slot frees and the scheduler promotes them through
+      // the claim gate.
+      await db
+        .update(issues)
+        .set({ assigneeAgentId: specifier.id })
+        .where(eq(issues.id, seeded.issue.id));
+      await db
+        .update(heartbeatRuns)
+        .set({ status: "succeeded", finishedAt: new Date() })
+        .where(eq(heartbeatRuns.id, busyRun.id));
+      await heartbeatService(db).resumeQueuedRuns();
+
       // Ground truth of the defect, not the contract: the commissioned step
-      // runs exist, carry the step's context markers, and are ALREADY
-      // terminal — cancelled by the claim gate before they could start.
+      // runs exist, carry the step's context markers, and are terminal —
+      // cancelled by the claim gate before they could start.
       const stepRuns = await poll(async () => {
         const rows = await db
           .select()
@@ -343,16 +384,6 @@ describeEmbeddedPostgres("APEX-31 probe: agent step exit vs the ticket", () => {
         "the commissioned step runs were cancelled at the claim gate (issue_assignee_changed)",
       ).not.toBeNull();
       expect(stepRuns!.every((row) => row.errorCode === "issue_assignee_changed")).toBe(true);
-
-      // The ledger recorded the commission as a clean success, and the case is
-      // parked waiting for an agent that can never arrive.
-      const ledgers = await db
-        .select()
-        .from(pipelineAutomationExecutions)
-        .where(eq(pipelineAutomationExecutions.caseId, seeded.case.id));
-      expect(ledgers.some((row) => row.kind === "agent" && row.status === "succeeded")).toBe(true);
-      const parked = await caseDetail(company.id, seeded.case.id);
-      expect(parked.case.stepStatus).toBe("waiting_agent");
 
       // THE CONTRACT: the coordinator observes the commissioned run's terminal
       // status — it records the exit on the case (the `agent_run_cancelled`
@@ -380,13 +411,15 @@ describeEmbeddedPostgres("APEX-31 probe: agent step exit vs the ticket", () => {
     async () => {
       const company = await seedCompany();
       const specifier = await seedSpecifier(company.id);
-      const pipeline = await seedSpecPipeline(company.id);
-      const seeded = await seedCaseWithWorkTicket(company.id, pipeline.id);
-
       // Mid-flight, owned by the agent — the exact state APEX-14's ticket was
       // in when handoff run c13a76bd wrote `done` at 05:55:23 (agent actor,
       // `issue.successful_run_handoff_resolved` in the activity log) while
-      // the case sat held at `spec`.
+      // the case sat held at `spec`. The Specifier's slot is held by that
+      // in-flight work, so the stage's commission queues rather than launches.
+      await seedRunningRun(company.id, specifier.id);
+      const pipeline = await seedSpecPipeline(company.id);
+      const seeded = await seedCaseWithWorkTicket(company.id, pipeline.id);
+
       await svc.transitionCase({
         companyId: company.id,
         caseId: seeded.case.id,
