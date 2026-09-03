@@ -1,0 +1,12 @@
+# APEX configuration for this repo's own workflows (.apex/workflows/*).
+provider: gcp
+
+gcp:
+  project_id: sarala-cicd
+  region: asia-south1
+
+resource_servers:
+  # Deploys this repo's Cloud Run service (multi-container, IAM DB auth).
+  - gcp_cloud_run
+  # Builds and pushes this repo's image (docker-build-and-push module).
+  - docker_operations

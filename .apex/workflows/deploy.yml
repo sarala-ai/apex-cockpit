@@ -1,0 +1,114 @@
+# apex-cockpit's own deploy: this repo's image onto its Cloud Run service.
+# Multi-container (Cloud SQL Auth Proxy sidecar), secretless IAM DB auth,
+# two-pass public URL so PAPERCLIP_PUBLIC_URL matches the assigned URL, wired
+# to the gateway by resolving its stable Cloud Run URL at deploy time.
+#
+# DEPLOY ONLY. The Cloud SQL instance, database, IAM DB user, schema grants,
+# service account, and Secret Manager secrets named below are one-time infra
+# owned by the umbrella's bootstrap-project.sh.
+name: apex_cockpit_deploy
+version: "1.0"
+lifecycle: deployment
+description: "Deploy apex-cockpit to Cloud Run (secretless IAM DB auth, gateway URL resolved live)"
+
+inputs:
+  project_id:
+    type: string
+    default: "sarala-cicd"
+    description: "GCP project hosting the stack"
+  region:
+    type: string
+    default: "asia-south1"
+    description: "GCP region"
+  image_tag:
+    type: string
+    required: true
+    description: "apex-cockpit image tag in asia-south1-docker.pkg.dev/<project>/sarala-images (the release's git sha)"
+  cloudsql_instance:
+    type: string
+    default: "sarala-cicd:asia-south1:apex-stack"
+    description: "Cloud SQL connection name (project:region:instance)"
+  cloudsql_proxy_image:
+    type: string
+    default: "gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1"
+    description: "Cloud SQL Auth Proxy sidecar image"
+  org_admin_emails:
+    type: string
+    default: ""
+    description: "Comma-separated @sarala.ai emails granted instance_admin on first sign-in"
+
+outputs:
+  cockpit_url:
+    value: "${deploy_cockpit.url}"
+    description: "Deployed cockpit Cloud Run URL (public)"
+
+entry_point: get_gateway_url
+
+steps:
+  # The gateway is a peer service with its own deploy; only its URL is needed
+  # here, and Cloud Run URLs are stable once a service exists.
+  - name: get_gateway_url
+    server_type: gcp_cloud_run
+    tool_name: get_service_url
+    parameters:
+      service_name: "apex-gateway"
+      region: "${region}"
+      project_id: "${project_id}"
+
+  - name: deploy_cockpit
+    server_type: gcp_cloud_run
+    tool_name: deploy_multi_container_service
+    depends_on:
+      - get_gateway_url
+    parameters:
+      service_name: "apex-cockpit"
+      region: "${region}"
+      service_account: "apex-cockpit@${project_id}.iam.gserviceaccount.com"
+      cloudsql_instances:
+        - "${cloudsql_instance}"
+      allow_unauthenticated: true
+      public_url_env_var: "PAPERCLIP_PUBLIC_URL"
+      max_instances: 4
+      # Plugin workers spawn at boot; request-throttled CPU starves their init
+      # RPC into timeout. Always-allocated CPU + headroom keeps boot-time work alive.
+      cpu_always_allocated: true
+      project_id: "${project_id}"
+      containers:
+        - name: cockpit
+          image: "asia-south1-docker.pkg.dev/${project_id}/sarala-images/apex-cockpit:${image_tag}"
+          resources:
+            memory: "1Gi"
+            cpu: "1"
+          ports:
+            - 3100
+          depends_on:
+            - cloudsql-proxy
+          env:
+            DATABASE_URL: "postgres://apex-cockpit%40${project_id}.iam@127.0.0.1:5432/apex?sslmode=disable"
+            PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
+            PAPERCLIP_DEPLOYMENT_EXPOSURE: "public"
+            SERVE_UI: "true"
+            AUTH_GOOGLE_ALLOWED_DOMAIN: "sarala.ai"
+            AUTH_ORG_ADMIN_EMAILS: "${org_admin_emails}"
+            APEX_GATEWAY_URL: "${get_gateway_url.url}"
+          secrets:
+            BETTER_AUTH_SECRET: "apex-cockpit-better-auth-secret"
+            GOOGLE_CLIENT_ID: "apex-cockpit-google-client-id"
+            GOOGLE_CLIENT_SECRET: "apex-cockpit-google-client-secret"
+            # Stable master key: without it each Cloud Run instance mints an
+            # ephemeral key and every stored secret dies on redeploy/autoscale.
+            PAPERCLIP_SECRETS_MASTER_KEY: "apex-cockpit-secrets-master-key"
+        - name: cloudsql-proxy
+          image: "${cloudsql_proxy_image}"
+          args:
+            - "--auto-iam-authn"
+            - "--port=5432"
+            - "--health-check"
+            - "--http-address=0.0.0.0"
+            - "--http-port=9090"
+            - "${cloudsql_instance}"
+          startup_probe:
+            path: "/startup"
+            port: 9090
+            period_seconds: 5
+            failure_threshold: 20

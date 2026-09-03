@@ -1,0 +1,93 @@
+name: Deploy apex-cockpit (keyless via WIF)
+
+# This repo's own release+deploy. No stored cloud key, no sibling checkout:
+# GitHub's OIDC token is exchanged for GCP credentials as apex-ci, the image is
+# built and pushed by the apex docker workflow, and .apex/workflows/deploy.yml
+# rolls it onto the apex-cockpit Cloud Run service. The gateway is a peer with
+# its own deploy; only its Cloud Run URL is read here.
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      org_admin_emails:
+        description: "Comma-separated @sarala.ai emails granted instance_admin on first sign-in"
+        required: false
+        default: "admin@sarala.ai"
+      execution_mode:
+        description: "APEX execution mode"
+        required: true
+        default: "apply"
+        type: choice
+        options:
+          - apply
+          - dry_run
+
+concurrency:
+  group: deploy-apex-cockpit
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # Workload Identity Federation for google-github-actions/auth
+
+env:
+  PROJECT_ID: sarala-cicd
+  REGION: asia-south1
+  IMAGE_REPO: asia-south1-docker.pkg.dev/sarala-cicd/sarala-images/apex-cockpit
+  APEX_CORE_VERSION: "0.10.0"
+
+jobs:
+  deploy:
+    name: Build, push, deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to GCP (WIF, keyless)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: "projects/1040399111162/locations/global/workloadIdentityPools/github-actions/providers/github"
+          service_account: "apex-ci@sarala-cicd.iam.gserviceaccount.com"
+
+      - name: Setup gcloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Docker login to Artifact Registry
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - name: Install apex-core
+        run: |
+          pip install "apex-core==${APEX_CORE_VERSION}" \
+            --index-url "https://${REGION}-python.pkg.dev/${PROJECT_ID}/sarala-packages/simple/" \
+            --extra-index-url "https://pypi.org/simple/"
+
+      - name: Image tag = commit
+        id: tag
+        run: echo "tag=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+
+      # The Dockerfile needs BuildKit (syntax directive, COPY --parents).
+      - name: Build + push image (apex docker-build-and-push)
+        env:
+          DOCKER_BUILDKIT: "1"
+        run: |
+          apex run workflow run \
+            --workflow docker-build-and-push \
+            --params '{"dockerfile_dir":".","repository_uri":"'"${IMAGE_REPO}"'","image_tag":"'"${{ steps.tag.outputs.tag }}"'"}' \
+            --execution-mode apply
+
+      - name: Deploy to Cloud Run (.apex/workflows/deploy.yml)
+        env:
+          EXEC_MODE: ${{ inputs.execution_mode || 'apply' }}
+          ORG_ADMIN_EMAILS: ${{ inputs.org_admin_emails || 'admin@sarala.ai' }}
+        run: |
+          apex run workflow run \
+            --workflow .apex/workflows/deploy.yml \
+            --params '{"project_id":"'"$PROJECT_ID"'","region":"'"$REGION"'","image_tag":"'"${{ steps.tag.outputs.tag }}"'","org_admin_emails":"'"$ORG_ADMIN_EMAILS"'"}' \
+            --execution-mode "$EXEC_MODE"
+
+      - name: Deployed revision
+        run: gcloud run services describe apex-cockpit --region "$REGION" --project "$PROJECT_ID" --format='value(status.latestReadyRevisionName,status.url)'
