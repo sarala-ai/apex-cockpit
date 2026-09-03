@@ -3911,11 +3911,17 @@ export function secretService(db: Db) {
           continue;
         }
 
-        const secret = await getUserSecretValue({
+        let secret = await getUserSecretValue({
           companyId,
           ownerUserId: context.responsibleUserId,
           definitionId: definition.id,
         });
+        // Operator-credential fallback (matches resolveUserSecretValue): the
+        // value may live under another of the operator's companies.
+        if (!secret || secret.status !== "active") {
+          const anyCo = await getUserSecretValueAnyCompany(context.responsibleUserId, definition.key);
+          if (anyCo && anyCo.status === "active") secret = anyCo;
+        }
         if (!secret || secret.status !== "active") {
           missingUserSecretBindings.push({
             consumerType: context.consumerType,
@@ -4068,11 +4074,17 @@ export function secretService(db: Db) {
           continue;
         }
 
-        const secret = await getUserSecretValue({
+        let secret = await getUserSecretValue({
           companyId,
           ownerUserId: context.responsibleUserId,
           definitionId: definition.id,
         });
+        // Operator-credential fallback (matches resolveUserSecretValue): the
+        // value may live under another of the operator's companies.
+        if (!secret || secret.status !== "active") {
+          const anyCo = await getUserSecretValueAnyCompany(context.responsibleUserId, definition.key);
+          if (anyCo && anyCo.status === "active") secret = anyCo;
+        }
         if (!secret || secret.status !== "active") {
           missingUserSecretBindings.push({
             consumerType: context.consumerType,
