@@ -19,6 +19,16 @@ import type { TraceSpan, ToolCall, EvalRecord } from "@paperclipai/shared";
 
 export interface TraceEnricher {
   getTrace(runId: string): Promise<{ spans: TraceSpan[]; toolCalls: ToolCall[]; evals: EvalRecord[] }>;
+  /** Eval results across runs, when the enricher is also an eval store. */
+  evals?(input: EvalListInput): Promise<EvalRecord[]>;
+}
+
+export interface EvalListInput {
+  companyId?: string;
+  projectId?: string;
+  agentId?: string;
+  verdict?: "pass" | "warn" | "fail";
+  limit: number;
 }
 
 const EMPTY = { spans: [] as TraceSpan[], toolCalls: [] as ToolCall[], evals: [] as EvalRecord[] };
@@ -70,6 +80,28 @@ export class ApexEvalTraceClient implements TraceEnricher, AgentRunReader {
       return z.array(EvalAgentRunSchema).parse(await res.json());
     } catch (e) {
       console.warn(`[observe] apex-eval runs fetch failed for agent ${agentName}:`, e);
+      return [];
+    }
+  }
+
+  async evals(input: EvalListInput): Promise<EvalRecord[]> {
+    const qs = new URLSearchParams();
+    if (input.companyId) qs.set("companyId", input.companyId);
+    if (input.projectId) qs.set("projectId", input.projectId);
+    qs.set("limit", String(Math.min(1000, Math.max(input.limit, 1))));
+    try {
+      const res = await fetch(`${this.baseUrl}/evals?${qs.toString()}`, { headers: await evalAuthorization(this.baseUrl) });
+      if (!res.ok) {
+        console.warn(`[observe] apex-eval evals list failed: ${res.status}`);
+        return [];
+      }
+      const rows = z.array(EvalRecordSchema).parse(await res.json());
+      return rows
+        .filter((row) => !input.agentId || row.agentId === input.agentId)
+        .filter((row) => !input.verdict || row.verdict === input.verdict)
+        .slice(0, input.limit);
+    } catch (e) {
+      console.warn("[observe] apex-eval evals list failed:", e);
       return [];
     }
   }

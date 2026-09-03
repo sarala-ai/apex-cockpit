@@ -6,6 +6,7 @@ import { CloudTraceObserveStore } from "../observe/cloud-trace-store.js";
 import { ApexUnavailableError, type ApexInvoker } from "../apex/invoke.js";
 import type { ObserveStore } from "../observe/tools.js";
 import type { TraceEnricher } from "../observe/apex-eval-client.js";
+import type { EvalRecord } from "../observe/contract.js";
 
 function stubStore(partial: Partial<ObserveStore>): ObserveStore {
   const empty: ObserveStore = {
@@ -141,6 +142,32 @@ describe("CompositeObserveStore", () => {
     expect(detail?.toolCalls).toHaveLength(1);
     expect(detail?.evals).toHaveLength(1);
     expect(detail?.evals[0].verdict).toBe("pass");
+  });
+
+  it("evals lists verdicts from an enricher that is also an eval store", async () => {
+    const enricher: TraceEnricher = {
+      getTrace: async () => ({ spans: [], toolCalls: [], evals: [] }),
+      evals: async (input) => [
+        {
+          runId: "run-1",
+          evaluatorId: "builtin:RunCompleted",
+          library: "builtin",
+          name: "RunCompleted",
+          version: "1",
+          scope: "run",
+          verdict: "pass",
+          score: 1,
+          reason: `scoped to ${input.companyId ?? "all"}`,
+          occurredAt: new Date().toISOString(),
+          companyId: input.companyId ?? null,
+        } as unknown as EvalRecord,
+      ],
+    };
+    const owner = stubStore({});
+    const c = new CompositeObserveStore([owner], [enricher]);
+    const rows = await c.evals({ companyId: "co-1", limit: 10 });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].reason).toBe("scoped to co-1");
   });
 
   it("runDetail is not broken by an enricher that throws — base run still returned", async () => {

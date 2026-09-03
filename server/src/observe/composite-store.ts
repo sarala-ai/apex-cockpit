@@ -80,7 +80,15 @@ export class CompositeObserveStore implements ObserveStore {
   }
 
   async evals(input: z.infer<typeof observeInputs.evals>): Promise<EvalRecord[]> {
-    const parts = await Promise.all(this.stores.map((s) => settle(s.evals(input), [] as EvalRecord[])));
+    // Eval verdicts live in the eval store (apex-eval), which joins this
+    // composite as an enricher; the run stores rarely carry any of their own.
+    const sources = [
+      ...this.stores.map((s) => settle(s.evals(input), [] as EvalRecord[])),
+      ...this.enrichers
+        .filter((e): e is TraceEnricher & { evals: NonNullable<TraceEnricher["evals"]> } => typeof e.evals === "function")
+        .map((e) => settle(e.evals(input), [] as EvalRecord[])),
+    ];
+    const parts = await Promise.all(sources);
     return parts.flat().slice(0, input.limit);
   }
 
