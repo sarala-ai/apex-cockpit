@@ -250,7 +250,11 @@ describe("gemini remote execution", () => {
       exitCode: 0,
       signal: null,
       timedOut: false,
-      stdout: input.command === "gemini" ? geminiOutput : "",
+      // Managed-runtime restore probes the remote file size with `wc -c` before
+      // downloading (command-managed-runtime.ts readFile); answer "0" for every
+      // non-gemini shell call so that probe parses as an empty file instead of
+      // throwing "Could not determine remote file size".
+      stdout: input.command === "gemini" ? geminiOutput : "0",
       stderr: "",
       pid: 321,
       startedAt: new Date().toISOString(),

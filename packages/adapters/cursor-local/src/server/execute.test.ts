@@ -213,6 +213,10 @@ describe("cursor execute", () => {
   });
 
   it("reruns sandbox command resolution after managed runtime setup and keeps the original sandbox home", async () => {
+    // Managed-runtime restore now shells out for real (mkdir/tar/wc -c/dd) against
+    // the fixture's real tmp "remote" directory below, which is slower than the
+    // stubbed sh no-op this test used before — give it more headroom than the
+    // 5s default.
     setPrepareCursorSandboxCommand.mockReset();
     const prepareInputs: PrepareCursorSandboxCommandInput[] = [];
     let finalPreparedCommand: string | null = null;
@@ -269,23 +273,18 @@ printf '%s\\n' '{"type":"result","subtype":"success","session_id":"cursor-sessio
       commands: [] as string[],
     };
     const runner = {
-      execute: async (input: { command: string; args?: string[]; env?: Record<string, string> }) => {
+      execute: async (input: {
+        command: string;
+        args?: string[];
+        env?: Record<string, string>;
+        stdin?: string;
+      }) => {
         runnerState.commands.push(input.command);
-        if (input.command === "sh") {
-          return {
-            exitCode: 0,
-          signal: null,
-          timedOut: false,
-          stdout: "",
-          stderr: "",
-          pid: 555,
-          startedAt: new Date().toISOString(),
-        };
-        }
 
         return runChildProcess(`cursor-fresh-lease-${runnerState.commands.length}`, input.command, input.args ?? [], {
           cwd: remoteWorkspace,
           env: input.env ?? {},
+          stdin: input.stdin,
           timeoutSec: 30,
           graceSec: 5,
           onLog: async () => {},
@@ -348,5 +347,5 @@ printf '%s\\n' '{"type":"result","subtype":"success","session_id":"cursor-sessio
       else process.env.HOME = previousHome;
       await fs.rm(rootDir, { recursive: true, force: true });
     }
-  });
+  }, 20_000);
 });

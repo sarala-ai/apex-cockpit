@@ -28,6 +28,7 @@ import {
 import {
   describeClaudeFailure,
   detectClaudeLoginRequired,
+  isClaudeProviderQuotaError,
   isClaudeTransientUpstreamError,
   parseClaudeStreamJson,
 } from "./parse.js";
@@ -428,11 +429,22 @@ export async function testEnvironment(
           (stdoutFallback ? truncateDetail(stdoutFallback) : "") ||
           detail ||
           "";
-        const transient = isClaudeTransientUpstreamError({
-          parsed,
-          stdout: probe.stdout,
-          stderr: probe.stderr,
-        });
+        // Provider-quota errors (e.g. "Claude usage limit reached") are their
+        // own classifier in execute.ts (distinct retry/error-family handling),
+        // but isClaudeTransientUpstreamError() deliberately excludes them so
+        // the two stay mutually exclusive there. The probe only distinguishes
+        // "transient, retry later" from "hard fail" — treat both as transient.
+        const transient =
+          isClaudeTransientUpstreamError({
+            parsed,
+            stdout: probe.stdout,
+            stderr: probe.stderr,
+          }) ||
+          isClaudeProviderQuotaError({
+            parsed,
+            stdout: probe.stdout,
+            stderr: probe.stderr,
+          });
         checks.push(
           transient
             ? {
