@@ -48,8 +48,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Authenticate to GCP (WIF, keyless)
+        id: auth
         uses: google-github-actions/auth@v2
         with:
+          token_format: access_token
           workload_identity_provider: "projects/1040399111162/locations/global/workloadIdentityPools/github-actions/providers/github"
           service_account: "apex-ci@sarala-cicd.iam.gserviceaccount.com"
 
@@ -62,7 +64,7 @@ jobs:
       - name: Install apex-core
         run: |
           pip install "apex-core==${APEX_CORE_VERSION}" \
-            --index-url "https://${REGION}-python.pkg.dev/${PROJECT_ID}/sarala-packages/simple/" \
+            --index-url "https://oauth2accesstoken:${{ steps.auth.outputs.access_token }}@${REGION}-python.pkg.dev/${PROJECT_ID}/sarala-packages/simple/" \
             --extra-index-url "https://pypi.org/simple/"
 
       - name: Image tag = commit
