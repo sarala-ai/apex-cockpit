@@ -80,6 +80,12 @@ export const EvalRecordSchema = ScopeSchema.omit({ runId: true }).extend({
   score: z.number().nullable(),
   reason: z.string().nullable(),
   occurredAt: z.string().nullable(),
+  // Evaluator provenance (apex-eval eval.ts): which versioned evaluator said so.
+  evaluatorId: z.string().nullish(),
+  library: z.string().nullish(),
+  name: z.string().nullish(),
+  version: z.string().nullish(),
+  scope: z.string().nullish(),
 });
 export type EvalRecord = z.infer<typeof EvalRecordSchema>;
 
