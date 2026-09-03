@@ -524,6 +524,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     instructionsContents: combinedInstructionsContents,
     onLog,
   });
+  // Trusted apex-gateway MCP injection (when APEX_GATEWAY_TOKEN is in the run
+  // env). Written into the prompt-bundle dir BEFORE the bundle is synced so it
+  // rides the skills asset sync to remote targets; consumed via --mcp-config
+  // below. The file holds only the literal `${APEX_GATEWAY_TOKEN}` (resolved at
+  // the CLI from the run env) — no secret on disk.
+  const gatewayMcpConfig = buildGatewayMcpConfig(effectiveEnv);
+  if (gatewayMcpConfig) {
+    await fs.writeFile(
+      path.join(promptBundle.addDir, "apex-gateway.mcp.json"),
+      JSON.stringify(gatewayMcpConfig, null, 2),
+    );
+  }
   const useManagedRemoteClaudeConfig =
     executionTargetIsRemote &&
     adapterExecutionTargetUsesManagedHome(executionTarget) &&
@@ -596,17 +608,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? path.posix.join(effectivePromptBundleAddDir, path.basename(promptBundle.instructionsFilePath))
       : promptBundle.instructionsFilePath
     : undefined;
-  // Trusted apex-gateway MCP injection (when APEX_GATEWAY_TOKEN is in the run env).
-  // Written into the prompt-bundle dir so it rides the existing skills asset sync to
-  // remote targets; consumed via --mcp-config below. The file holds only the literal
-  // `${APEX_GATEWAY_TOKEN}` (resolved at the CLI from the run env) — no secret on disk.
-  const gatewayMcpConfig = buildGatewayMcpConfig(effectiveEnv);
   let gatewayMcpConfigArgPath: string | null = null;
   if (gatewayMcpConfig) {
-    await fs.writeFile(
-      path.join(promptBundle.addDir, "apex-gateway.mcp.json"),
-      JSON.stringify(gatewayMcpConfig, null, 2),
-    );
     gatewayMcpConfigArgPath = path.posix.join(effectivePromptBundleAddDir, "apex-gateway.mcp.json");
     await onLog(
       "stdout",

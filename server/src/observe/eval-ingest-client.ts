@@ -75,18 +75,40 @@ function spineKeyValues(spine: SpineAttrs): Array<{ key: string; value: { string
   return kv;
 }
 
+// apex-eval is a private Cloud Run service: calls from a hosted cockpit carry
+// a Google ID token for the eval URL's audience, minted by the runtime's
+// metadata server. Off GCP (local dev, tests) the client talks plain HTTP.
+const METADATA_IDENTITY_URL =
+  "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity";
+
+async function evalAuthorization(evalUrl: string): Promise<Record<string, string>> {
+  if (!process.env.K_SERVICE || !evalUrl.startsWith("https://")) return {};
+  try {
+    const res = await fetch(`${METADATA_IDENTITY_URL}?audience=${encodeURIComponent(new URL(evalUrl).origin)}`, {
+      headers: { "Metadata-Flavor": "Google" },
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!res.ok) return {};
+    return { authorization: `Bearer ${await res.text()}` };
+  } catch {
+    return {};
+  }
+}
+
 async function postJson(url: string, body: unknown, timeoutMs = 5000): Promise<boolean> {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(url, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...(await evalAuthorization(EVAL_URL())) },
       body: JSON.stringify(body),
       signal: controller.signal,
     });
+    if (!res.ok) console.warn(`[observe] apex-eval ${res.status} for ${new URL(url).pathname}`);
     return res.ok;
-  } catch {
+  } catch (err) {
+    console.warn(`[observe] apex-eval unreachable at ${url}: ${(err as Error).message}`);
     return false;
   } finally {
     clearTimeout(t);

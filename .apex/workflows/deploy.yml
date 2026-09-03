@@ -45,8 +45,8 @@ outputs:
 entry_point: get_gateway_url
 
 steps:
-  # The gateway is a peer service with its own deploy; only its URL is needed
-  # here, and Cloud Run URLs are stable once a service exists.
+  # Gateway and eval are peer services with their own deploys; only their URLs
+  # are needed here, and Cloud Run URLs are stable once a service exists.
   - name: get_gateway_url
     server_type: gcp_cloud_run
     tool_name: get_service_url
@@ -55,11 +55,21 @@ steps:
       region: "${region}"
       project_id: "${project_id}"
 
+  - name: get_eval_url
+    server_type: gcp_cloud_run
+    tool_name: get_service_url
+    depends_on:
+      - get_gateway_url
+    parameters:
+      service_name: "apex-eval"
+      region: "${region}"
+      project_id: "${project_id}"
+
   - name: deploy_cockpit
     server_type: gcp_cloud_run
     tool_name: deploy_multi_container_service
     depends_on:
-      - get_gateway_url
+      - get_eval_url
     parameters:
       service_name: "apex-cockpit"
       region: "${region}"
@@ -91,6 +101,7 @@ steps:
             AUTH_GOOGLE_ALLOWED_DOMAIN: "sarala.ai"
             AUTH_ORG_ADMIN_EMAILS: "${org_admin_emails}"
             APEX_GATEWAY_URL: "${get_gateway_url.url}"
+            APEX_EVAL_URL: "${get_eval_url.url}"
           secrets:
             BETTER_AUTH_SECRET: "apex-cockpit-better-auth-secret"
             GOOGLE_CLIENT_ID: "apex-cockpit-google-client-id"
