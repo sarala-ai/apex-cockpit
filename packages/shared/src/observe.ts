@@ -17,17 +17,19 @@ export type Env = z.infer<typeof EnvSchema>;
 export const EvalVerdictSchema = z.enum(["pass", "warn", "fail"]);
 export type EvalVerdict = z.infer<typeof EvalVerdictSchema>;
 
+// Spine columns are nullable at the store (apex-eval writes what the emitter
+// knew), so a wire row may carry an explicit null as readily as omit a key.
 export const ScopeSchema = z.object({
-  orgId: z.string().optional(),
-  companyId: z.string().optional(),
-  projectId: z.string().optional(),
-  agentId: z.string().optional(),
-  agentName: z.string().optional(),
-  agentKind: AgentKindSchema.optional(),
-  repo: z.string().optional(),
-  issueId: z.string().optional(),
-  runId: z.string().optional(),
-  env: EnvSchema.optional(),
+  orgId: z.string().nullish(),
+  companyId: z.string().nullish(),
+  projectId: z.string().nullish(),
+  agentId: z.string().nullish(),
+  agentName: z.string().nullish(),
+  agentKind: AgentKindSchema.nullish(),
+  repo: z.string().nullish(),
+  issueId: z.string().nullish(),
+  runId: z.string().nullish(),
+  env: EnvSchema.nullish(),
 });
 export type ObserveScope = z.infer<typeof ScopeSchema>;
 
