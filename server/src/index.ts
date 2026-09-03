@@ -1172,6 +1172,11 @@ export async function startServer(): Promise<StartedServer> {
     deps: { wakeup: heartbeatWakeup },
   });
 
+  // Finished heartbeat runs become traces in apex-eval (run-level ingest, the
+  // eval spine's feed). Every APEX_EVAL_RUN_INGEST_SEC (default 60; 0 disables).
+  const { startRunEvalIngestSweep } = await import("./observe/run-eval-ingest-sweep.js");
+  const stopRunEvalIngestSweep = startRunEvalIngestSweep(db as any);
+
   // Recurring `apex capabilities sync` (spec: capability sync +
   // PATH-canonical resolution, Session B / T4) — pulls configured
   // capability_sources (workflows/skills) into ~/.apex/company/<alias>/ per
@@ -1273,6 +1278,7 @@ export async function startServer(): Promise<StartedServer> {
       stopGithubIssueIngestScheduler();
       stopPipelineStepSweep();
       stopCriterionReviewSweep();
+      stopRunEvalIngestSweep();
       stopCapabilitySyncScheduler();
       await waitForHeartbeatSchedulerIdle();
 

@@ -38,6 +38,7 @@ export const heartbeatRuns = pgTable(
     lastOutputAt: timestamp("last_output_at", { withTimezone: true }),
     lastOutputSeq: integer("last_output_seq").notNull().default(0),
     lastOutputStream: text("last_output_stream"),
+    evalIngestedAt: timestamp("eval_ingested_at", { withTimezone: true }),
     lastOutputBytes: bigint("last_output_bytes", { mode: "number" }),
     retryOfRunId: uuid("retry_of_run_id").references((): AnyPgColumn => heartbeatRuns.id, {
       onDelete: "set null",

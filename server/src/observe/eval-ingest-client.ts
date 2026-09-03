@@ -137,6 +137,14 @@ async function triggerEval(runId: string): Promise<void> {
 }
 
 export class EvalIngestClient {
+  /** A whole heartbeat run as one trace (see run-trace.ts). Returns whether
+   *  apex-eval accepted it — the sweep marks the run ingested only then. */
+  async ingestRunTrace(params: { runId: string; body: unknown }): Promise<boolean> {
+    const ok = await postJson(`${EVAL_URL()}/v1/traces`, params.body, 15_000);
+    if (ok) await triggerEval(params.runId);
+    return ok;
+  }
+
   /** GCP resource-health outcome → RunCompletedEvaluator (verdict pass/fail on
    *  terminal status). `healthy` maps to "succeeded", anything else to "failed". */
   async evaluateResourceHealth(params: {
