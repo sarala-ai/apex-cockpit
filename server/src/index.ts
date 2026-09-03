@@ -1177,6 +1177,12 @@ export async function startServer(): Promise<StartedServer> {
   const { startRunEvalIngestSweep } = await import("./observe/run-eval-ingest-sweep.js");
   const stopRunEvalIngestSweep = startRunEvalIngestSweep(db as any);
 
+  // Sandbox leases whose provider release failed still have a live, billing
+  // resource behind them. Every APEX_SANDBOX_REAPER_SEC (default 300; 0
+  // disables) the reaper retries the release and names what it cannot reclaim.
+  const { startEnvironmentLeaseReaper } = await import("./services/environment-lease-reaper.js");
+  const stopEnvironmentLeaseReaper = startEnvironmentLeaseReaper(db as any, { pluginWorkerManager });
+
   // Recurring `apex capabilities sync` (spec: capability sync +
   // PATH-canonical resolution, Session B / T4) — pulls configured
   // capability_sources (workflows/skills) into ~/.apex/company/<alias>/ per
@@ -1279,6 +1285,7 @@ export async function startServer(): Promise<StartedServer> {
       stopPipelineStepSweep();
       stopCriterionReviewSweep();
       stopRunEvalIngestSweep();
+      stopEnvironmentLeaseReaper();
       stopCapabilitySyncScheduler();
       await waitForHeartbeatSchedulerIdle();
 

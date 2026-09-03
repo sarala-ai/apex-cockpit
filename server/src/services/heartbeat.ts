@@ -10857,6 +10857,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     activeRunExecutions.add(run.id);
     let runScratch: HeartbeatRunScratch | null = null;
+    const runIdentity = { runId: run.id, companyId: run.companyId, agentId: run.agentId };
+    // Environment leases are released the moment the run row goes terminal,
+    // before summaries, recovery, or promotion run: a sandbox bills for every
+    // second it lives, and none of that finalization work needs it. The
+    // `finally` below repeats the call as a safety net; the release only
+    // touches `active` leases, so the second pass is a no-op.
+    const releaseRunEnvironmentNow = async (status: string, failureReason?: string | null) => {
+      await releaseEnvironmentLeasesForRun({ ...runIdentity, status, failureReason });
+    };
 
     try {
     const agent = await getAgent(run.agentId);
@@ -12904,6 +12913,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         );
         return;
       }
+      await releaseRunEnvironmentNow(status, runErrorMessage);
 
       let persistedRun = persistedRunWrite.run;
       if (persistedRun) {
@@ -13126,6 +13136,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         );
         return;
       }
+      await releaseRunEnvironmentNow("failed", message);
 
       const failedRun = failedRunWrite.run;
       await setWakeupStatus(run.wakeupRequestId, "failed", {
@@ -13234,6 +13245,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               "skipping late setup failure finalization because the run already left running state",
             );
           } else {
+            await releaseRunEnvironmentNow("failed", message);
             await setWakeupStatus(run.wakeupRequestId, "failed", {
               finishedAt: new Date(),
               error: message,
@@ -13287,9 +13299,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         } finally {
           const latestRun = await getRun(run.id).catch(() => null);
           await releaseEnvironmentLeasesForRun({
-            runId: run.id,
-            companyId: run.companyId,
-            agentId: run.agentId,
+            ...runIdentity,
             status: latestRun?.status,
             failureReason: latestRun?.error ?? undefined,
           });

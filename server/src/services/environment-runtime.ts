@@ -1857,6 +1857,39 @@ export function environmentRuntimeService(
       return destroyed;
     },
 
+    /**
+     * Re-runs provider cleanup for a lease whose row already left `active` but
+     * whose provider resource may still exist (`cleanupStatus` not success).
+     * The driver keeps the retry semantics: a `pending_cleanup` reusable lease
+     * is destroyed, any other terminal lease is released again with the status
+     * already recorded on it, so the row's audit trail is never rewritten.
+     * Returns null when nothing can act on the lease (no driver, missing
+     * environment, or a status that has no cleanup to retry).
+     */
+    async retryLeaseCleanup(leaseId: string): Promise<EnvironmentLease | null> {
+      const [leaseRow] = await db
+        .select()
+        .from(environmentLeases)
+        .where(eq(environmentLeases.id, leaseId))
+        .limit(1);
+      if (!leaseRow) return null;
+      const environment = await environmentsSvc.getById(leaseRow.environmentId);
+      if (!environment) return null;
+      const lease = toEnvironmentLeaseSnapshot(leaseRow);
+      const driver = getDriver(getLeaseDriverKey(lease, environment));
+      if (!driver) return null;
+      if (lease.status === "pending_cleanup") {
+        if (!driver.destroyRunLease) return null;
+        return await driver.destroyRunLease({
+          environment,
+          lease,
+          failureReason: lease.failureReason ?? "cleanup_retry",
+        });
+      }
+      if (lease.status !== "released" && lease.status !== "expired" && lease.status !== "failed") return null;
+      return await driver.releaseRunLease({ environment, lease, status: lease.status });
+    },
+
     async resumeRunLease(input: EnvironmentDriverLeaseInput): Promise<PluginEnvironmentLease | EnvironmentLease | null> {
       const driver = requireDriverKey(getLeaseDriverKey(input.lease, input.environment));
       if (!driver.resumeRunLease) {
