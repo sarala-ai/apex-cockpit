@@ -15,6 +15,8 @@ function createProjectWorkspace(overrides: Partial<ProjectWorkspace>): ProjectWo
     defaultRef: overrides.defaultRef ?? null,
     visibility: overrides.visibility ?? "default",
     setupCommand: overrides.setupCommand ?? null,
+    checkCommand: overrides.checkCommand ?? null,
+    deployWorkflow: overrides.deployWorkflow ?? null,
     cleanupCommand: overrides.cleanupCommand ?? null,
     remoteProvider: overrides.remoteProvider ?? null,
     remoteWorkspaceRef: overrides.remoteWorkspaceRef ?? null,

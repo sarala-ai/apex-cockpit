@@ -287,6 +287,7 @@ describe("ImportFromVaultDialog", () => {
         id: "secret-existing",
         companyId: "company-1",
         scope: "company",
+        orgId: null,
         ownerUserId: null,
         userSecretDefinitionId: null,
         key: "openai_api_key",

@@ -107,6 +107,8 @@ function projectWorkspace(overrides: Partial<ProjectWorkspace> = {}): ProjectWor
     defaultRef: "origin/main",
     visibility: "default",
     setupCommand: null,
+    checkCommand: null,
+    deployWorkflow: null,
     cleanupCommand: null,
     remoteProvider: null,
     remoteWorkspaceRef: null,

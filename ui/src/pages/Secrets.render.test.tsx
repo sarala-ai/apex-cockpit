@@ -228,6 +228,7 @@ function makeCompanySecret(overrides: Partial<CompanySecret> = {}): CompanySecre
     id: "secret-openai",
     companyId: "company-1",
     scope: "company",
+    orgId: null,
     ownerUserId: null,
     userSecretDefinitionId: null,
     key: "openai_api_key",
@@ -256,6 +257,8 @@ function makeUserSecretDefinition(overrides: Partial<UserSecretDefinition> = {})
   return {
     id: "def-github",
     companyId: "company-1",
+    scope: "company",
+    orgId: null,
     key: "PERSONAL_GH_TOKEN",
     name: "Personal GitHub token",
     description: "Used when the responsible user's own repos must be reached.",

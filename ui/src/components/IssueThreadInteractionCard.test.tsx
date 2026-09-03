@@ -4,6 +4,7 @@ import { act as reactAct, type ComponentProps, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
 import { ThemeProvider } from "../context/ThemeContext";
 import { TooltipProvider } from "./ui/tooltip";
@@ -50,17 +51,20 @@ function renderCard(
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
   act(() => {
     root?.render(
-      <TooltipProvider>
-        <ThemeProvider>
-          <IssueThreadInteractionCard
-            interaction={pendingAskUserQuestionsInteraction}
-            {...props}
-          />
-        </ThemeProvider>
-      </TooltipProvider>,
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <ThemeProvider>
+            <IssueThreadInteractionCard
+              interaction={pendingAskUserQuestionsInteraction}
+              {...props}
+            />
+          </ThemeProvider>
+        </TooltipProvider>
+      </QueryClientProvider>,
     );
   });
 

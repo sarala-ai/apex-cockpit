@@ -2,12 +2,15 @@
 
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ThemeProvider } from "../context/ThemeContext";
 import { RunInvocationCard } from "../pages/AgentDetail";
 
 describe("RunInvocationCard", () => {
   it("keeps verbose invocation details collapsed by default", () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const html = renderToStaticMarkup(
+      <QueryClientProvider client={queryClient}>
       <ThemeProvider>
         <RunInvocationCard
           payload={{
@@ -22,7 +25,8 @@ describe("RunInvocationCard", () => {
           }}
           censorUsernameInLogs={false}
         />
-      </ThemeProvider>,
+      </ThemeProvider>
+      </QueryClientProvider>,
     );
 
     expect(html).toContain("Invocation");

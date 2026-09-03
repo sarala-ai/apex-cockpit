@@ -28,6 +28,8 @@ function definition(overrides: Partial<UserSecretDefinition> = {}): UserSecretDe
   return {
     id: "def-1",
     companyId: "c1",
+    scope: "company",
+    orgId: null,
     key: "PERSONAL_GH_TOKEN",
     name: "Personal GitHub token",
     description: "Used for private repo access",
@@ -53,6 +55,7 @@ function secret(): CompanySecret {
     id: "sec-1",
     companyId: "c1",
     scope: "user",
+    orgId: null,
     ownerUserId: "u1",
     userSecretDefinitionId: "def-1",
     key: "PERSONAL_GH_TOKEN",

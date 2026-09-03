@@ -12,6 +12,7 @@ function makeSecret(status: CompanySecret["status"]): CompanySecret {
     id: "sec-1",
     companyId: "c1",
     scope: "user",
+    orgId: null,
     ownerUserId: "u1",
     userSecretDefinitionId: "def-1",
     key: "PERSONAL_GH_TOKEN",

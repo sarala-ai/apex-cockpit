@@ -2,11 +2,22 @@
 
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
+import type { ReactNode } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { parseAcpxStdoutLine } from "@paperclipai/adapter-utils/acpx-engine/ui";
 import type { TranscriptEntry } from "../../adapters";
 import { buildTranscript, type RunLogChunk } from "../../adapters";
 import { ThemeProvider } from "../../context/ThemeContext";
 import { RunTranscriptView, normalizeTranscript } from "./RunTranscriptView";
+
+function Providers({ children }: { children: ReactNode }) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return (
+    <QueryClientProvider client={queryClient}>
+      <ThemeProvider>{children}</ThemeProvider>
+    </QueryClientProvider>
+  );
+}
 
 describe("RunTranscriptView", () => {
   it("folds repeated tool_call status updates for the same toolUseId into one block", () => {
@@ -130,7 +141,7 @@ describe("RunTranscriptView", () => {
 
   it("renders assistant and thinking content as markdown in compact mode", () => {
     const html = renderToStaticMarkup(
-      <ThemeProvider>
+      <Providers>
         <RunTranscriptView
           density="compact"
           entries={[
@@ -146,7 +157,7 @@ describe("RunTranscriptView", () => {
             },
           ]}
         />
-      </ThemeProvider>,
+      </Providers>,
     );
 
     expect(html).toContain("<strong>world</strong>");
@@ -180,7 +191,7 @@ describe("RunTranscriptView", () => {
 
   it("renders successful result summaries as markdown in nice mode", () => {
     const html = renderToStaticMarkup(
-      <ThemeProvider>
+      <Providers>
         <RunTranscriptView
           density="compact"
           entries={[
@@ -198,7 +209,7 @@ describe("RunTranscriptView", () => {
             },
           ]}
         />
-      </ThemeProvider>,
+      </Providers>,
     );
 
     expect(html).toContain("<h2>Summary</h2>");
@@ -215,9 +226,9 @@ describe("RunTranscriptView", () => {
     }));
 
     const html = renderToStaticMarkup(
-      <ThemeProvider>
+      <Providers>
         <RunTranscriptView mode="raw" entries={entries} />
-      </ThemeProvider>,
+      </Providers>,
     );
 
     expect(html).toContain("line-0");

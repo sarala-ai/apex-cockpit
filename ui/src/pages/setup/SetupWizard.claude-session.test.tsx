@@ -75,12 +75,12 @@ function setInputValue(input: HTMLInputElement, value: string) {
 
 describe("ClaudeSessionStep", () => {
   let container: HTMLDivElement;
-  let onRecheck: ReturnType<typeof vi.fn>;
+  let onRecheck: ReturnType<typeof vi.fn<() => void>>;
 
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
-    onRecheck = vi.fn();
+    onRecheck = vi.fn<() => void>();
   });
 
   afterEach(() => {

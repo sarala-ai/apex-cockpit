@@ -38,6 +38,7 @@ function makeSecret(id: string, overrides: Partial<CompanySecret> = {}): Company
     id,
     companyId: "co",
     scope: "company",
+    orgId: null,
     ownerUserId: null,
     userSecretDefinitionId: null,
     key: id,

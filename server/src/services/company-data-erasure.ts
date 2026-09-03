@@ -125,6 +125,9 @@ import {
   companyMemberships,
   companySecretBindings,
   companySecretProviderConfigs,
+  companyPromptLabels,
+  companyPromptVersions,
+  companyPrompts,
   companySecrets,
   companySkillComments,
   companySkillStars,
@@ -133,11 +136,15 @@ import {
   companySkillVersions,
   companySkills,
   companyUserSidebarPreferences,
+  evalAmendments,
+  evalLessons,
   invites,
   labels,
+  lineageEdges,
   pipelines,
   pluginCompanySettings,
   principalPermissionGrants,
+  teams,
   userSecretDeclarations,
   userSecretDefinitions,
 } from "@paperclipai/db";
@@ -198,6 +205,17 @@ const ERASED_TABLES: ErasableTable[] = [
   // manages. Forced as much as chosen: they point at routines, which are
   // erased below. Startup reconciliation rebuilds them from the definitions.
   named(builtInManagedResources),
+  // Authored company content and what was learned from it: prompts (with
+  // their versions and labels), the eval lessons and amendments the workforce
+  // accumulated, the lineage between work products, and the company's teams.
+  // All of it is the company's, none of it is the instance's.
+  named(companyPrompts),
+  named(companyPromptVersions),
+  named(companyPromptLabels),
+  named(evalLessons),
+  named(evalAmendments),
+  named(lineageEdges),
+  named(teams),
 
   // Runs and their traces.
   named(heartbeatRuns),

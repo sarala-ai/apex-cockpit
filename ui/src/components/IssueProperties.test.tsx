@@ -333,6 +333,8 @@ function createProject(overrides: Partial<Project> = {}): Project {
     defaultRef: "master",
     visibility: "default" as const,
     setupCommand: null,
+    checkCommand: null,
+    deployWorkflow: null,
     cleanupCommand: null,
     remoteProvider: null,
     remoteWorkspaceRef: null,

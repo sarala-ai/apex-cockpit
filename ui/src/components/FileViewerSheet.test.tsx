@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { WorkspaceFileContent } from "@paperclipai/shared";
 import type { FileViewerUrlState } from "@/context/FileViewerContext";
 import { ThemeProvider } from "@/context/ThemeContext";
@@ -117,24 +118,27 @@ describe("FileContentViewer", () => {
   });
 
   it("shows an icon toggle for Markdown files and defaults to rendered Markdown", () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const markup = renderToStaticMarkup(
-      <ThemeProvider>
-        <FileContentViewer
-          content={content({
-            resource: {
-              ...content().resource,
-              title: "README.md",
-              displayPath: "docs/README.md",
-              contentType: "text/markdown; charset=utf-8",
-            },
-            content: {
-              encoding: "utf8",
-              data: "# Heading\n\nBody",
-            },
-          })}
-          highlightedLine={null}
-        />
-      </ThemeProvider>,
+      <QueryClientProvider client={queryClient}>
+        <ThemeProvider>
+          <FileContentViewer
+            content={content({
+              resource: {
+                ...content().resource,
+                title: "README.md",
+                displayPath: "docs/README.md",
+                contentType: "text/markdown; charset=utf-8",
+              },
+              content: {
+                encoding: "utf8",
+                data: "# Heading\n\nBody",
+              },
+            })}
+            highlightedLine={null}
+          />
+        </ThemeProvider>
+      </QueryClientProvider>,
     );
 
     expect(markup).toContain("Markdown preview mode");

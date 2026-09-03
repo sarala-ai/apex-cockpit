@@ -18,6 +18,8 @@ function makeUserSecretDefinition(overrides: { key: string; status?: "active" | 
   return {
     id: `def-${overrides.key}`,
     companyId: "co",
+    scope: "company",
+    orgId: null,
     key: overrides.key,
     name: overrides.key.toUpperCase(),
     description: null,
@@ -41,6 +43,7 @@ function makeSecret(overrides: Partial<CompanySecret> & Pick<CompanySecret, "id"
   return {
     companyId: "co",
     scope: "company",
+    orgId: null,
     ownerUserId: null,
     userSecretDefinitionId: null,
     key: overrides.id,

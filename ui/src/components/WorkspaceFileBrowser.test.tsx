@@ -124,6 +124,8 @@ function createWorkspace(overrides: Partial<ProjectWorkspace> = {}): ProjectWork
     defaultRef: null,
     visibility: "default",
     setupCommand: null,
+    checkCommand: null,
+    deployWorkflow: null,
     cleanupCommand: null,
     remoteProvider: null,
     remoteWorkspaceRef: null,
