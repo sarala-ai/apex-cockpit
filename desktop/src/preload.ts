@@ -39,6 +39,16 @@ interface AuthStatusResult {
   error?: string;
 }
 
+interface ClaudeConnectState {
+  event: "state";
+  cockpit_approved: boolean;
+  cockpit_approval_url?: string | null;
+  anthropic_url: string | null;
+  attempt_error: string | null;
+  delivered: boolean;
+  error: string | null;
+}
+
 interface CloudAuthStatus {
   ok: boolean;
   gcloudInstalled: boolean;
@@ -83,17 +93,30 @@ const apexDesktop = {
     },
   },
 
-  // The annual Claude subscription ceremony, desktop-triggered: main spawns
-  // `apex claude connect` and opens its guided page in-app. Consents stay
-  // with the human; everything around them is choreography.
+  // The annual Claude subscription ceremony, run inline in the cockpit page:
+  // main spawns `apex claude connect --emit-json` and relays its state here;
+  // the pasted authorization code goes back the same way. Consents stay with
+  // the human; everything around them is choreography. The minted token never
+  // crosses this bridge — the CLI delivers it to the cockpit slot directly.
   claudeConnect: {
     start: (opts: { companyId: string; definitionKey?: string }): Promise<RunnerStartResult> =>
       ipcRenderer.invoke("claude:connect", opts),
-    onOutput: (listener: (chunk: string) => void): void => {
-      ipcRenderer.on("claude:connect:output", (_event, chunk: string) => listener(chunk));
+    submitCode: (code: string): Promise<OkResult> => ipcRenderer.invoke("claude:connect:code", code),
+    cancel: (): Promise<OkResult> => ipcRenderer.invoke("claude:connect:cancel"),
+    onState: (listener: (state: ClaudeConnectState) => void): (() => void) => {
+      const handler = (_event: unknown, state: ClaudeConnectState) => listener(state);
+      ipcRenderer.on("claude:connect:state", handler);
+      return () => ipcRenderer.removeListener("claude:connect:state", handler);
     },
-    onExit: (listener: (info: { code: number | null }) => void): void => {
-      ipcRenderer.on("claude:connect:exit", (_event, info: { code: number | null }) => listener(info));
+    onOutput: (listener: (chunk: string) => void): (() => void) => {
+      const handler = (_event: unknown, chunk: string) => listener(chunk);
+      ipcRenderer.on("claude:connect:output", handler);
+      return () => ipcRenderer.removeListener("claude:connect:output", handler);
+    },
+    onExit: (listener: (info: { code: number | null }) => void): (() => void) => {
+      const handler = (_event: unknown, info: { code: number | null }) => listener(info);
+      ipcRenderer.on("claude:connect:exit", handler);
+      return () => ipcRenderer.removeListener("claude:connect:exit", handler);
     },
   },
 

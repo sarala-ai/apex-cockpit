@@ -106,6 +106,23 @@ function createWindow(): void {
     mainWindow.webContents.openDevTools({ mode: "detach" });
   }
 
+  // Link policy: cockpit-origin popups stay in-app (the session carries the
+  // board Bearer); every other origin — Anthropic's authorization page above
+  // all — opens in the system browser, where the operator's own sign-ins live.
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    let origin: string;
+    try {
+      origin = new URL(url).origin;
+    } catch {
+      return { action: "deny" };
+    }
+    if (origin === new URL(loadConfig().cockpitUrl).origin) {
+      return { action: "allow" };
+    }
+    void shell.openExternal(url);
+    return { action: "deny" };
+  });
+
   loadAppropriateView();
 
   mainWindow.on("closed", () => {
@@ -368,14 +385,28 @@ function resolveApexBinary(): string {
 }
 
 // ---- Claude session ceremony --------------------------------------------
-// Triggered from the cockpit's setup wizard when it runs inside the desktop:
-// spawns `apex claude connect` (the browser-completion flow) and opens its
-// localhost page in an in-app window. Cockpit-origin links inside that page
-// stay in-app (this session injects the board Bearer, so the CLI-access
-// approval is a signed-in one-click); Anthropic links go to the system
-// browser where the operator's claude.ai session lives. The two consent acts
-// stay human — this only removes every step around them.
+// The setup wizard's "Connect Claude subscription" step, run INLINE in the
+// cockpit page when it renders inside this app. Main spawns
+// `apex claude connect --emit-json` — the whole ceremony as a state machine:
+// state out as JSON lines, pasted codes in on stdin; the renderer owns the
+// Anthropic link and the paste field. The app's board session is handed to
+// the child so there is no cockpit-approval hop. Anthropic's approve + paste
+// stays human — that consent is theirs by design.
 let claudeConnectProcess: ChildProcessWithoutNullStreams | null = null;
+
+interface ClaudeConnectState {
+  event: "state";
+  cockpit_approved: boolean;
+  cockpit_approval_url?: string | null;
+  anthropic_url: string | null;
+  attempt_error: string | null;
+  delivered: boolean;
+  error: string | null;
+}
+
+function sendClaudeConnectState(state: Partial<ClaudeConnectState>): void {
+  mainWindow?.webContents.send("claude:connect:state", { event: "state", ...state });
+}
 
 ipcMain.handle(
   "claude:connect",
@@ -390,6 +421,7 @@ ipcMain.handle(
     const args = [
       "claude",
       "connect",
+      "--emit-json",
       "--cockpit-url",
       cfg.cockpitUrl,
       "--company-id",
@@ -397,49 +429,44 @@ ipcMain.handle(
       ...(opts.definitionKey ? ["--definition-key", opts.definitionKey] : []),
     ];
     try {
-      // The app already holds the operator's board session — hand it to the
-      // child so the ceremony has no cockpit-approval hop (the CLI skips its
-      // device challenge when a token is present). Anthropic's approve+paste
-      // remain: that consent is theirs by design.
       const env = { ...process.env, ...(cachedBoardToken ? { PAPERCLIP_API_TOKEN: cachedBoardToken } : {}) };
       const child = spawn(resolveApexBinary(), args, { stdio: "pipe", env });
       claudeConnectProcess = child;
       // spawn failures (ENOENT etc.) surface as an async "error" event — an
       // unhandled one crashes the whole app.
       child.on("error", (err: Error) => {
-        mainWindow?.webContents.send(
-          "claude:connect:output",
-          `failed to start apex: ${err.message} — is apex-core installed (pipx install apex-core)?\n`,
-        );
+        sendClaudeConnectState({
+          error: `failed to start apex: ${err.message} — is apex-core installed (pipx install apex-core)?`,
+        });
         mainWindow?.webContents.send("claude:connect:exit", { code: -1 });
         claudeConnectProcess = null;
       });
-      let opened = false;
-      const watch = (chunk: Buffer) => {
-        const text = chunk.toString("utf-8");
-        mainWindow?.webContents.send("claude:connect:output", text);
-        const m = text.match(/http:\/\/127\.0\.0\.1:\d+\//);
-        if (m && !opened) {
-          opened = true;
-          const flowWindow = new BrowserWindow({
-            width: 760,
-            height: 640,
-            title: "Connect Claude subscription",
-            webPreferences: { contextIsolation: true, nodeIntegration: false },
-          });
-          const cockpitOrigin = new URL(cfg.cockpitUrl).origin;
-          flowWindow.webContents.setWindowOpenHandler(({ url }) => {
-            if (new URL(url).origin === cockpitOrigin) {
-              return { action: "allow" }; // in-app: session carries the board Bearer
-            }
-            void shell.openExternal(url); // Anthropic → system browser (claude.ai session)
-            return { action: "deny" };
-          });
-          void flowWindow.loadURL(m[0]);
+      // stdout is a JSON-lines state stream; anything else on it (and all of
+      // stderr) is diagnostic output the renderer may show in a log pane.
+      let pending = "";
+      child.stdout.on("data", (chunk: Buffer) => {
+        pending += chunk.toString("utf-8");
+        let nl: number;
+        while ((nl = pending.indexOf("\n")) >= 0) {
+          const line = pending.slice(0, nl).trim();
+          pending = pending.slice(nl + 1);
+          if (!line) continue;
+          let parsed: unknown = null;
+          try {
+            parsed = JSON.parse(line);
+          } catch {
+            /* not a state line */
+          }
+          if (parsed && typeof parsed === "object" && (parsed as { event?: string }).event === "state") {
+            mainWindow?.webContents.send("claude:connect:state", parsed);
+          } else {
+            mainWindow?.webContents.send("claude:connect:output", `${line}\n`);
+          }
         }
-      };
-      child.stdout.on("data", watch);
-      child.stderr.on("data", watch);
+      });
+      child.stderr.on("data", (chunk: Buffer) => {
+        mainWindow?.webContents.send("claude:connect:output", chunk.toString("utf-8"));
+      });
       child.on("exit", (code: number | null) => {
         mainWindow?.webContents.send("claude:connect:exit", { code });
         claudeConnectProcess = null;
@@ -451,6 +478,35 @@ ipcMain.handle(
     }
   }
 );
+
+// One pasted code = one stdin line. The CLI strips stray colour codes / URLs
+// that ride along with a copied code, so the renderer passes the paste as-is.
+ipcMain.handle("claude:connect:code", (_event: IpcMainInvokeEvent, code: string) => {
+  if (!claudeConnectProcess) {
+    return { ok: false, error: "No connect ceremony is running." };
+  }
+  const line = typeof code === "string" ? code.replace(/\r?\n/g, " ").trim() : "";
+  if (!line) {
+    return { ok: false, error: "Paste the authorization code first." };
+  }
+  claudeConnectProcess.stdin.write(`${line}\n`);
+  return { ok: true };
+});
+
+ipcMain.handle("claude:connect:cancel", () => {
+  if (claudeConnectProcess) {
+    claudeConnectProcess.kill();
+    claudeConnectProcess = null;
+  }
+  return { ok: true };
+});
+
+function stopClaudeConnect(): void {
+  if (claudeConnectProcess) {
+    claudeConnectProcess.kill();
+    claudeConnectProcess = null;
+  }
+}
 
 // ---- Runner supervision --------------------------------------------------
 // The runner is a single supervised child process. Only one instance is
@@ -642,6 +698,7 @@ app.on("ready", () => {
 
 app.on("window-all-closed", () => {
   stopRunner();
+  stopClaudeConnect();
   if (process.platform !== "darwin") {
     app.quit();
   }
@@ -657,4 +714,5 @@ app.on("activate", () => {
 // running indefinitely with no supervisor to report or stop it.
 app.on("before-quit", () => {
   stopRunner();
+  stopClaudeConnect();
 });

@@ -565,20 +565,36 @@ function StepBody({
   }
 }
 
+/** The ceremony state stream from `apex claude connect --emit-json`, relayed by the desktop. */
+type ClaudeConnectState = {
+  cockpit_approved: boolean;
+  cockpit_approval_url?: string | null;
+  anthropic_url: string | null;
+  attempt_error: string | null;
+  delivered: boolean;
+  error: string | null;
+};
+
 /** The desktop bridge, when the cockpit renders inside the APEX desktop app. */
 type ApexDesktopBridge = {
   claudeConnect?: {
     start: (opts: { companyId: string }) => Promise<{ ok: boolean; error?: string }>;
+    submitCode?: (code: string) => Promise<{ ok: boolean; error?: string }>;
+    cancel?: () => Promise<{ ok: boolean }>;
+    onState?: (listener: (state: ClaudeConnectState) => void) => () => void;
+    onExit?: (listener: (info: { code: number | null }) => void) => () => void;
   };
 };
 
 /**
  * The annual Claude-subscription ceremony step. Inside the desktop app the
- * button triggers the whole guided flow in-app (main process spawns
- * `apex claude connect`, opens its page); in a plain browser it falls back to
+ * whole flow runs INLINE here — one surface: the Anthropic link is a button,
+ * the code paste is a field, delivery flips the step. The desktop's main
+ * process drives `apex claude connect --emit-json` underneath. In a plain
+ * browser (or an older desktop without the inline bridge) it falls back to
  * the copy-paste command. The two consent acts stay human either way.
  */
-function ClaudeSessionStep({
+export function ClaudeSessionStep({
   companyId,
   done,
   onRecheck,
@@ -590,27 +606,158 @@ function ClaudeSessionStep({
   rechecking: boolean;
 }) {
   const bridge = (window as unknown as { apexDesktop?: ApexDesktopBridge }).apexDesktop;
-  const canTrigger = Boolean(bridge?.claudeConnect && companyId);
+  const connect = bridge?.claudeConnect;
+  const inline = Boolean(connect?.submitCode && connect?.onState && companyId);
+  const [phase, setPhase] = useState<"idle" | "running" | "delivered" | "failed">("idle");
+  const [state, setState] = useState<ClaudeConnectState | null>(null);
+  const [code, setCode] = useState("");
+  const [submitted, setSubmitted] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const command = `apex claude connect --cockpit-url ${window.location.origin} --company-id ${companyId ?? "<company>"}`;
+
+  useEffect(() => {
+    if (!inline) return;
+    const offState = connect!.onState!((st) => {
+      setState(st);
+      if (st.delivered) {
+        setPhase("delivered");
+        onRecheck();
+      } else if (st.error) {
+        setPhase("failed");
+      }
+    });
+    const offExit = connect!.onExit?.(({ code: exitCode }) => {
+      // A non-zero exit without a terminal state means the CLI died mid-flow.
+      setPhase((p) => (p === "running" && exitCode !== 0 ? "failed" : p === "running" ? "idle" : p));
+    });
+    return () => {
+      offState();
+      offExit?.();
+    };
+  }, [inline]);
+
+  const start = () => {
+    setStartError(null);
+    setState(null);
+    setCode("");
+    setSubmitted(false);
+    setPhase("running");
+    void connect!.start({ companyId: companyId! }).then((r) => {
+      if (!r.ok) {
+        setStartError(r.error ?? "failed to start");
+        setPhase("failed");
+      }
+    });
+  };
+
+  const submit = () => {
+    if (!code.trim()) return;
+    void connect!.submitCode!(code).then((r) => {
+      if (!r.ok) setStartError(r.error ?? "could not submit the code");
+      else setSubmitted(true);
+    });
+  };
+
+  const cancel = () => {
+    void connect!.cancel?.();
+    setPhase("idle");
+    setState(null);
+  };
+
+  if (!inline) {
+    return <GuidedStep command={command} done={done} onRecheck={onRecheck} rechecking={rechecking} />;
+  }
+
+  const running = phase === "running";
+  const anthropicUrl = state?.anthropic_url ?? null;
+
   return (
-    <div className="space-y-3">
-      {canTrigger && (
-        <Button
-          size="sm"
-          variant={done ? "outline" : "default"}
-          onClick={() => {
-            setStartError(null);
-            void bridge!.claudeConnect!.start({ companyId: companyId! }).then((r) => {
-              if (!r.ok) setStartError(r.error ?? "failed to start");
-            });
-          }}
-        >
-          Connect Claude subscription…
+    <div className="space-y-3 text-sm" data-testid="claude-session-step">
+      {(phase === "idle" || phase === "failed") && (
+        <Button size="sm" variant={done ? "outline" : "default"} onClick={start} data-testid="claude-connect-start">
+          {phase === "failed" ? "Try again" : done ? "Reconnect Claude subscription…" : "Connect Claude subscription…"}
         </Button>
       )}
-      {startError && <p className="text-xs text-rose-500">{startError}</p>}
-      <GuidedStep command={canTrigger ? undefined : command} done={done} onRecheck={onRecheck} rechecking={rechecking} />
+
+      {phase !== "idle" && (
+        <ol className="space-y-2 rounded-md border border-border p-3">
+          <li className="flex items-center gap-2">
+            <span className="text-muted-foreground">1.</span>
+            <span>Cockpit access</span>
+            {state?.cockpit_approved ? (
+              <span className="text-xs text-emerald-500">approved ✓</span>
+            ) : state?.cockpit_approval_url ? (
+              <a href={state.cockpit_approval_url} target="_blank" rel="noreferrer" className="text-xs underline">
+                approve in the browser
+              </a>
+            ) : (
+              <span className="text-xs text-muted-foreground">{running ? "starting…" : ""}</span>
+            )}
+          </li>
+          <li className="flex flex-wrap items-center gap-2">
+            <span className="text-muted-foreground">2.</span>
+            <span>Authorize with Anthropic</span>
+            {anthropicUrl ? (
+              <a href={anthropicUrl} target="_blank" rel="noreferrer">
+                <Button size="sm" variant="outline" data-testid="claude-connect-anthropic">
+                  Open Anthropic page
+                </Button>
+              </a>
+            ) : (
+              <span className="text-xs text-muted-foreground">
+                {state?.cockpit_approved ? "starting claude setup-token…" : "waiting for step 1…"}
+              </span>
+            )}
+            {anthropicUrl && <span className="text-xs text-muted-foreground">approve, then copy the code shown</span>}
+          </li>
+          <li className="space-y-1.5">
+            <div className="flex items-center gap-2">
+              <span className="text-muted-foreground">3.</span>
+              <span>Paste the code</span>
+              <span className="text-xs text-muted-foreground">(extra characters are cleaned automatically)</span>
+            </div>
+            <div className="flex items-center gap-2 pl-5">
+              <input
+                data-testid="claude-connect-code"
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") submit();
+                }}
+                placeholder="authorization code"
+                disabled={!running || !anthropicUrl}
+                className="w-80 rounded-md border border-border bg-transparent px-2.5 py-1 font-mono text-xs outline-none disabled:opacity-50"
+              />
+              <Button size="sm" onClick={submit} disabled={!running || !anthropicUrl || code.trim().length === 0} data-testid="claude-connect-submit">
+                Submit
+              </Button>
+            </div>
+            {submitted && !state?.attempt_error && running && (
+              <p className="pl-5 text-xs text-muted-foreground">submitted — minting and delivering…</p>
+            )}
+            {state?.attempt_error && <p className="pl-5 text-xs text-rose-500">{state.attempt_error}</p>}
+          </li>
+          {phase === "delivered" && (
+            <li className="text-xs text-emerald-500" data-testid="claude-connect-delivered">
+              Delivered ✓ — your subscription is connected for remote sessions.
+            </li>
+          )}
+          {phase === "failed" && (state?.error || startError) && (
+            <li className="text-xs text-rose-500" data-testid="claude-connect-error">
+              {state?.error ?? startError}
+            </li>
+          )}
+          {running && (
+            <li>
+              <Button size="sm" variant="ghost" onClick={cancel}>
+                Cancel
+              </Button>
+            </li>
+          )}
+        </ol>
+      )}
+      {startError && phase !== "failed" && <p className="text-xs text-rose-500">{startError}</p>}
+      <GuidedStep done={done} onRecheck={onRecheck} rechecking={rechecking} />
     </div>
   );
 }
