@@ -227,10 +227,10 @@ export class GatewayClient {
     return timedFetch(url, cred.token, timeoutMs);
   }
 
-  private async write(url: string, init: RequestInit): Promise<{ status: number; body: unknown } | null> {
+  private async write(url: string, init: RequestInit, timeoutMs?: number): Promise<{ status: number; body: unknown } | null> {
     const cred = await this.credential();
     if (cred.failure) return { status: CREDENTIAL_UNAVAILABLE_STATUS, body: { message: cred.failure.message } };
-    return timedWrite(url, init, cred.token);
+    return timedWrite(url, init, cred.token, timeoutMs);
   }
 
   /** Transport-level liveness: any HTTP answer from /health counts. The
@@ -507,16 +507,25 @@ export class GatewayClient {
     url: string;
     transport: "SSE" | "STREAMABLEHTTP" | "STDIO";
     description?: string | null;
+    /** Override the default 8s write timeout. POST /gateways makes the gateway
+     *  itself connect to (and MCP-initialize) the upstream url before it
+     *  answers — see registerCockpitMcpWithGateway (mcp/router.ts) for why the
+     *  cockpit's own self-registration passes a much longer value here. */
+    timeoutMs?: number;
   }): Promise<GatewayWriteResult> {
-    const res = await this.write(`${gatewayUrl()}/gateways`, {
-      method: "POST",
-      body: JSON.stringify({
-        name: input.name,
-        url: input.url,
-        transport: input.transport,
-        ...(input.description ? { description: input.description } : {}),
-      }),
-    });
+    const res = await this.write(
+      `${gatewayUrl()}/gateways`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          name: input.name,
+          url: input.url,
+          transport: input.transport,
+          ...(input.description ? { description: input.description } : {}),
+        }),
+      },
+      input.timeoutMs,
+    );
     if (!res) {
       return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
     }
@@ -547,16 +556,27 @@ export class GatewayClient {
    */
   async updateGateway(
     id: string,
-    input: { url?: string; transport?: "SSE" | "STREAMABLEHTTP" | "STDIO"; description?: string | null },
+    input: {
+      url?: string;
+      transport?: "SSE" | "STREAMABLEHTTP" | "STDIO";
+      description?: string | null;
+      /** See registerGateway's timeoutMs — PUT also re-runs the upstream
+       *  MCP-initialize probe when the url changes. */
+      timeoutMs?: number;
+    },
   ): Promise<GatewayWriteResult> {
-    const res = await this.write(`${gatewayUrl()}/gateways/${encodeURIComponent(id)}`, {
-      method: "PUT",
-      body: JSON.stringify({
-        ...(input.url ? { url: input.url } : {}),
-        ...(input.transport ? { transport: input.transport } : {}),
-        ...(input.description ? { description: input.description } : {}),
-      }),
-    });
+    const res = await this.write(
+      `${gatewayUrl()}/gateways/${encodeURIComponent(id)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          ...(input.url ? { url: input.url } : {}),
+          ...(input.transport ? { transport: input.transport } : {}),
+          ...(input.description ? { description: input.description } : {}),
+        }),
+      },
+      input.timeoutMs,
+    );
     if (!res) {
       return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
     }

@@ -556,16 +556,7 @@ function StepBody({
       );
     }
     case "mcpServers":
-      return (
-        <div className="space-y-3">
-          {state.mcpServers.error && (
-            <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-600">
-              Registry could not be read: {state.mcpServers.error} — the list below is not an empty registry
-            </div>
-          )}
-          <GuidedStep done={done} onRecheck={onRecheck} rechecking={rechecking} />
-        </div>
-      );
+      return <McpServersStep state={state} done={done} onRecheck={onRecheck} rechecking={rechecking} />;
     case "connect":
       return <GuidedStep done={done} onRecheck={onRecheck} rechecking={rechecking} />;
     case "models":
@@ -861,6 +852,65 @@ function CompanyCreateStep() {
           No companies yet — create your first (e.g. APEX, FinPilot, Bloom).
         </p>
       )}
+    </div>
+  );
+}
+
+/**
+ * MCP servers step body. Registration normally happens on its own — boot
+ * (once) and the background sweep (registration-sweep.ts, every
+ * APEX_MCP_REGISTRATION_SWEEP_SEC) both retry without operator action. The
+ * "Register now" button only surfaces when there's evidence it hasn't
+ * caught up yet: the registry read errored, or cockpit-mcp is absent from
+ * it — so an operator isn't left waiting on the next sweep tick.
+ */
+export function McpServersStep({
+  state,
+  done,
+  onRecheck,
+  rechecking,
+}: {
+  state: SetupState;
+  done: boolean;
+  onRecheck: () => void;
+  rechecking: boolean;
+}) {
+  const queryClient = useQueryClient();
+  const needsRegisterNow = Boolean(state.mcpServers.error) || !state.mcpServers.cockpitMcp.registered;
+
+  const registerNow = useMutation({
+    mutationFn: () => setupStateApi.registerCockpitMcp(),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["setup-state"] });
+      onRecheck();
+    },
+  });
+
+  return (
+    <div className="space-y-3">
+      {state.mcpServers.error && (
+        <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-600">
+          Registry could not be read: {state.mcpServers.error} — the list below is not an empty registry
+        </div>
+      )}
+      {needsRegisterNow && (
+        <div className="space-y-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => registerNow.mutate()}
+            disabled={registerNow.isPending}
+          >
+            {registerNow.isPending ? "Registering…" : "Register now"}
+          </Button>
+          {registerNow.data && (
+            <div className="text-xs text-muted-foreground">
+              {registerNow.data.outcome}: {registerNow.data.message}
+            </div>
+          )}
+        </div>
+      )}
+      <GuidedStep done={done} onRecheck={onRecheck} rechecking={rechecking} />
     </div>
   );
 }

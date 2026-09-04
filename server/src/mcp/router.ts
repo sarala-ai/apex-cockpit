@@ -22,7 +22,7 @@ import type { Db } from "@paperclipai/db";
 import { activityLog, issues } from "@paperclipai/db";
 import { and, asc, eq, ilike } from "drizzle-orm";
 import { verifyCockpitMcpJwt, type CockpitMcpJwtClaims } from "./cockpit-mcp-jwt.js";
-import type { GatewayClient } from "../gateway/gateway-client.js";
+import type { GatewayClient, GatewayWriteResult } from "../gateway/gateway-client.js";
 import { cockpitSystemGatewayClient } from "../gateway/system-credential.js";
 import { logger } from "../middleware/logger.js";
 import { issueService } from "../services/issues.js";
@@ -467,7 +467,7 @@ function buildMcpServer(db: Db, claims: CockpitMcpJwtClaims): McpServer {
 
 // ─── Gateway self-registration ───────────────────────────────────────────────
 
-const COCKPIT_MCP_GATEWAY_NAME = "cockpit-mcp";
+export const COCKPIT_MCP_GATEWAY_NAME = "cockpit-mcp";
 
 export interface CockpitMcpUrlInput {
   serverPort: number;
@@ -491,19 +491,89 @@ export function resolveCockpitMcpUrl(input: CockpitMcpUrlInput): string {
 }
 
 /**
- * Self-register the cockpit MCP server with the APEX gateway on boot, as the
- * cockpit system principal. Idempotent: a 409 conflict means a gateway
- * already exists under this name — if its registered url no longer matches
- * the resolved one (e.g. a stale loopback or placeholder URL from an earlier
- * deploy pass), it is repointed via PUT. Failure is non-fatal; the cockpit
- * continues to boot without gateway registration (degraded: external hosts
- * won't discover tools through the gateway, but dispatched runs still work
- * directly).
+ * POST /gateways makes apex-gateway itself dial the upstream url and run an
+ * MCP initialize handshake before it answers (gateway_service.py
+ * register_gateway → _initialize_gateway_with_timeout). The route that calls
+ * it (mcpgateway/main.py register_gateway) never passes `initialize_timeout`,
+ * so that handshake is NOT wrapped in `asyncio.wait_for` and is bounded only
+ * by the gateway's own federation_timeout (120s, config.py). The cockpit's
+ * default write timeout (gateway-client.ts timedWrite, 8s) is far shorter,
+ * so cockpit gives up and reports "unreachable" long before the gateway's
+ * attempt against cockpit's own /mcp resolves either way. Give this specific
+ * call enough room to outlast that 120s ceiling.
+ */
+const REGISTER_TIMEOUT_MS = 130_000;
+
+export type CockpitMcpRegistrationOutcome =
+  | "registered"
+  | "repointed"
+  | "already_registered"
+  | "skipped_placeholder"
+  | "rejected_credential"
+  | "upstream_auth_required"
+  | "gateway_unreachable"
+  | "failed";
+
+export interface CockpitMcpRegistrationResult {
+  outcome: CockpitMcpRegistrationOutcome;
+  mcpUrl: string;
+  message: string;
+}
+
+/**
+ * cockpit's own /mcp requires a run-scoped bearer JWT (verifyCockpitMcpJwt,
+ * see handleMcpRequest below) and the gateway's initialize probe against a
+ * freshly-registered gateway is sent with no authentication at all — the
+ * cockpit system principal is a credential cockpit uses TO CALL the gateway,
+ * not one the gateway holds to call back into cockpit. So the gateway's
+ * probe of cockpit's own MCP url is expected to be rejected for lacking a
+ * JWT it was never given. `upstream_unreachable` (POST /gateways got a 502:
+ * apex-gateway reached the url but couldn't complete the connection) is the
+ * observable shape of that rejection from here — surfaced as its own outcome
+ * rather than folded into "unreachable" so it reads as the real blocking
+ * defect (a known follow-up: cockpit-mcp's own registration needs a
+ * gateway-presentable credential) instead of a transient network problem.
+ */
+function classifyRegistrationFailure(mcpUrl: string, result: Extract<GatewayWriteResult, { ok: false }>): CockpitMcpRegistrationResult {
+  if (result.status === "auth") {
+    return {
+      outcome: "rejected_credential",
+      mcpUrl,
+      message: `apex-gateway rejected the cockpit system principal: ${result.message}`,
+    };
+  }
+  if (result.status === "upstream_unreachable") {
+    return {
+      outcome: "upstream_auth_required",
+      mcpUrl,
+      message:
+        `apex-gateway reached cockpit's own /mcp endpoint but could not complete the connection (${result.message}). ` +
+        `cockpit's /mcp requires a run-scoped JWT, which the gateway's registration probe never holds — this is a ` +
+        `known follow-up (cockpit-mcp needs a gateway-presentable credential), not a reachability problem.`,
+    };
+  }
+  if (result.status === "unreachable" || result.status === "credential_unavailable") {
+    return { outcome: "gateway_unreachable", mcpUrl, message: result.message };
+  }
+  return { outcome: "failed", mcpUrl, message: result.message };
+}
+
+/**
+ * Self-register the cockpit MCP server with the APEX gateway, as the cockpit
+ * system principal. Called once at boot (fire-and-forget) and, on retry, by
+ * `startCockpitMcpRegistrationSweep` (registration-sweep.ts) and the manual
+ * `POST /setup/mcp/register` route — all three go through this one function
+ * so every caller sees the same classification. Idempotent: a 409 conflict
+ * means a gateway already exists under this name — if its registered url no
+ * longer matches the resolved one (e.g. a stale loopback or placeholder URL
+ * from an earlier deploy pass), it is repointed via PUT. Never throws:
+ * callers get a classified result instead, so a down/slow gateway degrades
+ * this to a retryable outcome rather than crashing boot.
  */
 export async function registerCockpitMcpWithGateway(
   input: Omit<CockpitMcpUrlInput, "explicitUrl">,
   client: GatewayClient = cockpitSystemGatewayClient(),
-): Promise<void> {
+): Promise<CockpitMcpRegistrationResult> {
   const mcpUrl = resolveCockpitMcpUrl({ ...input, explicitUrl: process.env.PAPERCLIP_COCKPIT_MCP_URL });
   let hostname: string | null = null;
   try {
@@ -512,28 +582,26 @@ export async function registerCockpitMcpWithGateway(
     hostname = null;
   }
   if (hostname === "placeholder.invalid") {
-    logger.info({ mcpUrl }, "cockpit-mcp registration skipped: PAPERCLIP_PUBLIC_URL is still the deploy placeholder (will register on the next deploy pass)");
-    return;
+    return {
+      outcome: "skipped_placeholder",
+      mcpUrl,
+      message: "PAPERCLIP_PUBLIC_URL is still the deploy placeholder (will register on the next deploy pass)",
+    };
   }
   const result = await client.registerGateway({
     name: COCKPIT_MCP_GATEWAY_NAME,
     url: mcpUrl,
     transport: "STREAMABLEHTTP",
     description: "Cockpit MCP server — board APIs with run-scoped identity",
+    timeoutMs: REGISTER_TIMEOUT_MS,
   });
   if (result.ok) {
-    logger.info({ mcpUrl, gatewayId: result.id }, "cockpit-mcp registered with APEX gateway");
-    return;
+    return { outcome: "registered", mcpUrl, message: `registered with APEX gateway (id=${result.id ?? "?"})` };
   }
   if (result.status === "conflict") {
-    await repointExistingCockpitMcpGateway(mcpUrl, client);
-    return;
+    return repointExistingCockpitMcpGateway(mcpUrl, client);
   }
-  if (result.status === "auth") {
-    logger.warn({ mcpUrl, message: result.message }, "cockpit-mcp gateway registration rejected: the cockpit system principal is not accepted by the gateway (non-fatal)");
-    return;
-  }
-  logger.warn({ mcpUrl, status: result.status, message: result.message }, "cockpit-mcp gateway registration failed (non-fatal)");
+  return classifyRegistrationFailure(mcpUrl, result);
 }
 
 /**
@@ -541,31 +609,30 @@ export async function registerCockpitMcpWithGateway(
  * Read it back and, if its url has drifted from the desired one, repoint it
  * with PUT rather than leaving the stale registration in place.
  */
-async function repointExistingCockpitMcpGateway(mcpUrl: string, client: GatewayClient): Promise<void> {
+async function repointExistingCockpitMcpGateway(mcpUrl: string, client: GatewayClient): Promise<CockpitMcpRegistrationResult> {
   const existing = await client.readGateways();
   if (!existing.ok) {
-    logger.warn({ mcpUrl, message: existing.failure.message }, "cockpit-mcp already registered with APEX gateway, but could not read it back to check for drift (non-fatal)");
-    return;
+    return {
+      outcome: "failed",
+      mcpUrl,
+      message: `already registered with APEX gateway, but could not read it back to check for drift: ${existing.failure.message}`,
+    };
   }
   const entry = existing.value.find((g) => g.name === COCKPIT_MCP_GATEWAY_NAME);
   if (!entry) {
-    logger.warn({ mcpUrl }, "cockpit-mcp gateway registration conflicted (409) but no gateway with that name was found on read-back (non-fatal)");
-    return;
+    return { outcome: "failed", mcpUrl, message: "registration conflicted (409) but no gateway with that name was found on read-back" };
   }
   if (entry.url === mcpUrl) {
-    logger.info({ mcpUrl }, "cockpit-mcp already registered with APEX gateway");
-    return;
+    return { outcome: "already_registered", mcpUrl, message: "already registered with APEX gateway" };
   }
   if (!entry.id) {
-    logger.warn({ mcpUrl, previousUrl: entry.url }, "cockpit-mcp registration is stale but has no id to update (non-fatal)");
-    return;
+    return { outcome: "failed", mcpUrl, message: `registration is stale (previous url ${entry.url}) but has no id to update` };
   }
-  const update = await client.updateGateway(entry.id, { url: mcpUrl });
+  const update = await client.updateGateway(entry.id, { url: mcpUrl, timeoutMs: REGISTER_TIMEOUT_MS });
   if (update.ok) {
-    logger.info({ mcpUrl, previousUrl: entry.url, gatewayId: entry.id }, "cockpit-mcp registration repointed to current URL");
-  } else {
-    logger.warn({ mcpUrl, previousUrl: entry.url, status: update.status, message: update.message }, "cockpit-mcp registration is stale but repointing it failed (non-fatal)");
+    return { outcome: "repointed", mcpUrl, message: `repointed from ${entry.url} to current URL` };
   }
+  return classifyRegistrationFailure(mcpUrl, update);
 }
 
 // ─── Router ───────────────────────────────────────────────────────────────────

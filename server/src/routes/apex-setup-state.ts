@@ -15,11 +15,17 @@ import { Router } from "express";
 import { and, eq } from "drizzle-orm";
 import { type Db, orgs, companies, cloudScopeBindings, orgMemberships, companySecrets, userSecretDefinitions } from "@paperclipai/db";
 import { resolveOperatorAuth, serverIsOperatorWorkstation } from "../apex/setup/operator-auth.js";
-import { assertBoardOrAgent } from "./authz.js";
+import { assertBoard, assertBoardOrAgent } from "./authz.js";
 import { readModelAccessState, type ModelAccessState } from "../apex/model-access/index.js";
 import { detectClaudeAuthForOperator, UNKNOWN_CLAUDE_DETECT } from "../apex/model-access/detect-claude.js";
 import { cockpitSystemGatewayClient } from "../gateway/system-credential.js";
 import { gatewayUrl, type GatewayFailure } from "../gateway/gateway-client.js";
+import type { DeploymentMode } from "@paperclipai/shared";
+import { registerCockpitMcpWithGateway, resolveCockpitMcpUrl } from "../mcp/router.js";
+import {
+  recordCockpitMcpRegistrationAttempt,
+  getLastCockpitMcpRegistrationAttempt,
+} from "../mcp/registration-state.js";
 
 type Health = "ok" | "missing" | "expired";
 
@@ -69,8 +75,17 @@ export interface SetupState {
   gateway: { reachable: boolean; url: string; authenticated: boolean | null; failure: GatewayFailure | null };
   /** `error` is set when the registry could not be read even though the
    *  gateway is up — typically the cockpit's credential being rejected — so
-   *  an empty list is never mistaken for an empty registry. */
-  mcpServers: { registered: string[]; error?: string };
+   *  an empty list is never mistaken for an empty registry. `cockpitMcp`
+   *  narrows to the one entry the "Register now" button (below) acts on. */
+  mcpServers: {
+    registered: string[];
+    error?: string;
+    cockpitMcp: {
+      registered: boolean;
+      url?: string;
+      lastAttempt?: { at: string; outcome: string };
+    };
+  };
   /** Model access — how model calls are paid for and routed. Covers both
    *  provider detection (is claude logged in? is OpenRouter configured?) and
    *  generated artifact presence (is the subscription bridge registered in the
@@ -92,6 +107,9 @@ export interface SetupStateProbes {
   oauthClient: () => Promise<SetupState["oauthClient"]>;
   gateway: () => Promise<SetupState["gateway"]>;
   mcpServers: (gatewayReachable: boolean) => Promise<SetupState["mcpServers"]>;
+  /** Runs one registration attempt and returns its classification — the
+   *  probe behind `POST /setup/mcp/register`, also injectable for tests. */
+  registerCockpitMcp: () => Promise<{ outcome: string; mcpUrl: string; message: string }>;
   models: (userId: string | null) => Promise<SetupState["models"]>;
   claudeSession: (userId: string | null) => Promise<SetupState["claudeSession"]>;
 }
@@ -103,6 +121,7 @@ export function defaultProbes(
   db: Db,
   gateway = cockpitSystemGatewayClient(),
   env: NodeJS.ProcessEnv = process.env,
+  mcpUrlInput?: { serverPort: number; publicUrl?: string | null; deploymentMode: DeploymentMode },
 ): SetupStateProbes {
   return {
     async claudeSession(userId) {
@@ -220,10 +239,32 @@ export function defaultProbes(
       return { reachable: probe.reachable, url: gatewayUrl(), authenticated: probe.authenticated, failure: probe.failure };
     },
     async mcpServers(gatewayReachable: boolean) {
-      if (!gatewayReachable) return { registered: [] };
+      const lastAttempt = getLastCockpitMcpRegistrationAttempt() ?? undefined;
+      const resolvedUrl = mcpUrlInput
+        ? resolveCockpitMcpUrl({ ...mcpUrlInput, explicitUrl: env.PAPERCLIP_COCKPIT_MCP_URL })
+        : undefined;
+      if (!gatewayReachable) return { registered: [], cockpitMcp: { registered: false, url: resolvedUrl, lastAttempt } };
       const res = await gateway.readGateways();
-      if (!res.ok) return { registered: [], error: res.failure.message };
-      return { registered: res.value.map((g) => g.name) };
+      if (!res.ok) {
+        return { registered: [], error: res.failure.message, cockpitMcp: { registered: false, url: resolvedUrl, lastAttempt } };
+      }
+      const cockpitMcpEntry = res.value.find((g) => g.name === "cockpit-mcp");
+      return {
+        registered: res.value.map((g) => g.name),
+        cockpitMcp: {
+          registered: cockpitMcpEntry != null,
+          url: cockpitMcpEntry?.url ?? resolvedUrl,
+          lastAttempt,
+        },
+      };
+    },
+    async registerCockpitMcp() {
+      if (!mcpUrlInput) {
+        return { outcome: "failed", mcpUrl: "", message: "cockpit-mcp registration is not configured on this instance" };
+      }
+      const result = await registerCockpitMcpWithGateway(mcpUrlInput, gateway);
+      recordCockpitMcpRegistrationAttempt(result);
+      return result;
     },
     async models(userId) {
       return readModelAccessState(gateway, detectClaudeAuthForOperator(db, userId, env));
@@ -239,8 +280,12 @@ async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
   }
 }
 
-export function apexSetupStateRoutes(db: Db, overrides?: Partial<SetupStateProbes>) {
-  const probes: SetupStateProbes = { ...defaultProbes(db), ...overrides };
+export function apexSetupStateRoutes(
+  db: Db,
+  overrides?: Partial<SetupStateProbes>,
+  mcpUrlInput?: { serverPort: number; publicUrl?: string | null; deploymentMode: DeploymentMode },
+) {
+  const probes: SetupStateProbes = { ...defaultProbes(db, undefined, undefined, mcpUrlInput), ...overrides };
   const router = Router();
 
   // GET /setup/state — one failure-isolated snapshot of every prerequisite.
@@ -289,7 +334,7 @@ export function apexSetupStateRoutes(db: Db, overrides?: Partial<SetupStateProbe
     };
     const [companiesState, mcpServers, membership, models, claudeSession] = await Promise.all([
       safe(() => probes.companies(resolvedOrgId), { count: 0, ids: [] }),
-      safe(() => probes.mcpServers(gateway.reachable), { registered: [] }),
+      safe(() => probes.mcpServers(gateway.reachable), { registered: [], cockpitMcp: { registered: false } }),
       safe(() => probes.membership(req.actor?.userId ?? null, resolvedOrgId), { present: false }),
       safe(() => probes.models(req.actor?.userId ?? null), defaultModelsState),
       safe(() => probes.claudeSession(req.actor?.userId ?? null), { connected: false, source: null, setAt: null } as const),
@@ -308,6 +353,17 @@ export function apexSetupStateRoutes(db: Db, overrides?: Partial<SetupStateProbe
       claudeSession,
     };
     res.json(state);
+  });
+
+  // POST /setup/mcp/register — one manual registration attempt (the wizard's
+  // "Register now" button), for when the boot-time attempt and the
+  // background sweep (registration-sweep.ts) haven't caught up yet.
+  // Board-only: this writes to the gateway registry, unlike the read-only
+  // GET above.
+  router.post("/setup/mcp/register", async (req, res) => {
+    assertBoard(req);
+    const result = await probes.registerCockpitMcp();
+    res.json(result);
   });
 
   return router;

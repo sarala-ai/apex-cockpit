@@ -1193,6 +1193,19 @@ export async function startServer(): Promise<StartedServer> {
   const { startEnvironmentLeaseReaper } = await import("./services/environment-lease-reaper.js");
   const stopEnvironmentLeaseReaper = startEnvironmentLeaseReaper(db as any, { pluginWorkerManager });
 
+  // Boot-time cockpit-mcp gateway self-registration (app.ts) runs exactly
+  // once and is never retried on its own — if the gateway was down or
+  // restarting at that moment, cockpit-mcp stays unregistered until the next
+  // deploy. This sweep is the retry: every APEX_MCP_REGISTRATION_SWEEP_SEC
+  // (default 300; 0 disables) it re-attempts, stopping once the registry
+  // read confirms cockpit-mcp registered + reachable.
+  const { startCockpitMcpRegistrationSweep } = await import("./mcp/registration-sweep.js");
+  const stopCockpitMcpRegistrationSweep = startCockpitMcpRegistrationSweep({
+    serverPort: listenPort,
+    publicUrl: config.authPublicBaseUrl ?? null,
+    deploymentMode: config.deploymentMode,
+  });
+
   // Recurring `apex capabilities sync` (spec: capability sync +
   // PATH-canonical resolution, Session B / T4) — pulls configured
   // capability_sources (workflows/skills) into ~/.apex/company/<alias>/ per
@@ -1296,6 +1309,7 @@ export async function startServer(): Promise<StartedServer> {
       stopCriterionReviewSweep();
       stopRunEvalIngestSweep();
       stopEnvironmentLeaseReaper();
+      stopCockpitMcpRegistrationSweep();
       stopCapabilitySyncScheduler();
       await waitForHeartbeatSchedulerIdle();
 
