@@ -83,6 +83,7 @@ steps:
       # RPC into timeout. Always-allocated CPU + headroom keeps boot-time work alive.
       cpu_always_allocated: true
       project_id: "${project_id}"
+      health_check_path: "/api/health"
       containers:
         - name: cockpit
           image: "asia-south1-docker.pkg.dev/${project_id}/sarala-images/apex-cockpit:${image_tag}"
