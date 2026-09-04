@@ -694,8 +694,18 @@ interface WorkstationReport {
   gcloud: { installed: boolean; account: string | null; live: boolean };
   adc: { live: boolean };
   gh: { installed: boolean; user: string | null };
-  claude: { installed: boolean };
+  // loggedIn null = `claude auth status` gave no parseable answer; never guessed.
+  claude: { installed: boolean; version: string | null; loggedIn: boolean | null };
   apex: { installed: boolean; version: string | null };
+}
+
+function parseClaudeLoggedIn(stdout: string): boolean | null {
+  try {
+    const parsed = JSON.parse(stdout) as { loggedIn?: unknown };
+    return typeof parsed.loggedIn === "boolean" ? parsed.loggedIn : null;
+  } catch {
+    return null;
+  }
 }
 
 async function probeCommand(command: string, args: string[]): Promise<{ installed: boolean; ok: boolean; stdout: string }> {
@@ -708,12 +718,13 @@ async function probeCommand(command: string, args: string[]): Promise<{ installe
 }
 
 async function collectWorkstationReport(): Promise<WorkstationReport> {
-  const [account, token, adc, gh, claude, apex] = await Promise.all([
+  const [account, token, adc, gh, claude, claudeAuth, apex] = await Promise.all([
     probeCommand("gcloud", ["config", "get-value", "account", "--quiet"]),
     probeCommand("gcloud", ["auth", "print-access-token", "--quiet"]),
     probeCommand("gcloud", ["auth", "application-default", "print-access-token", "--quiet"]),
     probeCommand("gh", ["api", "user", "--jq", ".login"]),
     probeCommand("claude", ["--version"]),
+    probeCommand("claude", ["auth", "status"]),
     probeCommand(resolveApexBinary(), ["--help"]),
   ]);
   const gcloudAccount = account.ok && account.stdout && account.stdout !== "(unset)" ? account.stdout : null;
@@ -721,7 +732,11 @@ async function collectWorkstationReport(): Promise<WorkstationReport> {
     gcloud: { installed: account.installed, account: gcloudAccount, live: token.ok && token.stdout.length > 0 },
     adc: { live: adc.ok && adc.stdout.length > 0 },
     gh: { installed: gh.installed, user: gh.ok && gh.stdout ? gh.stdout : null },
-    claude: { installed: claude.installed },
+    claude: {
+      installed: claude.installed,
+      version: claude.ok && claude.stdout ? claude.stdout.split(/\s+/)[0].slice(0, 64) : null,
+      loggedIn: claude.installed && claudeAuth.ok ? parseClaudeLoggedIn(claudeAuth.stdout) : null,
+    },
     apex: { installed: apex.installed && apex.ok, version: null },
   };
 }
