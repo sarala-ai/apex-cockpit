@@ -96,7 +96,7 @@ jobs:
         run: |
           apex run workflow run \
             --workflow docker-build-and-push \
-            --params '{"dockerfile_dir":".","repository_uri":"'"${IMAGE_REPO}"'","image_tag":"'"${{ steps.tag.outputs.tag }}"'"}' \
+            --params '{"dockerfile_dir":".","repository_uri":"'"${IMAGE_REPO}"'","image_tag":"'"${{ steps.tag.outputs.tag }}"'","build_args":{"APEX_RELEASE_SHA":"'"${{ github.sha }}"'"}}' \
             --execution-mode apply
 
       - name: Deploy to Cloud Run (.apex/workflows/deploy.yml)

@@ -57,4 +57,27 @@ describe("resolveServerVersion", () => {
       "falling back to package version for server version",
     );
   });
+
+  it("prefers APEX_RELEASE_SHA over git describe (hosted images ship without .git)", () => {
+    const gitDescribeCommand = vi.fn(() => "v2026.626.0-58-g518fc71ce\n");
+
+    expect(
+      resolveServerVersion({
+        packageVersion: "2026.706.0",
+        releaseSha: "518fc71ce1234567890abcdef",
+        gitDescribeCommand,
+      }),
+    ).toBe("2026.706.0+git.518fc71ce123");
+    expect(gitDescribeCommand).not.toHaveBeenCalled();
+  });
+
+  it("falls back to git describe, then package version, when APEX_RELEASE_SHA is unset", () => {
+    expect(
+      resolveServerVersion({
+        packageVersion: "2026.706.0",
+        releaseSha: undefined,
+        gitDescribeCommand: () => "v2026.626.0-58-g518fc71ce\n",
+      }),
+    ).toBe("2026.626.0+58.git.518fc71ce");
+  });
 });

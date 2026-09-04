@@ -75,6 +75,7 @@ RUN cd packages/plugins/sandbox-providers/kubernetes \
 FROM base AS production
 ARG USER_UID=1000
 ARG USER_GID=1000
+ARG APEX_RELEASE_SHA=""
 WORKDIR /app
 COPY --chown=node:node --from=build /app /app
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai @google/gemini-cli@latest \
@@ -96,6 +97,7 @@ ENV NODE_ENV=production \
   PAPERCLIP_INSTANCE_ID=default \
   USER_UID=${USER_UID} \
   USER_GID=${USER_GID} \
+  APEX_RELEASE_SHA=${APEX_RELEASE_SHA} \
   PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
   PAPERCLIP_DEPLOYMENT_EXPOSURE=private \
