@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import { and, desc, eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -1641,16 +1643,48 @@ export function builtInAgentService(db: Db) {
    * ABSENCE of a decision, not about which one was made — so reconciling over an
    * explicit choice would be the definition overruling a human, which is not
    * what a default means. Every other adapter key the operator set is preserved.
+   *
+   * `instructionsFilePath` is reconciled independently of that decision: the
+   * charter's location is a property of the host the cockpit runs on, not a
+   * choice. When the definition declares one and the record differs, the
+   * record is repointed if the current path is unreadable on this host OR ends
+   * with the same `built-ins/agents/<key>/AGENTS.md` suffix (a stale install
+   * prefix from another machine). A custom, existing, differently-named path
+   * is left alone. Returns `{}` when nothing changes, so a no-op reconcile is
+   * not recorded as a revision.
    */
   function reconciledAdapterConfig(
     definition: BuiltInAgentDefinition,
     existing: { adapterConfig?: Record<string, unknown> | null },
   ): { adapterConfig?: Record<string, unknown> } {
     const declared = definition.defaultAdapterConfig;
-    if (!declared) return {};
     const current = existing.adapterConfig ?? {};
-    if ("dangerouslySkipPermissions" in current) return {};
-    return { adapterConfig: { ...current, ...declared } };
+    let next = current;
+    let changed = false;
+
+    if (declared && !("dangerouslySkipPermissions" in current)) {
+      next = { ...next, ...declared };
+      changed = true;
+    }
+
+    const declaredInstructionsFilePath = declared?.instructionsFilePath;
+    if (typeof declaredInstructionsFilePath === "string") {
+      const currentInstructionsFilePath =
+        typeof next.instructionsFilePath === "string" ? next.instructionsFilePath : null;
+      if (currentInstructionsFilePath !== declaredInstructionsFilePath) {
+        const staleSuffix = path.join("built-ins", "agents", definition.key, "AGENTS.md");
+        const isUnreadable =
+          !currentInstructionsFilePath || !existsSync(currentInstructionsFilePath);
+        const isStaleInstall =
+          !!currentInstructionsFilePath && currentInstructionsFilePath.endsWith(staleSuffix);
+        if (isUnreadable || isStaleInstall) {
+          next = { ...next, instructionsFilePath: declaredInstructionsFilePath };
+          changed = true;
+        }
+      }
+    }
+
+    return changed ? { adapterConfig: next } : {};
   }
 
   async function reconcileDefinitionDefaults(companyId: string, key: string) {

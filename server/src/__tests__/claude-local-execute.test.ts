@@ -1660,4 +1660,49 @@ describe("claude execute", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it("hard-fails when adapterConfig.instructionsFilePath cannot be read, without spawning claude", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-missing-instructions-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+    const missingInstructionsPath = path.join(root, "does-not-exist", "AGENTS.md");
+    const stderrLogs: string[] = [];
+    try {
+      const result = await execute({
+        runId: "run-missing-instructions",
+        agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          instructionsFilePath: missingInstructionsPath,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "Do work.",
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async (stream, chunk) => {
+          if (stream === "stderr") stderrLogs.push(chunk);
+        },
+      });
+
+      expect(result.errorCode).toBe("agent_instructions_unreadable");
+      expect(result.errorMessage).toBeTruthy();
+      expect(result.errorMessage).toContain(missingInstructionsPath);
+      expect(result.exitCode).toBeNull();
+      expect(result.errorMeta).toMatchObject({ instructionsFilePath: missingInstructionsPath });
+      expect(stderrLogs.join("")).toContain(missingInstructionsPath);
+      // The fake claude binary writes its capture file as its first action, so
+      // its absence proves the process was never spawned.
+      await expect(fs.access(capturePath)).rejects.toThrow();
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });

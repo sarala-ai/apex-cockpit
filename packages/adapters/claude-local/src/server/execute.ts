@@ -512,10 +512,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       combinedInstructionsContents = instructionsContent + pathDirective;
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      await onLog(
-        "stderr",
-        `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
-      );
+      const errorMessage =
+        `Agent instructions file "${instructionsFilePath}" could not be read on this host: ${reason}. ` +
+        `Reconcile the agent (built-in agents → reset/reconcile) or fix adapterConfig.instructionsFilePath.`;
+      await onLog("stderr", `[paperclip] ${errorMessage}\n`);
+      return {
+        exitCode: null,
+        signal: null,
+        timedOut: false,
+        errorMessage,
+        errorCode: "agent_instructions_unreadable",
+        errorMeta: { instructionsFilePath, reason },
+      };
     }
   }
   const promptBundle = await prepareClaudePromptBundle({

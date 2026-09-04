@@ -846,6 +846,82 @@ describeEmbeddedPostgres("built-in agents", () => {
     expect(readBuiltInAgentMarker(row?.metadata)).toEqual({ key: "specifier", featureKeys: ["lifecycle-feature-spec"] });
   });
 
+  it("repoints a stale-install instructionsFilePath during startup reconciliation while preserving other adapterConfig keys", async () => {
+    const companyId = await seedCompany();
+    const agentId = randomUUID();
+    const definition = listBuiltInAgentDefinitions().find((entry) => entry.key === "implementer");
+    expect(definition?.defaultAdapterConfig?.instructionsFilePath).toBeTruthy();
+    const definitionInstructionsFilePath = definition!.defaultAdapterConfig!.instructionsFilePath as string;
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Implementer",
+      role: "engineering",
+      status: "idle",
+      adapterType: "claude_local",
+      adapterConfig: {
+        dangerouslySkipPermissions: false,
+        allowedTools: "Read",
+        instructionsFilePath:
+          "/Users/someone/.paperclip/checkouts/cockpit/server/src/built-ins/agents/implementer/AGENTS.md",
+        model: "keep-me",
+      },
+      runtimeConfig: {},
+      permissions: {},
+      metadata: withBuiltInAgentMarker({}, { key: "implementer", featureKeys: ["stale-feature-key"] }),
+    });
+
+    await reconcileBuiltInAgentsOnStartup(db);
+
+    const [row] = await db.select().from(agents).where(eq(agents.id, agentId));
+    const adapterConfig = row?.adapterConfig as Record<string, unknown>;
+    expect(adapterConfig.instructionsFilePath).toBe(definitionInstructionsFilePath);
+    expect(adapterConfig.model).toBe("keep-me");
+    expect(adapterConfig.dangerouslySkipPermissions).toBe(false);
+    expect(adapterConfig.allowedTools).toBe("Read");
+  });
+
+  it("leaves an existing custom instructionsFilePath untouched during startup reconciliation", async () => {
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const companyId = await seedCompany();
+    const agentId = randomUUID();
+    const customDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-custom-instructions-"));
+    const customInstructionsFilePath = path.join(customDir, "CUSTOM.md");
+    fs.writeFileSync(customInstructionsFilePath, "Custom operator instructions.\n", "utf8");
+
+    try {
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Implementer",
+        role: "engineering",
+        status: "idle",
+        adapterType: "claude_local",
+        adapterConfig: {
+          dangerouslySkipPermissions: false,
+          allowedTools: "Read",
+          instructionsFilePath: customInstructionsFilePath,
+          model: "keep-me",
+        },
+        runtimeConfig: {},
+        permissions: {},
+        metadata: withBuiltInAgentMarker({}, { key: "implementer", featureKeys: ["stale-feature-key"] }),
+      });
+
+      await reconcileBuiltInAgentsOnStartup(db);
+
+      const [row] = await db.select().from(agents).where(eq(agents.id, agentId));
+      const adapterConfig = row?.adapterConfig as Record<string, unknown>;
+      expect(adapterConfig.instructionsFilePath).toBe(customInstructionsFilePath);
+      expect(adapterConfig.model).toBe("keep-me");
+    } finally {
+      fs.rmSync(customDir, { recursive: true, force: true });
+    }
+  });
+
   /**
    * THE ORPHAN. Deleting a definition does not delete the rows it already
    * provisioned, and on the live board one of them — a paused reflection-coach
