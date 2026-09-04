@@ -103,6 +103,19 @@ export interface Config {
   telemetryEnabled: boolean;
 }
 
+// Cloud Run's disk is ephemeral and Cloud SQL already runs automated
+// backups in "authenticated" (hosted) mode, so local-disk backups default
+// off there; local_trusted keeps the prior default-on behavior. An explicit
+// env var or file setting always wins over the deployment-mode default.
+export function resolveDatabaseBackupEnabled(
+  deploymentMode: DeploymentMode,
+  envValue: string | undefined,
+  fileValue: boolean | undefined,
+): boolean {
+  if (envValue !== undefined) return envValue === "true";
+  return fileValue ?? deploymentMode !== "authenticated";
+}
+
 function detectTailnetBindHost(): string | undefined {
   const explicit = process.env.PAPERCLIP_TAILNET_BIND_HOST?.trim();
   if (explicit) return explicit;
@@ -269,10 +282,11 @@ export function loadConfig(): Config {
     companyDeletionEnvRaw !== undefined
       ? companyDeletionEnvRaw === "true"
       : deploymentMode === "local_trusted";
-  const databaseBackupEnabled =
-    process.env.PAPERCLIP_DB_BACKUP_ENABLED !== undefined
-      ? process.env.PAPERCLIP_DB_BACKUP_ENABLED === "true"
-      : (fileDatabaseBackup?.enabled ?? true);
+  const databaseBackupEnabled = resolveDatabaseBackupEnabled(
+    deploymentMode,
+    process.env.PAPERCLIP_DB_BACKUP_ENABLED,
+    fileDatabaseBackup?.enabled,
+  );
   const databaseBackupIntervalMinutes = Math.max(
     1,
     Number(process.env.PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES) ||

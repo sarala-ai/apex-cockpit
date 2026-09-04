@@ -66,13 +66,18 @@ function redactConnectionString(raw: string): string {
   }
 }
 
-function resolveAgentJwtSecretStatus(
+export function resolveAgentJwtSecretStatus(
   envFilePath: string,
+  deploymentMode: DeploymentMode,
 ): {
   status: "pass" | "warn";
   message: string;
 } {
-  const envValue = process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim();
+  // Every consumer (agent-auth-jwt.ts, better-auth.ts, cockpit-mcp-jwt.ts)
+  // falls back to BETTER_AUTH_SECRET when PAPERCLIP_AGENT_JWT_SECRET is
+  // unset, so the banner must check both or it warns on a working config.
+  const envValue =
+    process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim() || process.env.BETTER_AUTH_SECRET?.trim();
   if (envValue) {
     return {
       status: "pass",
@@ -82,7 +87,9 @@ function resolveAgentJwtSecretStatus(
 
   if (existsSync(envFilePath)) {
     const parsed = parseEnvFileContents(readFileSync(envFilePath, "utf-8"));
-    const fileValue = typeof parsed.PAPERCLIP_AGENT_JWT_SECRET === "string" ? parsed.PAPERCLIP_AGENT_JWT_SECRET.trim() : "";
+    const fileValue =
+      (typeof parsed.PAPERCLIP_AGENT_JWT_SECRET === "string" ? parsed.PAPERCLIP_AGENT_JWT_SECRET.trim() : "") ||
+      (typeof parsed.BETTER_AUTH_SECRET === "string" ? parsed.BETTER_AUTH_SECRET.trim() : "");
     if (fileValue) {
       return {
         status: "warn",
@@ -91,9 +98,14 @@ function resolveAgentJwtSecretStatus(
     }
   }
 
+  // `pnpm paperclipai onboard` is a local dev ceremony; it doesn't apply to
+  // a hosted deployment, which sets the secret via Secret Manager instead.
   return {
     status: "warn",
-    message: "missing (run `pnpm paperclipai onboard`)",
+    message:
+      deploymentMode === "local_trusted"
+        ? "missing (run `pnpm paperclipai onboard`)"
+        : "missing",
   };
 }
 
@@ -104,7 +116,7 @@ export function printStartupBanner(opts: StartupBannerOptions): void {
   const uiUrl = opts.uiMode === "none" ? "disabled" : baseUrl;
   const configPath = resolvePaperclipConfigPath();
   const envFilePath = resolvePaperclipEnvPath();
-  const agentJwtSecret = resolveAgentJwtSecretStatus(envFilePath);
+  const agentJwtSecret = resolveAgentJwtSecretStatus(envFilePath, opts.deploymentMode);
 
   const dbMode =
     opts.db.mode === "embedded-postgres"
