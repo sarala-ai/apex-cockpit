@@ -21,6 +21,7 @@ function authStatus(overrides: Partial<AuthStatus> = {}): AuthStatus {
     adc: "ok",
     source: "server",
     reportedAt: null,
+    reportAgeMs: null,
     ...overrides,
   };
 }
@@ -117,6 +118,28 @@ describe("GcloudAuthBanner", () => {
 
     expect(login).toHaveBeenCalledTimes(1);
     expect(container.textContent).toContain("reported by your workstation");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows the stale-report copy and the --cockpit-url re-run command when source is 'stale'", async () => {
+    vi.mocked(apexSetupApi.auth).mockResolvedValue(
+      authStatus({
+        source: "stale",
+        reportedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
+        reportAgeMs: 2 * 24 * 60 * 60 * 1000,
+        gcloud: "ok",
+        gh: "ok",
+      }),
+    );
+
+    const root = await renderBanner(container);
+
+    expect(container.textContent).toContain("Your workstation's report is stale");
+    expect(container.textContent).toContain("apex doctor --report --cockpit-url");
+    expect(container.textContent).toContain(window.location.origin);
 
     await act(async () => {
       root.unmount();

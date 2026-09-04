@@ -27,10 +27,25 @@ export interface AuthStatus {
   gh: AuthHealth;
   adc: AuthHealth;
   // "server" = cockpit runs on the operator's own machine and probed itself;
-  // "workstation" = the desktop app / `apex doctor --report` last reported;
-  // "none" = hosted cockpit, this operator has never reported (unknown, not failing).
-  source: "server" | "workstation" | "none";
+  // "workstation" = the desktop app / `apex doctor --report` last reported
+  // (within the max report age); "stale" = a report exists but is too old to
+  // trust; "none" = hosted cockpit, this operator has never reported (unknown,
+  // not failing).
+  source: "server" | "workstation" | "stale" | "none";
   reportedAt: string | null;
+  /** Milliseconds since the workstation report; null for "server"/"none". */
+  reportAgeMs: number | null;
+}
+
+/** Carried on the four discovery responses below when a hosted cockpit can't
+ *  shell out to gcloud/gh itself — discovery only runs on the operator's
+ *  workstation there. */
+export type DiscoveryReason = "operator_workstation_required";
+
+export interface DiscoveryWorkstation {
+  reportedAt: string;
+  gcloud: { account: string | null; live: boolean };
+  gh: { user: string | null };
 }
 export interface GcpProject {
   projectId: string;
@@ -57,13 +72,37 @@ export const apexSetupApi = {
   workstationReport: () =>
     api.get<{ report: unknown; reportedAt: string | null }>("/setup/workstation-report"),
   gcpProjects: () =>
-    api.get<{ projects: GcpProject[]; source: string; note?: string }>("/setup/gcp/projects"),
-  gcpOrgs: () => api.get<{ orgs: GcpOrg[]; source: string; note?: string }>("/setup/gcp/orgs"),
-  githubOrgs: () => api.get<{ orgs: GhOrg[]; source: string; note?: string }>("/setup/github/orgs"),
+    api.get<{
+      projects: GcpProject[];
+      source: string;
+      note?: string;
+      reason?: DiscoveryReason;
+      workstation?: DiscoveryWorkstation | null;
+    }>("/setup/gcp/projects"),
+  gcpOrgs: () =>
+    api.get<{
+      orgs: GcpOrg[];
+      source: string;
+      note?: string;
+      reason?: DiscoveryReason;
+      workstation?: DiscoveryWorkstation | null;
+    }>("/setup/gcp/orgs"),
+  githubOrgs: () =>
+    api.get<{
+      orgs: GhOrg[];
+      source: string;
+      note?: string;
+      reason?: DiscoveryReason;
+      workstation?: DiscoveryWorkstation | null;
+    }>("/setup/github/orgs"),
   githubRepos: (org: string) =>
-    api.get<{ repos: GhRepo[]; source: string; note?: string }>(
-      `/setup/github/repos${org ? `?org=${encodeURIComponent(org)}` : ""}`,
-    ),
+    api.get<{
+      repos: GhRepo[];
+      source: string;
+      note?: string;
+      reason?: DiscoveryReason;
+      workstation?: DiscoveryWorkstation | null;
+    }>(`/setup/github/repos${org ? `?org=${encodeURIComponent(org)}` : ""}`),
 };
 
 // --- GCP/repo binding on projects.env (no migration) ------------------------

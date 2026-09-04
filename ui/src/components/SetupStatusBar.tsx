@@ -65,10 +65,19 @@ const TEXT_CLASS: Record<Tone, string> = {
 };
 
 /** Auth-pill tone + title: "none" source means the workstation hasn't reported
- *  yet (unknown, not failing); "workstation" source annotates when it did. */
+ *  yet (unknown, not failing); "stale" means it reported but too long ago to
+ *  trust; "workstation" source annotates a fresh report. */
 function authIndicator(key: string, label: string, health: Health, auth: SetupState["auth"]): Indicator {
   if (auth.source === "none") {
     return { key, label, tone: "unknown", title: "workstation not reported yet" };
+  }
+  if (auth.source === "stale") {
+    return {
+      key,
+      label,
+      tone: "warn",
+      title: `workstation report is stale (reported ${auth.reportedAt ? timeAgo(auth.reportedAt) : "a while ago"}) — re-run apex doctor --report`,
+    };
   }
   const title =
     auth.source === "workstation" && auth.reportedAt
@@ -77,17 +86,54 @@ function authIndicator(key: string, label: string, health: Health, auth: SetupSt
   return { key, label, tone: healthTone(health), title };
 }
 
+/** Gateway pill: ok only when reachable AND the credential was accepted; a
+ *  rejected credential (unauthenticated/forbidden) is a hard "bad", never a
+ *  quiet "warn" — everything else unreachable/other-failure is "warn". */
+function gatewayIndicator(gateway: SetupState["gateway"]): Indicator {
+  if (gateway.reachable && gateway.authenticated === true) {
+    return { key: "gateway", label: "Gateway", tone: "ok" };
+  }
+  if (gateway.reachable && gateway.failure && (gateway.failure.kind === "unauthenticated" || gateway.failure.kind === "forbidden")) {
+    return { key: "gateway", label: "Gateway", tone: "bad", title: gateway.failure.message };
+  }
+  return { key: "gateway", label: "Gateway", tone: "warn", title: gateway.failure?.message };
+}
+
+/** MCP pill: a registry read error is a hard "bad" — an empty list must never
+ *  be shown as a quiet empty registry. */
+function mcpIndicator(mcpServers: SetupState["mcpServers"]): Indicator {
+  const count = mcpServers.registered.length;
+  if (mcpServers.error) {
+    return { key: "mcp", label: "MCP", value: String(count), tone: "bad", title: mcpServers.error };
+  }
+  return { key: "mcp", label: "MCP", value: String(count), tone: count > 0 ? "ok" : "muted" };
+}
+
+/** OAuth pill: ok only when the cockpit's own sign-in client is configured;
+ *  title carries the sign-in client state + gateway upstream count. */
+function oauthIndicator(oauthClient: SetupState["oauthClient"]): Indicator {
+  const upstreams = oauthClient.gatewayUpstreams;
+  const upstreamsText = upstreams.error
+    ? `gateway upstreams: ${upstreams.error}`
+    : `gateway upstreams: ${upstreams.configured}/${upstreams.total} configured`;
+  return {
+    key: "oauth",
+    label: "OAuth",
+    tone: oauthClient.configured ? "ok" : "warn",
+    title: `sign-in client: ${oauthClient.signInClient}; ${upstreamsText}`,
+  };
+}
+
 /** Flatten the detector snapshot into the bar's ordered indicators. */
 function toIndicators(s: SetupState): Indicator[] {
-  const mcpCount = s.mcpServers.registered.length;
   return [
     authIndicator("gcloud", "gcloud", s.auth.gcloud, s.auth),
     authIndicator("github", "GitHub", s.auth.gh, s.auth),
     authIndicator("adc", "ADC", s.auth.adc, s.auth),
     { key: "org", label: "Org", value: s.org.present ? "set" : "not set", tone: s.org.present ? "ok" : "warn" },
-    { key: "oauth", label: "OAuth", tone: s.oauthClient.configured ? "ok" : "warn" },
-    { key: "gateway", label: "Gateway", tone: s.gateway.reachable ? "ok" : "warn" },
-    { key: "mcp", label: "MCP", value: String(mcpCount), tone: mcpCount > 0 ? "ok" : "muted" },
+    oauthIndicator(s.oauthClient),
+    gatewayIndicator(s.gateway),
+    mcpIndicator(s.mcpServers),
     { key: "claude", label: "Claude", tone: s.claudeSession?.connected ? "ok" : "warn" },
   ];
 }

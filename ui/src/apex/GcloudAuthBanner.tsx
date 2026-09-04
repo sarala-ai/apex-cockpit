@@ -71,7 +71,44 @@ export function GcloudAuthBanner({ pollMs = 60_000 }: { pollMs?: number }) {
         <div className="flex items-center gap-2 font-medium text-foreground">
           <CloudCog className="h-4 w-4 shrink-0 text-muted-foreground" />
           Your workstation hasn't reported yet — open the APEX desktop app or run{" "}
-          <code className="rounded bg-muted px-1.5 py-0.5 text-xs">apex doctor --report</code>.
+          <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
+            apex doctor --report --cockpit-url {window.location.origin}
+          </code>
+          .
+        </div>
+        {bridge?.workstation ? (
+          <div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() =>
+                void bridge.workstation!.report().then((r) => {
+                  if (r.ok) recheck();
+                })
+              }
+            >
+              <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+              Report now
+            </Button>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (auth.source === "stale") {
+    return (
+      <div className="flex flex-col gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm">
+        <div className="flex items-center gap-2 font-medium text-amber-700 dark:text-amber-300">
+          <CloudCog className="h-4 w-4 shrink-0" />
+          Your workstation's report is stale — reported{" "}
+          {auth.reportedAt ? timeAgo(auth.reportedAt) : "a while ago"}; the cockpit no longer trusts it.
+        </div>
+        <div className="text-muted-foreground">
+          Re-run{" "}
+          <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
+            apex doctor --report --cockpit-url {window.location.origin}
+          </code>
         </div>
         {bridge?.workstation ? (
           <div>
@@ -157,7 +194,10 @@ export function GcloudAuthBanner({ pollMs = 60_000 }: { pollMs?: number }) {
             </Button>
           ) : (
             <span className="text-xs text-muted-foreground">
-              or run <code className="rounded bg-muted px-1 py-0.5">apex doctor --report</code>
+              or run{" "}
+              <code className="rounded bg-muted px-1 py-0.5">
+                apex doctor --report --cockpit-url {window.location.origin}
+              </code>
             </span>
           )
         ) : null}

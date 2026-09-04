@@ -9,10 +9,53 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Building2, Cloud, Github } from "lucide-react";
-import { apexSetupApi, type GcpProject, type GhRepo } from "../../api/apex-setup";
+import {
+  apexSetupApi,
+  type DiscoveryReason,
+  type DiscoveryWorkstation,
+  type GcpProject,
+  type GhRepo,
+} from "../../api/apex-setup";
 import { orgsApi, scopeBindingApi, type GovernancePosture } from "../../api/apex-scoping";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/apex/status-badge";
+import { timeAgo } from "../../lib/timeAgo";
+
+/** Client-side sanity check before a hosted-discovery text-entry Add — the
+ *  server's PUT still validates and rejects malformed ids with 400. */
+const GCP_PROJECT_ID_RE = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
+const GITHUB_REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+/** A discovery response's hosted-fallback shape: no `reason` on a local
+ *  cockpit (picker chips); `operator_workstation_required` when discovery
+ *  only runs on the operator's workstation. */
+interface DiscoveryMeta {
+  reason?: DiscoveryReason;
+  workstation?: DiscoveryWorkstation | null;
+}
+
+/** "Discovery runs on your workstation…" hint line, shared by the GCP-project
+ *  and repo hosted fallbacks. */
+function WorkstationDiscoveryHint({ kind, workstation }: { kind: string; workstation?: DiscoveryWorkstation | null }) {
+  return (
+    <p className="text-xs text-muted-foreground">
+      Discovery runs on your workstation — this cockpit can't list your {kind}. Enter the ids; they're
+      validated when you save.
+      {workstation ? (
+        <> Last reported by your workstation {timeAgo(workstation.reportedAt)}.</>
+      ) : (
+        <>
+          {" "}
+          Run{" "}
+          <code className="rounded bg-muted px-1 py-0.5">
+            apex doctor --report --cockpit-url {window.location.origin}
+          </code>
+          .
+        </>
+      )}
+    </p>
+  );
+}
 
 /** The signed-in user's GitHub orgs, for the "map to a GitHub org" selector on
  *  create. Not fetched until the create form actually needs it (no org yet). */
@@ -61,6 +104,8 @@ function ScopeBindingEditor({
   testId,
   gcpProjects,
   repos,
+  gcpDiscovery,
+  repoDiscovery,
   discoveryNote,
   suggestForName,
 }: {
@@ -70,6 +115,10 @@ function ScopeBindingEditor({
   testId: string;
   gcpProjects: GcpProject[];
   repos: GhRepo[];
+  /** Hosted-fallback metadata for the GCP-project discovery response. */
+  gcpDiscovery: DiscoveryMeta;
+  /** Hosted-fallback metadata for the GitHub-repo discovery response. */
+  repoDiscovery: DiscoveryMeta;
   discoveryNote: string | null;
   /** Company name (company scope) → drives loose convention suggestions. */
   suggestForName?: string;
@@ -83,6 +132,54 @@ function ScopeBindingEditor({
   const [selProjects, setSelProjects] = useState<Set<string>>(new Set());
   const [selRepos, setSelRepos] = useState<Set<string>>(new Set());
   const [dirty, setDirty] = useState(false);
+  const [projectInput, setProjectInput] = useState("");
+  const [projectInputError, setProjectInputError] = useState<string | null>(null);
+  const [repoInput, setRepoInput] = useState("");
+  const [repoInputError, setRepoInputError] = useState<string | null>(null);
+
+  const addProjectId = () => {
+    const id = projectInput.trim();
+    if (!id) return;
+    if (!GCP_PROJECT_ID_RE.test(id)) {
+      setProjectInputError("Not a valid GCP project id (lowercase letters, digits, hyphens, 6-30 chars).");
+      return;
+    }
+    setSelProjects((s) => new Set(s).add(id));
+    setProjectInput("");
+    setProjectInputError(null);
+    setDirty(true);
+  };
+
+  const addRepoId = () => {
+    const id = repoInput.trim();
+    if (!id) return;
+    if (!GITHUB_REPO_RE.test(id)) {
+      setRepoInputError("Not a valid repo — use owner/repo.");
+      return;
+    }
+    setSelRepos((s) => new Set(s).add(id));
+    setRepoInput("");
+    setRepoInputError(null);
+    setDirty(true);
+  };
+
+  const removeProject = (id: string) => {
+    setSelProjects((s) => {
+      const next = new Set(s);
+      next.delete(id);
+      return next;
+    });
+    setDirty(true);
+  };
+
+  const removeRepo = (id: string) => {
+    setSelRepos((s) => {
+      const next = new Set(s);
+      next.delete(id);
+      return next;
+    });
+    setDirty(true);
+  };
 
   // Load the server-side binding into the editor when it (or the scope) changes.
   useEffect(() => {
@@ -156,58 +253,134 @@ function ScopeBindingEditor({
         <div className="mb-1.5 flex items-center gap-1.5 text-sm text-muted-foreground">
           <Cloud className="h-3.5 w-3.5" /> GCP projects
         </div>
-        <div className="flex flex-wrap gap-1.5">
-          {gcpProjects.length === 0 && (
-            <span className="text-xs text-muted-foreground">
-              {discoveryNote ?? "No GCP projects visible."}
-            </span>
-          )}
-          {gcpProjects.map((p) => (
-            <button
-              key={p.projectId}
-              type="button"
-              onClick={() => {
-                setSelProjects((s) => toggle(s, p.projectId));
-                setDirty(true);
-              }}
-              className={`rounded border px-1.5 py-0.5 text-xs ${
-                selProjects.has(p.projectId)
-                  ? "border-sky-500/50 bg-sky-500/20 text-sky-600 dark:text-sky-200"
-                  : "border-border text-muted-foreground"
-              }`}
-            >
-              {p.projectId}
-            </button>
-          ))}
-        </div>
+        {gcpDiscovery.reason ? (
+          <div className="space-y-1.5">
+            <WorkstationDiscoveryHint kind="GCP projects" workstation={gcpDiscovery.workstation} />
+            <div className="flex flex-wrap items-center gap-1.5">
+              <input
+                data-testid="apex-scope-project-input"
+                value={projectInput}
+                onChange={(e) => {
+                  setProjectInput(e.target.value);
+                  setProjectInputError(null);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") addProjectId();
+                }}
+                placeholder="my-gcp-project-id"
+                className="w-56 rounded-md border border-border bg-transparent px-2.5 py-1 text-xs outline-none"
+              />
+              <Button size="sm" variant="outline" data-testid="apex-scope-project-add" onClick={addProjectId}>
+                Add
+              </Button>
+            </div>
+            {projectInputError && <p className="text-xs text-destructive">{projectInputError}</p>}
+            <div className="flex flex-wrap gap-1.5">
+              {[...selProjects].map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => removeProject(p)}
+                  title="Remove"
+                  className="rounded border border-sky-500/50 bg-sky-500/20 px-1.5 py-0.5 text-xs text-sky-600 dark:text-sky-200"
+                >
+                  {p} ×
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
+            {gcpProjects.length === 0 && (
+              <span className="text-xs text-muted-foreground">
+                {discoveryNote ?? "No GCP projects visible."}
+              </span>
+            )}
+            {gcpProjects.map((p) => (
+              <button
+                key={p.projectId}
+                type="button"
+                onClick={() => {
+                  setSelProjects((s) => toggle(s, p.projectId));
+                  setDirty(true);
+                }}
+                className={`rounded border px-1.5 py-0.5 text-xs ${
+                  selProjects.has(p.projectId)
+                    ? "border-sky-500/50 bg-sky-500/20 text-sky-600 dark:text-sky-200"
+                    : "border-border text-muted-foreground"
+                }`}
+              >
+                {p.projectId}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       <div>
         <div className="mb-1.5 flex items-center gap-1.5 text-sm text-muted-foreground">
           <Github className="h-3.5 w-3.5" /> Repositories
         </div>
-        <div className="flex flex-wrap gap-1.5">
-          {repos.length === 0 && (
-            <span className="text-xs text-muted-foreground">No repositories visible.</span>
-          )}
-          {repos.map((r) => (
-            <button
-              key={r.nameWithOwner}
-              type="button"
-              onClick={() => {
-                setSelRepos((s) => toggle(s, r.nameWithOwner));
-                setDirty(true);
-              }}
-              className={`rounded border px-1.5 py-0.5 text-xs ${
-                selRepos.has(r.nameWithOwner)
-                  ? "border-sky-500/50 bg-sky-500/20 text-sky-600 dark:text-sky-200"
-                  : "border-border text-muted-foreground"
-              }`}
-            >
-              {r.name}
-            </button>
-          ))}
-        </div>
+        {repoDiscovery.reason ? (
+          <div className="space-y-1.5">
+            <WorkstationDiscoveryHint kind="repos" workstation={repoDiscovery.workstation} />
+            <div className="flex flex-wrap items-center gap-1.5">
+              <input
+                data-testid="apex-scope-repo-input"
+                value={repoInput}
+                onChange={(e) => {
+                  setRepoInput(e.target.value);
+                  setRepoInputError(null);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") addRepoId();
+                }}
+                placeholder="owner/repo"
+                className="w-56 rounded-md border border-border bg-transparent px-2.5 py-1 text-xs outline-none"
+              />
+              <Button size="sm" variant="outline" data-testid="apex-scope-repo-add" onClick={addRepoId}>
+                Add
+              </Button>
+            </div>
+            {repoInputError && <p className="text-xs text-destructive">{repoInputError}</p>}
+            <div className="flex flex-wrap gap-1.5">
+              {[...selRepos].map((r) => (
+                <button
+                  key={r}
+                  type="button"
+                  onClick={() => removeRepo(r)}
+                  title="Remove"
+                  className="rounded border border-sky-500/50 bg-sky-500/20 px-1.5 py-0.5 text-xs text-sky-600 dark:text-sky-200"
+                >
+                  {r} ×
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
+            {repos.length === 0 && (
+              <span className="text-xs text-muted-foreground">No repositories visible.</span>
+            )}
+            {repos.map((r) => (
+              <button
+                key={r.nameWithOwner}
+                type="button"
+                onClick={() => {
+                  setSelRepos((s) => toggle(s, r.nameWithOwner));
+                  setDirty(true);
+                }}
+                className={`rounded border px-1.5 py-0.5 text-xs ${
+                  selRepos.has(r.nameWithOwner)
+                    ? "border-sky-500/50 bg-sky-500/20 text-sky-600 dark:text-sky-200"
+                    : "border-border text-muted-foreground"
+                }`}
+              >
+                {r.name}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {(selProjects.size > 0 || selRepos.size > 0) && (
@@ -354,6 +527,16 @@ export function OrgScopingSection({
   const gcpProjects: GcpProject[] = gcpProjectsQuery.data?.projects ?? [];
   const repos: GhRepo[] = reposQuery.data?.repos ?? [];
   const discoveryNote = gcpProjectsQuery.data?.note ?? reposQuery.data?.note ?? null;
+  // Hosted-fallback metadata (unset on a local cockpit, where discovery
+  // shells out to gcloud/gh and the picker chips render).
+  const gcpDiscovery: DiscoveryMeta = {
+    reason: gcpProjectsQuery.data?.reason,
+    workstation: gcpProjectsQuery.data?.workstation,
+  };
+  const repoDiscovery: DiscoveryMeta = {
+    reason: reposQuery.data?.reason,
+    workstation: reposQuery.data?.workstation,
+  };
   const companies = companiesQuery.data?.companies ?? [];
   const companyLinked = !!companyId && companies.some((c) => c.id === companyId);
   // Governance posture (default individual). Drives whether the missing-GitHub-org
@@ -399,19 +582,29 @@ export function OrgScopingSection({
                   placeholder="Org name (e.g. Sarala)"
                   className="w-48 rounded-md border border-border bg-transparent px-2.5 py-1 text-sm outline-none"
                 />
-                <select
-                  data-testid="apex-org-github-org-select"
-                  value={newGithubOrg}
-                  onChange={(e) => setNewGithubOrg(e.target.value)}
-                  className="rounded-md border border-border bg-transparent px-2.5 py-1 text-sm outline-none"
-                >
-                  <option value="">No GitHub org (personal repos)</option>
-                  {(githubOrgsQuery.data?.orgs ?? []).map((o) => (
-                    <option key={o.login} value={o.login}>
-                      {o.login}
-                    </option>
-                  ))}
-                </select>
+                {githubOrgsQuery.data?.reason ? (
+                  <input
+                    data-testid="apex-org-github-org-input"
+                    value={newGithubOrg}
+                    onChange={(e) => setNewGithubOrg(e.target.value)}
+                    placeholder="GitHub org (optional — discovery runs on your workstation)"
+                    className="w-72 rounded-md border border-border bg-transparent px-2.5 py-1 text-sm outline-none"
+                  />
+                ) : (
+                  <select
+                    data-testid="apex-org-github-org-select"
+                    value={newGithubOrg}
+                    onChange={(e) => setNewGithubOrg(e.target.value)}
+                    className="rounded-md border border-border bg-transparent px-2.5 py-1 text-sm outline-none"
+                  >
+                    <option value="">No GitHub org (personal repos)</option>
+                    {(githubOrgsQuery.data?.orgs ?? []).map((o) => (
+                      <option key={o.login} value={o.login}>
+                        {o.login}
+                      </option>
+                    ))}
+                  </select>
+                )}
                 <Button
                   size="sm"
                   onClick={() => createOrg.mutate({ name: newOrgName.trim(), githubOrg: newGithubOrg })}
@@ -620,6 +813,8 @@ export function OrgScopingSection({
                 testId="apex-org-scope-binding"
                 gcpProjects={gcpProjects}
                 repos={repos}
+                gcpDiscovery={gcpDiscovery}
+                repoDiscovery={repoDiscovery}
                 discoveryNote={discoveryNote}
               />
             )}
@@ -659,6 +854,8 @@ export function OrgScopingSection({
                       testId="apex-company-scope-binding"
                       gcpProjects={gcpProjects}
                       repos={repos}
+                      gcpDiscovery={gcpDiscovery}
+                      repoDiscovery={repoDiscovery}
                       discoveryNote={discoveryNote}
                       suggestForName={effectiveCompanyName}
                     />

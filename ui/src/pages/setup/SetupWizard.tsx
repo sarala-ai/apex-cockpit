@@ -22,6 +22,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { GuidedStep } from "./GuidedStep";
 import { STEP_HELP, HelpRail, StepInfo } from "./setup-help";
 import { PRODUCT_NAME } from "../../lib/product";
+import { timeAgo } from "../../lib/timeAgo";
 
 // The cloud-first org→company engineering-setup spine. ORG steps (identity →
 // create org → org cloud → org GitHub) provision the shared substrate; COMPANY
@@ -32,7 +33,6 @@ export type StepKey =
   | "org"
   | "companies"
   | "orgCloud"
-  | "orgGithub"
   | "companyCloud"
   | "companyRepos"
   | "oauthClient"
@@ -58,7 +58,7 @@ const STEPS: StepDef[] = [
     // not block step 1. ADC gates the cloud-provisioning steps instead (see below).
     key: "auth",
     title: "Connect gcloud + GitHub (your identity)",
-    done: (s) => s.auth.gcloud === "ok" && s.auth.gh === "ok",
+    done: (s) => s.auth.gcloud === "ok" && s.auth.gh === "ok" && s.auth.source !== "stale",
   },
   { key: "org", title: "Create Org (you = owner)", done: (s) => s.org.present },
   // Create your companies (product units) first-class in the flow — the cloud/repo
@@ -75,11 +75,6 @@ const STEPS: StepDef[] = [
     done: (s) => s.scoping.orgProjectsBound,
   },
   {
-    key: "orgGithub",
-    title: "Org GitHub — App + Workload Identity Federation",
-    done: (s) => s.orgGithub.appInstalled && s.orgGithub.wifConfigured,
-  },
-  {
     key: "companyCloud",
     title: "Company cloud — GCP projects",
     done: (s) => s.companies.count > 0 && s.scoping.companyProjectsBound,
@@ -89,13 +84,25 @@ const STEPS: StepDef[] = [
     title: "Company repos",
     done: (s) => s.companies.count > 0 && s.scoping.companyReposBound,
   },
-  { key: "oauthClient", title: "Google OAuth client", done: (s) => s.oauthClient.configured },
-  { key: "gateway", title: "MCP gateway running", done: (s) => s.gateway.reachable },
-  { key: "mcpServers", title: "MCP servers registered", done: (s) => s.mcpServers.registered.length > 0 },
+  {
+    key: "oauthClient",
+    title: "Google OAuth — cockpit sign-in + gateway upstreams",
+    done: (s) => s.oauthClient.configured,
+  },
+  {
+    key: "gateway",
+    title: "MCP gateway running",
+    done: (s) => s.gateway.reachable && s.gateway.authenticated === true,
+  },
+  {
+    key: "mcpServers",
+    title: "MCP servers registered",
+    done: (s) => s.mcpServers.registered.length > 0,
+  },
   {
     key: "connect",
     title: "Connect capability (your Google consent)",
-    done: (s) => s.oauthClient.configured && s.mcpServers.registered.length > 0,
+    done: (s) => s.oauthClient.configured && s.mcpServers.registered.length > 0 && !s.mcpServers.error,
   },
   {
     key: "models",
@@ -123,7 +130,6 @@ const STEPS: StepDef[] = [
 const CLOUD_STEP_KEYS = new Set<StepKey>([
   "companies",
   "orgCloud",
-  "orgGithub",
   "companyCloud",
   "companyRepos",
   "oauthClient",
@@ -139,30 +145,12 @@ function roleNeedsCloud(role?: string): boolean {
   return role !== "reviewer" && role !== "observer";
 }
 
-/**
- * The HARDENING steps — org-level App-install + Workload Identity Federation.
- * They're the governed, admin-authoritative boundary and only apply once the org
- * dials its governance posture up to `team`/`enterprise`. Under the default
- * `individual` posture (solo dev on personal repos + personal GCP projects) they
- * are OPTIONAL — not required, not blocking "setup complete". (Don't hardcode
- * "everyone needs the App/WIF governance.")
- */
-const HARDENING_STEP_KEYS = new Set<StepKey>(["orgGithub"]);
-
-/** Posture that turns on the heavy governance (App-install/WIF/admin binding). */
-function postureNeedsHardening(posture?: string): boolean {
-  return posture === "team" || posture === "enterprise";
-}
-
-/** Steps that count toward "required" given the actor's role AND the org's
- *  governance posture (individual skips the hardening steps). */
+/** Steps that count toward "required" given the actor's role. */
 function requiredSteps(s: SetupState): StepDef[] {
   const needsCloud = roleNeedsCloud(s.membership?.role);
-  const needsHardening = postureNeedsHardening(s.org.posture);
   return STEPS.filter((st) => {
     if (st.optional) return false;
     if (CLOUD_STEP_KEYS.has(st.key) && !needsCloud) return false;
-    if (HARDENING_STEP_KEYS.has(st.key) && !needsHardening) return false;
     return true;
   });
 }
@@ -189,17 +177,10 @@ function statusOf(
 ): { label: string; variant: StatusVariant; icon: "done" | "active" | "pending" } {
   if (step.done(state)) return { label: "done", variant: "success", icon: "done" };
   if (step.optional) return { label: "optional", variant: "default", icon: "pending" };
-  // Non-optional but not required here. A hardening step under `individual`
-  // posture reads as "optional" (dial up posture to require it); a cloud step
-  // skipped for a reviewer/observer role reads as "skipped".
+  // Non-optional but not required here — a cloud step skipped for a
+  // reviewer/observer role reads as "skipped".
   if (!isRequired) {
-    const optionalByPosture =
-      HARDENING_STEP_KEYS.has(step.key) && !postureNeedsHardening(state.org.posture);
-    return {
-      label: optionalByPosture ? "optional" : "skipped",
-      variant: "default",
-      icon: "pending",
-    };
+    return { label: "skipped", variant: "default", icon: "pending" };
   }
   if (step.key === activeKey) return { label: "current", variant: "info", icon: "active" };
   return { label: "pending", variant: "default", icon: "pending" };
@@ -282,7 +263,8 @@ export function SetupWizard() {
   const complete = state != null && activeKey == null;
   // Identity is the hard gate: nothing org/cloud-scoped proceeds until gcloud+gh
   // are both green.
-  const authReady = state != null && state.auth.gcloud === "ok" && state.auth.gh === "ok";
+  const authReady =
+    state != null && state.auth.gcloud === "ok" && state.auth.gh === "ok" && state.auth.source !== "stale";
 
   // Default the expanded step to the active one whenever state resolves/changes.
   useEffect(() => {
@@ -308,8 +290,8 @@ export function SetupWizard() {
 
   return (
     <div className="mx-auto max-w-5xl p-4" data-testid="apex-setup-wizard">
-      <div className="lg:grid lg:grid-cols-[minmax(0,1fr)_20rem] lg:items-start lg:gap-4">
-        <Card>
+      <div className="lg:flex lg:items-start lg:gap-4">
+        <Card className="lg:min-w-0 lg:flex-1">
           <CardHeader>
             <CardTitle className="flex items-center justify-between">
               <span>Set up {PRODUCT_NAME}</span>
@@ -404,6 +386,7 @@ export function SetupWizard() {
                       <div className="border-t border-border px-3 py-3">
                         <StepBody
                           stepKey={step.key}
+                          state={state}
                           selectedCompanyId={selectedCompanyId}
                           orgId={state.org.id ?? null}
                           orgPresent={state.org.present}
@@ -422,7 +405,7 @@ export function SetupWizard() {
         </Card>
 
         {/* Contextual help rail — wide screens only; narrow uses the ⓘ popover. */}
-        <div className="hidden lg:sticky lg:top-4 lg:block">
+        <div className="hidden lg:sticky lg:top-4 lg:block lg:w-80 lg:shrink-0">
           <HelpRail title={railStep?.title} help={railStep ? STEP_HELP[railStep.key] : undefined} />
         </div>
       </div>
@@ -432,6 +415,7 @@ export function SetupWizard() {
 
 function StepBody({
   stepKey,
+  state,
   selectedCompanyId,
   orgId,
   orgPresent,
@@ -441,6 +425,7 @@ function StepBody({
   rechecking,
 }: {
   stepKey: StepKey;
+  state: SetupState;
   selectedCompanyId: string | null;
   orgId: string | null;
   orgPresent: boolean;
@@ -492,18 +477,6 @@ function StepBody({
       ) : (
         <OrgScopingSection companyId={selectedCompanyId ?? undefined} slice="orgScope" />
       );
-    case "orgGithub":
-      return (
-        <GuidedStep
-          deepLink={{
-            href: "https://github.com/organizations/sarala-ai/settings/installations",
-            label: "Open GitHub org apps →",
-          }}
-          done={done}
-          onRecheck={onRecheck}
-          rechecking={rechecking}
-        />
-      );
     case "companyCloud":
       // Bind each company's own GCP projects (dev/staging/prod) at company scope.
       // No fixed companyId — the section shows a per-company picker so multi-company
@@ -526,30 +499,73 @@ function StepBody({
       ) : (
         <OrgScopingSection slice="companyScope" />
       );
-    case "oauthClient":
+    case "oauthClient": {
+      const signInLabel =
+        state.oauthClient.signInClient === "configured"
+          ? "configured"
+          : state.oauthClient.signInClient === "not_applicable"
+            ? "not needed on a local instance"
+            : "missing";
+      const upstreams = state.oauthClient.gatewayUpstreams;
       return (
-        <GuidedStep
-          deepLink={{
-            href: "https://console.cloud.google.com/apis/credentials",
-            label: "Open GCP Credentials →",
-          }}
-          command="apex run workflow run --workflow gateway-oauth-bootstrap --execution-mode apply"
-          done={done}
-          onRecheck={onRecheck}
-          rechecking={rechecking}
-        />
+        <div className="space-y-3">
+          <div className="space-y-1 text-sm text-muted-foreground">
+            <div>Sign-in client: {signInLabel}</div>
+            <div>
+              {upstreams.error
+                ? `Gateway OAuth upstreams: ${upstreams.error}`
+                : `Gateway OAuth upstreams: ${upstreams.configured} of ${upstreams.total} configured`}
+            </div>
+          </div>
+          <GuidedStep
+            deepLink={{
+              href: "https://console.cloud.google.com/apis/credentials",
+              label: "Open GCP Credentials →",
+            }}
+            command="apex run workflow run --workflow gateway-oauth-bootstrap --execution-mode apply"
+            done={done}
+            onRecheck={onRecheck}
+            rechecking={rechecking}
+          />
+        </div>
       );
-    case "gateway":
+    }
+    case "gateway": {
+      const gw = state.gateway;
+      let toneClass = "";
+      let message = "";
+      if (!gw.reachable) {
+        toneClass = "border-amber-500/30 bg-amber-500/10 text-amber-600";
+        message = `apex-gateway at ${gw.url} is unreachable`;
+      } else if (gw.failure && (gw.failure.kind === "unauthenticated" || gw.failure.kind === "forbidden")) {
+        toneClass = "border-red-500/30 bg-red-500/10 text-red-600";
+        message = `apex-gateway at ${gw.url} answered but rejected the cockpit's credential: ${gw.failure.message}`;
+      } else if (gw.failure) {
+        toneClass = "border-amber-500/30 bg-amber-500/10 text-amber-600";
+        message = gw.failure.message;
+      } else {
+        toneClass = "border-emerald-500/30 bg-emerald-500/10 text-emerald-600";
+        message = "reachable, credential accepted";
+      }
       return (
-        <GuidedStep
-          command="uvicorn mcpgateway.main:app --host 127.0.0.1 --port 4444"
-          done={done}
-          onRecheck={onRecheck}
-          rechecking={rechecking}
-        />
+        <div className="space-y-3">
+          <code className="block w-fit rounded bg-muted px-2 py-1 text-xs">{gw.url}</code>
+          <div className={`rounded-md border px-3 py-2 text-sm ${toneClass}`}>{message}</div>
+          <GuidedStep done={done} onRecheck={onRecheck} rechecking={rechecking} />
+        </div>
       );
+    }
     case "mcpServers":
-      return <GuidedStep done={done} onRecheck={onRecheck} rechecking={rechecking} />;
+      return (
+        <div className="space-y-3">
+          {state.mcpServers.error && (
+            <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-600">
+              Registry could not be read: {state.mcpServers.error} — the list below is not an empty registry
+            </div>
+          )}
+          <GuidedStep done={done} onRecheck={onRecheck} rechecking={rechecking} />
+        </div>
+      );
     case "connect":
       return <GuidedStep done={done} onRecheck={onRecheck} rechecking={rechecking} />;
     case "models":
@@ -902,30 +918,49 @@ function ModelsStep({ onRecheck, rechecking }: { onRecheck: () => void; rechecki
   const bridgeReady =
     models?.claude.subscriptionProviderRegistered || models?.claude.apiKeyProviderRegistered;
   const aliasesReady = (models?.aliasesRegistered.length ?? 0) > 0;
+  const bridgeAvailable = models?.bridgeAvailable ?? true;
+
+  const cliLine = (() => {
+    if (!models || models.claude.source === "unknown") {
+      return `claude CLI: unknown — your workstation hasn't reported (run \`apex doctor --report --cockpit-url ${window.location.origin}\`)`;
+    }
+    if (models.claude.source === "server") {
+      return `claude CLI: ${models.claude.installed ? "installed" : "not found"} (this cockpit host)`;
+    }
+    const reported = models.claude.reportedAt ? timeAgo(models.claude.reportedAt) : "recently";
+    return `claude CLI on your workstation: ${models.claude.installed ? "installed" : "not found"} (reported ${reported})`;
+  })();
+  const cliKnown = models != null && models.claude.source !== "unknown" && models.claude.installed === true;
+
+  const authLine = (() => {
+    if (!models || models.claude.mode === "unknown") return "Claude auth: unknown";
+    const label = modeLabel(models.claude.mode);
+    if (models.claude.source === "workstation") {
+      return `Claude auth: ${label} (logged in on your workstation — that alone doesn't let this cockpit call Claude)`;
+    }
+    return `Claude auth: ${label}`;
+  })();
+  const authKnown = models != null && models.claude.mode !== "none" && models.claude.mode !== "unknown";
 
   return (
     <div className="space-y-4" data-testid="apex-models-step">
       {/* Status row */}
       <div className="space-y-1 text-sm">
         <div className="flex items-center gap-2">
-          {models?.claude.installed ? (
+          {cliKnown ? (
             <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
           ) : (
             <Circle className="h-3.5 w-3.5 text-muted-foreground/40" />
           )}
-          <span className="text-muted-foreground">
-            claude CLI: {models?.claude.installed ? "installed" : "not found"}
-          </span>
+          <span className="text-muted-foreground">{cliLine}</span>
         </div>
         <div className="flex items-center gap-2">
-          {models && models.claude.mode !== "none" ? (
+          {authKnown ? (
             <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
           ) : (
             <Circle className="h-3.5 w-3.5 text-muted-foreground/40" />
           )}
-          <span className="text-muted-foreground">
-            Claude auth: {modeLabel(models?.claude.mode)}
-          </span>
+          <span className="text-muted-foreground">{authLine}</span>
         </div>
         <div className="flex items-center gap-2">
           {bridgeReady ? (
@@ -949,11 +984,11 @@ function ModelsStep({ onRecheck, rechecking }: { onRecheck: () => void; rechecki
         </div>
       </div>
 
-      {/* Default path — subscription bridge */}
-      {!bridgeReady && (
+      {/* Default path — subscription bridge (local cockpit only) */}
+      {!bridgeReady && bridgeAvailable && (
         <div className="space-y-2">
           <p className="text-xs text-muted-foreground">
-            Default: uses your logged-in <code className="rounded bg-muted px-1 py-0.5 text-[0.85em]">claude</code> CLI to provision
+            Default: uses your logged-in <code className="rounded bg-muted px-1 py-0.5 text-xs">claude</code> CLI to provision
             a subscription bridge — no credentials entered anywhere.
           </p>
           <Button
@@ -979,12 +1014,19 @@ function ModelsStep({ onRecheck, rechecking }: { onRecheck: () => void; rechecki
         </div>
       )}
 
+      {!bridgeAvailable && !bridgeReady && (
+        <p className="text-xs text-muted-foreground">
+          The subscription bridge runs only on a local cockpit. On this hosted cockpit, model calls
+          use your connected Claude session (next step) or an API key (Advanced).
+        </p>
+      )}
+
       {bridgeReady && (
         <div className="flex items-center gap-2">
           <Button size="sm" variant="outline" onClick={invalidate} disabled={rechecking}>
             {rechecking ? "Rechecking…" : "Recheck state"}
           </Button>
-          {!aliasesReady && (
+          {!aliasesReady && bridgeAvailable && (
             <Button
               size="sm"
               variant="outline"

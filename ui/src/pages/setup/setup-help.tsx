@@ -27,7 +27,7 @@ export interface StepHelp {
 function renderInline(text: string): ReactNode[] {
   return text.split(/(`[^`]+`)/g).map((part, i) =>
     part.startsWith("`") && part.endsWith("`") ? (
-      <code key={i} className="rounded bg-muted px-1 py-0.5 text-[0.85em]">
+      <code key={i} className="rounded bg-muted px-1 py-0.5 text-xs">
         {part.slice(1, -1)}
       </code>
     ) : (
@@ -85,22 +85,6 @@ export const STEP_HELP: Record<StepKey, StepHelp> = {
       "Save the binding — it seeds the org → company → project resolver cascade.",
     ],
   },
-  orgGithub: {
-    purpose:
-      "Connect the GitHub org to GCP once, keylessly: install the APEX GitHub App, then create one org-level Workload Identity Federation pool + provider that trusts your whole org.",
-    whatYoullDo: [
-      "Install the APEX GitHub App on the org (fine-grained, per-install token — not a personal PAT). Grant `contents:rw`, `pull_requests`, `actions`, `checks`, `workflows`, `environments`, `metadata`, and select the repos it may touch.",
-      "Create one org-level WIF pool + provider, hosted in the shared project (e.g. `sarala-cicd`). Scope trust to the whole org with `assertion.repository_owner == 'sarala-ai'` — do not create a pool/provider per repo.",
-      "Leave per-repo authorization to the company steps: they IAM-bind `principalSet://…/attribute.repository/<org>/<repo>` (optionally `+attribute.environment`) to each env's least-privilege deploy SA.",
-    ],
-    note: "WIF filters only on `repository`, `repository_owner`, and `environment` (GitHub OIDC claims). GitHub is flat — \"company = a group of repos\" is an APEX-side grouping. Deploy SAs can live in any project; only the pool/provider is pinned to the host. This fuses WIF + GitHub Environments + required reviewers into one keyless, approval-gated deploy path.",
-    links: [
-      {
-        label: "Open GitHub org apps",
-        href: "https://github.com/organizations/sarala-ai/settings/installations",
-      },
-    ],
-  },
   companyCloud: {
     purpose:
       "Associate this company's GCP projects (dev / staging / prod) so its view shows them and deploys can target them.",
@@ -119,7 +103,7 @@ export const STEP_HELP: Record<StepKey, StepHelp> = {
   },
   oauthClient: {
     purpose:
-      "One Google OAuth client (Web app) backs both SSO and per-user Workspace access. You consent to your own account later — no service account, no delegation.",
+      "This step checks two things: the cockpit's own Google sign-in client (`GOOGLE_CLIENT_ID`) and whether the gateway's registered OAuth-typed upstreams carry an OAuth config. One Google OAuth client (Web app) backs both SSO and per-user Workspace access — you consent to your own account later, no service account, no delegation.",
     whatYoullDo: [
       "Enable the `gmail`, `docs`, `sheets`, and `drive` APIs in the project.",
       "Set the OAuth consent screen to Internal (sarala.ai). Scopes: `openid`, `userinfo.email`, `userinfo.profile` (identity / SSO); `gmail.modify`; `documents`; `spreadsheets`; `drive.file`.",
@@ -133,8 +117,11 @@ export const STEP_HELP: Record<StepKey, StepHelp> = {
   },
   gateway: {
     purpose:
-      "Start the apex-gateway (ContextForge MCP gateway); the wizard detects it via /health.",
-    whatYoullDo: ["Run the gateway locally, or point `APEX_GATEWAY_URL` at a running instance."],
+      "The apex-gateway (ContextForge MCP gateway) URL is set by the deployment, not by you — the wizard shows it and detects reachability + credential trust.",
+    whatYoullDo: [
+      "Unreachable means the gateway deployment is down — that's a deployment fix, not a local process to start.",
+      "Credential rejected means the gateway does not trust this cockpit's issuer (JWKS trust) — also a deployment fix.",
+    ],
   },
   mcpServers: {
     purpose:
@@ -156,7 +143,8 @@ export const STEP_HELP: Record<StepKey, StepHelp> = {
     purpose:
       "Answer 'how do model calls get paid for and routed here' — provision the subscription bridge (default) or wire an API key (advanced).",
     whatYoullDo: [
-      "Default path (zero credentials): make sure `claude` is installed and logged in on this machine, then click 'Provision subscription bridge'. The cockpit starts an OpenAI-compatible shim backed by `claude -p`; the gateway gets a provider row and `apex-*` aliases pointing at it.",
+      "On a local cockpit: the default subscription bridge uses the `claude` CLI logged in on that machine — click 'Provision subscription bridge'. The cockpit starts an OpenAI-compatible shim backed by `claude -p`; the gateway gets a provider row and `apex-*` aliases pointing at it.",
+      "On a hosted cockpit: the bridge isn't available — model calls use the connected Claude session (the next step) or an API key (below).",
       "Advanced (Claude API key): paste a `sk-ant-…` key — it goes ONLY into the gateway's encrypted store, the cockpit never persists it. Enables per-token cost attribution (Costs page).",
       "Advanced (OpenRouter): paste a `sk-or-…` key to register a BYO-plane provider. Existing `apex-*` aliases stay on Claude subscription; OpenRouter is available as an additional provider.",
     ],
@@ -255,7 +243,7 @@ export function StepInfo({
   onFocusRail: () => void;
 }) {
   const iconClass =
-    "inline-flex items-center justify-center rounded p-0.5 text-muted-foreground/70 transition hover:text-foreground focus-visible:ring-ring focus-visible:ring-[3px] focus-visible:outline-none";
+    "inline-flex items-center justify-center rounded p-0.5 text-muted-foreground/70 transition hover:text-foreground focus-visible:ring-ring focus-visible:ring-2 focus-visible:outline-none";
   return (
     <>
       {/* Wide: focus the rail on this step. */}
