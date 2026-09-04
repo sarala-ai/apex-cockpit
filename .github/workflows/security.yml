@@ -59,10 +59,12 @@ jobs:
             | tar -xz -C /usr/local/bin gitleaks
           gitleaks version
 
-      # apex-platform is published to Artifact Registry; the cockpit has no
-      # Python project of its own, so install the tool standalone.
+      # The published PyPI package is apex-core (not apex-platform — that
+      # name doesn't exist and was breaking this job on every push/PR). The
+      # cockpit has no Python project of its own, so install the tool
+      # standalone; it provides the `apex` CLI used below.
       - name: Install apex
-        run: uv tool install apex-platform
+        run: uv tool install apex-core
 
       - name: Scan
         env:
