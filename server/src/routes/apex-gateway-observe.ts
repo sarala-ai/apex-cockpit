@@ -133,6 +133,9 @@ export function apexGatewayObserveRoutes(
     if (result.status === "unreachable") {
       throw new HttpError(502, "apex-gateway itself is unreachable — check APEX_GATEWAY_URL/APEX_GATEWAY_TOKEN");
     }
+    if (result.status === "auth") {
+      throw new HttpError(502, `apex-gateway did not accept the cockpit credential: ${result.message}`);
+    }
     throw badRequest(result.message);
   });
 

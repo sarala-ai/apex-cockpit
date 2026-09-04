@@ -26,7 +26,9 @@ import { CloudTraceObserveStore } from "../observe/cloud-trace-store.js";
 import { CompositeObserveStore } from "../observe/composite-store.js";
 import { ApexEvalTraceClient } from "../observe/apex-eval-client.js";
 import { GcpInventoryStore } from "../observe/gcp-inventory-store.js";
+import type { Request as ExpressRequest } from "express";
 import { GatewayClient } from "../gateway/gateway-client.js";
+import { cockpitSystemGatewayClient } from "../gateway/system-credential.js";
 import { EvalIngestClient } from "../observe/eval-ingest-client.js";
 import { observeInputs } from "../observe/tools.js";
 import { assertBoardOrAgent, getActorInfo } from "./authz.js";
@@ -53,7 +55,13 @@ function numOrNull(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
-export function apexObserveRoutes(db: Db) {
+export interface ApexObserveRouteOptions {
+  /** Mints the signed-in operator's principal JWT; absent in local_trusted
+   *  mode, where gateway reads run as the cockpit process. */
+  mintOperatorToken?: (req: ExpressRequest) => Promise<string | null>;
+}
+
+export function apexObserveRoutes(db: Db, opts: ApexObserveRouteOptions = {}) {
   const router = Router();
 
   // Contract-shaped observe surface, backed by a composite ObserveStore: the
@@ -69,7 +77,13 @@ export function apexObserveRoutes(db: Db) {
     [evalClient],
   );
   const inventoryStore = new GcpInventoryStore(db);
-  const gatewayClient = new GatewayClient();
+  // Gateway calls carry the operator's identity when the request has one;
+  // otherwise (agent keys, local mode) the cockpit's own.
+  const systemGatewayClient = cockpitSystemGatewayClient();
+  async function gatewayClientFor(req: ExpressRequest): Promise<GatewayClient> {
+    const operatorToken = (await opts.mintOperatorToken?.(req)) ?? null;
+    return operatorToken ? new GatewayClient(operatorToken) : systemGatewayClient;
+  }
   const evalIngestClient = new EvalIngestClient();
 
   // GET /observe/gcp-resource?companyId=&service= — the unified product-agent view:
@@ -237,10 +251,10 @@ export function apexObserveRoutes(db: Db) {
   // metrics (throughput, failure rate, avg response time). Operational health,
   // not governance — the registry/audit-ledger side of the gateway lives under
   // /gateway/* (apex-gateway-observe.ts) instead.
-  router.get("/observe/gateway-metrics", async (_req, res) => {
-    assertBoardOrAgent(_req);
+  router.get("/observe/gateway-metrics", async (req, res) => {
+    assertBoardOrAgent(req);
     try {
-      res.json(await gatewayClient.metrics());
+      res.json(await (await gatewayClientFor(req)).metrics());
     } catch (e) {
       console.error("[observe] gateway-metrics", e);
       res.json({ reachable: false, tools: null, servers: null, a2aAgents: null, error: "failed to load metrics" });

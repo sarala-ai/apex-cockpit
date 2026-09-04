@@ -22,7 +22,8 @@ import type { Db } from "@paperclipai/db";
 import { activityLog, issues } from "@paperclipai/db";
 import { and, asc, eq, ilike } from "drizzle-orm";
 import { verifyCockpitMcpJwt, type CockpitMcpJwtClaims } from "./cockpit-mcp-jwt.js";
-import { GatewayClient } from "../gateway/gateway-client.js";
+import type { GatewayClient } from "../gateway/gateway-client.js";
+import { cockpitSystemGatewayClient } from "../gateway/system-credential.js";
 import { logger } from "../middleware/logger.js";
 import { issueService } from "../services/issues.js";
 import { logActivity, secretService } from "../services/index.js";
@@ -468,17 +469,39 @@ function buildMcpServer(db: Db, claims: CockpitMcpJwtClaims): McpServer {
 
 const COCKPIT_MCP_GATEWAY_NAME = "cockpit-mcp";
 
+export interface CockpitMcpUrlInput {
+  serverPort: number;
+  /** Cockpit's public base URL (PAPERCLIP_PUBLIC_URL); the MCP URL the
+   *  gateway must dial on a hosted deployment, where loopback is the
+   *  gateway's own container. */
+  publicUrl?: string | null;
+  deploymentMode: "local_trusted" | "authenticated";
+  explicitUrl?: string | null;
+}
+
+/** The URL the gateway registers for cockpit-mcp. An explicit
+ *  PAPERCLIP_COCKPIT_MCP_URL always wins; hosted (authenticated) instances
+ *  derive it from their public URL; local instances use loopback. */
+export function resolveCockpitMcpUrl(input: CockpitMcpUrlInput): string {
+  const explicit = input.explicitUrl?.trim();
+  if (explicit) return explicit;
+  const publicBase = input.publicUrl?.trim().replace(/\/+$/, "");
+  if (input.deploymentMode === "authenticated" && publicBase) return `${publicBase}/mcp`;
+  return `http://127.0.0.1:${input.serverPort}/mcp`;
+}
+
 /**
- * Self-register the cockpit MCP server with the APEX gateway on boot.
- * Idempotent: a 409 conflict means it is already registered, which is fine.
- * Failure is non-fatal; the cockpit continues to boot without gateway
- * registration (degraded: external hosts won't discover tools through
- * the gateway, but dispatched runs still work directly).
+ * Self-register the cockpit MCP server with the APEX gateway on boot, as the
+ * cockpit system principal. Idempotent: a 409 conflict means it is already
+ * registered, which is fine. Failure is non-fatal; the cockpit continues to
+ * boot without gateway registration (degraded: external hosts won't discover
+ * tools through the gateway, but dispatched runs still work directly).
  */
-export async function registerCockpitMcpWithGateway(serverPort: number): Promise<void> {
-  const mcpUrl =
-    process.env.PAPERCLIP_COCKPIT_MCP_URL?.trim() || `http://127.0.0.1:${serverPort}/mcp`;
-  const client = new GatewayClient();
+export async function registerCockpitMcpWithGateway(
+  input: Omit<CockpitMcpUrlInput, "explicitUrl">,
+  client: GatewayClient = cockpitSystemGatewayClient(),
+): Promise<void> {
+  const mcpUrl = resolveCockpitMcpUrl({ ...input, explicitUrl: process.env.PAPERCLIP_COCKPIT_MCP_URL });
   const result = await client.registerGateway({
     name: COCKPIT_MCP_GATEWAY_NAME,
     url: mcpUrl,
@@ -489,6 +512,8 @@ export async function registerCockpitMcpWithGateway(serverPort: number): Promise
     logger.info({ mcpUrl, gatewayId: result.id }, "cockpit-mcp registered with APEX gateway");
   } else if (result.status === "conflict") {
     logger.info({ mcpUrl }, "cockpit-mcp already registered with APEX gateway");
+  } else if (result.status === "auth") {
+    logger.warn({ mcpUrl, message: result.message }, "cockpit-mcp gateway registration rejected: the cockpit system principal is not accepted by the gateway (non-fatal)");
   } else {
     logger.warn({ mcpUrl, status: result.status, message: result.message }, "cockpit-mcp gateway registration failed (non-fatal)");
   }

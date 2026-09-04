@@ -13,7 +13,8 @@
  */
 
 import { Router } from "express";
-import { GatewayClient } from "../gateway/gateway-client.js";
+import type { GatewayClient } from "../gateway/gateway-client.js";
+import { cockpitSystemGatewayClient } from "../gateway/system-credential.js";
 import { assertBoardOrAgent } from "./authz.js";
 import {
   readModelAccessState,
@@ -23,7 +24,7 @@ import {
 } from "../apex/model-access/index.js";
 import { detectClaudeAuth } from "../apex/model-access/detect-claude.js";
 
-export function apexSetupModelsRoutes(client: GatewayClient = new GatewayClient()) {
+export function apexSetupModelsRoutes(client: GatewayClient = cockpitSystemGatewayClient()) {
   const router = Router();
 
   /** GET /setup/models — live snapshot of model access state. */

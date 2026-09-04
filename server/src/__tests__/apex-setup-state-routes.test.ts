@@ -2,7 +2,8 @@ import express from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
 import type { Db } from "@paperclipai/db";
-import { apexSetupStateRoutes, type SetupStateProbes } from "../routes/apex-setup-state.js";
+import { apexSetupStateRoutes, defaultProbes, type SetupStateProbes } from "../routes/apex-setup-state.js";
+import type { GatewayClient } from "../gateway/gateway-client.js";
 import { errorHandler } from "../middleware/index.js";
 
 const healthy: SetupStateProbes = {
@@ -105,5 +106,45 @@ describe("GET /setup/state", () => {
       }),
     ).get("/setup/state?orgId=org-xyz");
     expect(seen).toBe("org-xyz");
+  });
+});
+
+describe("defaultProbes gateway probes", () => {
+  const fakeGateway = (readGateways: () => Promise<unknown>, reachable = async () => true) =>
+    ({ readGateways, reachable }) as unknown as GatewayClient;
+
+  it("lists the registry names when the credential is accepted", async () => {
+    const probes = defaultProbes({} as unknown as Db, fakeGateway(async () => ({ ok: true, value: [{ name: "cockpit-mcp" }, { name: "gworkspace" }] })));
+    expect(await probes.mcpServers(true)).toEqual({ registered: ["cockpit-mcp", "gworkspace"] });
+  });
+
+  it("carries the auth failure instead of reporting an empty registry", async () => {
+    const probes = defaultProbes(
+      {} as unknown as Db,
+      fakeGateway(async () => ({ ok: false, failure: { kind: "unauthenticated", status: 401, message: "apex-gateway rejected the credential (401)" } })),
+    );
+    expect(await probes.mcpServers(true)).toEqual({ registered: [], error: "apex-gateway rejected the credential (401)" });
+  });
+
+  it("skips the registry read when the gateway is down", async () => {
+    let called = false;
+    const probes = defaultProbes({} as unknown as Db, fakeGateway(async () => { called = true; return { ok: true, value: [] }; }));
+    expect(await probes.mcpServers(false)).toEqual({ registered: [] });
+    expect(called).toBe(false);
+  });
+
+  it("passes the registry error through the route", async () => {
+    const res = await request(
+      appWith({
+        mcpServers: async () => ({ registered: [], error: "apex-gateway rejected the credential (401)" }),
+        models: async () => ({
+          claude: { mode: "none", installed: false, subscriptionProviderRegistered: false, apiKeyProviderRegistered: false },
+          openrouter: { configured: false },
+          aliasesRegistered: [],
+        }),
+      }),
+    ).get("/setup/state");
+    expect(res.status).toBe(200);
+    expect(res.body.mcpServers).toEqual({ registered: [], error: "apex-gateway rejected the credential (401)" });
   });
 });

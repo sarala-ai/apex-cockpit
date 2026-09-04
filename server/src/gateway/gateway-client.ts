@@ -1,15 +1,21 @@
 /**
- * GatewayClient — thin read-only client for apex-gateway (ContextForge fork),
- * following the exact fetch+bearer pattern already proven in
- * routes/apex-setup-state.ts (`gatewayUrl()` + `APEX_GATEWAY_TOKEN` + a timed,
- * abortable fetch). Every method narrows the gateway's response to an explicit
+ * GatewayClient — thin client for apex-gateway (ContextForge fork): timed,
+ * abortable fetch with a bearer credential. Every method narrows the gateway's response to an explicit
  * safe field pick (see @paperclipai/shared/gateway) — never forwards raw
  * payloads, so auth_value/auth_headers/oauth_config and similar secret-bearing
  * fields can't leak to the browser even if the gateway's schema grows a new one.
  *
- * Failure-isolated: every method returns an empty/null result on any failure
- * (unreachable gateway, missing token, non-2xx) rather than throwing, so a down
- * gateway degrades the Gateway page/Observe metrics to empty state, never a 500.
+ * Failure-isolated: every list method returns an empty result on any failure
+ * rather than throwing, so a down gateway degrades the Gateway page/Observe
+ * metrics to empty state, never a 500. Failures are still classified
+ * (GatewayFailure): a 401/403 is a credential problem and must never be
+ * reported as "unreachable" — callers that surface state to operators use the
+ * `read*` variants or `probe()` to get the classification.
+ *
+ * Credential: a per-request operator principal JWT, the cockpit's own system
+ * principal (a token source, re-minted on expiry), or — for local/unauth
+ * gateways — the APEX_GATEWAY_TOKEN env fallback. Never a static shared
+ * service token on a hosted deployment.
  */
 import type {
   GatewayEntry,
@@ -24,8 +30,45 @@ import type {
 const gatewayUrl = (): string =>
   (process.env.APEX_GATEWAY_URL ?? "http://127.0.0.1:4444").replace(/\/$/, "");
 
-async function timedFetch(url: string, operatorToken?: string | null, timeoutMs = 5000): Promise<Response | null> {
-  const token = operatorToken ?? process.env.APEX_GATEWAY_TOKEN;
+/**
+ * Classified failure of a gateway call. `unauthenticated`/`forbidden` mean
+ * the gateway answered and rejected the credential (401/403); `unreachable`
+ * is a transport failure (network/timeout); `http` is any other non-2xx.
+ */
+export interface GatewayFailure {
+  kind: "unauthenticated" | "forbidden" | "http" | "unreachable";
+  status: number | null;
+  message: string;
+}
+
+export type GatewayHttp<T> = { ok: true; value: T } | { ok: false; failure: GatewayFailure };
+
+export function classifyStatus(status: number, detail?: string | null): GatewayFailure {
+  const suffix = detail ? `: ${detail}` : "";
+  if (status === 401) return { kind: "unauthenticated", status, message: `apex-gateway rejected the credential (401)${suffix}` };
+  if (status === 403) return { kind: "forbidden", status, message: `apex-gateway refused the credential (403)${suffix}` };
+  return { kind: "http", status, message: `apex-gateway returned ${status}${suffix}` };
+}
+
+const UNREACHABLE: GatewayFailure = { kind: "unreachable", status: null, message: "apex-gateway is unreachable" };
+
+/**
+ * A credential for gateway calls: a bearer string, a source that mints one
+ * on demand (the cockpit system principal), or nothing — which falls back
+ * to APEX_GATEWAY_TOKEN for local/unauthenticated gateways.
+ */
+export type GatewayCredential = string | null | undefined | (() => Promise<string | null>);
+
+async function resolveToken(credential: GatewayCredential): Promise<string | null> {
+  const token = typeof credential === "function" ? await credential() : credential;
+  return token ?? process.env.APEX_GATEWAY_TOKEN ?? null;
+}
+
+function bearerHeaders(token: string | null): Record<string, string> {
+  return token ? { authorization: `Bearer ${token}` } : {};
+}
+
+async function timedFetch(url: string, token: string | null, timeoutMs = 5000): Promise<GatewayHttp<Response>> {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -33,9 +76,14 @@ async function timedFetch(url: string, operatorToken?: string | null, timeoutMs 
       signal: controller.signal,
       headers: token ? { authorization: `Bearer ${token}` } : {},
     });
-    return res.ok ? res : null;
+    if (res.ok) return { ok: true, value: res };
+    const detail = await res
+      .json()
+      .then((b: unknown) => extractMessage(b, ""))
+      .catch(() => "");
+    return { ok: false, failure: classifyStatus(res.status, detail || null) };
   } catch {
-    return null;
+    return { ok: false, failure: UNREACHABLE };
   } finally {
     clearTimeout(t);
   }
@@ -56,9 +104,17 @@ export type GatewayWriteResult =
       // "unreachable" = we couldn't even reach apex-gateway itself (network/timeout).
       // "upstream_unreachable" = apex-gateway is up but couldn't connect to the
       // registered URL (its 502) — a different, more actionable failure.
-      status: "conflict" | "validation" | "unreachable" | "upstream_unreachable" | "error";
+      // "auth" = apex-gateway answered 401/403: the cockpit's credential is
+      // missing or not trusted — never a reachability problem.
+      status: "conflict" | "validation" | "unreachable" | "upstream_unreachable" | "auth" | "error";
       message: string;
     };
+
+function authWriteFailure(res: { status: number; body: unknown }): GatewayWriteResult | null {
+  if (res.status !== 401 && res.status !== 403) return null;
+  const detail = extractMessage(res.body, "");
+  return { ok: false, status: "auth", message: classifyStatus(res.status, detail || null).message };
+}
 
 function extractMessage(body: unknown, fallback: string): string {
   if (body && typeof body === "object") {
@@ -71,10 +127,9 @@ function extractMessage(body: unknown, fallback: string): string {
 async function timedWrite(
   url: string,
   init: RequestInit,
-  operatorToken?: string | null,
+  token: string | null,
   timeoutMs = 8000,
 ): Promise<{ status: number; body: unknown } | null> {
-  const token = operatorToken ?? process.env.APEX_GATEWAY_TOKEN;
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -108,16 +163,71 @@ function num(v: unknown): number | null {
 
 export class GatewayClient {
   /**
-   * @param operatorToken Per-request operator principal JWT. When
-   * provided, every call from this instance authenticates as that operator
-   * instead of the static `APEX_GATEWAY_TOKEN`. `undefined`/`null` (the
-   * default) falls back to `APEX_GATEWAY_TOKEN`, so existing callers with no
-   * operator context (agents/board) are unaffected.
+   * @param credential See GatewayCredential: a per-request operator JWT for
+   * operator-initiated calls, the cockpit system token source for
+   * process-level probes, or nothing for local/unauthenticated gateways.
    */
-  constructor(private readonly operatorToken?: string | null) {}
+  constructor(private readonly credential?: GatewayCredential) {}
 
+  private token(): Promise<string | null> {
+    return resolveToken(this.credential);
+  }
+
+  private async get(url: string): Promise<Response | null> {
+    const res = await timedFetch(url, await this.token());
+    return res.ok ? res.value : null;
+  }
+
+  private async getClassified(url: string, timeoutMs?: number): Promise<GatewayHttp<Response>> {
+    return timedFetch(url, await this.token(), timeoutMs);
+  }
+
+  private async write(url: string, init: RequestInit): Promise<{ status: number; body: unknown } | null> {
+    return timedWrite(url, init, await this.token());
+  }
+
+  /** Transport-level liveness: any HTTP answer from /health counts. The
+   *  gateway's own /health does a Cloud SQL round-trip and can cold-start
+   *  past the default timeout, so this probe gets a longer allowance. */
   async reachable(): Promise<boolean> {
-    return (await timedFetch(`${gatewayUrl()}/health`, this.operatorToken)) !== null;
+    const res = await this.getClassified(`${gatewayUrl()}/health`, 15000);
+    return res.ok || res.failure.kind !== "unreachable";
+  }
+
+  /**
+   * Liveness AND credential acceptance, via the authenticated registry read.
+   * `authenticated: null` means the gateway could not be reached at all.
+   */
+  async probe(): Promise<{ reachable: boolean; authenticated: boolean | null; failure: GatewayFailure | null }> {
+    const res = await this.getClassified(`${gatewayUrl()}/gateways`);
+    if (res.ok) return { reachable: true, authenticated: true, failure: null };
+    const f = res.failure;
+    if (f.kind === "unreachable") return { reachable: false, authenticated: null, failure: f };
+    return { reachable: true, authenticated: f.kind !== "unauthenticated" && f.kind !== "forbidden", failure: f };
+  }
+
+  /** GET /gateways with the failure classification preserved. */
+  async readGateways(): Promise<GatewayHttp<GatewayEntry[]>> {
+    const res = await this.getClassified(`${gatewayUrl()}/gateways`);
+    if (!res.ok) return res;
+    const raw = await res.value.json().catch(() => []);
+    const rows = Array.isArray(raw) ? raw : [];
+    return {
+      ok: true,
+      value: rows.map(
+        (g: Record<string, unknown>): GatewayEntry => ({
+          id: str(g.id),
+          name: String(g.name ?? "gateway"),
+          url: str(g.url),
+          transport: str(g.transport),
+          description: str(g.description),
+          enabled: bool(g.enabled, true),
+          reachable: bool(g.reachable, true),
+          authType: str(g.authType),
+          createdAt: str(g.createdAt),
+        }),
+      ),
+    };
   }
 
   // NOTE: gateways/tools/a2a/servers all extend ContextForge's
@@ -127,23 +237,8 @@ export class GatewayClient {
   // AuditTrailResponse below is a plain BaseModel (no such conversion),
   // confirmed to stay snake_case.
   async listGateways(): Promise<GatewayEntry[]> {
-    const res = await timedFetch(`${gatewayUrl()}/gateways`, this.operatorToken);
-    if (!res) return [];
-    const raw = await res.json().catch(() => []);
-    const rows = Array.isArray(raw) ? raw : [];
-    return rows.map(
-      (g: Record<string, unknown>): GatewayEntry => ({
-        id: str(g.id),
-        name: String(g.name ?? "gateway"),
-        url: str(g.url),
-        transport: str(g.transport),
-        description: str(g.description),
-        enabled: bool(g.enabled, true),
-        reachable: bool(g.reachable, true),
-        authType: str(g.authType),
-        createdAt: str(g.createdAt),
-      }),
-    );
+    const res = await this.readGateways();
+    return res.ok ? res.value : [];
   }
 
   /**
@@ -162,7 +257,7 @@ export class GatewayClient {
       const res = await fetch(`${gatewayUrl()}/oauth/authorize/${encodeURIComponent(gatewayId)}`, {
         redirect: "manual",
         signal: controller.signal,
-        headers: this.operatorToken ? { authorization: `Bearer ${this.operatorToken}` } : {},
+        headers: bearerHeaders(await this.token()),
       });
       if (res.status >= 300 && res.status < 400) {
         const location = res.headers.get("location");
@@ -189,7 +284,7 @@ export class GatewayClient {
       const res = await fetch(`${gatewayUrl()}/oauth/fetch-tools/${encodeURIComponent(gatewayId)}`, {
         method: "POST",
         signal: controller.signal,
-        headers: this.operatorToken ? { authorization: `Bearer ${this.operatorToken}` } : {},
+        headers: bearerHeaders(await this.token()),
       });
       const message = await res
         .json()
@@ -204,7 +299,7 @@ export class GatewayClient {
   }
 
   async listTools(): Promise<GatewayToolEntry[]> {
-    const res = await timedFetch(`${gatewayUrl()}/tools`, this.operatorToken);
+    const res = await this.get(`${gatewayUrl()}/tools`);
     if (!res) return [];
     const raw = await res.json().catch(() => []);
     const rows = Array.isArray(raw) ? raw : [];
@@ -220,7 +315,7 @@ export class GatewayClient {
   }
 
   async listServers(): Promise<GatewayServerEntry[]> {
-    const res = await timedFetch(`${gatewayUrl()}/servers`, this.operatorToken);
+    const res = await this.get(`${gatewayUrl()}/servers`);
     if (!res) return [];
     const raw = await res.json().catch(() => []);
     const rows = Array.isArray(raw) ? raw : [];
@@ -236,7 +331,7 @@ export class GatewayClient {
   }
 
   async listAgents(): Promise<GatewayAgentEntry[]> {
-    const res = await timedFetch(`${gatewayUrl()}/a2a`, this.operatorToken);
+    const res = await this.get(`${gatewayUrl()}/a2a`);
     if (!res) return [];
     const raw = await res.json().catch(() => []);
     const rows = Array.isArray(raw) ? raw : [];
@@ -256,7 +351,7 @@ export class GatewayClient {
   }
 
   async listAudit(limit = 100): Promise<GatewayAuditEntry[]> {
-    const res = await timedFetch(`${gatewayUrl()}/api/logs/audit-trails?limit=${limit}`, this.operatorToken);
+    const res = await this.get(`${gatewayUrl()}/api/logs/audit-trails?limit=${limit}`);
     if (!res) return [];
     const raw = await res.json().catch(() => []);
     const rows = Array.isArray(raw) ? raw : [];
@@ -278,11 +373,12 @@ export class GatewayClient {
   }
 
   async metrics(): Promise<GatewayMetrics> {
-    const res = await timedFetch(`${gatewayUrl()}/metrics`, this.operatorToken);
-    if (!res) {
-      return { reachable: false, tools: null, servers: null, a2aAgents: null, error: "gateway unreachable" };
+    const http = await this.getClassified(`${gatewayUrl()}/metrics`);
+    if (!http.ok) {
+      const f = http.failure;
+      return { reachable: f.kind !== "unreachable", tools: null, servers: null, a2aAgents: null, error: f.message };
     }
-    const raw = await res.json().catch(() => null);
+    const raw = await http.value.json().catch(() => null);
     if (!raw) {
       return { reachable: true, tools: null, servers: null, a2aAgents: null, error: "invalid metrics response" };
     }
@@ -344,7 +440,7 @@ export class GatewayClient {
     transport: "SSE" | "STREAMABLEHTTP" | "STDIO";
     description?: string | null;
   }): Promise<GatewayWriteResult> {
-    const res = await timedWrite(`${gatewayUrl()}/gateways`, {
+    const res = await this.write(`${gatewayUrl()}/gateways`, {
       method: "POST",
       body: JSON.stringify({
         name: input.name,
@@ -352,7 +448,7 @@ export class GatewayClient {
         transport: input.transport,
         ...(input.description ? { description: input.description } : {}),
       }),
-    }, this.operatorToken);
+    });
     if (!res) {
       return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
     }
@@ -360,6 +456,8 @@ export class GatewayClient {
       const body = (res.body ?? {}) as Record<string, unknown>;
       return { ok: true, id: str(body.id), name: String(body.name ?? input.name) };
     }
+    const auth = authWriteFailure(res);
+    if (auth) return auth;
     if (res.status === 409) {
       return { ok: false, status: "conflict", message: extractMessage(res.body, "Gateway name already exists") };
     }
@@ -379,13 +477,15 @@ export class GatewayClient {
    * render an inline message the same way registerGateway does.
    */
   async deleteGateway(id: string): Promise<GatewayWriteResult> {
-    const res = await timedWrite(`${gatewayUrl()}/gateways/${encodeURIComponent(id)}`, { method: "DELETE" }, this.operatorToken);
+    const res = await this.write(`${gatewayUrl()}/gateways/${encodeURIComponent(id)}`, { method: "DELETE" });
     if (!res) {
       return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
     }
     if (res.status >= 200 && res.status < 300) {
       return { ok: true, id, name: id };
     }
+    const auth = authWriteFailure(res);
+    if (auth) return auth;
     // delete_gateway raises plain HTTPException(detail=...), not {message: ...}
     const body = res.body as Record<string, unknown> | null;
     const message = typeof body?.detail === "string" ? body.detail : extractMessage(res.body, `Delete failed (${res.status})`);
@@ -423,12 +523,14 @@ export class GatewayClient {
     if (input.description) body.description = input.description;
     if (input.ssrfAllowPrivateNetworks) body.ssrf_allow_private_networks = true;
 
-    const res = await timedWrite(`${gatewayUrl()}/llm/providers`, { method: "POST", body: JSON.stringify(body) }, this.operatorToken);
+    const res = await this.write(`${gatewayUrl()}/llm/providers`, { method: "POST", body: JSON.stringify(body) });
     if (!res) return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
     if (res.status >= 200 && res.status < 300) {
       const b = (res.body ?? {}) as Record<string, unknown>;
       return { ok: true, id: str(b.id), name: String(b.name ?? input.name) };
     }
+    const auth = authWriteFailure(res);
+    if (auth) return auth;
     if (res.status === 409) return { ok: false, status: "conflict", message: extractMessage(res.body, "Provider already exists") };
     if (res.status === 422) return { ok: false, status: "validation", message: extractMessage(res.body, "Validation failed") };
     return { ok: false, status: "error", message: extractMessage(res.body, `Create provider failed (${res.status})`) };
@@ -436,7 +538,7 @@ export class GatewayClient {
 
   /** GET /llm/providers — list registered LLM providers. */
   async listLLMProviders(): Promise<Array<{ id: string; name: string; providerType: string; apiBase: string | null; enabled: boolean }>> {
-    const res = await timedFetch(`${gatewayUrl()}/llm/providers`, this.operatorToken);
+    const res = await this.get(`${gatewayUrl()}/llm/providers`);
     if (!res) return [];
     const raw = await res.json().catch(() => null);
     // Response is either a list or a {providers: [...]} envelope depending on gateway version
@@ -452,9 +554,11 @@ export class GatewayClient {
 
   /** DELETE /llm/providers/{id} — remove an LLM provider and all its models. */
   async deleteLLMProvider(id: string): Promise<GatewayWriteResult> {
-    const res = await timedWrite(`${gatewayUrl()}/llm/providers/${encodeURIComponent(id)}`, { method: "DELETE" }, this.operatorToken);
+    const res = await this.write(`${gatewayUrl()}/llm/providers/${encodeURIComponent(id)}`, { method: "DELETE" });
     if (!res) return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
     if (res.status >= 200 && res.status < 300) return { ok: true, id, name: id };
+    const auth = authWriteFailure(res);
+    if (auth) return auth;
     const body = res.body as Record<string, unknown> | null;
     const message = typeof body?.detail === "string" ? body.detail : extractMessage(res.body, `Delete provider failed (${res.status})`);
     return { ok: false, status: "error", message };
@@ -479,12 +583,14 @@ export class GatewayClient {
     };
     if (input.modelAlias) body.model_alias = input.modelAlias;
 
-    const res = await timedWrite(`${gatewayUrl()}/llm/models`, { method: "POST", body: JSON.stringify(body) }, this.operatorToken);
+    const res = await this.write(`${gatewayUrl()}/llm/models`, { method: "POST", body: JSON.stringify(body) });
     if (!res) return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
     if (res.status >= 200 && res.status < 300) {
       const b = (res.body ?? {}) as Record<string, unknown>;
       return { ok: true, id: str(b.id), name: String(b.model_alias ?? b.model_name ?? input.modelAlias ?? input.modelName) };
     }
+    const auth = authWriteFailure(res);
+    if (auth) return auth;
     if (res.status === 409) return { ok: false, status: "conflict", message: extractMessage(res.body, "Model already exists") };
     if (res.status === 422) return { ok: false, status: "validation", message: extractMessage(res.body, "Validation failed") };
     return { ok: false, status: "error", message: extractMessage(res.body, `Create model failed (${res.status})`) };
@@ -492,7 +598,7 @@ export class GatewayClient {
 
   /** GET /llm/models — list registered LLM models (including aliases). */
   async listLLMModels(): Promise<Array<{ id: string; modelId: string; modelName: string; modelAlias: string | null; providerId: string; enabled: boolean }>> {
-    const res = await timedFetch(`${gatewayUrl()}/llm/models`, this.operatorToken);
+    const res = await this.get(`${gatewayUrl()}/llm/models`);
     if (!res) return [];
     const raw = await res.json().catch(() => null);
     const rows = Array.isArray(raw) ? raw : Array.isArray((raw as Record<string, unknown>)?.models) ? (raw as Record<string, unknown>).models as unknown[] : [];
@@ -508,9 +614,11 @@ export class GatewayClient {
 
   /** DELETE /llm/models/{id} — remove a model/alias. */
   async deleteLLMModel(id: string): Promise<GatewayWriteResult> {
-    const res = await timedWrite(`${gatewayUrl()}/llm/models/${encodeURIComponent(id)}`, { method: "DELETE" }, this.operatorToken);
+    const res = await this.write(`${gatewayUrl()}/llm/models/${encodeURIComponent(id)}`, { method: "DELETE" });
     if (!res) return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
     if (res.status >= 200 && res.status < 300) return { ok: true, id, name: id };
+    const auth = authWriteFailure(res);
+    if (auth) return auth;
     const body = res.body as Record<string, unknown> | null;
     const message = typeof body?.detail === "string" ? body.detail : extractMessage(res.body, `Delete model failed (${res.status})`);
     return { ok: false, status: "error", message };
@@ -524,7 +632,7 @@ export class GatewayClient {
 
   /** GET /prompts — list all MCP prompts the gateway knows about. */
   async listGatewayPrompts(): Promise<GatewayPromptEntry[]> {
-    const res = await timedFetch(`${gatewayUrl()}/prompts`, this.operatorToken);
+    const res = await this.get(`${gatewayUrl()}/prompts`);
     if (!res) return [];
     const raw = await res.json().catch(() => []);
     const rows = Array.isArray(raw) ? raw : [];
@@ -561,12 +669,14 @@ export class GatewayClient {
     if (input.arguments?.length) body.arguments = input.arguments;
     if (input.template) body.template = input.template;
 
-    const res = await timedWrite(`${gatewayUrl()}/prompts`, { method: "POST", body: JSON.stringify(body) }, this.operatorToken);
+    const res = await this.write(`${gatewayUrl()}/prompts`, { method: "POST", body: JSON.stringify(body) });
     if (!res) return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
     if (res.status >= 200 && res.status < 300) {
       const b = (res.body ?? {}) as Record<string, unknown>;
       return { ok: true, id: str(b.id), name: String(b.name ?? input.name) };
     }
+    const auth = authWriteFailure(res);
+    if (auth) return auth;
     if (res.status === 409) return { ok: false, status: "conflict", message: extractMessage(res.body, "Prompt name already exists") };
     if (res.status === 422) return { ok: false, status: "validation", message: extractMessage(res.body, "Validation failed") };
     return { ok: false, status: "error", message: extractMessage(res.body, `Create prompt failed (${res.status})`) };
@@ -574,9 +684,11 @@ export class GatewayClient {
 
   /** DELETE /prompts/{id} — remove a prompt from the gateway registry. */
   async deleteGatewayPrompt(id: string): Promise<GatewayWriteResult> {
-    const res = await timedWrite(`${gatewayUrl()}/prompts/${encodeURIComponent(id)}`, { method: "DELETE" }, this.operatorToken);
+    const res = await this.write(`${gatewayUrl()}/prompts/${encodeURIComponent(id)}`, { method: "DELETE" });
     if (!res) return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
     if (res.status >= 200 && res.status < 300) return { ok: true, id, name: id };
+    const auth = authWriteFailure(res);
+    if (auth) return auth;
     const body = res.body as Record<string, unknown> | null;
     const message = typeof body?.detail === "string" ? body.detail : extractMessage(res.body, `Delete prompt failed (${res.status})`);
     return { ok: false, status: "error", message };

@@ -52,7 +52,9 @@ export interface SetupState {
   orgGithub: { appInstalled: boolean; wifConfigured: boolean };
   oauthClient: { configured: boolean; note?: string };
   gateway: { reachable: boolean };
-  mcpServers: { registered: string[] };
+  /** `error` set when the registry could not be read though the gateway is
+   *  up (credential rejected) — an empty list then is not an empty registry. */
+  mcpServers: { registered: string[]; error?: string };
   /** Model access — how model calls are paid for and routed (APEX-115). */
   models: ModelAccessState;
   /** Remote-claude credential presence for the signed-in operator (annual

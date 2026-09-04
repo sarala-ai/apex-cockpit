@@ -24,7 +24,8 @@
  */
 
 import { detectClaudeAuth, type ClaudeDetectResult } from './detect-claude.js';
-import { GatewayClient } from '../../gateway/gateway-client.js';
+import type { GatewayClient } from '../../gateway/gateway-client.js';
+import { cockpitSystemGatewayClient } from '../../gateway/system-credential.js';
 
 /** The apex-* aliases seeded for Claude and their purposes. */
 export const APEX_MODEL_ALIASES = [
@@ -92,7 +93,7 @@ function bridgeUrl(): string {
 
 /** Read ModelAccessState from the live gateway + local detection. Never throws. */
 export async function readModelAccessState(
-  client: GatewayClient = new GatewayClient(),
+  client: GatewayClient = cockpitSystemGatewayClient(),
 ): Promise<ModelAccessState> {
   const [claudeDetect, providers, models] = await Promise.all([
     detectClaudeAuth().catch(() => ({ mode: 'none' as const, installed: false })),
@@ -133,7 +134,7 @@ export type ProvisionResult =
  * proceed to seed any missing aliases.
  */
 export async function provisionClaudeSubscription(
-  client: GatewayClient = new GatewayClient(),
+  client: GatewayClient = cockpitSystemGatewayClient(),
 ): Promise<ProvisionResult> {
   // Verify gateway is reachable first
   const reachable = await client.reachable();
@@ -222,7 +223,7 @@ export async function provisionClaudeSubscription(
  */
 export async function provisionClaudeApiKey(
   apiKey: string,
-  client: GatewayClient = new GatewayClient(),
+  client: GatewayClient = cockpitSystemGatewayClient(),
 ): Promise<ProvisionResult> {
   if (!apiKey?.trim()) return { ok: false, reason: 'API key is required' };
 
@@ -283,7 +284,7 @@ export async function provisionClaudeApiKey(
  */
 export async function provisionOpenRouter(
   apiKey: string,
-  client: GatewayClient = new GatewayClient(),
+  client: GatewayClient = cockpitSystemGatewayClient(),
 ): Promise<ProvisionResult> {
   if (!apiKey?.trim()) return { ok: false, reason: 'OpenRouter API key is required' };
 

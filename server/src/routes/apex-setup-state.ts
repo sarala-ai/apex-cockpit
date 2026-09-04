@@ -17,7 +17,7 @@ import { type Db, orgs, companies, cloudScopeBindings, orgMemberships, companySe
 import { resolveOperatorAuth } from "../apex/setup/operator-auth.js";
 import { assertBoardOrAgent } from "./authz.js";
 import { readModelAccessState, type ModelAccessState } from "../apex/model-access/index.js";
-import { GatewayClient } from "../gateway/gateway-client.js";
+import { cockpitSystemGatewayClient } from "../gateway/system-credential.js";
 
 type Health = "ok" | "missing" | "expired";
 
@@ -49,7 +49,10 @@ export interface SetupState {
   orgGithub: { appInstalled: boolean; wifConfigured: boolean };
   oauthClient: { configured: boolean; note?: string };
   gateway: { reachable: boolean };
-  mcpServers: { registered: string[] };
+  /** `error` is set when the registry could not be read even though the
+   *  gateway is up — typically the cockpit's credential being rejected — so
+   *  an empty list is never mistaken for an empty registry. */
+  mcpServers: { registered: string[]; error?: string };
   /** Model access — how model calls are paid for and routed. Covers both
    *  provider detection (is claude logged in? is OpenRouter configured?) and
    *  generated artifact presence (is the subscription bridge registered in the
@@ -76,23 +79,10 @@ export interface SetupStateProbes {
   claudeSession: (userId: string | null) => Promise<SetupState["claudeSession"]>;
 }
 
-const gatewayUrl = (): string =>
-  (process.env.APEX_GATEWAY_URL ?? "http://127.0.0.1:4444").replace(/\/$/, "");
-
-async function timedFetch(url: string, init?: RequestInit, timeoutMs = 3000): Promise<Response> {
-  const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } finally {
-    clearTimeout(t);
-  }
-}
-
-const _sharedGatewayClient = new GatewayClient();
-
-/** Real probes over the live DB / gcloud / gateway. Each is self-contained. */
-export function defaultProbes(db: Db): SetupStateProbes {
+/** Real probes over the live DB / gcloud / gateway. Each is self-contained.
+ *  Gateway probes run as the cockpit system principal: they describe the
+ *  instance, not the signed-in operator. */
+export function defaultProbes(db: Db, gateway = cockpitSystemGatewayClient()): SetupStateProbes {
   return {
     async claudeSession(userId) {
       if (!userId) return { connected: false, source: null, setAt: null };
@@ -187,25 +177,16 @@ export function defaultProbes(db: Db): SetupStateProbes {
         : { configured: false, note: "GOOGLE_OAUTH_CLIENT_ID not set" };
     },
     async gateway() {
-      const res = await timedFetch(`${gatewayUrl()}/health`);
-      return { reachable: res.ok };
+      return { reachable: await gateway.reachable() };
     },
     async mcpServers(gatewayReachable: boolean) {
       if (!gatewayReachable) return { registered: [] };
-      const token = process.env.APEX_GATEWAY_TOKEN;
-      const res = await timedFetch(`${gatewayUrl()}/gateways`, {
-        headers: token ? { authorization: `Bearer ${token}` } : {},
-      });
-      if (!res.ok) return { registered: [] };
-      const body = (await res.json()) as unknown;
-      const list = Array.isArray(body) ? body : [];
-      const registered = list
-        .map((g) => (g && typeof g === "object" ? (g as { name?: unknown }).name : undefined))
-        .filter((n): n is string => typeof n === "string");
-      return { registered };
+      const res = await gateway.readGateways();
+      if (!res.ok) return { registered: [], error: res.failure.message };
+      return { registered: res.value.map((g) => g.name) };
     },
     async models() {
-      return readModelAccessState(_sharedGatewayClient);
+      return readModelAccessState(gateway);
     },
   };
 }

@@ -303,7 +303,7 @@ export async function createApp(
   api.use(apexScopingRoutes(db));
   api.use(apexSetupStateRoutes(db));
   api.use(apexSetupModelsRoutes());
-  api.use(apexObserveRoutes(db));
+  api.use(apexObserveRoutes(db, { mintOperatorToken: opts.mintOperatorToken }));
   api.use(apexGatewayObserveRoutes({ mintOperatorToken: opts.mintOperatorToken }));
   api.use(apexWorkflowsRoutes(db));
   api.use(apexCapabilitiesRoutes());
@@ -637,7 +637,11 @@ export async function createApp(
       );
     }
   };
-  void registerCockpitMcpWithGateway(opts.serverPort).catch((err) => {
+  void registerCockpitMcpWithGateway({
+    serverPort: opts.serverPort,
+    publicUrl: opts.authPublicBaseUrl,
+    deploymentMode: opts.deploymentMode,
+  }).catch((err) => {
     logger.error({ err }, "cockpit-mcp gateway self-registration failed (non-fatal)");
   });
   void ensureBundledKubernetesPlugin()
