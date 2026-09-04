@@ -61,8 +61,7 @@ export function resolveServerVersion(
 
   // A hosted image ships without .git (.dockerignore excludes it), so `git
   // describe` can't work there; the build passes the release sha as an env
-  // var instead. Local/dev checkouts have no APEX_RELEASE_SHA and fall
-  // through to the git-describe path below.
+  // var instead.
   if (releaseSha) {
     return `${packageVersion}+git.${releaseSha.slice(0, 12)}`;
   }

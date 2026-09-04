@@ -492,16 +492,29 @@ export function resolveCockpitMcpUrl(input: CockpitMcpUrlInput): string {
 
 /**
  * Self-register the cockpit MCP server with the APEX gateway on boot, as the
- * cockpit system principal. Idempotent: a 409 conflict means it is already
- * registered, which is fine. Failure is non-fatal; the cockpit continues to
- * boot without gateway registration (degraded: external hosts won't discover
- * tools through the gateway, but dispatched runs still work directly).
+ * cockpit system principal. Idempotent: a 409 conflict means a gateway
+ * already exists under this name — if its registered url no longer matches
+ * the resolved one (e.g. a stale loopback or placeholder URL from an earlier
+ * deploy pass), it is repointed via PUT. Failure is non-fatal; the cockpit
+ * continues to boot without gateway registration (degraded: external hosts
+ * won't discover tools through the gateway, but dispatched runs still work
+ * directly).
  */
 export async function registerCockpitMcpWithGateway(
   input: Omit<CockpitMcpUrlInput, "explicitUrl">,
   client: GatewayClient = cockpitSystemGatewayClient(),
 ): Promise<void> {
   const mcpUrl = resolveCockpitMcpUrl({ ...input, explicitUrl: process.env.PAPERCLIP_COCKPIT_MCP_URL });
+  let hostname: string | null = null;
+  try {
+    hostname = new URL(mcpUrl).hostname;
+  } catch {
+    hostname = null;
+  }
+  if (hostname === "placeholder.invalid") {
+    logger.info({ mcpUrl }, "cockpit-mcp registration skipped: PAPERCLIP_PUBLIC_URL is still the deploy placeholder (will register on the next deploy pass)");
+    return;
+  }
   const result = await client.registerGateway({
     name: COCKPIT_MCP_GATEWAY_NAME,
     url: mcpUrl,
@@ -510,12 +523,48 @@ export async function registerCockpitMcpWithGateway(
   });
   if (result.ok) {
     logger.info({ mcpUrl, gatewayId: result.id }, "cockpit-mcp registered with APEX gateway");
-  } else if (result.status === "conflict") {
-    logger.info({ mcpUrl }, "cockpit-mcp already registered with APEX gateway");
-  } else if (result.status === "auth") {
+    return;
+  }
+  if (result.status === "conflict") {
+    await repointExistingCockpitMcpGateway(mcpUrl, client);
+    return;
+  }
+  if (result.status === "auth") {
     logger.warn({ mcpUrl, message: result.message }, "cockpit-mcp gateway registration rejected: the cockpit system principal is not accepted by the gateway (non-fatal)");
+    return;
+  }
+  logger.warn({ mcpUrl, status: result.status, message: result.message }, "cockpit-mcp gateway registration failed (non-fatal)");
+}
+
+/**
+ * A 409 on POST /gateways means a gateway named cockpit-mcp already exists.
+ * Read it back and, if its url has drifted from the desired one, repoint it
+ * with PUT rather than leaving the stale registration in place.
+ */
+async function repointExistingCockpitMcpGateway(mcpUrl: string, client: GatewayClient): Promise<void> {
+  const existing = await client.readGateways();
+  if (!existing.ok) {
+    logger.warn({ mcpUrl, message: existing.failure.message }, "cockpit-mcp already registered with APEX gateway, but could not read it back to check for drift (non-fatal)");
+    return;
+  }
+  const entry = existing.value.find((g) => g.name === COCKPIT_MCP_GATEWAY_NAME);
+  if (!entry) {
+    logger.warn({ mcpUrl }, "cockpit-mcp gateway registration conflicted (409) but no gateway with that name was found on read-back (non-fatal)");
+    return;
+  }
+  if (entry.url === mcpUrl) {
+    logger.info({ mcpUrl }, "cockpit-mcp already registered with APEX gateway");
+    return;
+  }
+  if (!entry.id) {
+    logger.warn({ mcpUrl, previousUrl: entry.url }, "cockpit-mcp registration is stale but has no id to update (non-fatal)");
+    return;
+  }
+  const update = await client.updateGateway(entry.id, { url: mcpUrl });
+  if (update.ok) {
+    logger.info({ mcpUrl, previousUrl: entry.url, gatewayId: entry.id }, "cockpit-mcp registration repointed to current URL");
   } else {
-    logger.warn({ mcpUrl, status: result.status, message: result.message }, "cockpit-mcp gateway registration failed (non-fatal)");
+    logger.warn({ mcpUrl, previousUrl: entry.url, status: update.status, message: update.message }, "cockpit-mcp registration is stale but repointing it failed (non-fatal)");
   }
 }
 

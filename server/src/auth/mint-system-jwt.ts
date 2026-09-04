@@ -1,6 +1,5 @@
 import type { PrincipalClaims } from "./auth-client.js";
 import type { PrincipalJwtSigner } from "./mint-principal-jwt.js";
-import { logger } from "../middleware/logger.js";
 
 /**
  * The cockpit process's own principal — the identity behind gateway calls
@@ -77,9 +76,10 @@ export function jwtExpiryMs(token: string): number | null {
 
 /**
  * Caches a minted token until shortly before its expiry, then re-mints.
- * Concurrent callers share one in-flight mint. A mint failure yields null
- * (the caller degrades to its unauthenticated behaviour and reports it) and
- * is retried on the next call rather than cached.
+ * Concurrent callers share one in-flight mint. A mint failure rejects — the
+ * caller (GatewayClient) classifies that as `credential_unavailable` rather
+ * than sending an unauthenticated request — and is retried on the next call
+ * rather than cached.
  */
 export function createCachedTokenSource(
   mint: () => Promise<string>,
@@ -88,7 +88,7 @@ export function createCachedTokenSource(
   const refreshMarginMs = opts.refreshMarginMs ?? 60_000;
   const now = opts.now ?? Date.now;
   let cached: { token: string; expiresAt: number | null } | null = null;
-  let inFlight: Promise<string | null> | null = null;
+  let inFlight: Promise<string> | null = null;
 
   const fresh = (): boolean =>
     cached !== null && (cached.expiresAt === null || cached.expiresAt - refreshMarginMs > now());
@@ -100,10 +100,6 @@ export function createCachedTokenSource(
       .then((token) => {
         cached = { token, expiresAt: jwtExpiryMs(token) };
         return token;
-      })
-      .catch((err: unknown) => {
-        logger.warn({ err }, "cockpit system principal mint failed; gateway calls proceed without a credential");
-        return null;
       })
       .finally(() => {
         inFlight = null;

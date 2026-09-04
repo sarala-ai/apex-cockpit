@@ -75,7 +75,7 @@ export function resolveAgentJwtSecretStatus(
 } {
   // Every consumer (agent-auth-jwt.ts, better-auth.ts, cockpit-mcp-jwt.ts)
   // falls back to BETTER_AUTH_SECRET when PAPERCLIP_AGENT_JWT_SECRET is
-  // unset, so the banner must check both or it warns on a working config.
+  // unset, so the banner must check both.
   const envValue =
     process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim() || process.env.BETTER_AUTH_SECRET?.trim();
   if (envValue) {

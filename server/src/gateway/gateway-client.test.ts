@@ -57,6 +57,20 @@ describe("GatewayClient credential", () => {
     await new GatewayClient().listGateways();
     expect(calls[1]!.headers.authorization).toBeUndefined();
   });
+
+  it("classifies a token source that throws as credential_unavailable and never sends a request", async () => {
+    const calls = stubFetch(() => json(200, []));
+    const client = new GatewayClient(async () => {
+      throw new Error("signer down");
+    });
+    const read = await client.readGateways();
+    expect(read.ok).toBe(false);
+    if (!read.ok) {
+      expect(read.failure.kind).toBe("credential_unavailable");
+      expect(read.failure.message).toContain("signer down");
+    }
+    expect(calls).toHaveLength(0);
+  });
 });
 
 describe("GatewayClient read classification", () => {
@@ -115,5 +129,16 @@ describe("GatewayClient write classification", () => {
     stubFetch(() => json(401, { detail: "Authentication required" }));
     const result = await new GatewayClient().deleteGateway("g1");
     expect(result).toMatchObject({ ok: false, status: "auth" });
+  });
+
+  it("classifies a token source that throws as credential_unavailable and never sends a request", async () => {
+    const calls = stubFetch(() => json(200, {}));
+    const client = new GatewayClient(async () => {
+      throw new Error("signer down");
+    });
+    const result = await client.registerGateway({ name: "x", url: "https://x/mcp", transport: "STREAMABLEHTTP" });
+    expect(result).toMatchObject({ ok: false, status: "credential_unavailable" });
+    if (!result.ok) expect(result.message).toContain("signer down");
+    expect(calls).toHaveLength(0);
   });
 });

@@ -84,13 +84,13 @@ describe("createCachedTokenSource", () => {
     expect(mint).toHaveBeenCalledTimes(1);
   });
 
-  it("yields null on a mint failure and retries on the next call", async () => {
+  it("rejects on a mint failure (never cached) and retries on the next call", async () => {
     const mint = vi
       .fn<() => Promise<string>>()
       .mockRejectedValueOnce(new Error("signer down"))
       .mockResolvedValueOnce(fakeJwt({ exp: Math.floor(Date.now() / 1000) + 900 }));
     const source = createCachedTokenSource(mint);
-    expect(await source()).toBeNull();
+    await expect(source()).rejects.toThrow("signer down");
     expect(await source()).toMatch(/^eyJ/);
     expect(mint).toHaveBeenCalledTimes(2);
   });

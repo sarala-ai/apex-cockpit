@@ -14,8 +14,7 @@ export const workstationReportSchema = z.object({
     installed: z.boolean(),
     user: z.string().trim().min(1).max(120).nullable(),
   }),
-  // `version`/`loggedIn` are optional: reporters older than the claude probe
-  // extension omit them, and `loggedIn: null` means the probe could not tell.
+  // optional: not every reporter sends them
   claude: z.object({
     installed: z.boolean(),
     version: z.string().trim().min(1).max(64).nullable().optional(),

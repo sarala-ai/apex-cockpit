@@ -105,8 +105,8 @@ export interface Config {
 
 // Cloud Run's disk is ephemeral and Cloud SQL already runs automated
 // backups in "authenticated" (hosted) mode, so local-disk backups default
-// off there; local_trusted keeps the prior default-on behavior. An explicit
-// env var or file setting always wins over the deployment-mode default.
+// off there. An explicit env var or file setting always wins over the
+// deployment-mode default.
 export function resolveDatabaseBackupEnabled(
   deploymentMode: DeploymentMode,
   envValue: string | undefined,

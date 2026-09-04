@@ -113,7 +113,6 @@ describe("GET /setup/state", () => {
 describe("defaultProbes gateway probes", () => {
   const fakeGateway = (readGateways: () => Promise<unknown>, reachable = async () => true) =>
     ({ readGateways, reachable }) as unknown as GatewayClient;
-  const authenticatedRegistry = async () => ({ ok: true, value: [] });
   const rejected = { kind: "unauthenticated", status: 401, message: "apex-gateway rejected the credential (401)" } as const;
 
   it("reports the configured URL and distinguishes unreachable from a rejected credential", async () => {
@@ -189,7 +188,6 @@ describe("defaultProbes gateway probes", () => {
   });
 
   it("lists the registry names when the credential is accepted", async () => {
-    void authenticatedRegistry;
     const probes = defaultProbes({} as unknown as Db, fakeGateway(async () => ({ ok: true, value: [{ name: "cockpit-mcp" }, { name: "gworkspace" }] })));
     expect(await probes.mcpServers(true)).toEqual({ registered: ["cockpit-mcp", "gworkspace"] });
   });

@@ -34,10 +34,13 @@ export const gatewayUrl = (): string =>
 /**
  * Classified failure of a gateway call. `unauthenticated`/`forbidden` mean
  * the gateway answered and rejected the credential (401/403); `unreachable`
- * is a transport failure (network/timeout); `http` is any other non-2xx.
+ * is a transport failure (network/timeout); `http` is any other non-2xx;
+ * `credential_unavailable` means the cockpit never sent a request at all —
+ * its own token source (e.g. the system-principal JWT signer) failed to
+ * produce a credential, so this is never the gateway's fault.
  */
 export interface GatewayFailure {
-  kind: "unauthenticated" | "forbidden" | "http" | "unreachable";
+  kind: "unauthenticated" | "forbidden" | "http" | "unreachable" | "credential_unavailable";
   status: number | null;
   message: string;
 }
@@ -60,9 +63,31 @@ const UNREACHABLE: GatewayFailure = { kind: "unreachable", status: null, message
  */
 export type GatewayCredential = string | null | undefined | (() => Promise<string | null>);
 
-async function resolveToken(credential: GatewayCredential): Promise<string | null> {
-  const token = typeof credential === "function" ? await credential() : credential;
-  return token ?? process.env.APEX_GATEWAY_TOKEN ?? null;
+/** Resolving a credential either yields a token (possibly null, meaning
+ *  "fall back to APEX_GATEWAY_TOKEN") or a classified failure when a token
+ *  source function threw instead of returning — a mint failure, never a
+ *  legitimate "no credential configured" case. */
+interface ResolvedCredential {
+  token: string | null;
+  failure: GatewayFailure | null;
+}
+
+const CREDENTIAL_UNAVAILABLE_MESSAGE_PREFIX = "cockpit could not mint its gateway principal";
+
+async function resolveToken(credential: GatewayCredential): Promise<ResolvedCredential> {
+  if (typeof credential !== "function") {
+    return { token: credential ?? process.env.APEX_GATEWAY_TOKEN ?? null, failure: null };
+  }
+  try {
+    const token = await credential();
+    return { token: token ?? process.env.APEX_GATEWAY_TOKEN ?? null, failure: null };
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    return {
+      token: null,
+      failure: { kind: "credential_unavailable", status: null, message: `${CREDENTIAL_UNAVAILABLE_MESSAGE_PREFIX}: ${reason}` },
+    };
+  }
 }
 
 function bearerHeaders(token: string | null): Record<string, string> {
@@ -107,7 +132,9 @@ export type GatewayWriteResult =
       // registered URL (its 502) — a different, more actionable failure.
       // "auth" = apex-gateway answered 401/403: the cockpit's credential is
       // missing or not trusted — never a reachability problem.
-      status: "conflict" | "validation" | "unreachable" | "upstream_unreachable" | "auth" | "error";
+      // "credential_unavailable" = the cockpit never sent the request: its
+      // own token source failed to mint a credential.
+      status: "conflict" | "validation" | "unreachable" | "upstream_unreachable" | "auth" | "credential_unavailable" | "error";
       message: string;
     };
 
@@ -115,6 +142,15 @@ function authWriteFailure(res: { status: number; body: unknown }): GatewayWriteR
   if (res.status !== 401 && res.status !== 403) return null;
   const detail = extractMessage(res.body, "");
   return { ok: false, status: "auth", message: classifyStatus(res.status, detail || null).message };
+}
+
+/** Sentinel status `write()` uses on its `{status, body}` shape to signal a
+ *  credential-mint failure rather than any real HTTP response. */
+const CREDENTIAL_UNAVAILABLE_STATUS = -1;
+
+function credentialFailureWriteResult(res: { status: number; body: unknown }): GatewayWriteResult | null {
+  if (res.status !== CREDENTIAL_UNAVAILABLE_STATUS) return null;
+  return { ok: false, status: "credential_unavailable", message: extractMessage(res.body, CREDENTIAL_UNAVAILABLE_MESSAGE_PREFIX) };
 }
 
 function extractMessage(body: unknown, fallback: string): string {
@@ -168,23 +204,33 @@ export class GatewayClient {
    * operator-initiated calls, the cockpit system token source for
    * process-level probes, or nothing for local/unauthenticated gateways.
    */
-  constructor(private readonly credential?: GatewayCredential) {}
+  constructor(private readonly credentialSource?: GatewayCredential) {}
 
-  private token(): Promise<string | null> {
-    return resolveToken(this.credential);
+  private async credential(): Promise<ResolvedCredential> {
+    return resolveToken(this.credentialSource);
+  }
+
+  private async token(): Promise<string | null> {
+    return (await this.credential()).token;
   }
 
   private async get(url: string): Promise<Response | null> {
-    const res = await timedFetch(url, await this.token());
+    const cred = await this.credential();
+    if (cred.failure) return null;
+    const res = await timedFetch(url, cred.token);
     return res.ok ? res.value : null;
   }
 
   private async getClassified(url: string, timeoutMs?: number): Promise<GatewayHttp<Response>> {
-    return timedFetch(url, await this.token(), timeoutMs);
+    const cred = await this.credential();
+    if (cred.failure) return { ok: false, failure: cred.failure };
+    return timedFetch(url, cred.token, timeoutMs);
   }
 
   private async write(url: string, init: RequestInit): Promise<{ status: number; body: unknown } | null> {
-    return timedWrite(url, init, await this.token());
+    const cred = await this.credential();
+    if (cred.failure) return { status: CREDENTIAL_UNAVAILABLE_STATUS, body: { message: cred.failure.message } };
+    return timedWrite(url, init, cred.token);
   }
 
   /** Transport-level liveness: any HTTP answer from /health counts. The
@@ -203,7 +249,7 @@ export class GatewayClient {
     const res = await this.getClassified(`${gatewayUrl()}/gateways`);
     if (res.ok) return { reachable: true, authenticated: true, failure: null };
     const f = res.failure;
-    if (f.kind === "unreachable") return { reachable: false, authenticated: null, failure: f };
+    if (f.kind === "unreachable" || f.kind === "credential_unavailable") return { reachable: false, authenticated: null, failure: f };
     return { reachable: true, authenticated: f.kind !== "unauthenticated" && f.kind !== "forbidden", failure: f };
   }
 
@@ -398,7 +444,7 @@ export class GatewayClient {
     const http = await this.getClassified(`${gatewayUrl()}/metrics`);
     if (!http.ok) {
       const f = http.failure;
-      return { reachable: f.kind !== "unreachable", tools: null, servers: null, a2aAgents: null, error: f.message };
+      return { reachable: f.kind !== "unreachable" && f.kind !== "credential_unavailable", tools: null, servers: null, a2aAgents: null, error: f.message };
     }
     const raw = await http.value.json().catch(() => null);
     if (!raw) {
@@ -478,6 +524,8 @@ export class GatewayClient {
       const body = (res.body ?? {}) as Record<string, unknown>;
       return { ok: true, id: str(body.id), name: String(body.name ?? input.name) };
     }
+    const cred = credentialFailureWriteResult(res);
+    if (cred) return cred;
     const auth = authWriteFailure(res);
     if (auth) return auth;
     if (res.status === 409) {
@@ -490,6 +538,48 @@ export class GatewayClient {
       return { ok: false, status: "upstream_unreachable", message: extractMessage(res.body, "Upstream gateway unreachable") };
     }
     return { ok: false, status: "error", message: extractMessage(res.body, `Registration failed (${res.status})`) };
+  }
+
+  /**
+   * PUT /gateways/{id} — update an existing federation gateway (e.g. repoint
+   * its url after a stale registration). All fields optional (GatewayUpdate);
+   * only the ones passed here are changed.
+   */
+  async updateGateway(
+    id: string,
+    input: { url?: string; transport?: "SSE" | "STREAMABLEHTTP" | "STDIO"; description?: string | null },
+  ): Promise<GatewayWriteResult> {
+    const res = await this.write(`${gatewayUrl()}/gateways/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        ...(input.url ? { url: input.url } : {}),
+        ...(input.transport ? { transport: input.transport } : {}),
+        ...(input.description ? { description: input.description } : {}),
+      }),
+    });
+    if (!res) {
+      return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
+    }
+    if (res.status >= 200 && res.status < 300) {
+      const body = (res.body ?? {}) as Record<string, unknown>;
+      return { ok: true, id: str(body.id) ?? id, name: String(body.name ?? id) };
+    }
+    const cred = credentialFailureWriteResult(res);
+    if (cred) return cred;
+    const auth = authWriteFailure(res);
+    if (auth) return auth;
+    if (res.status === 409) {
+      return { ok: false, status: "conflict", message: extractMessage(res.body, "Gateway name already exists") };
+    }
+    if (res.status === 422) {
+      return { ok: false, status: "validation", message: extractMessage(res.body, "Validation failed") };
+    }
+    if (res.status === 502) {
+      return { ok: false, status: "upstream_unreachable", message: extractMessage(res.body, "Upstream gateway unreachable") };
+    }
+    const body = res.body as Record<string, unknown> | null;
+    const message = typeof body?.message === "string" ? body.message : extractMessage(res.body, `Update failed (${res.status})`);
+    return { ok: false, status: "error", message };
   }
 
   /**
@@ -506,6 +596,8 @@ export class GatewayClient {
     if (res.status >= 200 && res.status < 300) {
       return { ok: true, id, name: id };
     }
+    const cred = credentialFailureWriteResult(res);
+    if (cred) return cred;
     const auth = authWriteFailure(res);
     if (auth) return auth;
     // delete_gateway raises plain HTTPException(detail=...), not {message: ...}
@@ -551,6 +643,8 @@ export class GatewayClient {
       const b = (res.body ?? {}) as Record<string, unknown>;
       return { ok: true, id: str(b.id), name: String(b.name ?? input.name) };
     }
+    const cred = credentialFailureWriteResult(res);
+    if (cred) return cred;
     const auth = authWriteFailure(res);
     if (auth) return auth;
     if (res.status === 409) return { ok: false, status: "conflict", message: extractMessage(res.body, "Provider already exists") };
@@ -579,6 +673,8 @@ export class GatewayClient {
     const res = await this.write(`${gatewayUrl()}/llm/providers/${encodeURIComponent(id)}`, { method: "DELETE" });
     if (!res) return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
     if (res.status >= 200 && res.status < 300) return { ok: true, id, name: id };
+    const cred = credentialFailureWriteResult(res);
+    if (cred) return cred;
     const auth = authWriteFailure(res);
     if (auth) return auth;
     const body = res.body as Record<string, unknown> | null;
@@ -611,6 +707,8 @@ export class GatewayClient {
       const b = (res.body ?? {}) as Record<string, unknown>;
       return { ok: true, id: str(b.id), name: String(b.model_alias ?? b.model_name ?? input.modelAlias ?? input.modelName) };
     }
+    const cred = credentialFailureWriteResult(res);
+    if (cred) return cred;
     const auth = authWriteFailure(res);
     if (auth) return auth;
     if (res.status === 409) return { ok: false, status: "conflict", message: extractMessage(res.body, "Model already exists") };
@@ -639,6 +737,8 @@ export class GatewayClient {
     const res = await this.write(`${gatewayUrl()}/llm/models/${encodeURIComponent(id)}`, { method: "DELETE" });
     if (!res) return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
     if (res.status >= 200 && res.status < 300) return { ok: true, id, name: id };
+    const cred = credentialFailureWriteResult(res);
+    if (cred) return cred;
     const auth = authWriteFailure(res);
     if (auth) return auth;
     const body = res.body as Record<string, unknown> | null;
@@ -697,6 +797,8 @@ export class GatewayClient {
       const b = (res.body ?? {}) as Record<string, unknown>;
       return { ok: true, id: str(b.id), name: String(b.name ?? input.name) };
     }
+    const cred = credentialFailureWriteResult(res);
+    if (cred) return cred;
     const auth = authWriteFailure(res);
     if (auth) return auth;
     if (res.status === 409) return { ok: false, status: "conflict", message: extractMessage(res.body, "Prompt name already exists") };
@@ -709,6 +811,8 @@ export class GatewayClient {
     const res = await this.write(`${gatewayUrl()}/prompts/${encodeURIComponent(id)}`, { method: "DELETE" });
     if (!res) return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
     if (res.status >= 200 && res.status < 300) return { ok: true, id, name: id };
+    const cred = credentialFailureWriteResult(res);
+    if (cred) return cred;
     const auth = authWriteFailure(res);
     if (auth) return auth;
     const body = res.body as Record<string, unknown> | null;

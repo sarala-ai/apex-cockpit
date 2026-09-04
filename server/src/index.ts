@@ -627,9 +627,6 @@ export async function startServer(): Promise<StartedServer> {
     mintGatewayToken = (userId) =>
       mintPrincipalJwtForUser(auth as unknown as PrincipalJwtSigner, db as any, userId);
     registerGatewayTokenMinter(mintGatewayToken);
-    // The cockpit's own gateway identity for operator-less calls (boot-time
-    // self-registration, setup/model-access probes): minted through the same
-    // JWKS path, cached until near expiry, never a static shared secret.
     const { mintCockpitSystemJwt, createCachedTokenSource } = await import("./auth/mint-system-jwt.js");
     const { registerCockpitSystemTokenSource } = await import("./gateway/system-credential.js");
     registerCockpitSystemTokenSource(

@@ -60,4 +60,47 @@ describe("registerCockpitMcpWithGateway", () => {
       ),
     ).resolves.toBeUndefined();
   });
+
+  it("skips registration when the public URL is still the deploy placeholder", async () => {
+    vi.stubEnv("PAPERCLIP_COCKPIT_MCP_URL", "");
+    const registerGateway = vi.fn();
+    const readGateways = vi.fn();
+    await registerCockpitMcpWithGateway(
+      { serverPort: 3100, deploymentMode: "authenticated", publicUrl: "https://placeholder.invalid" },
+      { registerGateway, readGateways } as unknown as GatewayClient,
+    );
+    expect(registerGateway).not.toHaveBeenCalled();
+    expect(readGateways).not.toHaveBeenCalled();
+  });
+
+  it("on 409 with the same registered URL, does not update", async () => {
+    vi.stubEnv("PAPERCLIP_COCKPIT_MCP_URL", "");
+    const registerGateway = vi.fn(async (): Promise<GatewayWriteResult> => ({ ok: false, status: "conflict", message: "conflict" }));
+    const readGateways = vi.fn(async () => ({
+      ok: true as const,
+      value: [{ id: "g1", name: "cockpit-mcp", url: "https://cockpit.run.app/mcp", transport: "STREAMABLEHTTP", description: null, enabled: true, reachable: true, authType: null, createdAt: null }],
+    }));
+    const updateGateway = vi.fn();
+    await registerCockpitMcpWithGateway(
+      { serverPort: 3100, deploymentMode: "authenticated", publicUrl: "https://cockpit.run.app" },
+      { registerGateway, readGateways, updateGateway } as unknown as GatewayClient,
+    );
+    expect(readGateways).toHaveBeenCalled();
+    expect(updateGateway).not.toHaveBeenCalled();
+  });
+
+  it("on 409 with a different registered URL, repoints it", async () => {
+    vi.stubEnv("PAPERCLIP_COCKPIT_MCP_URL", "");
+    const registerGateway = vi.fn(async (): Promise<GatewayWriteResult> => ({ ok: false, status: "conflict", message: "conflict" }));
+    const readGateways = vi.fn(async () => ({
+      ok: true as const,
+      value: [{ id: "g1", name: "cockpit-mcp", url: "https://placeholder.invalid/mcp", transport: "STREAMABLEHTTP", description: null, enabled: true, reachable: true, authType: null, createdAt: null }],
+    }));
+    const updateGateway = vi.fn(async (): Promise<GatewayWriteResult> => ({ ok: true, id: "g1", name: "cockpit-mcp" }));
+    await registerCockpitMcpWithGateway(
+      { serverPort: 3100, deploymentMode: "authenticated", publicUrl: "https://cockpit.run.app" },
+      { registerGateway, readGateways, updateGateway } as unknown as GatewayClient,
+    );
+    expect(updateGateway).toHaveBeenCalledWith("g1", { url: "https://cockpit.run.app/mcp" });
+  });
 });
