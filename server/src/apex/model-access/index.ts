@@ -23,9 +23,10 @@
  * for the gateway's openai_compatible Claude-subscription provider row.
  */
 
-import { detectClaudeAuth, type ClaudeDetectResult } from './detect-claude.js';
+import { detectClaudeAuth, UNKNOWN_CLAUDE_DETECT, type ClaudeDetectResult } from './detect-claude.js';
 import type { GatewayClient } from '../../gateway/gateway-client.js';
 import { cockpitSystemGatewayClient } from '../../gateway/system-credential.js';
+import { serverIsOperatorWorkstation } from '../setup/operator-auth.js';
 
 /** The apex-* aliases seeded for Claude and their purposes. */
 export const APEX_MODEL_ALIASES = [
@@ -43,10 +44,13 @@ export const OPENROUTER_PROVIDER_NAME          = 'openrouter';
 /** Detected + generated state for this instance's model access. */
 export interface ModelAccessState {
   claude: {
-    /** How (if at all) Claude is authenticated. */
+    /** How (if at all) Claude is authenticated where `source` says. */
     mode: ClaudeDetectResult['mode'];
-    /** Whether the `claude` CLI binary is installed. */
-    installed: boolean;
+    /** Whether the `claude` CLI binary is installed there; null = unknown. */
+    installed: boolean | null;
+    /** Who answered mode/installed: this server, the operator's workstation, nobody. */
+    source: ClaudeDetectResult['source'];
+    reportedAt: string | null;
     /** Whether the subscription bridge provider row exists in the gateway. */
     subscriptionProviderRegistered: boolean;
     /** Whether the api_key provider row exists in the gateway. */
@@ -58,6 +62,13 @@ export interface ModelAccessState {
   };
   /** Which apex-* aliases are currently registered in the gateway. */
   aliasesRegistered: string[];
+  /** The in-process subscription bridge exists only where the server is the
+   *  operator's workstation (a logged-in `claude` CLI on this host). */
+  bridgeAvailable: boolean;
+}
+
+export function subscriptionBridgeAvailable(env: NodeJS.ProcessEnv = process.env): boolean {
+  return serverIsOperatorWorkstation(env);
 }
 
 /**
@@ -91,12 +102,17 @@ function bridgeUrl(): string {
   return `http://${bridgeHost()}:${port}/bridge/v1`;
 }
 
-/** Read ModelAccessState from the live gateway + local detection. Never throws. */
+/**
+ * Read ModelAccessState from the live gateway + claude detection. Never throws.
+ * `claude` is the operator-scoped detection (detectClaudeAuthForOperator); when
+ * omitted the server probes itself, which is only correct on a local instance.
+ */
 export async function readModelAccessState(
   client: GatewayClient = cockpitSystemGatewayClient(),
+  claude?: Promise<ClaudeDetectResult> | ClaudeDetectResult,
 ): Promise<ModelAccessState> {
   const [claudeDetect, providers, models] = await Promise.all([
-    detectClaudeAuth().catch(() => ({ mode: 'none' as const, installed: false })),
+    Promise.resolve(claude ?? detectClaudeAuth()).catch(() => UNKNOWN_CLAUDE_DETECT),
     client.listLLMProviders().catch(() => []),
     client.listLLMModels().catch(() => []),
   ]);
@@ -110,6 +126,8 @@ export async function readModelAccessState(
     claude: {
       mode: claudeDetect.mode,
       installed: claudeDetect.installed,
+      source: claudeDetect.source,
+      reportedAt: claudeDetect.reportedAt,
       subscriptionProviderRegistered: providerNames.has(CLAUDE_SUBSCRIPTION_PROVIDER_NAME),
       apiKeyProviderRegistered: providerNames.has(CLAUDE_API_KEY_PROVIDER_NAME),
     },
@@ -117,6 +135,7 @@ export async function readModelAccessState(
       configured: providerNames.has(OPENROUTER_PROVIDER_NAME),
     },
     aliasesRegistered: registeredAliases,
+    bridgeAvailable: subscriptionBridgeAvailable(),
   };
 }
 

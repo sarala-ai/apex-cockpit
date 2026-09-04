@@ -13,16 +13,20 @@ const mockProvisionClaudeSubscription = vi.hoisted(() => vi.fn());
 const mockProvisionClaudeApiKey = vi.hoisted(() => vi.fn());
 const mockProvisionOpenRouter = vi.hoisted(() => vi.fn());
 const mockDetectClaudeAuth = vi.hoisted(() => vi.fn());
+const mockDetectClaudeAuthForOperator = vi.hoisted(() => vi.fn());
+const mockBridgeAvailable = vi.hoisted(() => vi.fn(() => true));
 
 vi.mock("../apex/model-access/index.js", () => ({
   readModelAccessState: mockReadModelAccessState,
   provisionClaudeSubscription: mockProvisionClaudeSubscription,
   provisionClaudeApiKey: mockProvisionClaudeApiKey,
   provisionOpenRouter: mockProvisionOpenRouter,
+  subscriptionBridgeAvailable: mockBridgeAvailable,
 }));
 
 vi.mock("../apex/model-access/detect-claude.js", () => ({
   detectClaudeAuth: mockDetectClaudeAuth,
+  detectClaudeAuthForOperator: mockDetectClaudeAuthForOperator,
 }));
 
 const { apexSetupModelsRoutes } = await import("../routes/apex-setup-models.js");
@@ -30,7 +34,11 @@ const { apexSetupModelsRoutes } = await import("../routes/apex-setup-models.js")
 function makeApp() {
   const app = express();
   app.use(express.json());
-  app.use(apexSetupModelsRoutes({} as any));
+  app.use((req, _res, next) => {
+    (req as any).actor = { type: "board", userId: "user-1" };
+    next();
+  });
+  app.use(apexSetupModelsRoutes({} as any, {} as any));
   return app;
 }
 
@@ -41,14 +49,21 @@ const stateFixture = {
 };
 
 describe("GET /setup/models — state probe", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockBridgeAvailable.mockReturnValue(true);
+  });
 
-  it("returns the ModelAccessState snapshot", async () => {
+  it("returns the ModelAccessState snapshot with claude facts scoped to the operator", async () => {
     mockReadModelAccessState.mockResolvedValue(stateFixture);
+    const detect = Promise.resolve({ mode: "unknown", installed: null, source: "unknown", reportedAt: null });
+    mockDetectClaudeAuthForOperator.mockReturnValue(detect);
     const res = await request(makeApp()).get("/setup/models");
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual(stateFixture);
+    expect(mockDetectClaudeAuthForOperator).toHaveBeenCalledWith(expect.anything(), "user-1");
+    expect(mockReadModelAccessState).toHaveBeenCalledWith(expect.anything(), detect);
   });
 
   it("propagates gateway errors as 500", async () => {
@@ -59,7 +74,20 @@ describe("GET /setup/models — state probe", () => {
 });
 
 describe("POST /setup/models/claude/provision — subscription bridge", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockBridgeAvailable.mockReturnValue(true);
+  });
+
+  it("is refused with a classified error on a hosted deployment, before any detection", async () => {
+    mockBridgeAvailable.mockReturnValue(false);
+    const res = await request(makeApp()).post("/setup/models/claude/provision").send({});
+    expect(res.status).toBe(501);
+    expect(res.body).toMatchObject({ code: "not_available_on_hosted" });
+    expect(res.body.error).toMatch(/hosted/i);
+    expect(mockDetectClaudeAuth).not.toHaveBeenCalled();
+    expect(mockProvisionClaudeSubscription).not.toHaveBeenCalled();
+  });
 
   it("provisions successfully when claude subscription is detected", async () => {
     mockDetectClaudeAuth.mockResolvedValue({ mode: "subscription", installed: true });
@@ -75,11 +103,14 @@ describe("POST /setup/models/claude/provision — subscription bridge", () => {
     expect(res.body.providerName).toBe("claude-subscription-bridge");
   });
 
-  it("returns 428 when claude is not authenticated", async () => {
+  it("returns a classified 428 naming the in-UI ceremony when claude is not authenticated", async () => {
     mockDetectClaudeAuth.mockResolvedValue({ mode: "none", installed: false });
     const res = await request(makeApp()).post("/setup/models/claude/provision").send({});
     expect(res.status).toBe(428);
     expect(res.body.error).toMatch(/not authenticated/i);
+    expect(res.body.code).toBe("claude_session_required");
+    expect(res.body.hint).toMatch(/Connect Claude subscription/);
+    expect(JSON.stringify(res.body)).not.toMatch(/claude login/);
     expect(mockProvisionClaudeSubscription).not.toHaveBeenCalled();
   });
 

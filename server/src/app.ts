@@ -302,7 +302,7 @@ export async function createApp(
   api.use(apexSetupRoutes(db));
   api.use(apexScopingRoutes(db));
   api.use(apexSetupStateRoutes(db));
-  api.use(apexSetupModelsRoutes());
+  api.use(apexSetupModelsRoutes(db));
   api.use(apexObserveRoutes(db, { mintOperatorToken: opts.mintOperatorToken }));
   api.use(apexGatewayObserveRoutes({ mintOperatorToken: opts.mintOperatorToken }));
   api.use(apexWorkflowsRoutes(db));

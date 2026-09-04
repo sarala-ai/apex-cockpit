@@ -27,7 +27,8 @@ import type {
   GatewayPromptEntry,
 } from "@paperclipai/shared";
 
-const gatewayUrl = (): string =>
+/** The gateway base URL this process is configured to talk to. */
+export const gatewayUrl = (): string =>
   (process.env.APEX_GATEWAY_URL ?? "http://127.0.0.1:4444").replace(/\/$/, "");
 
 /**
@@ -227,6 +228,27 @@ export class GatewayClient {
           createdAt: str(g.createdAt),
         }),
       ),
+    };
+  }
+
+  /**
+   * The registry's OAuth posture, as booleans only: which upstreams are
+   * registered with authType "oauth" and whether each carries an OAuth
+   * config. The config itself (client id/secret, URLs) is never read past
+   * this method.
+   */
+  async readGatewayOauthPosture(): Promise<GatewayHttp<Array<{ name: string; authType: string | null; oauthConfigured: boolean }>>> {
+    const res = await this.getClassified(`${gatewayUrl()}/gateways`);
+    if (!res.ok) return res;
+    const raw = await res.value.json().catch(() => []);
+    const rows = Array.isArray(raw) ? raw : [];
+    return {
+      ok: true,
+      value: rows.map((g: Record<string, unknown>) => ({
+        name: String(g.name ?? "gateway"),
+        authType: str(g.authType),
+        oauthConfigured: g.oauthConfig != null && typeof g.oauthConfig === "object" && Object.keys(g.oauthConfig as object).length > 0,
+      })),
     };
   }
 

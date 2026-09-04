@@ -11,7 +11,7 @@ import {
 import { validate } from "../middleware/validate.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { HttpError } from "../errors.js";
-import { GatewayClient } from "../gateway/gateway-client.js";
+import { cockpitSystemGatewayClient } from "../gateway/system-credential.js";
 
 function slugify(name: string): string {
   return name
@@ -23,7 +23,7 @@ function slugify(name: string): string {
 
 export function companyPromptRoutes(db: Db) {
   const router = Router();
-  const gateway = new GatewayClient();
+  const gateway = cockpitSystemGatewayClient();
 
   // GET /companies/:companyId/prompts
   router.get("/companies/:companyId/prompts", async (req, res) => {

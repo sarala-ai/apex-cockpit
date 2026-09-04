@@ -11,6 +11,7 @@
 import type { Request } from "express";
 import { Router } from "express";
 import { GatewayClient } from "../gateway/gateway-client.js";
+import { cockpitSystemGatewayClient } from "../gateway/system-credential.js";
 import { EvalIngestClient } from "../observe/eval-ingest-client.js";
 import { assertBoardOrAgent } from "./authz.js";
 import { validate } from "../middleware/validate.js";
@@ -45,9 +46,8 @@ export function apexGatewayObserveRoutes(
   opts: {
     /** Default/fallback client — used whenever `mintOperatorToken` is absent
      *  or resolves to null (e.g. agent/board callers with no operator
-     *  session). Defaults to a fresh env-token-backed GatewayClient, same as
-     *  before this option existed. Also the seam tests inject a mock client
-     *  through. */
+     *  session). Defaults to the cockpit's own system principal. Also the
+     *  seam tests inject a mock client through. */
     client?: GatewayClient;
     /**
      * Mints the signed-in operator's cockpit principal JWT for this
@@ -60,7 +60,7 @@ export function apexGatewayObserveRoutes(
 ) {
   const router = Router();
   const evalIngestClient = new EvalIngestClient();
-  const defaultClient = opts.client ?? new GatewayClient();
+  const defaultClient = opts.client ?? cockpitSystemGatewayClient();
 
   // Resolves the GatewayClient to use for a single request: the operator's
   // own token when available, else the shared default/fallback client.

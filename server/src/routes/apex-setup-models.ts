@@ -13,6 +13,7 @@
  */
 
 import { Router } from "express";
+import type { Db } from "@paperclipai/db";
 import type { GatewayClient } from "../gateway/gateway-client.js";
 import { cockpitSystemGatewayClient } from "../gateway/system-credential.js";
 import { assertBoardOrAgent } from "./authz.js";
@@ -21,34 +22,48 @@ import {
   provisionClaudeSubscription,
   provisionClaudeApiKey,
   provisionOpenRouter,
+  subscriptionBridgeAvailable,
 } from "../apex/model-access/index.js";
-import { detectClaudeAuth } from "../apex/model-access/detect-claude.js";
+import { detectClaudeAuth, detectClaudeAuthForOperator } from "../apex/model-access/detect-claude.js";
 
-export function apexSetupModelsRoutes(client: GatewayClient = cockpitSystemGatewayClient()) {
+export function apexSetupModelsRoutes(db: Db, client: GatewayClient = cockpitSystemGatewayClient()) {
   const router = Router();
 
-  /** GET /setup/models — live snapshot of model access state. */
+  /** GET /setup/models — live snapshot of model access state, claude facts
+   *  scoped to the signed-in operator. */
   router.get("/setup/models", async (req, res) => {
     assertBoardOrAgent(req);
-    const state = await readModelAccessState(client);
+    const state = await readModelAccessState(client, detectClaudeAuthForOperator(db, req.actor?.userId ?? null));
     res.json(state);
   });
 
   /**
    * POST /setup/models/claude/provision — provision the subscription bridge.
    *
-   * Auto-detect: if the local claude CLI is logged in, generate the bridge
-   * provider row + apex-* aliases. Returns 428 if claude is not detected so
-   * the UI can guide the operator.
+   * The bridge spawns `claude -p` on THIS host, so it exists only where the
+   * host is the operator's logged-in workstation. Elsewhere it is refused
+   * with a classified error rather than registering a bridge URL nothing
+   * serves. Returns 428 when claude is not authenticated here, naming the
+   * in-UI alternative.
    */
   router.post("/setup/models/claude/provision", async (req, res) => {
     assertBoardOrAgent(req);
 
+    if (!subscriptionBridgeAvailable()) {
+      res.status(501).json({
+        error: "The subscription bridge is not available on hosted deployments",
+        code: "not_available_on_hosted",
+        hint: "Complete the 'Connect Claude subscription' step (your per-user session token), or add a Claude API key under Advanced.",
+      });
+      return;
+    }
+
     const detect = await detectClaudeAuth();
-    if (detect.mode === "none") {
+    if (detect.mode === "none" || detect.mode === "unknown") {
       res.status(428).json({
-        error: "Claude is not authenticated on this machine",
-        hint: "Run `claude login` or set ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN",
+        error: "Claude is not authenticated on the cockpit host",
+        code: "claude_session_required",
+        hint: "Complete the 'Connect Claude subscription' step in this wizard, or add a Claude API key under Advanced.",
         detected: detect,
       });
       return;

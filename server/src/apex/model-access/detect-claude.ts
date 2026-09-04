@@ -22,14 +22,34 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import type { Db } from '@paperclipai/db';
 import { run } from '../exec.js';
+import {
+  readWorkstationReport,
+  serverIsOperatorWorkstation,
+  workstationReportIsStale,
+} from '../setup/operator-auth.js';
 
-export type ClaudeAuthMode = 'subscription_local' | 'subscription_remote' | 'api_key' | 'none';
+/** `unknown` = nobody who could answer has answered (hosted cockpit, no
+ *  workstation report). Never inferred from the container. */
+export type ClaudeAuthMode = 'subscription_local' | 'subscription_remote' | 'api_key' | 'none' | 'unknown';
 
 export interface ClaudeDetectResult {
   mode: ClaudeAuthMode;
-  installed: boolean;
+  /** null = unknown. */
+  installed: boolean | null;
+  /** Who answered: this server's own probe, the operator's workstation
+   *  report, or nobody. */
+  source: 'server' | 'workstation' | 'unknown';
+  reportedAt: string | null;
 }
+
+export const UNKNOWN_CLAUDE_DETECT: ClaudeDetectResult = {
+  mode: 'unknown',
+  installed: null,
+  source: 'unknown',
+  reportedAt: null,
+};
 
 /** ~/.claude directory — where Claude Code persists login state. */
 const claudeDir = () => path.join(os.homedir(), '.claude');
@@ -78,23 +98,51 @@ export async function detectClaudeAuth(): Promise<ClaudeDetectResult> {
   // --- Step 1: is the claude CLI installed? ---
   const versionRes = await run('claude', ['--version'], 4000);
   const installed = versionRes.status === 'ok';
+  const base = { installed, source: 'server' as const, reportedAt: null };
 
   // --- Step 2: classify the auth mode ---
   // api_key mode: explicit key overrides any local login
   if (process.env.ANTHROPIC_API_KEY) {
-    return { mode: 'api_key', installed };
+    return { mode: 'api_key', ...base };
   }
 
   // Remote subscription: CLAUDE_CODE_OAUTH_TOKEN is set (APEX-101 slot, seeded
   // by a founder-run `claude setup-token`)
   if (process.env.CLAUDE_CODE_OAUTH_TOKEN) {
-    return { mode: 'subscription_remote', installed };
+    return { mode: 'subscription_remote', ...base };
   }
 
   // Local subscription: claude is installed and shows signs of an active login
   if (installed && (await hasLocalClaudeLogin())) {
-    return { mode: 'subscription_local', installed };
+    return { mode: 'subscription_local', ...base };
   }
 
-  return { mode: 'none', installed };
+  return { mode: 'none', ...base };
+}
+
+/**
+ * Claude detection scoped to the operator. On the operator's own workstation
+ * (local_trusted) the server probes itself. On a hosted cockpit the container
+ * has the CLI installed (image) and is never logged in, so neither fact is the
+ * operator's: the answer comes from the operator's workstation report, and is
+ * `unknown` when there is none or it is stale. A workstation login does not
+ * make this server able to call Claude; the claudeSession step owns that.
+ */
+export async function detectClaudeAuthForOperator(
+  db: Db,
+  userId: string | null,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<ClaudeDetectResult> {
+  if (serverIsOperatorWorkstation(env)) return detectClaudeAuth();
+  if (!userId) return UNKNOWN_CLAUDE_DETECT;
+  const row = await readWorkstationReport(db, userId);
+  if (!row || workstationReportIsStale(row)) return UNKNOWN_CLAUDE_DETECT;
+  const claude = row.report.claude;
+  const loggedIn = claude.loggedIn ?? null;
+  return {
+    installed: claude.installed,
+    mode: !claude.installed || loggedIn === false ? 'none' : loggedIn === true ? 'subscription_local' : 'unknown',
+    source: 'workstation',
+    reportedAt: row.reportedAt.toISOString(),
+  };
 }

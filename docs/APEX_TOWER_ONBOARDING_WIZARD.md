@@ -27,15 +27,35 @@ Returns the status of each prerequisite so the UI renders a live checklist:
 
 ```
 {
-  auth:        { gcloud, gh, adc: 'ok'|'missing'|'expired' },   // /setup/auth + adc probe
-  org:         { present: bool, id? },                          // orgs table
+  auth:        { gcloud, gh, adc: 'ok'|'missing'|'expired',
+                 source: 'server'|'workstation'|'stale'|'none', reportedAt, reportAgeMs },
+                                                                // local: server probes itself; hosted: operator's
+                                                                // workstation report (stale past 24h — never green)
+  org:         { present: bool, id?, posture? },                // orgs table
   companies:   { count, ids[] },                                // companies under org
-  scoping:     { orgBound: bool, companyBound: bool },          // cloud_scope_bindings
-  oauthClient: { configured: bool },                            // gateway Google OAuth client
-  gateway:     { reachable: bool },                             // apex-gateway /health
-  mcpServers:  { registered: [names] },                         // gateway GET /gateways
+  scoping:     { orgProjectsBound, orgReposBound,
+                 companyProjectsBound, companyReposBound },      // cloud_scope_bindings
+  oauthClient: { configured, signInClient: 'configured'|'missing'|'not_applicable',
+                 gatewayUpstreams: { total, configured, error? } },
+                                                                // cockpit GOOGLE_CLIENT_ID + OAuth-typed gateway
+                                                                // upstreams carrying an oauth config
+  gateway:     { reachable, url, authenticated: bool|null, failure },
+                                                                // apex-gateway registry read as the cockpit
+                                                                // system principal (unreachable vs rejected)
+  mcpServers:  { registered: [names], error? },                 // gateway GET /gateways; error = unreadable
+  models:      { claude: { mode, installed, source: 'server'|'workstation'|'unknown', ... },
+                 bridgeAvailable },                             // claude facts scoped to the operator, never
+                                                                // the container's; bridge only on a local host
+  claudeSession: { connected, source, setAt },                  // per-user token / company key present
 }
 ```
+
+There is no org-GitHub (App install / WIF) step: the cockpit holds nothing it
+could verify an App installation with, so the wizard does not claim one.
+Discovery routes (`/setup/gcp/*`, `/setup/github/*`) shell `gcloud`/`gh` only
+on a local_trusted instance; hosted they answer
+`{ source: "unavailable", reason: "operator_workstation_required", workstation }`
+and the UI takes typed ids, validated on the binding write.
 
 ## Step / gate state machine
 
@@ -43,11 +63,11 @@ Ordered steps; each = `{ detect, kind: 'auto'|'hitl', action|guidance, verify }`
 
 | # | Step | Kind | Action / gate |
 |---|---|---|---|
-| 1 | Local auth | auto-detect + **hitl** if missing | detect gcloud/gh/ADC; if missing, guide `gcloud auth login` (reauth banner) |
+| 1 | Local auth | auto-detect + **hitl** if missing | detect gcloud/gh/ADC (local: server probe; hosted: workstation report); if missing, the desktop sign-in or `apex connect gcloud|github` (reauth banner) |
 | 2 | Org "Sarala" | **auto** | create from discovered Google org (`/orgs`), or one click |
 | 3 | Companies + GCP/repo scoping | **auto (UI)** | the Org/scoping component — bind projects/repos per scope (`/apex/scope/...`) |
 | 4 | Google OAuth client | **auto (APEX) → hitl consent-screen** | APEX workflow provisions the client + Secret Manager secret; consent-screen config is the one console gate |
-| 5 | Gateway up | **auto** | start/health-check apex-gateway |
+| 5 | Gateway up | **auto** | registry read as the cockpit principal: unreachable / credential rejected / ok, with the configured URL |
 | 6 | Register MCP servers | **auto** | `POST /gateways` for known servers (e.g. Google Workspace MCP) |
 | 7 | Connect capability (per-user OAuth) | **hitl** | user does the one Google consent (incremental scopes on their SSO identity); broker stores the token; wizard detects + advances |
 | 8 | Per-tool governance | **auto (UI)** | allowlist which federated tools a company/agent may use (the resolver applied) |

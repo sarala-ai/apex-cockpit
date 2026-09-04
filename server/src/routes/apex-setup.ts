@@ -4,8 +4,10 @@
  * Read-only control-plane queries that back the one-time "connect a product to
  * its Google org + GitHub org" flow: check auth status, and load the existing
  * GCP projects/orgs and GitHub orgs/repos the authed accounts can see. Shells
- * `gcloud`/`gh` (deterministic core, already-authed). Nothing here provisions;
- * creation goes through APEX workflows.
+ * `gcloud`/`gh` only when the server is the operator's own workstation
+ * (local_trusted); a hosted cockpit reports discovery as unavailable instead of
+ * answering as its service account. Nothing here provisions; creation goes
+ * through APEX workflows.
  *
  * These are a 1:1 Express re-expression of the Fastify endpoints in
  * `server/src/apex/index.ts` (`GET /setup/*`). The shell-out + classified-error
@@ -25,7 +27,12 @@ import {
   listGithubOrgs,
   listGithubRepos,
 } from "../apex/setup/cloud.js";
-import { readWorkstationReport, resolveOperatorAuth } from "../apex/setup/operator-auth.js";
+import {
+  readWorkstationReport,
+  resolveOperatorAuth,
+  serverIsOperatorWorkstation,
+  summarizeWorkstationReport,
+} from "../apex/setup/operator-auth.js";
 import { validate } from "../middleware/validate.js";
 import { assertBoard, assertBoardOrAgent } from "./authz.js";
 import { unauthorized } from "../errors.js";
@@ -65,9 +72,30 @@ export function apexSetupRoutes(db: Db) {
     res.json(row ? { report: row.report, reportedAt: row.reportedAt.toISOString() } : { report: null, reportedAt: null });
   });
 
+  // Discovery shells the server's own gcloud/gh, which is only the operator's
+  // view when the server IS the operator's workstation. On a hosted cockpit
+  // the container's CLIs would answer as the service account, so discovery
+  // is declared unavailable and the operator's last workstation report (if
+  // any) is echoed so the UI can say who last reported and when.
+  async function hostedDiscovery(req: { actor?: { userId?: string | null } }) {
+    if (serverIsOperatorWorkstation()) return null;
+    const userId = req.actor?.userId ?? null;
+    const row = userId ? await readWorkstationReport(db, userId) : null;
+    return {
+      source: "unavailable" as const,
+      reason: "operator_workstation_required" as const,
+      workstation: summarizeWorkstationReport(row),
+    };
+  }
+
   // GET /setup/gcp/projects — GCP projects the authed account can see.
   router.get("/setup/gcp/projects", async (req, res) => {
     assertBoardOrAgent(req);
+    const hosted = await hostedDiscovery(req);
+    if (hosted) {
+      res.json({ projects: [], ...hosted });
+      return;
+    }
     const r = await listGcpProjects();
     res.json(
       r.ok
@@ -79,6 +107,11 @@ export function apexSetupRoutes(db: Db) {
   // GET /setup/gcp/orgs — GCP organizations the authed account can see.
   router.get("/setup/gcp/orgs", async (req, res) => {
     assertBoardOrAgent(req);
+    const hosted = await hostedDiscovery(req);
+    if (hosted) {
+      res.json({ orgs: [], ...hosted });
+      return;
+    }
     const r = await listGcpOrgs();
     res.json(
       r.ok
@@ -90,6 +123,11 @@ export function apexSetupRoutes(db: Db) {
   // GET /setup/github/orgs — GitHub orgs the authed user belongs to.
   router.get("/setup/github/orgs", async (req, res) => {
     assertBoardOrAgent(req);
+    const hosted = await hostedDiscovery(req);
+    if (hosted) {
+      res.json({ orgs: [], ...hosted });
+      return;
+    }
     const r = await listGithubOrgs();
     res.json(
       r.ok
@@ -102,6 +140,11 @@ export function apexSetupRoutes(db: Db) {
   // authed user when org is omitted).
   router.get("/setup/github/repos", async (req, res) => {
     assertBoardOrAgent(req);
+    const hosted = await hostedDiscovery(req);
+    if (hosted) {
+      res.json({ repos: [], ...hosted });
+      return;
+    }
     const org = typeof req.query.org === "string" ? req.query.org : "";
     const r = await listGithubRepos(org);
     res.json(

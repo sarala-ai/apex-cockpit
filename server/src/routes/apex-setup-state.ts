@@ -14,18 +14,28 @@
 import { Router } from "express";
 import { and, eq } from "drizzle-orm";
 import { type Db, orgs, companies, cloudScopeBindings, orgMemberships, companySecrets, userSecretDefinitions } from "@paperclipai/db";
-import { resolveOperatorAuth } from "../apex/setup/operator-auth.js";
+import { resolveOperatorAuth, serverIsOperatorWorkstation } from "../apex/setup/operator-auth.js";
 import { assertBoardOrAgent } from "./authz.js";
 import { readModelAccessState, type ModelAccessState } from "../apex/model-access/index.js";
+import { detectClaudeAuthForOperator, UNKNOWN_CLAUDE_DETECT } from "../apex/model-access/detect-claude.js";
 import { cockpitSystemGatewayClient } from "../gateway/system-credential.js";
+import { gatewayUrl, type GatewayFailure } from "../gateway/gateway-client.js";
 
 type Health = "ok" | "missing" | "expired";
 
 export interface SetupState {
   /** Operator-scoped: `source` says who answered — the server probing itself
-   *  (local instance) or the operator's workstation report (hosted); `none`
-   *  means no report yet. `reportedAt` carries the report's staleness. */
-  auth: { gcloud: Health; gh: Health; adc: Health; source: "server" | "workstation" | "none"; reportedAt: string | null };
+   *  (local instance) or the operator's workstation report (hosted); `stale`
+   *  is a report past its max age (items carried, never green); `none` means
+   *  no report yet. */
+  auth: {
+    gcloud: Health;
+    gh: Health;
+    adc: Health;
+    source: "server" | "workstation" | "stale" | "none";
+    reportedAt: string | null;
+    reportAgeMs: number | null;
+  };
   /** `posture` is the governance dial (default `individual`) — drives which
    *  hardening steps the wizard requires (see SetupWizard.requiredSteps). */
   org: { present: boolean; id?: string; posture?: "individual" | "team" | "enterprise" };
@@ -43,12 +53,20 @@ export interface SetupState {
     companyProjectsBound: boolean;
     companyReposBound: boolean;
   };
-  /** Org-level GitHub connection: the GitHub App install + the single org WIF
-   *  pool/provider. SHALLOW probe — presence of config/env markers only; a deep
-   *  check (App install liveness, WIF binding) is a later APEX workflow. */
-  orgGithub: { appInstalled: boolean; wifConfigured: boolean };
-  oauthClient: { configured: boolean; note?: string };
-  gateway: { reachable: boolean };
+  /** What the cockpit can actually verify about Google OAuth: its own sign-in
+   *  client (GOOGLE_CLIENT_ID, the value config.ts reads; not applicable on a
+   *  local_trusted instance) and, in the gateway registry, whether every
+   *  OAuth-typed upstream carries an OAuth config. `configured` is both. */
+  oauthClient: {
+    configured: boolean;
+    signInClient: "configured" | "missing" | "not_applicable";
+    gatewayUpstreams: { total: number; configured: number; error?: string };
+    note?: string;
+  };
+  /** `url` is what this process is configured to call; `authenticated` is
+   *  whether the registry read accepted the cockpit's credential (null when
+   *  the gateway could not be reached at all). */
+  gateway: { reachable: boolean; url: string; authenticated: boolean | null; failure: GatewayFailure | null };
   /** `error` is set when the registry could not be read even though the
    *  gateway is up — typically the cockpit's credential being rejected — so
    *  an empty list is never mistaken for an empty registry. */
@@ -71,18 +89,21 @@ export interface SetupStateProbes {
   membership: (userId?: string | null, orgId?: string) => Promise<SetupState["membership"]>;
   companies: (orgId?: string) => Promise<SetupState["companies"]>;
   scoping: () => Promise<SetupState["scoping"]>;
-  orgGithub: () => Promise<SetupState["orgGithub"]>;
   oauthClient: () => Promise<SetupState["oauthClient"]>;
   gateway: () => Promise<SetupState["gateway"]>;
   mcpServers: (gatewayReachable: boolean) => Promise<SetupState["mcpServers"]>;
-  models: () => Promise<SetupState["models"]>;
+  models: (userId: string | null) => Promise<SetupState["models"]>;
   claudeSession: (userId: string | null) => Promise<SetupState["claudeSession"]>;
 }
 
 /** Real probes over the live DB / gcloud / gateway. Each is self-contained.
  *  Gateway probes run as the cockpit system principal: they describe the
  *  instance, not the signed-in operator. */
-export function defaultProbes(db: Db, gateway = cockpitSystemGatewayClient()): SetupStateProbes {
+export function defaultProbes(
+  db: Db,
+  gateway = cockpitSystemGatewayClient(),
+  env: NodeJS.ProcessEnv = process.env,
+): SetupStateProbes {
   return {
     async claudeSession(userId) {
       if (!userId) return { connected: false, source: null, setAt: null };
@@ -115,8 +136,15 @@ export function defaultProbes(db: Db, gateway = cockpitSystemGatewayClient()): S
       return { connected: false, source: null, setAt: null };
     },
     async auth(userId) {
-      const status = await resolveOperatorAuth(db, userId);
-      return { gcloud: status.gcloud, gh: status.gh, adc: status.adc, source: status.source, reportedAt: status.reportedAt };
+      const status = await resolveOperatorAuth(db, userId, env);
+      return {
+        gcloud: status.gcloud,
+        gh: status.gh,
+        adc: status.adc,
+        source: status.source,
+        reportedAt: status.reportedAt,
+        reportAgeMs: status.reportAgeMs,
+      };
     },
     async org() {
       const [row] = await db
@@ -159,25 +187,37 @@ export function defaultProbes(db: Db, gateway = cockpitSystemGatewayClient()): S
         companyReposBound: rows.some((r) => r.scopeType === "company" && nonEmpty(r.githubRepos)),
       };
     },
-    async orgGithub() {
-      // Shallow: presence of a stored GitHub App id + org WIF provider in
-      // config/env. Deeper verification (App installation, WIF pool binding) is
-      // a later APEX workflow — see the Org-GitHub wizard step.
+    async oauthClient() {
+      const signInClient: SetupState["oauthClient"]["signInClient"] = serverIsOperatorWorkstation(env)
+        ? "not_applicable"
+        : env.GOOGLE_CLIENT_ID?.trim()
+          ? "configured"
+          : "missing";
+      const posture = await gateway.readGatewayOauthPosture();
+      if (!posture.ok) {
+        return {
+          configured: false,
+          signInClient,
+          gatewayUpstreams: { total: 0, configured: 0, error: posture.failure.message },
+          note: "gateway registry could not be read",
+        };
+      }
+      const oauthUpstreams = posture.value.filter((g) => (g.authType ?? "").toLowerCase() === "oauth");
+      const gatewayUpstreams = {
+        total: oauthUpstreams.length,
+        configured: oauthUpstreams.filter((g) => g.oauthConfigured).length,
+      };
+      const upstreamsOk = gatewayUpstreams.configured === gatewayUpstreams.total;
       return {
-        appInstalled: Boolean(process.env.GITHUB_APP_ID),
-        wifConfigured: Boolean(process.env.GCP_WIF_PROVIDER),
+        configured: signInClient !== "missing" && upstreamsOk,
+        signInClient,
+        gatewayUpstreams,
+        ...(signInClient === "missing" ? { note: "GOOGLE_CLIENT_ID not set on the cockpit" } : {}),
       };
     },
-    async oauthClient() {
-      // Best-effort: the gateway's Google OAuth client is configured via env today.
-      // No signal yet → not configured (with a note), rather than a hard failure.
-      const configured = Boolean(process.env.GOOGLE_OAUTH_CLIENT_ID);
-      return configured
-        ? { configured: true }
-        : { configured: false, note: "GOOGLE_OAUTH_CLIENT_ID not set" };
-    },
     async gateway() {
-      return { reachable: await gateway.reachable() };
+      const probe = await gateway.probe();
+      return { reachable: probe.reachable, url: gatewayUrl(), authenticated: probe.authenticated, failure: probe.failure };
     },
     async mcpServers(gatewayReachable: boolean) {
       if (!gatewayReachable) return { registered: [] };
@@ -185,8 +225,8 @@ export function defaultProbes(db: Db, gateway = cockpitSystemGatewayClient()): S
       if (!res.ok) return { registered: [], error: res.failure.message };
       return { registered: res.value.map((g) => g.name) };
     },
-    async models() {
-      return readModelAccessState(gateway);
+    async models(userId) {
+      return readModelAccessState(gateway, detectClaudeAuthForOperator(db, userId, env));
     },
   };
 }
@@ -208,13 +248,14 @@ export function apexSetupStateRoutes(db: Db, overrides?: Partial<SetupStateProbe
     assertBoardOrAgent(req);
     const orgId = typeof req.query.orgId === "string" ? req.query.orgId : undefined;
 
-    const [auth, org, scoping, orgGithub, oauthClient, gateway] = await Promise.all([
+    const [auth, org, scoping, oauthClient, gateway] = await Promise.all([
       safe(() => probes.auth(req.actor?.userId ?? null), {
         gcloud: "missing",
         gh: "missing",
         adc: "missing",
         source: "none",
         reportedAt: null,
+        reportAgeMs: null,
       } as const),
       safe(() => probes.org(), { present: false }),
       safe(() => probes.scoping(), {
@@ -223,24 +264,34 @@ export function apexSetupStateRoutes(db: Db, overrides?: Partial<SetupStateProbe
         companyProjectsBound: false,
         companyReposBound: false,
       }),
-      safe(() => probes.orgGithub(), { appInstalled: false, wifConfigured: false }),
-      safe(() => probes.oauthClient(), { configured: false, note: "probe failed" }),
-      safe(() => probes.gateway(), { reachable: false }),
+      safe(() => probes.oauthClient(), {
+        configured: false,
+        signInClient: "missing",
+        gatewayUpstreams: { total: 0, configured: 0, error: "probe failed" },
+        note: "probe failed",
+      }),
+      safe(() => probes.gateway(), {
+        reachable: false,
+        url: gatewayUrl(),
+        authenticated: null,
+        failure: { kind: "unreachable", status: null, message: "probe failed" },
+      }),
     ]);
     // companies + membership are org-scoped once the org is known; mcpServers
     // depends on gateway. Membership resolves the signed-in actor's row.
     // models probe runs in parallel with the secondary probes.
     const resolvedOrgId = orgId ?? org.id;
     const defaultModelsState: ModelAccessState = {
-      claude: { mode: "none", installed: false, subscriptionProviderRegistered: false, apiKeyProviderRegistered: false },
+      claude: { ...UNKNOWN_CLAUDE_DETECT, subscriptionProviderRegistered: false, apiKeyProviderRegistered: false },
       openrouter: { configured: false },
       aliasesRegistered: [],
+      bridgeAvailable: false,
     };
     const [companiesState, mcpServers, membership, models, claudeSession] = await Promise.all([
       safe(() => probes.companies(resolvedOrgId), { count: 0, ids: [] }),
       safe(() => probes.mcpServers(gateway.reachable), { registered: [] }),
       safe(() => probes.membership(req.actor?.userId ?? null, resolvedOrgId), { present: false }),
-      safe(() => probes.models(), defaultModelsState),
+      safe(() => probes.models(req.actor?.userId ?? null), defaultModelsState),
       safe(() => probes.claudeSession(req.actor?.userId ?? null), { connected: false, source: null, setAt: null } as const),
     ]);
 
@@ -250,7 +301,6 @@ export function apexSetupStateRoutes(db: Db, overrides?: Partial<SetupStateProbe
       membership,
       companies: companiesState,
       scoping,
-      orgGithub,
       oauthClient,
       gateway,
       mcpServers,

@@ -71,11 +71,11 @@ export async function checkAuth(): Promise<AuthStatus> {
   };
 }
 
-// Note: interactive re-auth is intentionally NOT done server-side in local dev.
-// `checkAuth().google.live === false` signals expiry; the UI prompts the operator
-// to run `gcloud auth login` (or re-run scripts/run-tower.sh). A future hosted
-// deployment replaces that guidance with an in-app OAuth redirect + per-user token
-// store behind the same detect→prompt seam.
+// Note: interactive re-auth is intentionally NOT done server-side. On a local
+// instance `checkAuth().google.live === false` signals expiry and the UI offers
+// the desktop sign-in / `apex connect gcloud`. These probes describe the machine
+// the server runs on; a hosted cockpit never calls them for operator questions
+// (see operator-auth.ts and the discovery routes).
 
 function parseJson<T>(res: Awaited<ReturnType<typeof run>>, source: string): Result<T> & { source: string } {
   if (res.status === 'missing') {
@@ -85,7 +85,7 @@ function parseJson<T>(res: Awaited<ReturnType<typeof run>>, source: string): Res
     const unauth = /auth|login|credential|reauth|not logged/i.test(res.stderr);
     return {
       ...err(unauth ? 'tool-unauth' : 'tool-failed', unauth
-        ? 'Not authenticated — run `gcloud auth login` / `gh auth login`.'
+        ? 'Not signed in on this machine — run `apex connect gcloud` / `apex connect github`.'
         : res.stderr.trim().slice(0, 200)),
       source: 'unavailable',
     };

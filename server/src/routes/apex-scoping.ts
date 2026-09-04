@@ -25,6 +25,31 @@ import {
 
 type ScopeType = "org" | "company";
 
+// Binding ids are typed by hand on a hosted cockpit (discovery runs on the
+// operator's workstation), so the write path checks their shape: a GCP project
+// id and an `owner/repo` slug. Existence is not checked here — that is the
+// provisioning workflow's job at execution time.
+const GCP_PROJECT_ID_RE = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
+const GITHUB_REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+export function invalidBindingIds(input: { gcpProjects: string[]; githubRepos: string[] }) {
+  return {
+    gcpProjects: input.gcpProjects.filter((id) => !GCP_PROJECT_ID_RE.test(id)),
+    githubRepos: input.githubRepos.filter((slug) => !GITHUB_REPO_RE.test(slug)),
+  };
+}
+
+function describeInvalidBindingIds(invalid: { gcpProjects: string[]; githubRepos: string[] }): string {
+  const parts: string[] = [];
+  if (invalid.gcpProjects.length > 0) {
+    parts.push(`not a GCP project id: ${invalid.gcpProjects.join(", ")}`);
+  }
+  if (invalid.githubRepos.length > 0) {
+    parts.push(`not an owner/repo slug: ${invalid.githubRepos.join(", ")}`);
+  }
+  return parts.join("; ");
+}
+
 function isScopeType(v: string): v is ScopeType {
   return v === "org" || v === "company";
 }
@@ -420,6 +445,14 @@ export function apexScopingRoutes(db: Db) {
       Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
     const gcpProjects = asStrArr(body.gcpProjects);
     const githubRepos = asStrArr(body.githubRepos);
+    const invalid = invalidBindingIds({ gcpProjects, githubRepos });
+    if (invalid.gcpProjects.length > 0 || invalid.githubRepos.length > 0) {
+      res.status(400).json({
+        error: describeInvalidBindingIds(invalid),
+        invalid,
+      });
+      return;
+    }
     const [row] = await db
       .insert(cloudScopeBindings)
       .values({ scopeType, scopeId, gcpProjects, githubRepos })
