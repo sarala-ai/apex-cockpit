@@ -18,6 +18,17 @@ import { spawn, ChildProcessWithoutNullStreams } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 
+// ---- Test seam: isolated userData -----------------------------------------
+// Playwright (desktop/tests/) launches this same binary and needs a throwaway
+// profile per run instead of the operator's real one. Electron's userData
+// path can only be changed before the app is ready, so this must run at
+// module load, before any function below calls app.getPath("userData"). The
+// env var is never set outside test runs, so production behavior is
+// unaffected.
+if (process.env.APEX_DESKTOP_USER_DATA_DIR) {
+  app.setPath("userData", process.env.APEX_DESKTOP_USER_DATA_DIR);
+}
+
 interface CockpitConfig {
   mode: "local" | "remote";
   cockpitUrl: string;
@@ -171,6 +182,14 @@ function storeToken(token: string): { ok: boolean; error?: string } {
 }
 
 function readToken(): { ok: boolean; token: string | null; error?: string } {
+  // Test seam: an unpackaged build (dev or Playwright) may supply the board
+  // token via env instead of the OS keychain — CI/dev keychains don't reliably
+  // offer safeStorage encryption, and the authenticated test tier needs a real
+  // token without driving the browser-approval ceremony. Never honored in a
+  // packaged (shipped) build.
+  if (!app.isPackaged && process.env.APEX_DESKTOP_TEST_BOARD_TOKEN) {
+    return { ok: true, token: process.env.APEX_DESKTOP_TEST_BOARD_TOKEN };
+  }
   const p = tokenPath();
   if (!fs.existsSync(p)) {
     return { ok: true, token: null };

@@ -10,9 +10,12 @@
     "build": "tsc -p tsconfig.json && cp src/signin.html dist/signin.html",
     "start": "npm run build && electron .",
     "dist": "npm run build && electron-builder",
-    "lint": "tsc -p tsconfig.json --noEmit"
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test:e2e": "npm run build && playwright test -c tests/playwright.config.ts offline.spec.ts",
+    "test:e2e:auth": "npm run build && playwright test -c tests/playwright.config.ts"
   },
   "devDependencies": {
+    "@playwright/test": "1.58.2",
     "@types/node": "^22.10.5",
     "electron": "^33.2.1",
     "electron-builder": "^25.1.8",
