@@ -297,6 +297,7 @@ export {
 } from "./recovery/service.js";
 import { lockIssueRow } from "./db-lock-order.js";
 export const ACTIVE_RUN_OUTPUT_PROGRESS_FLUSH_INTERVAL_MS = 60 * 1000;
+export const UNVERIFIABLE_RUN_ORPHAN_STALE_THRESHOLD_MS = 5 * 60 * 1000;
 export const ACTIVE_RUN_LOG_RUNTIME_STATUS_REFRESH_INTERVAL_MS = 5 * 1000;
 export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS = [
   2 * 60 * 1000,
@@ -10505,6 +10506,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
+    const resolveStaleThresholdMs = (run: { processPid: number | null; processGroupId: number | null }) => {
+      // A run with no process handle (remote/sandbox execution, or not yet
+      // spawned) cannot be verified dead from here; on multi-instance hosting a
+      // sibling instance may still own it. Its only liveness signal is row
+      // freshness, so it must age past the floor even during startup reaps.
+      if (run.processPid || run.processGroupId) return staleThresholdMs;
+      return Math.max(staleThresholdMs, UNVERIFIABLE_RUN_ORPHAN_STALE_THRESHOLD_MS);
+    };
 
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
     const activeRuns = await db
@@ -10523,9 +10532,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
 
       // Apply staleness threshold to avoid false positives
-      if (staleThresholdMs > 0) {
+      const effectiveStaleThresholdMs = resolveStaleThresholdMs(run);
+      if (effectiveStaleThresholdMs > 0) {
         const refTime = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
-        if (now.getTime() - refTime < staleThresholdMs) continue;
+        if (now.getTime() - refTime < effectiveStaleThresholdMs) continue;
       }
 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);

@@ -97,6 +97,7 @@ vi.mock("../adapters/index.ts", async () => {
 import {
   heartbeatService,
   redactDetectedSuccessfulRunProgressSummaryForBoard,
+  UNVERIFIABLE_RUN_ORPHAN_STALE_THRESHOLD_MS,
 } from "../services/heartbeat.ts";
 import { secretService } from "../services/secrets.ts";
 import { nativeToolsForProfile } from "../apex/steps/run-policy.ts";
@@ -591,6 +592,34 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     return { environmentId, leaseId };
   }
+
+  it("does not reap a fresh run without a process handle on startup (a sibling instance may own it)", async () => {
+    const { runId } = await seedRunFixture({
+      adapterType: "claude_local",
+      runStatus: "running",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({ updatedAt: new Date() })
+      .where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 0, runIds: [] });
+    expect((await heartbeat.getRun(runId))?.status).toBe("running");
+
+    await db
+      .update(heartbeatRuns)
+      .set({ updatedAt: new Date(Date.now() - UNVERIFIABLE_RUN_ORPHAN_STALE_THRESHOLD_MS - 1_000) })
+      .where(eq(heartbeatRuns.id, runId));
+
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [runId] });
+    const reaped = await heartbeat.getRun(runId);
+    expect(reaped?.status).toBe("failed");
+    expect(reaped?.errorCode).toBe("process_lost");
+  });
 
   it("does not reap active adapter executions started by another heartbeat service instance", async () => {
     let releaseAdapter: (() => void) | null = null;
