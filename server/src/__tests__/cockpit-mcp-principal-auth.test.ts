@@ -2,7 +2,7 @@
  * cockpit-mcp accepts the cockpit's own operator principal JWTs next to run
  * tokens:
  *   - operator principal: authorized as that operator (board:read, one company)
- *   - cockpit-system principal: 403 (cockpit does not call itself)
+ *   - a token naming no user (the retired cockpit-system subject): 401
  *   - run JWT: unchanged
  * Verification is real (EdDSA against a test JWKS); the DB is a stub that
  * answers the few reads the operator mapping and listIssues need.
@@ -13,9 +13,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { activityLog, authUsers, companyMemberships, instanceUserRoles, issues } from "@paperclipai/db";
 import { mcpRoutes } from "../mcp/router.js";
 import { mintCockpitMcpJwt } from "../mcp/cockpit-mcp-jwt.js";
-import { CAP_BOARD_READ } from "../mcp/capabilities.js";
+import { CAP_BOARD_READ, CAP_VEIL_WRITE } from "../mcp/capabilities.js";
 import {
-  cockpitSystemClaims,
   operatorClaims,
   signPrincipalJwt,
   testPrincipalKey,
@@ -106,7 +105,13 @@ describe("cockpit-mcp — operator principal", () => {
     const body = parseSseJsonRpc(res.text) as { result: { content: Array<{ text: string }> } };
     expect(JSON.parse(body.result.content[0]!.text).issues).toHaveLength(1);
     expect(activity[0]).toMatchObject({ actorType: "user", actorId: "user-1", companyId: COMPANY, entityId: "listIssues" });
-    expect((activity[0]!.details as { grantedCapabilities: string[] }).grantedCapabilities).toEqual([CAP_BOARD_READ]);
+    // veil:write joined board:read for operator sessions when set_surface_veil
+    // landed (mcp/router.ts resolveOperatorClaims) — see
+    // cockpit-mcp-veil-tools.test.ts for that tool's own coverage.
+    expect((activity[0]!.details as { grantedCapabilities: string[] }).grantedCapabilities).toEqual([
+      CAP_BOARD_READ,
+      CAP_VEIL_WRITE,
+    ]);
   });
 
   it("cannot write: board writes attribute to a run, which an operator token is not", async () => {
@@ -162,11 +167,15 @@ describe("cockpit-mcp — rejected principals", () => {
     expect(forged.body.reason).toBe("bad_signature");
   });
 
-  it("403s the cockpit-system principal — cockpit does not call itself", async () => {
-    const { app } = appFor([]);
-    const res = await post(app, signPrincipalJwt(key, cockpitSystemClaims()), rpc(1, "tools/list"));
-    expect(res.status).toBe(403);
-    expect(res.body.reason).toBe("principal_not_permitted");
+  it("401s a token claiming the retired cockpit-system principal — there is no process identity", async () => {
+    const { db } = fakeDb(() => []);
+    const app = express();
+    app.use(express.json());
+    app.use(mcpRoutes(db, { principalJwtVerifier: key.verifier }));
+    const claims = operatorClaims({ sub: "cockpit-system", principalKind: "cockpit_system", instanceAdmin: true, companyId: null, companies: [] });
+    const res = await post(app, signPrincipalJwt(key, claims), rpc(1, "tools/list"));
+    expect(res.status).toBe(401);
+    expect(res.body.reason).toBe("unknown_user");
   });
 
   it("401s an EdDSA token when no verifier is configured (local_trusted)", async () => {

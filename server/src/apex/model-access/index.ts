@@ -25,7 +25,6 @@
 
 import { detectClaudeAuth, UNKNOWN_CLAUDE_DETECT, type ClaudeDetectResult } from './detect-claude.js';
 import type { GatewayClient } from '../../gateway/gateway-client.js';
-import { cockpitSystemGatewayClient } from '../../gateway/system-credential.js';
 import { serverIsOperatorWorkstation } from '../setup/operator-auth.js';
 
 /** The apex-* aliases seeded for Claude and their purposes. */
@@ -104,11 +103,12 @@ function bridgeUrl(): string {
 
 /**
  * Read ModelAccessState from the live gateway + claude detection. Never throws.
+ * `client` carries the identity of whoever asked (gatewayClientForRequest).
  * `claude` is the operator-scoped detection (detectClaudeAuthForOperator); when
  * omitted the server probes itself, which is only correct on a local instance.
  */
 export async function readModelAccessState(
-  client: GatewayClient = cockpitSystemGatewayClient(),
+  client: GatewayClient,
   claude?: Promise<ClaudeDetectResult> | ClaudeDetectResult,
 ): Promise<ModelAccessState> {
   const [claudeDetect, providers, models] = await Promise.all([
@@ -153,7 +153,7 @@ export type ProvisionResult =
  * proceed to seed any missing aliases.
  */
 export async function provisionClaudeSubscription(
-  client: GatewayClient = cockpitSystemGatewayClient(),
+  client: GatewayClient,
 ): Promise<ProvisionResult> {
   // Verify gateway is reachable first
   const reachable = await client.reachable();
@@ -242,7 +242,7 @@ export async function provisionClaudeSubscription(
  */
 export async function provisionClaudeApiKey(
   apiKey: string,
-  client: GatewayClient = cockpitSystemGatewayClient(),
+  client: GatewayClient,
 ): Promise<ProvisionResult> {
   if (!apiKey?.trim()) return { ok: false, reason: 'API key is required' };
 
@@ -303,7 +303,7 @@ export async function provisionClaudeApiKey(
  */
 export async function provisionOpenRouter(
   apiKey: string,
-  client: GatewayClient = cockpitSystemGatewayClient(),
+  client: GatewayClient,
 ): Promise<ProvisionResult> {
   if (!apiKey?.trim()) return { ok: false, reason: 'OpenRouter API key is required' };
 

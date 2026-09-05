@@ -151,29 +151,13 @@ interface ActorMiddlewareOptions {
  * session or a board key — memberships and instance-admin come from the DB
  * (boardAuth.resolveBoardAccess), not from the claims, exactly as the board
  * key path does; the claims were derived from those rows in the first place
- * and the DB is the authority in-process. The cockpit-system principal has
- * no user row: it becomes a read-only board actor (board-mutation-guard.ts
- * refuses every mutation for `service_principal`) whose instance-admin bit is
- * the claim's, so its headless probes can read what they need.
+ * and the DB is the authority in-process.
  */
 export async function resolvePrincipalJwtActor(
   boardAuth: Pick<ReturnType<typeof boardAuthService>, "resolveBoardAccess">,
   principal: VerifiedPrincipal,
   runIdHeader: string | undefined,
 ): Promise<Express.Request["actor"] | null> {
-  if (principal.principalKind === "cockpit_system") {
-    return {
-      type: "board",
-      userId: principal.sub,
-      userName: principal.sub,
-      userEmail: principal.email,
-      companyIds: [],
-      memberships: [],
-      isInstanceAdmin: principal.instanceAdmin,
-      runId: runIdHeader || undefined,
-      source: "service_principal",
-    };
-  }
   const access = await boardAuth.resolveBoardAccess(principal.sub);
   if (!access.user) return null;
   return {

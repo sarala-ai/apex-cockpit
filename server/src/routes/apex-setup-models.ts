@@ -12,10 +12,10 @@
  * setup. Gateway conflicts (409) are treated as "already done", not errors.
  */
 
-import { Router } from "express";
+import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import type { GatewayClient } from "../gateway/gateway-client.js";
-import { cockpitSystemGatewayClient } from "../gateway/system-credential.js";
+import { gatewayClientForRequest } from "../gateway/operator-gateway-client.js";
 import { assertBoardOrAgent } from "./authz.js";
 import {
   readModelAccessState,
@@ -26,14 +26,17 @@ import {
 } from "../apex/model-access/index.js";
 import { detectClaudeAuth, detectClaudeAuthForOperator } from "../apex/model-access/detect-claude.js";
 
-export function apexSetupModelsRoutes(db: Db, client: GatewayClient = cockpitSystemGatewayClient()) {
+/** `client` is a test seam; in production every gateway call is made as the
+ *  operator behind the request. */
+export function apexSetupModelsRoutes(db: Db, client?: GatewayClient) {
   const router = Router();
+  const clientFor = (req: Request): GatewayClient => client ?? gatewayClientForRequest(req);
 
   /** GET /setup/models — live snapshot of model access state, claude facts
    *  scoped to the signed-in operator. */
   router.get("/setup/models", async (req, res) => {
     assertBoardOrAgent(req);
-    const state = await readModelAccessState(client, detectClaudeAuthForOperator(db, req.actor?.userId ?? null));
+    const state = await readModelAccessState(clientFor(req), detectClaudeAuthForOperator(db, req.actor?.userId ?? null));
     res.json(state);
   });
 
@@ -76,7 +79,7 @@ export function apexSetupModelsRoutes(db: Db, client: GatewayClient = cockpitSys
       return;
     }
 
-    const result = await provisionClaudeSubscription(client);
+    const result = await provisionClaudeSubscription(clientFor(req));
     if (!result.ok) {
       res.status(502).json({ error: result.reason });
       return;
@@ -101,7 +104,7 @@ export function apexSetupModelsRoutes(db: Db, client: GatewayClient = cockpitSys
       return;
     }
 
-    const result = await provisionClaudeApiKey(apiKey.trim(), client);
+    const result = await provisionClaudeApiKey(apiKey.trim(), clientFor(req));
     if (!result.ok) {
       res.status(502).json({ error: result.reason });
       return;
@@ -127,7 +130,7 @@ export function apexSetupModelsRoutes(db: Db, client: GatewayClient = cockpitSys
       return;
     }
 
-    const result = await provisionOpenRouter(apiKey.trim(), client);
+    const result = await provisionOpenRouter(apiKey.trim(), clientFor(req));
     if (!result.ok) {
       res.status(502).json({ error: result.reason });
       return;

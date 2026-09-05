@@ -11,7 +11,7 @@
 import type { Request } from "express";
 import { Router } from "express";
 import { GatewayClient } from "../gateway/gateway-client.js";
-import { cockpitSystemGatewayClient } from "../gateway/system-credential.js";
+import { gatewayClientForRequest, mintOperatorTokenFor } from "../gateway/operator-gateway-client.js";
 import { EvalIngestClient } from "../observe/eval-ingest-client.js";
 import { assertBoardOrAgent } from "./authz.js";
 import { validate } from "../middleware/validate.js";
@@ -44,29 +44,18 @@ function markSeen(id: string): boolean {
 
 export function apexGatewayObserveRoutes(
   opts: {
-    /** Default/fallback client — used whenever `mintOperatorToken` is absent
-     *  or resolves to null (e.g. agent/board callers with no operator
-     *  session). Defaults to the cockpit's own system principal. Also the
-     *  seam tests inject a mock client through. */
+    /** Test seam: a fixed client for every request. */
     client?: GatewayClient;
-    /**
-     * Mints the signed-in operator's cockpit principal JWT for this
-     * request, so the gateway authorizes from the operator's own claims
-     * instead of the static APEX_GATEWAY_TOKEN. Returns null when there's no
-     * operator session (agent/board callers) — those fall back to `client`.
-     */
+    /** Overrides the registered operator-token minter (see
+     *  operator-gateway-client.ts). */
     mintOperatorToken?: (req: Request) => Promise<string | null>;
   } = {},
 ) {
   const router = Router();
   const evalIngestClient = new EvalIngestClient();
-  const defaultClient = opts.client ?? cockpitSystemGatewayClient();
 
-  // Resolves the GatewayClient to use for a single request: the operator's
-  // own token when available, else the shared default/fallback client.
   async function clientFor(req: Request): Promise<GatewayClient> {
-    const operatorToken = (await opts.mintOperatorToken?.(req)) ?? null;
-    return operatorToken ? new GatewayClient(operatorToken) : defaultClient;
+    return opts.client ?? gatewayClientForRequest(req, opts.mintOperatorToken);
   }
 
   // GET /gateway/registry — everything callable: upstream gateways, tools,
@@ -147,7 +136,7 @@ export function apexGatewayObserveRoutes(
   // Full-page navigation, not fetch — the provider's consent page must render.
   router.get("/gateway/oauth/:gatewayId/authorize", async (req, res) => {
     assertBoardOrAgent(req);
-    const operatorToken = (await opts.mintOperatorToken?.(req)) ?? null;
+    const operatorToken = await mintOperatorTokenFor(req, opts.mintOperatorToken);
     if (!operatorToken) {
       // No env-token fallback here on purpose: the provider token that comes
       // back is stored keyed to the initiating identity's email, and later MCP
@@ -166,7 +155,7 @@ export function apexGatewayObserveRoutes(
   // after consent lands. Same operator-only rule as authorize above.
   router.post("/gateway/oauth/:gatewayId/fetch-tools", async (req, res) => {
     assertBoardOrAgent(req);
-    const operatorToken = (await opts.mintOperatorToken?.(req)) ?? null;
+    const operatorToken = await mintOperatorTokenFor(req, opts.mintOperatorToken);
     if (!operatorToken) {
       throw badRequest("OAuth tool sync requires a signed-in operator session");
     }

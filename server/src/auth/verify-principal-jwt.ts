@@ -1,7 +1,6 @@
 /**
- * Verifies cockpit-issued principal JWTs (the EdDSA tokens the better-auth
- * jwt plugin mints: operator tokens from mint-principal-jwt.ts and the
- * cockpit-system token from mint-system-jwt.ts) with
+ * Verifies cockpit-issued principal JWTs (the EdDSA operator tokens the
+ * better-auth jwt plugin mints in mint-principal-jwt.ts) with
  * the cockpit's OWN keys — the same JWKS the gateway fetches from
  * /api/auth/jwks, read in-process instead. One auth authority, one key set,
  * two verifiers (gateway and cockpit) that agree by construction.
@@ -15,13 +14,8 @@ import { createPublicKey, verify as cryptoVerify, type JsonWebKey, type KeyObjec
 import { APEX_PRINCIPAL_AUDIENCE } from "./principal-token.js";
 import type { PrincipalClaims, PrincipalCompanyScope } from "./auth-client.js";
 
-export type PrincipalKind = "operator" | "cockpit_system";
-
 export interface VerifiedPrincipal {
   sub: string;
-  /** Absent on operator tokens (mint-principal-jwt.ts sets none); the
-   *  system principal stamps its own. */
-  principalKind: PrincipalKind;
   email: string | null;
   instanceAdmin: boolean;
   companyId: string | null;
@@ -104,12 +98,9 @@ function audienceMatches(aud: unknown, expected: string): boolean {
 function toPrincipal(payload: Record<string, unknown>, exp: number): VerifiedPrincipal | null {
   const sub = typeof payload.sub === "string" && payload.sub ? payload.sub : null;
   if (!sub) return null;
-  const kindRaw = payload.principalKind;
-  const principalKind: PrincipalKind = kindRaw === "cockpit_system" ? "cockpit_system" : "operator";
   const claims = payload as Partial<PrincipalClaims>;
   return {
     sub,
-    principalKind,
     email: typeof claims.email === "string" ? claims.email : null,
     instanceAdmin: claims.instanceAdmin === true,
     companyId: typeof claims.companyId === "string" ? claims.companyId : null,

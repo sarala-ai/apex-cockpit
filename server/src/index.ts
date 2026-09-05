@@ -51,6 +51,7 @@ import {
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
 } from "./services/index.js";
+import { operatorUserId, registerOperatorTokenMinters } from "./gateway/operator-gateway-client.js";
 import {
   parseAdapterRegistryEnv,
   reconcileAdapterAvailability,
@@ -629,13 +630,6 @@ export async function startServer(): Promise<StartedServer> {
     mintGatewayToken = (userId) =>
       mintPrincipalJwtForUser(auth as unknown as PrincipalJwtSigner, db as any, userId);
     registerGatewayTokenMinter(mintGatewayToken);
-    const { mintCockpitSystemJwt, createCachedTokenSource } = await import("./auth/mint-system-jwt.js");
-    const { registerCockpitSystemTokenSource } = await import("./gateway/system-credential.js");
-    registerCockpitSystemTokenSource(
-      createCachedTokenSource(() =>
-        mintCockpitSystemJwt(auth as unknown as PrincipalJwtSigner, config.authPublicBaseUrl ?? null),
-      ),
-    );
     // Cockpit verifies its own principal tokens with the same JWKS it
     // publishes for the gateway (/api/auth/jwks), read in-process.
     const { createPrincipalJwtVerifier } = await import("./auth/verify-principal-jwt.js");
@@ -648,10 +642,10 @@ export async function startServer(): Promise<StartedServer> {
     resolveSession = (req) => resolveBetterAuthSession(auth, req);
     mintOperatorToken = async (req) => {
       // Identity is the operator's however they reached the cockpit: a
-      // browser session or a user-attributed board key (the desktop app, the
-      // CLI). Both name the same user; the principal JWT is minted for them.
-      const actorUserId = req.actor?.type === "board" ? req.actor.userId ?? null : null;
-      const userId = actorUserId ?? (await resolveBetterAuthSession(auth, req))?.user?.id;
+      // browser session, a user-attributed board key (the desktop app, the
+      // CLI), or an agent run attributed to them. All name the same user;
+      // the principal JWT is minted for them.
+      const userId = operatorUserId(req) ?? (await resolveBetterAuthSession(auth, req))?.user?.id;
       if (!userId) return null;
       try {
         return await mintPrincipalJwtForUser(auth as unknown as PrincipalJwtSigner, db as any, userId);
@@ -659,6 +653,9 @@ export async function startServer(): Promise<StartedServer> {
         return null;
       }
     };
+    // Every gateway call the cockpit makes inside a request is made as that
+    // request's person; there is no cockpit process identity at the gateway.
+    registerOperatorTokenMinters({ forRequest: mintOperatorToken, forUser: mintGatewayToken });
     resolveSessionFromHeaders = (headers) => resolveBetterAuthSessionFromHeaders(auth, headers);
     await initializeBoardClaimChallenge(db as any, { deploymentMode: config.deploymentMode });
     authReady = true;

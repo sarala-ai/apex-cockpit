@@ -27,8 +27,8 @@ import { CompositeObserveStore } from "../observe/composite-store.js";
 import { ApexEvalTraceClient } from "../observe/apex-eval-client.js";
 import { GcpInventoryStore } from "../observe/gcp-inventory-store.js";
 import type { Request as ExpressRequest } from "express";
-import { GatewayClient } from "../gateway/gateway-client.js";
-import { cockpitSystemGatewayClient } from "../gateway/system-credential.js";
+import type { GatewayClient } from "../gateway/gateway-client.js";
+import { gatewayClientForRequest } from "../gateway/operator-gateway-client.js";
 import { EvalIngestClient } from "../observe/eval-ingest-client.js";
 import { observeInputs } from "../observe/tools.js";
 import { assertBoardOrAgent, getActorInfo } from "./authz.js";
@@ -56,8 +56,8 @@ function numOrNull(v: unknown): number | null {
 }
 
 export interface ApexObserveRouteOptions {
-  /** Mints the signed-in operator's principal JWT; absent in local_trusted
-   *  mode, where gateway reads run as the cockpit process. */
+  /** Overrides the registered operator-token minter (see
+   *  operator-gateway-client.ts). */
   mintOperatorToken?: (req: ExpressRequest) => Promise<string | null>;
 }
 
@@ -77,12 +77,8 @@ export function apexObserveRoutes(db: Db, opts: ApexObserveRouteOptions = {}) {
     [evalClient],
   );
   const inventoryStore = new GcpInventoryStore(db);
-  // Gateway calls carry the operator's identity when the request has one;
-  // otherwise (agent keys, local mode) the cockpit's own.
-  const systemGatewayClient = cockpitSystemGatewayClient();
   async function gatewayClientFor(req: ExpressRequest): Promise<GatewayClient> {
-    const operatorToken = (await opts.mintOperatorToken?.(req)) ?? null;
-    return operatorToken ? new GatewayClient(operatorToken) : systemGatewayClient;
+    return gatewayClientForRequest(req, opts.mintOperatorToken);
   }
   const evalIngestClient = new EvalIngestClient();
 

@@ -4,8 +4,8 @@
  * these in every deployment mode, while better-auth itself is only loaded on
  * authenticated instances.
  *
- * The one audience every cockpit-issued principal JWT carries — operator and
- * cockpit-system alike. The gateway trusts cockpit as an IdP for exactly this
+ * The one audience every cockpit-issued principal JWT carries. The gateway
+ * trusts cockpit as an IdP for exactly this
  * audience, and cockpit accepts its own tokens under it too (the gateway
  * forwards an operator's token back to cockpit-mcp verbatim), so there is
  * one principal token kind, not one per consumer.

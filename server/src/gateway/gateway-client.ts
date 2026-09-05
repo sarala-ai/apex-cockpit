@@ -12,10 +12,10 @@
  * reported as "unreachable" — callers that surface state to operators use the
  * `read*` variants or `probe()` to get the classification.
  *
- * Credential: a per-request operator principal JWT, the cockpit's own system
- * principal (a token source, re-minted on expiry), or — for local/unauth
- * gateways — the APEX_GATEWAY_TOKEN env fallback. Never a static shared
- * service token on a hosted deployment.
+ * Credential: the principal JWT of the person the request acts for (a token
+ * source, minted per call), or — for local/unauth gateways — the
+ * APEX_GATEWAY_TOKEN env fallback. Never a static shared service token on a
+ * hosted deployment, and never a cockpit process identity.
  */
 import type {
   GatewayEntry,
@@ -36,8 +36,8 @@ export const gatewayUrl = (): string =>
  * the gateway answered and rejected the credential (401/403); `unreachable`
  * is a transport failure (network/timeout); `http` is any other non-2xx;
  * `credential_unavailable` means the cockpit never sent a request at all —
- * its own token source (e.g. the system-principal JWT signer) failed to
- * produce a credential, so this is never the gateway's fault.
+ * the token source (the operator's principal JWT signer) failed to produce
+ * a credential, so this is never the gateway's fault.
  */
 export interface GatewayFailure {
   kind: "unauthenticated" | "forbidden" | "http" | "unreachable" | "credential_unavailable";
@@ -58,7 +58,7 @@ const UNREACHABLE: GatewayFailure = { kind: "unreachable", status: null, message
 
 /**
  * A credential for gateway calls: a bearer string, a source that mints one
- * on demand (the cockpit system principal), or nothing — which falls back
+ * on demand (the operator's principal JWT), or nothing — which falls back
  * to APEX_GATEWAY_TOKEN for local/unauthenticated gateways.
  */
 export type GatewayCredential = string | null | undefined | (() => Promise<string | null>);
@@ -72,7 +72,7 @@ interface ResolvedCredential {
   failure: GatewayFailure | null;
 }
 
-const CREDENTIAL_UNAVAILABLE_MESSAGE_PREFIX = "cockpit could not mint its gateway principal";
+const CREDENTIAL_UNAVAILABLE_MESSAGE_PREFIX = "cockpit could not mint the operator's gateway principal";
 
 async function resolveToken(credential: GatewayCredential): Promise<ResolvedCredential> {
   if (typeof credential !== "function") {
@@ -200,9 +200,9 @@ function num(v: unknown): number | null {
 
 export class GatewayClient {
   /**
-   * @param credential See GatewayCredential: a per-request operator JWT for
-   * operator-initiated calls, the cockpit system token source for
-   * process-level probes, or nothing for local/unauthenticated gateways.
+   * @param credential See GatewayCredential: the operator's principal JWT
+   * (or a source minting it) for calls made on their behalf, or nothing for
+   * local/unauthenticated gateways.
    */
   constructor(private readonly credentialSource?: GatewayCredential) {}
 

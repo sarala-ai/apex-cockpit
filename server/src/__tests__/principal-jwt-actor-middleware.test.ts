@@ -1,7 +1,7 @@
 /**
  * The REST actor middleware consumes cockpit-issued principal JWTs:
  *   - an operator token → the same board actor a session/board key yields
- *   - the cockpit-system principal → read-only
+ *   - a token naming no user (the retired cockpit-system subject) → unauthenticated
  *   - expired / foreign-signed → unauthenticated (401 at the route's gate)
  * Board keys, agent keys and sessions are untouched.
  */
@@ -16,7 +16,6 @@ import { errorHandler } from "../middleware/error-handler.js";
 import { assertAuthenticated, assertBoardOrAgent } from "../routes/authz.js";
 import { apexSetupStateRoutes, type SetupStateProbes } from "../routes/apex-setup-state.js";
 import {
-  cockpitSystemClaims,
   operatorClaims,
   signPrincipalJwt,
   testPrincipalKey,
@@ -125,17 +124,12 @@ describe("actor middleware — operator principal JWT", () => {
   });
 });
 
-describe("actor middleware — cockpit-system principal", () => {
-  it("cockpit-system reads as instance admin (its probes) and still cannot mutate", async () => {
+describe("actor middleware — no process principal", () => {
+  it("a token claiming the retired cockpit-system principal is just an unknown user", async () => {
     const app = createApp(fakeDb({ user: false, memberships: [] }));
-    const token = signPrincipalJwt(key, cockpitSystemClaims());
-    const actor = await get(app, "/actor", token);
-    expect(actor.body).toMatchObject({ type: "board", userId: "cockpit-system", isInstanceAdmin: true, companyIds: [], source: "service_principal" });
-    const state = await get(app, "/api/setup/state", token);
-    expect(state.status).toBe(200);
-    const res = await request(app).post(`/api/companies/${COMPANY}/issues`).set("Authorization", `Bearer ${token}`).send({ title: "x" });
-    expect(res.status).toBe(403);
-    expect(res.body.code).toBe("SERVICE_PRINCIPAL_READ_ONLY");
+    const token = signPrincipalJwt(key, operatorClaims({ sub: "cockpit-system", principalKind: "cockpit_system", instanceAdmin: true, companyId: null, companies: [] }));
+    expect((await get(app, "/protected", token)).status).toBe(401);
+    expect((await get(app, "/api/setup/state", token)).status).toBe(403);
   });
 });
 

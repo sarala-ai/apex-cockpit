@@ -39,8 +39,6 @@ declare global {
           // forwards, or a desktop/CLI client presents directly): the same
           // board actor the operator gets from a session or board key.
           | "principal_jwt"
-          // The cockpit-system principal: reads only, never a board mutation.
-          | "service_principal"
           | "none";
       };
     }

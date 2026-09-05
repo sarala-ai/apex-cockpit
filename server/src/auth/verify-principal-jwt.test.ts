@@ -55,7 +55,6 @@ describe("createPrincipalJwtVerifier", () => {
     if (!result.ok) return;
     expect(result.principal).toMatchObject({
       sub: "user-1",
-      principalKind: "operator",
       email: "op@example.com",
       companyId: "c1",
       instanceAdmin: false,
@@ -63,13 +62,14 @@ describe("createPrincipalJwtVerifier", () => {
     });
   });
 
-  it("carries the system principal kind through, and treats any other kind as an operator", async () => {
-    const unknown = await verifier.verify(signPrincipalJwt(kp.privateKey, "k1", operatorPayload({ principalKind: "something_else" })));
-    expect(unknown.ok && unknown.principal.principalKind).toBe("operator");
-    const sys = await verifier.verify(
+  it("ignores a principalKind claim — every principal is a person", async () => {
+    const result = await verifier.verify(
       signPrincipalJwt(kp.privateKey, "k1", operatorPayload({ sub: "cockpit-system", principalKind: "cockpit_system", instanceAdmin: true })),
     );
-    expect(sys.ok && sys.principal.principalKind === "cockpit_system" && sys.principal.instanceAdmin).toBe(true);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.principal).not.toHaveProperty("principalKind");
+    expect(result.principal.sub).toBe("cockpit-system");
   });
 
   it("rejects an expired token", async () => {

@@ -58,16 +58,3 @@ export function operatorClaims(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
-
-/** Claims as mint-system-jwt.ts buildCockpitSystemClaims produces. */
-export function cockpitSystemClaims(overrides: Record<string, unknown> = {}) {
-  return operatorClaims({
-    sub: "cockpit-system",
-    principalKind: "cockpit_system",
-    email: "cockpit-system@cockpit.example.run.app",
-    instanceAdmin: true,
-    companyId: null,
-    companies: [],
-    ...overrides,
-  });
-}

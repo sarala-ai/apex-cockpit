@@ -11,7 +11,7 @@ import {
 import { validate } from "../middleware/validate.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { HttpError } from "../errors.js";
-import { cockpitSystemGatewayClient } from "../gateway/system-credential.js";
+import { gatewayClientForRequest } from "../gateway/operator-gateway-client.js";
 
 function slugify(name: string): string {
   return name
@@ -23,7 +23,6 @@ function slugify(name: string): string {
 
 export function companyPromptRoutes(db: Db) {
   const router = Router();
-  const gateway = cockpitSystemGatewayClient();
 
   // GET /companies/:companyId/prompts
   router.get("/companies/:companyId/prompts", async (req, res) => {
@@ -188,7 +187,7 @@ export function companyPromptRoutes(db: Db) {
   router.get("/companies/:companyId/prompts/gateway", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const gatewayPrompts = await gateway.listGatewayPrompts();
+    const gatewayPrompts = await gatewayClientForRequest(req).listGatewayPrompts();
     res.json(gatewayPrompts);
   });
 
