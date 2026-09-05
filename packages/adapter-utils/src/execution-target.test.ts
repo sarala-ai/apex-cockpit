@@ -324,6 +324,38 @@ describe("ensureAdapterExecutionTargetRuntimeCommandInstalled", () => {
     }));
   });
 
+  it("names the provider's failure when the install command cannot run", async () => {
+    const runner = {
+      execute: vi.fn(async () => ({
+        exitCode: null,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: 'Unexpected server response: 403\ncannot get resource "pods/exec"',
+        pid: null,
+        startedAt: new Date().toISOString(),
+      })),
+    };
+
+    await expect(
+      ensureAdapterExecutionTargetRuntimeCommandInstalled({
+        runId: "run-install-forbidden",
+        target: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "kubernetes",
+          remoteCwd: "/workspace",
+          runner,
+        },
+        installCommand: "npm install -g @anthropic-ai/claude-code",
+        detectCommand: "claude",
+        cwd: "/local/workspace",
+        env: { PATH: "/usr/bin" },
+        timeoutSec: 30,
+      }),
+    ).rejects.toThrow(/Failed to install .*pods\/exec/);
+  });
+
   it("skips install commands for SSH targets", async () => {
     const runSshCommandSpy = vi.spyOn(ssh, "runSshCommand").mockResolvedValue({
       stdout: "",

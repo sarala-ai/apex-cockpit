@@ -475,7 +475,7 @@ async function ensureSandboxCommandResolvable(
       });
       if (installResult.timedOut) {
         installFailureDetail = `install command timed out: ${installCommand}`;
-      } else if ((installResult.exitCode ?? 0) !== 0) {
+      } else if (installResult.exitCode !== 0) {
         const tail = (text: string) =>
           text.split(/\r?\n/).filter((line) => line.trim().length > 0).slice(-2).join(" | ").slice(0, 240);
         const reason = tail(installResult.stderr || installResult.stdout) || `exit ${installResult.exitCode ?? "?"}`;
@@ -845,7 +845,8 @@ export async function ensureAdapterExecutionTargetRuntimeCommandInstalled(input:
   // be on PATH from a previous lease's install, the template image, or another
   // path entry. Re-run the detect probe (when one is configured) so a transient
   // install failure does not abort the agent run when the binary is reachable.
-  const installFailed = result.timedOut || (result.exitCode ?? 0) !== 0;
+  // exitCode null = the provider never ran the command; never a clean exit.
+  const installFailed = result.timedOut || result.exitCode === null || result.exitCode !== 0;
   if (!installFailed) {
     return;
   }
@@ -873,10 +874,12 @@ export async function ensureAdapterExecutionTargetRuntimeCommandInstalled(input:
     }
   }
 
+  const detail = result.stderr.trim().split("\n").filter(Boolean).slice(-3).join(" | ");
+  const suffix = detail ? ` (${detail})` : "";
   if (result.timedOut) {
-    throw new Error(`Timed out while installing the adapter runtime command via: ${installCommand}`);
+    throw new Error(`Timed out while installing the adapter runtime command via: ${installCommand}${suffix}`);
   }
-  throw new Error(`Failed to install the adapter runtime command via: ${installCommand}`);
+  throw new Error(`Failed to install the adapter runtime command via: ${installCommand}${suffix}`);
 }
 
 export async function ensureAdapterExecutionTargetFile(

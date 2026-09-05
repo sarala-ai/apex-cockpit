@@ -33,7 +33,7 @@ import {
   sandboxCrOrchestrator,
   SandboxCrTimeoutError,
 } from "./sandbox-cr-orchestrator.js";
-import { execInPod, wrapCommandWithEnv } from "./pod-exec.js";
+import { classifyExecInPodFailure, execInPod, wrapCommandWithEnv } from "./pod-exec.js";
 import { checkLeaseResumable, destroyLeaseResources } from "./lease-lifecycle.js";
 import {
   deriveCompanySlug,
@@ -683,11 +683,12 @@ const plugin = definePlugin({
               flushTimeoutMs,
             );
           } catch (err) {
+            const failure = classifyExecInPodFailure(err);
             return {
               exitCode: null,
-              timedOut: true,
+              timedOut: failure.timedOut,
               stdout: "",
-              stderr: `fast-upload flush failed: ${err instanceof Error ? err.message : String(err)}`,
+              stderr: `fast-upload flush failed: ${failure.stderr}`,
               metadata: {
                 provider: "kubernetes",
                 backend: "sandbox-cr",
@@ -751,13 +752,12 @@ const plugin = definePlugin({
           remainingTimeoutMs,
         );
       } catch (err) {
-        // Watchdog-fired or WebSocket-setup error. Surface as a timeout so
-        // the caller can retry instead of hanging forever.
+        const failure = classifyExecInPodFailure(err);
         return {
           exitCode: null,
-          timedOut: true,
+          timedOut: failure.timedOut,
           stdout: "",
-          stderr: err instanceof Error ? err.message : String(err),
+          stderr: failure.stderr,
           metadata: {
             provider: "kubernetes",
             backend: "sandbox-cr",

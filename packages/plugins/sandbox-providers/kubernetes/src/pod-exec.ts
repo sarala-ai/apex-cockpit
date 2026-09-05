@@ -53,6 +53,23 @@ export function wrapCommandWithEnv(
   return ["/bin/sh", "-c", `${exports} exec ${command.map(shQuote).join(" ")}`];
 }
 
+/** Raised only by the exec watchdog: the WebSocket connected but no status
+ *  frame arrived within the budget. Every other rejection (403 on the upgrade,
+ *  DNS, TLS, pod gone) is a transport/authorization failure, not a timeout. */
+export class ExecInPodTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ExecInPodTimeoutError";
+  }
+}
+
+export function classifyExecInPodFailure(err: unknown): { timedOut: boolean; stderr: string } {
+  return {
+    timedOut: err instanceof ExecInPodTimeoutError,
+    stderr: err instanceof Error ? err.message : String(err),
+  };
+}
+
 export async function execInPod(
   kc: KubeConfig,
   namespace: string,
@@ -127,7 +144,7 @@ export async function execInPod(
           if (resolved) return;
           resolved = true;
           try { ws?.close(); } catch { /* ignore */ }
-          reject(new Error(
+          reject(new ExecInPodTimeoutError(
             `execInPod timed out after ${timeoutMs}ms (pod=${podName}, container=${containerName}, cmd0=${effectiveCommand[0] ?? ""}). The WebSocket likely dropped before the command produced a status frame.`,
           ));
         }, timeoutMs);
