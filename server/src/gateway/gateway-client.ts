@@ -123,6 +123,26 @@ async function timedFetch(url: string, token: string | null, timeoutMs = 5000): 
  * `status` classifies the failure so the route (and ultimately the UI) can
  * give an actionable message instead of a raw upstream string.
  */
+/**
+ * The credential the gateway stores (encrypted, mcpgateway GatewayCreate /
+ * GatewayUpdate `auth_type` + `auth_token`) and presents to an upstream.
+ * `oauthConfig` rides along for the gateway's per-upstream auth policy —
+ * for cockpit-mcp, `login_passthrough` (forward the caller's own principal
+ * JWT over the stored bearer on tool calls) and the issuer it is pinned to.
+ */
+export interface GatewayUpstreamAuth {
+  authType?: "bearer";
+  authToken?: string;
+  oauthConfig?: Record<string, unknown>;
+}
+
+function upstreamAuthBody(input: GatewayUpstreamAuth): Record<string, unknown> {
+  return {
+    ...(input.authType && input.authToken ? { auth_type: input.authType, auth_token: input.authToken } : {}),
+    ...(input.oauthConfig ? { oauth_config: input.oauthConfig } : {}),
+  };
+}
+
 export type GatewayWriteResult =
   | { ok: true; id: string | null; name: string }
   | {
@@ -512,7 +532,7 @@ export class GatewayClient {
      *  answers — see registerCockpitMcpWithGateway (mcp/router.ts) for why the
      *  cockpit's own self-registration passes a much longer value here. */
     timeoutMs?: number;
-  }): Promise<GatewayWriteResult> {
+  } & GatewayUpstreamAuth): Promise<GatewayWriteResult> {
     const res = await this.write(
       `${gatewayUrl()}/gateways`,
       {
@@ -522,6 +542,7 @@ export class GatewayClient {
           url: input.url,
           transport: input.transport,
           ...(input.description ? { description: input.description } : {}),
+          ...upstreamAuthBody(input),
         }),
       },
       input.timeoutMs,
@@ -561,9 +582,9 @@ export class GatewayClient {
       transport?: "SSE" | "STREAMABLEHTTP" | "STDIO";
       description?: string | null;
       /** See registerGateway's timeoutMs — PUT also re-runs the upstream
-       *  MCP-initialize probe when the url changes. */
+       *  MCP-initialize probe when the url or the credential changes. */
       timeoutMs?: number;
-    },
+    } & GatewayUpstreamAuth,
   ): Promise<GatewayWriteResult> {
     const res = await this.write(
       `${gatewayUrl()}/gateways/${encodeURIComponent(id)}`,
@@ -573,6 +594,7 @@ export class GatewayClient {
           ...(input.url ? { url: input.url } : {}),
           ...(input.transport ? { transport: input.transport } : {}),
           ...(input.description ? { description: input.description } : {}),
+          ...upstreamAuthBody(input),
         }),
       },
       input.timeoutMs,

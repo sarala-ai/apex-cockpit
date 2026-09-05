@@ -18,6 +18,7 @@ import { eq } from "drizzle-orm";
 import type { Config } from "../config.js";
 import { resolvePaperclipInstanceId } from "../home-paths.js";
 import { buildPrincipalClaims } from "./auth-client.js";
+import { APEX_PRINCIPAL_AUDIENCE } from "./principal-audience.js";
 import { logger } from "../middleware/logger.js";
 
 // Maps a better-auth social/OAuth providerId to the OIDC issuer we record in
@@ -140,9 +141,18 @@ export function deriveAuthTrustedOrigins(config: Config, opts?: { listenPort?: n
   return Array.from(trustedOrigins);
 }
 
+/** The `iss` the jwt plugin signs with: the configured public URL, else the
+ *  explicit auth base URL. `null` means better-auth falls back to its own
+ *  baseURL origin — verifiers then skip the issuer check and rely on the
+ *  signature against this instance's JWKS alone. */
+export function resolvePrincipalJwtIssuer(config: Pick<Config, "authBaseUrlMode" | "authPublicBaseUrl">): string | null {
+  const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
+  return process.env.PAPERCLIP_PUBLIC_URL?.trim() || baseUrl || null;
+}
+
 export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins: string[]): BetterAuthInstance {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
-  const publicUrl = process.env.PAPERCLIP_PUBLIC_URL?.trim() || baseUrl;
+  const publicUrl = resolvePrincipalJwtIssuer(config) ?? undefined;
   const secret = process.env.BETTER_AUTH_SECRET ?? process.env.PAPERCLIP_AGENT_JWT_SECRET;
   if (!secret) {
     throw new Error(
@@ -244,7 +254,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
         disableSettingJwtHeader: true,
         jwt: {
           ...(publicUrl ? { issuer: publicUrl } : {}),
-          audience: "apex-gateway",
+          audience: APEX_PRINCIPAL_AUDIENCE,
           expirationTime: "15m",
           getSubject: ({ user }) => user.id,
           // Defensive: a claims-build failure must never crash the token

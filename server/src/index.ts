@@ -5,6 +5,7 @@
 // HTTP server, so trace coverage does not depend on incidental timing.
 import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
 import type { PrincipalJwtSigner } from "./auth/mint-principal-jwt.js";
+import type { PrincipalJwks, PrincipalJwtVerifier } from "./auth/verify-principal-jwt.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
@@ -586,6 +587,7 @@ export async function startServer(): Promise<StartedServer> {
   // apexGatewayObserveRoutes so gateway governance calls made from the UI
   // authenticate as the operator, not the static APEX_GATEWAY_TOKEN.
   let mintOperatorToken: ((req: ExpressRequest) => Promise<string | null>) | undefined;
+  let principalJwtVerifier: PrincipalJwtVerifier | undefined;
   if (config.deploymentMode === "local_trusted") {
     await ensureLocalTrustedBoardPrincipal(db as any);
   }
@@ -627,13 +629,34 @@ export async function startServer(): Promise<StartedServer> {
     mintGatewayToken = (userId) =>
       mintPrincipalJwtForUser(auth as unknown as PrincipalJwtSigner, db as any, userId);
     registerGatewayTokenMinter(mintGatewayToken);
-    const { mintCockpitSystemJwt, createCachedTokenSource } = await import("./auth/mint-system-jwt.js");
+    const { mintCockpitSystemJwt, mintGatewayFederationJwt, createCachedTokenSource } = await import("./auth/mint-system-jwt.js");
     const { registerCockpitSystemTokenSource } = await import("./gateway/system-credential.js");
     registerCockpitSystemTokenSource(
       createCachedTokenSource(() =>
         mintCockpitSystemJwt(auth as unknown as PrincipalJwtSigner, config.authPublicBaseUrl ?? null),
       ),
     );
+    // The credential the gateway holds to dial cockpit-mcp back. Its lifetime
+    // and the cache's refresh margin are both derived from the registration
+    // sweep's interval — see federationCredentialPolicy for the contract.
+    const { registerGatewayFederationTokenSource } = await import("./mcp/federation-credential.js");
+    const { cockpitMcpRegistrationSweepIntervalMs, federationCredentialPolicy } = await import("./mcp/registration-sweep.js");
+    const federationPolicy = federationCredentialPolicy(cockpitMcpRegistrationSweepIntervalMs());
+    registerGatewayFederationTokenSource(
+      createCachedTokenSource(
+        () => mintGatewayFederationJwt(auth as unknown as PrincipalJwtSigner, { lifetimeSeconds: federationPolicy.lifetimeSeconds }),
+        { refreshMarginMs: federationPolicy.tokenSourceRefreshMarginMs },
+      ),
+    );
+    // Cockpit verifies its own principal tokens with the same JWKS it
+    // publishes for the gateway (/api/auth/jwks), read in-process.
+    const { createPrincipalJwtVerifier } = await import("./auth/verify-principal-jwt.js");
+    const { resolvePrincipalJwtIssuer } = await import("./auth/better-auth.js");
+    const jwksApi = auth as unknown as { api: { getJwks: () => Promise<{ keys: Array<Record<string, unknown>> }> } };
+    principalJwtVerifier = createPrincipalJwtVerifier({
+      getJwks: () => jwksApi.api.getJwks() as Promise<PrincipalJwks>,
+      issuer: resolvePrincipalJwtIssuer(config),
+    });
     resolveSession = (req) => resolveBetterAuthSession(auth, req);
     mintOperatorToken = async (req) => {
       // Identity is the operator's however they reached the cockpit: a
@@ -772,6 +795,7 @@ export async function startServer(): Promise<StartedServer> {
     betterAuthHandler,
     resolveSession,
     mintOperatorToken,
+    principalJwtVerifier,
     googleAuthEnabled: Boolean(config.authGoogleClientId && config.authGoogleClientSecret),
     authPublicBaseUrl: config.authPublicBaseUrl ?? null,
     pluginWorkerManager,

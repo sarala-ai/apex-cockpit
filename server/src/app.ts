@@ -68,6 +68,7 @@ import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { mcpRoutes, registerCockpitMcpWithGateway } from "./mcp/router.js";
+import type { PrincipalJwtVerifier } from "./auth/verify-principal-jwt.js";
 import { recordCockpitMcpRegistrationAttempt } from "./mcp/registration-state.js";
 import { oauthRoutes } from "./mcp/oauth.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
@@ -189,6 +190,10 @@ export async function createApp(
     // serves OIDC/OAuth discovery so an external verifier (apex-gateway) can
     // resolve its JWKS from the issuer.
     authPublicBaseUrl?: string | null;
+    // Verifies the principal JWTs this instance issues, with its own JWKS —
+    // the REST actor middleware and cockpit-mcp both consume them. Only wired
+    // in authenticated mode (a local_trusted instance mints none).
+    principalJwtVerifier?: PrincipalJwtVerifier;
   },
 ) {
   const app = express();
@@ -430,7 +435,7 @@ export async function createApp(
   });
 
   // Cockpit MCP server — streamable-HTTP transport (APEX-35)
-  app.use(mcpRoutes(db));
+  app.use(mcpRoutes(db, { principalJwtVerifier: opts.principalJwtVerifier }));
   // OAuth 2.1 + PKCE flow for external MCP hosts (APEX-35 T7)
   app.use(
     oauthRoutes(db, {

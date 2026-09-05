@@ -6,7 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GatewayClient, GatewayWriteResult } from "../gateway/gateway-client.js";
 import type { GatewayEntry } from "@paperclipai/shared";
-import { startCockpitMcpRegistrationSweep, cockpitMcpRegistrationSweep } from "../mcp/registration-sweep.js";
+import { startCockpitMcpRegistrationSweep, cockpitMcpRegistrationSweep, federationCredentialPolicy } from "../mcp/registration-sweep.js";
 import { resetCockpitMcpRegistrationAttemptForTests, getLastCockpitMcpRegistrationAttempt } from "../mcp/registration-state.js";
 
 const cockpitMcpEntry = (overrides: Partial<GatewayEntry> = {}): GatewayEntry => ({
@@ -130,5 +130,74 @@ describe("startCockpitMcpRegistrationSweep", () => {
     expect(registerGateway).toHaveBeenCalledTimes(1); // resumed
 
     stop();
+  });
+});
+
+function fakeFederationJwt(expSec: number): string {
+  const b64 = (v: unknown) => Buffer.from(JSON.stringify(v)).toString("base64url");
+  return `${b64({ alg: "EdDSA", kid: "k1" })}.${b64({ sub: "apex-gateway", iss: "https://cockpit.run.app", exp: expSec })}.sig`;
+}
+
+describe("cockpitMcpRegistrationSweep — federation credential refresh", () => {
+  const INTERVAL = 300_000;
+  const input = { serverPort: 3100, deploymentMode: "authenticated" as const, publicUrl: "https://cockpit.run.app" };
+
+  function harness(startMs: number) {
+    let now = startMs;
+    const policy = federationCredentialPolicy(INTERVAL);
+    // Mints like the wired source: lifetime = 3 × interval + margin.
+    const federationToken = vi.fn(async () => fakeFederationJwt(Math.floor(now / 1000) + policy.lifetimeSeconds));
+    const readGateways = vi.fn(async () => ({ ok: true as const, value: [cockpitMcpEntry({ url: "https://cockpit.run.app/mcp" })] }));
+    const registerGateway = vi.fn(async (): Promise<GatewayWriteResult> => ({ ok: false, status: "conflict", message: "exists" }));
+    const updateGateway = vi.fn(async (): Promise<GatewayWriteResult> => ({ ok: true, id: "g1", name: "cockpit-mcp" }));
+    const job = cockpitMcpRegistrationSweep(
+      input,
+      { client: { readGateways, registerGateway, updateGateway } as unknown as GatewayClient, federationToken, log: () => {}, now: () => now },
+      INTERVAL,
+    );
+    return { job, updateGateway, federationToken, advance: (ms: number) => { now += ms; } };
+  }
+
+  it("a fresh process refreshes on its first tick, leaves the credential alone while it outlives two intervals, then refreshes again", async () => {
+    vi.stubEnv("PAPERCLIP_COCKPIT_MCP_URL", "");
+    const h = harness(1_700_000_000_000);
+
+    const first = await h.job.sweep();
+    expect(first.attempted).toBe(true);
+    expect(first.result?.outcome).toBe("credential_refreshed");
+    expect(h.updateGateway).toHaveBeenCalledTimes(1);
+
+    h.advance(INTERVAL); // remaining 2I + margin → not due
+    expect((await h.job.sweep()).attempted).toBe(false);
+    expect(h.updateGateway).toHaveBeenCalledTimes(1);
+
+    h.advance(INTERVAL); // remaining I + margin < 2I → due
+    const third = await h.job.sweep();
+    expect(third.attempted).toBe(true);
+    expect(third.result?.outcome).toBe("credential_refreshed");
+    expect(h.updateGateway).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not touch a registration when no token source is in play", async () => {
+    vi.stubEnv("PAPERCLIP_COCKPIT_MCP_URL", "");
+    const readGateways = vi.fn(async () => ({ ok: true as const, value: [cockpitMcpEntry({ url: "https://cockpit.run.app/mcp" })] }));
+    const updateGateway = vi.fn();
+    const job = cockpitMcpRegistrationSweep(
+      input,
+      { client: { readGateways, updateGateway } as unknown as GatewayClient, federationToken: async () => null, log: () => {} },
+      INTERVAL,
+    );
+    expect((await job.sweep()).attempted).toBe(false);
+    expect((await job.sweep()).attempted).toBe(false);
+    expect(updateGateway).not.toHaveBeenCalled();
+  });
+
+  it("derives lifetime and refresh from one interval so a single missed tick is survivable", () => {
+    const policy = federationCredentialPolicy(INTERVAL);
+    expect(policy.lifetimeSeconds * 1000).toBe(3 * INTERVAL + 60_000);
+    expect(policy.refreshBelowMs).toBe(2 * INTERVAL);
+    expect(policy.tokenSourceRefreshMarginMs).toBe(2 * INTERVAL);
+    // Written at tick 0, still valid at tick 3 even if tick 2's refresh failed.
+    expect(policy.lifetimeSeconds * 1000 - 3 * INTERVAL).toBeGreaterThan(0);
   });
 });

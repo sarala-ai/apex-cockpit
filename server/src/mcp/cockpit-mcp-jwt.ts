@@ -14,9 +14,13 @@ const JWT_ALGORITHM = "HS256";
 export const COCKPIT_MCP_AUDIENCE = "cockpit-mcp";
 
 export interface CockpitMcpJwtClaims {
-  sub: string; // agentId (run tokens) or userId (user tokens)
-  token_kind: "run" | "user";
-  company_id: string;
+  sub: string; // agentId (run tokens), userId (user tokens), "apex-gateway" (federation)
+  // "run"/"user" are the HS256 tokens minted here. "user" is also what a
+  // cockpit-issued operator principal JWT becomes once the router has verified
+  // it (mcp/router.ts). "gateway_federation" is the gateway's own probe
+  // credential: no company, no capabilities, probe surface only.
+  token_kind: "run" | "user" | "gateway_federation";
+  company_id: string; // "" for gateway_federation, which is company-less
   run_id: string | null; // null for user-scoped (OAuth) tokens
   user_id: string | null; // null for run-scoped tokens
   adapter_type: string | null; // null for user-scoped tokens
