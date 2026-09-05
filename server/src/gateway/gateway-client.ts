@@ -123,26 +123,6 @@ async function timedFetch(url: string, token: string | null, timeoutMs = 5000): 
  * `status` classifies the failure so the route (and ultimately the UI) can
  * give an actionable message instead of a raw upstream string.
  */
-/**
- * The credential the gateway stores (encrypted, mcpgateway GatewayCreate /
- * GatewayUpdate `auth_type` + `auth_token`) and presents to an upstream.
- * `oauthConfig` rides along for the gateway's per-upstream auth policy —
- * for cockpit-mcp, `login_passthrough` (forward the caller's own principal
- * JWT over the stored bearer on tool calls) and the issuer it is pinned to.
- */
-export interface GatewayUpstreamAuth {
-  authType?: "bearer";
-  authToken?: string;
-  oauthConfig?: Record<string, unknown>;
-}
-
-function upstreamAuthBody(input: GatewayUpstreamAuth): Record<string, unknown> {
-  return {
-    ...(input.authType && input.authToken ? { auth_type: input.authType, auth_token: input.authToken } : {}),
-    ...(input.oauthConfig ? { oauth_config: input.oauthConfig } : {}),
-  };
-}
-
 export type GatewayWriteResult =
   | { ok: true; id: string | null; name: string }
   | {
@@ -529,10 +509,9 @@ export class GatewayClient {
     description?: string | null;
     /** Override the default 8s write timeout. POST /gateways makes the gateway
      *  itself connect to (and MCP-initialize) the upstream url before it
-     *  answers — see registerCockpitMcpWithGateway (mcp/router.ts) for why the
-     *  cockpit's own self-registration passes a much longer value here. */
+     *  answers, bounded only by the gateway's federation_timeout (120s). */
     timeoutMs?: number;
-  } & GatewayUpstreamAuth): Promise<GatewayWriteResult> {
+  }): Promise<GatewayWriteResult> {
     const res = await this.write(
       `${gatewayUrl()}/gateways`,
       {
@@ -542,7 +521,6 @@ export class GatewayClient {
           url: input.url,
           transport: input.transport,
           ...(input.description ? { description: input.description } : {}),
-          ...upstreamAuthBody(input),
         }),
       },
       input.timeoutMs,
@@ -568,84 +546,6 @@ export class GatewayClient {
       return { ok: false, status: "upstream_unreachable", message: extractMessage(res.body, "Upstream gateway unreachable") };
     }
     return { ok: false, status: "error", message: extractMessage(res.body, `Registration failed (${res.status})`) };
-  }
-
-  /**
-   * PUT /gateways/{id} — update an existing federation gateway (e.g. repoint
-   * its url after a stale registration). All fields optional (GatewayUpdate);
-   * only the ones passed here are changed.
-   */
-  async updateGateway(
-    id: string,
-    input: {
-      url?: string;
-      transport?: "SSE" | "STREAMABLEHTTP" | "STDIO";
-      description?: string | null;
-      /** See registerGateway's timeoutMs — PUT also re-runs the upstream
-       *  MCP-initialize probe when the url or the credential changes. */
-      timeoutMs?: number;
-    } & GatewayUpstreamAuth,
-  ): Promise<GatewayWriteResult> {
-    const res = await this.write(
-      `${gatewayUrl()}/gateways/${encodeURIComponent(id)}`,
-      {
-        method: "PUT",
-        body: JSON.stringify({
-          ...(input.url ? { url: input.url } : {}),
-          ...(input.transport ? { transport: input.transport } : {}),
-          ...(input.description ? { description: input.description } : {}),
-          ...upstreamAuthBody(input),
-        }),
-      },
-      input.timeoutMs,
-    );
-    if (!res) {
-      return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
-    }
-    if (res.status >= 200 && res.status < 300) {
-      const body = (res.body ?? {}) as Record<string, unknown>;
-      return { ok: true, id: str(body.id) ?? id, name: String(body.name ?? id) };
-    }
-    const cred = credentialFailureWriteResult(res);
-    if (cred) return cred;
-    const auth = authWriteFailure(res);
-    if (auth) return auth;
-    if (res.status === 409) {
-      return { ok: false, status: "conflict", message: extractMessage(res.body, "Gateway name already exists") };
-    }
-    if (res.status === 422) {
-      return { ok: false, status: "validation", message: extractMessage(res.body, "Validation failed") };
-    }
-    if (res.status === 502) {
-      return { ok: false, status: "upstream_unreachable", message: extractMessage(res.body, "Upstream gateway unreachable") };
-    }
-    const body = res.body as Record<string, unknown> | null;
-    const message = typeof body?.message === "string" ? body.message : extractMessage(res.body, `Update failed (${res.status})`);
-    return { ok: false, status: "error", message };
-  }
-
-  /**
-   * DELETE /gateways/{id} — confirmed present in the fork (mcpgateway/main.py,
-   * `gateways.delete` permission), unlike a guessed endpoint. Returns
-   * `{ok:false}` (never throws) on 403/404/400/unreachable so callers can
-   * render an inline message the same way registerGateway does.
-   */
-  async deleteGateway(id: string): Promise<GatewayWriteResult> {
-    const res = await this.write(`${gatewayUrl()}/gateways/${encodeURIComponent(id)}`, { method: "DELETE" });
-    if (!res) {
-      return { ok: false, status: "unreachable", message: "apex-gateway is unreachable" };
-    }
-    if (res.status >= 200 && res.status < 300) {
-      return { ok: true, id, name: id };
-    }
-    const cred = credentialFailureWriteResult(res);
-    if (cred) return cred;
-    const auth = authWriteFailure(res);
-    if (auth) return auth;
-    // delete_gateway raises plain HTTPException(detail=...), not {message: ...}
-    const body = res.body as Record<string, unknown> | null;
-    const message = typeof body?.detail === "string" ? body.detail : extractMessage(res.body, `Delete failed (${res.status})`);
-    return { ok: false, status: "error", message };
   }
 
   // ── LLM model-plane API (/llm/providers, /llm/models) ──────────────────

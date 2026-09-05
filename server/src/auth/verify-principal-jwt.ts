@@ -1,7 +1,7 @@
 /**
  * Verifies cockpit-issued principal JWTs (the EdDSA tokens the better-auth
- * jwt plugin mints: operator tokens from mint-principal-jwt.ts, and the
- * cockpit-system / gateway-federation tokens from mint-system-jwt.ts) with
+ * jwt plugin mints: operator tokens from mint-principal-jwt.ts and the
+ * cockpit-system token from mint-system-jwt.ts) with
  * the cockpit's OWN keys — the same JWKS the gateway fetches from
  * /api/auth/jwks, read in-process instead. One auth authority, one key set,
  * two verifiers (gateway and cockpit) that agree by construction.
@@ -12,15 +12,15 @@
  * different token kind and never reach this verifier.
  */
 import { createPublicKey, verify as cryptoVerify, type JsonWebKey, type KeyObject } from "node:crypto";
-import { APEX_PRINCIPAL_AUDIENCE } from "./principal-audience.js";
+import { APEX_PRINCIPAL_AUDIENCE } from "./principal-token.js";
 import type { PrincipalClaims, PrincipalCompanyScope } from "./auth-client.js";
 
-export type PrincipalKind = "operator" | "cockpit_system" | "gateway_federation";
+export type PrincipalKind = "operator" | "cockpit_system";
 
 export interface VerifiedPrincipal {
   sub: string;
-  /** Absent on operator tokens (mint-principal-jwt.ts sets none); the two
-   *  service principals stamp theirs explicitly. */
+  /** Absent on operator tokens (mint-principal-jwt.ts sets none); the
+   *  system principal stamps its own. */
   principalKind: PrincipalKind;
   email: string | null;
   instanceAdmin: boolean;
@@ -105,8 +105,7 @@ function toPrincipal(payload: Record<string, unknown>, exp: number): VerifiedPri
   const sub = typeof payload.sub === "string" && payload.sub ? payload.sub : null;
   if (!sub) return null;
   const kindRaw = payload.principalKind;
-  const principalKind: PrincipalKind =
-    kindRaw === "cockpit_system" || kindRaw === "gateway_federation" ? kindRaw : "operator";
+  const principalKind: PrincipalKind = kindRaw === "cockpit_system" ? "cockpit_system" : "operator";
   const claims = payload as Partial<PrincipalClaims>;
   return {
     sub,

@@ -79,14 +79,16 @@ export interface SetupState {
   };
   /** `error` set when the registry could not be read though the gateway is
    *  up (credential rejected) — an empty list then is not an empty registry.
-   *  `cockpitMcp` narrows to the one entry the "Register now" button acts on. */
+   *  `cockpitMcp` is the gateway's built-in upstream for this cockpit, derived
+   *  there at boot from COCKPIT_PUBLIC_URL; `reachable` is the gateway's own
+   *  health verdict (null when none yet). */
   mcpServers: {
     registered: string[];
     error?: string;
     cockpitMcp: {
       registered: boolean;
+      reachable: boolean | null;
       url?: string;
-      lastAttempt?: { at: string; outcome: string };
     };
   };
   /** Model access — how model calls are paid for and routed (APEX-115). */
@@ -97,16 +99,7 @@ export interface SetupState {
   claudeSession: { connected: boolean; source: "subscription_token" | "company_api_key" | null; setAt: string | null };
 }
 
-export interface CockpitMcpRegistrationResult {
-  outcome: string;
-  mcpUrl: string;
-  message: string;
-}
-
 export const setupStateApi = {
   get: (orgId?: string) =>
     api.get<SetupState>(`/setup/state${orgId ? `?orgId=${encodeURIComponent(orgId)}` : ""}`),
-  /** POST /setup/mcp/register — one manual cockpit-mcp registration attempt
-   *  (the wizard's "Register now" button). Board-only. */
-  registerCockpitMcp: () => api.post<CockpitMcpRegistrationResult>("/setup/mcp/register", {}),
 };

@@ -125,12 +125,6 @@ describe("GatewayClient write classification", () => {
     if (!result.ok) expect(result.message).toContain("CSRF validation failed");
   });
 
-  it("classifies 401 on a delete as an auth failure", async () => {
-    stubFetch(() => json(401, { detail: "Authentication required" }));
-    const result = await new GatewayClient().deleteGateway("g1");
-    expect(result).toMatchObject({ ok: false, status: "auth" });
-  });
-
   it("classifies a token source that throws as credential_unavailable and never sends a request", async () => {
     const calls = stubFetch(() => json(200, {}));
     const client = new GatewayClient(async () => {

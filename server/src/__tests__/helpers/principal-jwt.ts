@@ -59,19 +59,6 @@ export function operatorClaims(overrides: Record<string, unknown> = {}) {
   };
 }
 
-/** Claims as mint-system-jwt.ts buildGatewayFederationClaims produces. */
-export function federationClaims(overrides: Record<string, unknown> = {}) {
-  return operatorClaims({
-    sub: "apex-gateway",
-    principalKind: "gateway_federation",
-    email: null,
-    email_verified: false,
-    companyId: null,
-    companies: [],
-    ...overrides,
-  });
-}
-
 /** Claims as mint-system-jwt.ts buildCockpitSystemClaims produces. */
 export function cockpitSystemClaims(overrides: Record<string, unknown> = {}) {
   return operatorClaims({

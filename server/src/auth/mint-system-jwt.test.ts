@@ -1,13 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   COCKPIT_SYSTEM_SUBJECT,
-  GATEWAY_FEDERATION_SUBJECT,
   buildCockpitSystemClaims,
-  buildGatewayFederationClaims,
   createCachedTokenSource,
   jwtExpiryMs,
   mintCockpitSystemJwt,
-  mintGatewayFederationJwt,
 } from "./mint-system-jwt.js";
 
 function fakeJwt(payload: Record<string, unknown>): string {
@@ -96,34 +93,5 @@ describe("createCachedTokenSource", () => {
     await expect(source()).rejects.toThrow("signer down");
     expect(await source()).toMatch(/^eyJ/);
     expect(mint).toHaveBeenCalledTimes(2);
-  });
-});
-
-describe("gateway federation principal", () => {
-  it("is an unverified, non-admin, company-less principal named apex-gateway", () => {
-    const claims = buildGatewayFederationClaims();
-    expect(claims.sub).toBe(GATEWAY_FEDERATION_SUBJECT);
-    expect(claims.principalKind).toBe("gateway_federation");
-    expect(claims.instanceAdmin).toBe(false);
-    expect(claims.email).toBeNull();
-    expect(claims.companies).toEqual([]);
-  });
-
-  it("mints with an explicit exp of the requested lifetime, through the principal signer", async () => {
-    const signJWT = vi.fn(async (_input: { body: { payload: Record<string, unknown> } }) => ({ token: "tok" }));
-    const now = 1_700_000_000_000;
-    const token = await mintGatewayFederationJwt({ api: { signJWT } }, { lifetimeSeconds: 960, now: () => now });
-    expect(token).toBe("tok");
-    expect(signJWT.mock.calls[0]![0].body.payload).toMatchObject({
-      sub: GATEWAY_FEDERATION_SUBJECT,
-      principalKind: "gateway_federation",
-      iat: now / 1000,
-      exp: now / 1000 + 960,
-    });
-  });
-
-  it("throws when the signer returns no token", async () => {
-    const signJWT = vi.fn(async () => ({ token: "" }));
-    await expect(mintGatewayFederationJwt({ api: { signJWT } }, { lifetimeSeconds: 960 })).rejects.toThrow(/no token/);
   });
 });

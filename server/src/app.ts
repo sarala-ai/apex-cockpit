@@ -67,9 +67,8 @@ import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
-import { mcpRoutes, registerCockpitMcpWithGateway } from "./mcp/router.js";
+import { mcpRoutes } from "./mcp/router.js";
 import type { PrincipalJwtVerifier } from "./auth/verify-principal-jwt.js";
-import { recordCockpitMcpRegistrationAttempt } from "./mcp/registration-state.js";
 import { oauthRoutes } from "./mcp/oauth.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
 import { applyUiBranding } from "./ui-branding.js";
@@ -308,11 +307,7 @@ export async function createApp(
   api.use(projectRoutes(db));
   api.use(apexSetupRoutes(db));
   api.use(apexScopingRoutes(db));
-  api.use(apexSetupStateRoutes(db, undefined, {
-    serverPort: opts.serverPort,
-    publicUrl: opts.authPublicBaseUrl,
-    deploymentMode: opts.deploymentMode,
-  }));
+  api.use(apexSetupStateRoutes(db));
   api.use(apexSetupModelsRoutes(db));
   api.use(apexObserveRoutes(db, { mintOperatorToken: opts.mintOperatorToken }));
   api.use(apexGatewayObserveRoutes({ mintOperatorToken: opts.mintOperatorToken }));
@@ -648,26 +643,6 @@ export async function createApp(
       );
     }
   };
-  // One boot-time attempt only (fire-and-forget) — if the gateway is down or
-  // restarting right now, this is not retried until the next deploy pass.
-  // startCockpitMcpRegistrationSweep (registration-sweep.ts, wired in
-  // index.ts) is what actually keeps retrying until the registry read
-  // confirms cockpit-mcp is registered.
-  void registerCockpitMcpWithGateway({
-    serverPort: opts.serverPort,
-    publicUrl: opts.authPublicBaseUrl,
-    deploymentMode: opts.deploymentMode,
-  })
-    .then((result) => {
-      recordCockpitMcpRegistrationAttempt(result);
-      const log = result.outcome === "registered" || result.outcome === "repointed" || result.outcome === "already_registered" || result.outcome === "skipped_placeholder"
-        ? logger.info.bind(logger)
-        : logger.warn.bind(logger);
-      log({ ...result }, `cockpit-mcp gateway registration attempt: ${result.outcome}`);
-    })
-    .catch((err) => {
-      logger.error({ err }, "cockpit-mcp gateway self-registration threw unexpectedly");
-    });
   void ensureBundledKubernetesPlugin()
     .then(() => loader.loadAll())
     .then((result) => {

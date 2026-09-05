@@ -1,7 +1,7 @@
 /**
  * The REST actor middleware consumes cockpit-issued principal JWTs:
  *   - an operator token → the same board actor a session/board key yields
- *   - a service principal (gateway-federation, cockpit-system) → read-only
+ *   - the cockpit-system principal → read-only
  *   - expired / foreign-signed → unauthenticated (401 at the route's gate)
  * Board keys, agent keys and sessions are untouched.
  */
@@ -17,7 +17,6 @@ import { assertAuthenticated, assertBoardOrAgent } from "../routes/authz.js";
 import { apexSetupStateRoutes, type SetupStateProbes } from "../routes/apex-setup-state.js";
 import {
   cockpitSystemClaims,
-  federationClaims,
   operatorClaims,
   signPrincipalJwt,
   testPrincipalKey,
@@ -52,7 +51,6 @@ const probes: SetupStateProbes = {
   oauthClient: async () => ({ configured: true, signInClient: "configured", gatewayUpstreams: { total: 0, configured: 0 } }),
   gateway: async () => ({ reachable: true, url: "http://gw.test", authenticated: true, failure: null }),
   mcpServers: async () => ({ registered: [], cockpitMcp: { registered: true } }),
-  registerCockpitMcp: async () => ({ outcome: "already_registered", mcpUrl: "http://gw.test/mcp", message: "" }),
   models: async () => ({
     claude: { mode: "none", installed: false, source: "server", reportedAt: null, subscriptionProviderRegistered: false, apiKeyProviderRegistered: false },
     openrouter: { configured: false },
@@ -127,25 +125,17 @@ describe("actor middleware — operator principal JWT", () => {
   });
 });
 
-describe("actor middleware — service principals", () => {
-  it("gateway-federation is a read-only board actor: a mutating route is 403", async () => {
-    const app = createApp(fakeDb({ user: false, memberships: [] }));
-    const token = signPrincipalJwt(key, federationClaims());
-    const actor = await get(app, "/actor", token);
-    expect(actor.body).toMatchObject({ type: "board", userId: "apex-gateway", isInstanceAdmin: false, companyIds: [], source: "service_principal" });
-
-    const res = await request(app).post(`/api/companies/${COMPANY}/issues`).set("Authorization", `Bearer ${token}`).send({ title: "x" });
-    expect(res.status).toBe(403);
-    expect(res.body.code).toBe("SERVICE_PRINCIPAL_READ_ONLY");
-  });
-
+describe("actor middleware — cockpit-system principal", () => {
   it("cockpit-system reads as instance admin (its probes) and still cannot mutate", async () => {
     const app = createApp(fakeDb({ user: false, memberships: [] }));
     const token = signPrincipalJwt(key, cockpitSystemClaims());
+    const actor = await get(app, "/actor", token);
+    expect(actor.body).toMatchObject({ type: "board", userId: "cockpit-system", isInstanceAdmin: true, companyIds: [], source: "service_principal" });
     const state = await get(app, "/api/setup/state", token);
     expect(state.status).toBe(200);
     const res = await request(app).post(`/api/companies/${COMPANY}/issues`).set("Authorization", `Bearer ${token}`).send({ title: "x" });
     expect(res.status).toBe(403);
+    expect(res.body.code).toBe("SERVICE_PRINCIPAL_READ_ONLY");
   });
 });
 

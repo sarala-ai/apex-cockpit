@@ -63,11 +63,9 @@ describe("createPrincipalJwtVerifier", () => {
     });
   });
 
-  it("carries the service principal kinds through", async () => {
-    const fed = await verifier.verify(
-      signPrincipalJwt(kp.privateKey, "k1", operatorPayload({ sub: "apex-gateway", principalKind: "gateway_federation", email: null, companies: [], companyId: null })),
-    );
-    expect(fed.ok && fed.principal.principalKind).toBe("gateway_federation");
+  it("carries the system principal kind through, and treats any other kind as an operator", async () => {
+    const unknown = await verifier.verify(signPrincipalJwt(kp.privateKey, "k1", operatorPayload({ principalKind: "something_else" })));
+    expect(unknown.ok && unknown.principal.principalKind).toBe("operator");
     const sys = await verifier.verify(
       signPrincipalJwt(kp.privateKey, "k1", operatorPayload({ sub: "cockpit-system", principalKind: "cockpit_system", instanceAdmin: true })),
     );

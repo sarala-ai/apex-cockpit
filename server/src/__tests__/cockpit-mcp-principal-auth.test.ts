@@ -1,7 +1,8 @@
 /**
- * cockpit-mcp accepts the cockpit's own principal JWTs next to run tokens:
- *   - gateway-federation principal: probe surface only, tool call → 403
+ * cockpit-mcp accepts the cockpit's own operator principal JWTs next to run
+ * tokens:
  *   - operator principal: authorized as that operator (board:read, one company)
+ *   - cockpit-system principal: 403 (cockpit does not call itself)
  *   - run JWT: unchanged
  * Verification is real (EdDSA against a test JWKS); the DB is a stub that
  * answers the few reads the operator mapping and listIssues need.
@@ -15,7 +16,6 @@ import { mintCockpitMcpJwt } from "../mcp/cockpit-mcp-jwt.js";
 import { CAP_BOARD_READ } from "../mcp/capabilities.js";
 import {
   cockpitSystemClaims,
-  federationClaims,
   operatorClaims,
   signPrincipalJwt,
   testPrincipalKey,
@@ -96,39 +96,6 @@ function appFor(memberships: Array<{ companyId: string }>, opts: { admin?: boole
 
 const post = (app: express.Express, token: string, body: unknown, headers: Record<string, string> = {}) =>
   request(app).post("/mcp").set("Authorization", `Bearer ${token}`).set("Accept", ACCEPT).set(headers).send(body);
-
-describe("cockpit-mcp — gateway-federation principal", () => {
-  const token = signPrincipalJwt(key, federationClaims());
-
-  it("may initialize and list tools (the registration/probe surface)", async () => {
-    const { app, activity } = appFor([]);
-    const init = await post(app, token, initialize());
-    expect(init.status).toBe(200);
-    expect(parseSseJsonRpc(init.text)).toMatchObject({ result: { serverInfo: { name: "cockpit-mcp" } } });
-
-    const list = await post(app, token, rpc(2, "tools/list"));
-    expect(list.status).toBe(200);
-    const names = ((parseSseJsonRpc(list.text).result as { tools: Array<{ name: string }> }).tools).map((t) => t.name);
-    expect(names).toContain("listIssues");
-    // Company-less: nothing to audit against, and nothing was.
-    expect(activity).toHaveLength(0);
-  });
-
-  it("is refused a tool call with 403 before any tool runs", async () => {
-    const { app, activity } = appFor([]);
-    const res = await post(app, token, rpc(3, "tools/call", { name: "listIssues", arguments: {} }));
-    expect(res.status).toBe(403);
-    expect(res.body).toEqual({ error: "Forbidden", reason: "federation_probe_only", method: "tools/call" });
-    expect(activity).toHaveLength(0);
-  });
-
-  it("is refused a batch that smuggles a tool call among probes", async () => {
-    const { app } = appFor([]);
-    const res = await post(app, token, [rpc(1, "tools/list"), rpc(2, "tools/call", { name: "getIssue", arguments: {} })]);
-    expect(res.status).toBe(403);
-    expect(res.body.method).toBe("tools/call");
-  });
-});
 
 describe("cockpit-mcp — operator principal", () => {
   it("is authorized as that operator for their single company, with board:read", async () => {

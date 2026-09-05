@@ -6,16 +6,14 @@
  *   - Chat-panel: same JWT bearer, capability set restricted to draft:write.
  *   - External hosts: OAuth 2.1 + PKCE (T7, see ./oauth.ts) — the access token
  *     is a user-scoped cockpit-mcp JWT verified by the same middleware.
- *   - Cockpit-issued principal JWTs (EdDSA, aud "apex-gateway", verified with
- *     this instance's own JWKS — auth/verify-principal-jwt.ts), as the gateway
- *     presents them when it federates cockpit-mcp:
- *       · gateway-federation principal: the credential the gateway holds for
- *         its registration probe / health check / catalog sync. Probe surface
- *         only (FEDERATION_PROBE_METHODS); a tool call is 403.
- *       · operator principal: forwarded by the gateway on tool calls, or
- *         presented directly. Authorized as that operator — a board user with
- *         their companies, resolved from the DB like the REST actor — with
- *         board:read; board writes stay run-attributed (requireRunIdentity).
+ *   - Cockpit-issued operator principal JWTs (EdDSA, aud "apex-gateway",
+ *     verified with this instance's own JWKS — auth/verify-principal-jwt.ts),
+ *     as the gateway forwards them: cockpit-mcp is a built-in upstream of the
+ *     gateway (derived from COCKPIT_PUBLIC_URL there) with no stored
+ *     credential — the caller's own bearer is passed through. Authorized as
+ *     that operator — a board user with their companies, resolved from the DB
+ *     like the REST actor — with board:read; board writes stay run-attributed
+ *     (requireRunIdentity).
  *
  * Every request follows the pattern:
  *   1. Extract + verify JWT → 401 on failure.
@@ -32,16 +30,7 @@ import type { Db } from "@paperclipai/db";
 import { activityLog, issues } from "@paperclipai/db";
 import { and, asc, eq, ilike } from "drizzle-orm";
 import { verifyCockpitMcpJwt, type CockpitMcpJwtClaims } from "./cockpit-mcp-jwt.js";
-import type { GatewayClient, GatewayWriteResult } from "../gateway/gateway-client.js";
-import { cockpitSystemGatewayClient } from "../gateway/system-credential.js";
-import { gatewayFederationToken } from "./federation-credential.js";
-import { jwtExpiryMs, type TokenSource } from "../auth/mint-system-jwt.js";
-import {
-  decodeJwtHeader,
-  jwtIssuer,
-  type PrincipalJwtVerifier,
-  type VerifiedPrincipal,
-} from "../auth/verify-principal-jwt.js";
+import { decodeJwtHeader, type PrincipalJwtVerifier, type VerifiedPrincipal } from "../auth/verify-principal-jwt.js";
 import { logger } from "../middleware/logger.js";
 import { boardAuthService } from "../services/board-auth.js";
 import { issueService } from "../services/issues.js";
@@ -89,12 +78,6 @@ async function writeAuditRow(
     errorMessage?: string;
   },
 ): Promise<void> {
-  // The federation principal belongs to no company, and activity rows are
-  // company-scoped; its probes are logged, not audited.
-  if (input.claims.token_kind === "gateway_federation") {
-    logger.debug({ tool: input.tool, outcome: input.outcome }, "cockpit-mcp federation probe");
-    return;
-  }
   const isUser = input.claims.token_kind === "user";
   try {
     await db.insert(activityLog).values({
@@ -490,311 +473,9 @@ function buildMcpServer(db: Db, claims: CockpitMcpJwtClaims): McpServer {
   return server;
 }
 
-// ─── Gateway self-registration ───────────────────────────────────────────────
-
-export const COCKPIT_MCP_GATEWAY_NAME = "cockpit-mcp";
-
-export interface CockpitMcpUrlInput {
-  serverPort: number;
-  /** Cockpit's public base URL (PAPERCLIP_PUBLIC_URL); the MCP URL the
-   *  gateway must dial on a hosted deployment, where loopback is the
-   *  gateway's own container. */
-  publicUrl?: string | null;
-  deploymentMode: "local_trusted" | "authenticated";
-  explicitUrl?: string | null;
-}
-
-/** The URL the gateway registers for cockpit-mcp. An explicit
- *  PAPERCLIP_COCKPIT_MCP_URL always wins; hosted (authenticated) instances
- *  derive it from their public URL; local instances use loopback. */
-export function resolveCockpitMcpUrl(input: CockpitMcpUrlInput): string {
-  const explicit = input.explicitUrl?.trim();
-  if (explicit) return explicit;
-  const publicBase = input.publicUrl?.trim().replace(/\/+$/, "");
-  if (input.deploymentMode === "authenticated" && publicBase) return `${publicBase}/mcp`;
-  return `http://127.0.0.1:${input.serverPort}/mcp`;
-}
-
-/**
- * POST /gateways makes apex-gateway itself dial the upstream url and run an
- * MCP initialize handshake before it answers (gateway_service.py
- * register_gateway → _initialize_gateway_with_timeout). The route that calls
- * it (mcpgateway/main.py register_gateway) never passes `initialize_timeout`,
- * so that handshake is NOT wrapped in `asyncio.wait_for` and is bounded only
- * by the gateway's own federation_timeout (120s, config.py). The cockpit's
- * default write timeout (gateway-client.ts timedWrite, 8s) is far shorter,
- * so cockpit gives up and reports "unreachable" long before the gateway's
- * attempt against cockpit's own /mcp resolves either way. Give this specific
- * call enough room to outlast that 120s ceiling.
- */
-const REGISTER_TIMEOUT_MS = 130_000;
-
-export type CockpitMcpRegistrationOutcome =
-  | "registered"
-  | "repointed"
-  | "credential_refreshed"
-  | "already_registered"
-  | "skipped_placeholder"
-  | "rejected_credential"
-  | "upstream_auth_required"
-  | "gateway_unreachable"
-  | "failed";
-
-export interface CockpitMcpRegistrationResult {
-  outcome: CockpitMcpRegistrationOutcome;
-  mcpUrl: string;
-  message: string;
-  /** Expiry (ms) of the federation token this attempt stored at the gateway;
-   *  null when it wrote one without a readable `exp`; absent when the attempt
-   *  stored no credential (no token source, or nothing was written). The
-   *  sweep uses it to refresh before expiry. */
-  credentialExpiresAt?: number | null;
-}
-
-/**
- * `upstream_unreachable` (POST/PUT /gateways got a 502) means apex-gateway
- * reached cockpit's own /mcp but the initialize probe was refused. With a
- * federation credential registered that is no longer expected — it now means
- * the credential was rejected (expired between mint and probe, JWKS out of
- * step, or a cockpit build that predates principal verification at /mcp).
- * Without one (local_trusted instances have no signer) it is the known
- * shape of the probe arriving with no credential at all.
- */
-function classifyRegistrationFailure(
-  mcpUrl: string,
-  result: Extract<GatewayWriteResult, { ok: false }>,
-  credentialPresented: boolean,
-): CockpitMcpRegistrationResult {
-  if (result.status === "auth") {
-    return {
-      outcome: "rejected_credential",
-      mcpUrl,
-      message: `apex-gateway rejected the cockpit system principal: ${result.message}`,
-    };
-  }
-  if (result.status === "upstream_unreachable") {
-    return {
-      outcome: "upstream_auth_required",
-      mcpUrl,
-      message: credentialPresented
-        ? `apex-gateway reached cockpit's own /mcp endpoint but its probe was refused (${result.message}). ` +
-          `The gateway-federation token was registered as the upstream credential, so this is a verification ` +
-          `failure at cockpit's /mcp (expired token, JWKS/issuer mismatch), not a reachability problem.`
-        : `apex-gateway reached cockpit's own /mcp endpoint but could not complete the connection (${result.message}). ` +
-          `cockpit's /mcp requires a JWT and this instance minted no gateway-federation credential to register ` +
-          `(no principal signer on a local_trusted instance), so the probe arrived unauthenticated.`,
-    };
-  }
-  if (result.status === "unreachable" || result.status === "credential_unavailable") {
-    return { outcome: "gateway_unreachable", mcpUrl, message: result.message };
-  }
-  return { outcome: "failed", mcpUrl, message: result.message };
-}
-
-export interface CockpitMcpRegistrationOptions {
-  /** Mints the upstream credential the gateway stores for cockpit-mcp
-   *  (mintGatewayFederationJwt). Defaults to the process-level source; null
-   *  from it means "register without a credential", the local contract. */
-  federationToken?: TokenSource;
-  /** When cockpit-mcp is already registered at the right URL: re-point it
-   *  anyway with a fresh federation token (default true — a fresh process
-   *  cannot know how stale the stored one is). The sweep passes false on the
-   *  ticks where its own record says the credential is still fresh. */
-  refreshCredential?: boolean;
-}
-
-interface FederationCredential {
-  token: string;
-  /** `iss` of the minted token — the value the gateway pins the caller's
-   *  forwarded JWT against (oauth_config.issuer). Omitted for loopback
-   *  issuers, which the gateway's URL validator refuses; the gateway then
-   *  forwards any non-hub JWS, which on a local instance is only ever
-   *  cockpit's own. */
-  issuer: string | null;
-  expiresAt: number | null;
-}
-
-function isLoopbackIssuer(issuer: string): boolean {
-  try {
-    const host = new URL(issuer).hostname;
-    return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]" || host === "0.0.0.0";
-  } catch {
-    return true;
-  }
-}
-
-async function mintFederationCredential(source: TokenSource): Promise<FederationCredential | null> {
-  const token = await source();
-  if (!token) return null;
-  const issuer = jwtIssuer(token);
-  return { token, issuer: issuer && !isLoopbackIssuer(issuer) ? issuer : null, expiresAt: jwtExpiryMs(token) };
-}
-
-/** The auth fields of a cockpit-mcp registration: the federation token as the
- *  stored bearer, and the gateway's static-login-passthrough opt-in so an
- *  operator's own principal JWT supersedes it on tool calls
- *  (gateway_auth_service.static_login_passthrough_bearer). */
-function federationAuthFields(credential: FederationCredential) {
-  return {
-    authType: "bearer" as const,
-    authToken: credential.token,
-    oauthConfig: {
-      login_passthrough: true,
-      ...(credential.issuer ? { issuer: credential.issuer } : {}),
-    },
-  };
-}
-
-/**
- * Self-register the cockpit MCP server with the APEX gateway, as the cockpit
- * system principal, handing the gateway a gateway-federation token as the
- * credential it presents back to cockpit's /mcp. Called once at boot
- * (fire-and-forget) and, on retry, by `startCockpitMcpRegistrationSweep`
- * (registration-sweep.ts) and the manual `POST /setup/mcp/register` route —
- * all three go through this one function so every caller sees the same
- * classification. Idempotent: a 409 conflict means a gateway already exists
- * under this name — if its registered url no longer matches the resolved one
- * (e.g. a stale loopback or placeholder URL from an earlier deploy pass), or
- * its credential is due for refresh, it is repointed via PUT. Never throws:
- * callers get a classified result instead, so a down/slow gateway degrades
- * this to a retryable outcome rather than crashing boot.
- */
-export async function registerCockpitMcpWithGateway(
-  input: Omit<CockpitMcpUrlInput, "explicitUrl">,
-  client: GatewayClient = cockpitSystemGatewayClient(),
-  opts: CockpitMcpRegistrationOptions = {},
-): Promise<CockpitMcpRegistrationResult> {
-  const mcpUrl = resolveCockpitMcpUrl({ ...input, explicitUrl: process.env.PAPERCLIP_COCKPIT_MCP_URL });
-  let hostname: string | null = null;
-  try {
-    hostname = new URL(mcpUrl).hostname;
-  } catch {
-    hostname = null;
-  }
-  if (hostname === "placeholder.invalid") {
-    return {
-      outcome: "skipped_placeholder",
-      mcpUrl,
-      message: "PAPERCLIP_PUBLIC_URL is still the deploy placeholder (will register on the next deploy pass)",
-    };
-  }
-  let credential: FederationCredential | null;
-  try {
-    credential = await mintFederationCredential(opts.federationToken ?? gatewayFederationToken);
-  } catch (err) {
-    return {
-      outcome: "gateway_unreachable",
-      mcpUrl,
-      message: `cockpit could not mint the gateway-federation credential: ${err instanceof Error ? err.message : String(err)}`,
-    };
-  }
-  const result = await client.registerGateway({
-    name: COCKPIT_MCP_GATEWAY_NAME,
-    url: mcpUrl,
-    transport: "STREAMABLEHTTP",
-    description: "Cockpit MCP server — board APIs with run-scoped identity",
-    timeoutMs: REGISTER_TIMEOUT_MS,
-    ...(credential ? federationAuthFields(credential) : {}),
-  });
-  if (result.ok) {
-    return {
-      outcome: "registered",
-      mcpUrl,
-      message: `registered with APEX gateway (id=${result.id ?? "?"})`,
-      ...(credential ? { credentialExpiresAt: credential.expiresAt } : {}),
-    };
-  }
-  if (result.status === "conflict") {
-    return repointExistingCockpitMcpGateway(mcpUrl, client, credential, opts.refreshCredential ?? true);
-  }
-  return classifyRegistrationFailure(mcpUrl, result, credential !== null);
-}
-
-/**
- * A 409 on POST /gateways means a gateway named cockpit-mcp already exists.
- * Read it back and, if its url has drifted from the desired one or its
- * stored federation credential is due, repoint it with PUT rather than
- * leaving the stale registration in place.
- */
-async function repointExistingCockpitMcpGateway(
-  mcpUrl: string,
-  client: GatewayClient,
-  credential: FederationCredential | null,
-  refreshCredential: boolean,
-): Promise<CockpitMcpRegistrationResult> {
-  const existing = await client.readGateways();
-  if (!existing.ok) {
-    return {
-      outcome: "failed",
-      mcpUrl,
-      message: `already registered with APEX gateway, but could not read it back to check for drift: ${existing.failure.message}`,
-    };
-  }
-  const entry = existing.value.find((g) => g.name === COCKPIT_MCP_GATEWAY_NAME);
-  if (!entry) {
-    return { outcome: "failed", mcpUrl, message: "registration conflicted (409) but no gateway with that name was found on read-back" };
-  }
-  const urlCurrent = entry.url === mcpUrl;
-  const refresh = credential !== null && refreshCredential;
-  if (urlCurrent && !refresh) {
-    return { outcome: "already_registered", mcpUrl, message: "already registered with APEX gateway" };
-  }
-  if (!entry.id) {
-    return { outcome: "failed", mcpUrl, message: `registration is stale (previous url ${entry.url}) but has no id to update` };
-  }
-  const update = await client.updateGateway(entry.id, {
-    url: mcpUrl,
-    timeoutMs: REGISTER_TIMEOUT_MS,
-    ...(credential ? federationAuthFields(credential) : {}),
-  });
-  if (update.ok) {
-    const credentialExpiresAt = credential ? { credentialExpiresAt: credential.expiresAt } : {};
-    return urlCurrent
-      ? { outcome: "credential_refreshed", mcpUrl, message: "refreshed the gateway-federation credential", ...credentialExpiresAt }
-      : { outcome: "repointed", mcpUrl, message: `repointed from ${entry.url} to current URL`, ...credentialExpiresAt };
-  }
-  return classifyRegistrationFailure(mcpUrl, update, credential !== null);
-}
-
 // ─── Principal JWT → MCP identity ────────────────────────────────────────────
 
-/**
- * The JSON-RPC methods the gateway-federation principal may call: what a
- * registration probe, health check and catalog sync need, and nothing that
- * executes. Anything else — tools/call above all — is refused before the
- * MCP server is even built.
- */
-export const FEDERATION_PROBE_METHODS: ReadonlySet<string> = new Set([
-  "initialize",
-  "notifications/initialized",
-  "ping",
-  "tools/list",
-  "prompts/list",
-  "resources/list",
-  "resources/templates/list",
-]);
-
 const COMPANY_HEADER = "x-paperclip-company-id";
-
-export function federationClaims(principal: VerifiedPrincipal): CockpitMcpJwtClaims {
-  return {
-    sub: principal.sub,
-    token_kind: "gateway_federation",
-    company_id: "",
-    run_id: null,
-    user_id: null,
-    adapter_type: null,
-    granted_capabilities: [],
-    issue_id: null,
-    case_id: null,
-    project_id: null,
-    iat: 0,
-    exp: principal.exp,
-    iss: principal.iss ?? "",
-    aud: "apex-gateway",
-    instance_id: "",
-  };
-}
 
 type OperatorClaimsResult =
   | { ok: true; claims: CockpitMcpJwtClaims }
@@ -857,13 +538,6 @@ export async function resolveOperatorClaims(
   };
 }
 
-function rpcMethodsOf(body: unknown): string[] {
-  const items = Array.isArray(body) ? body : [body];
-  return items
-    .map((item) => (item && typeof item === "object" ? (item as { method?: unknown }).method : undefined))
-    .filter((m): m is string => typeof m === "string");
-}
-
 // ─── Router ───────────────────────────────────────────────────────────────────
 
 export interface McpRoutesOptions {
@@ -889,18 +563,7 @@ export function mcpRoutes(db: Db, opts: McpRoutesOptions = {}): Router {
         return null;
       }
       const principal = verified.principal;
-      if (principal.principalKind === "gateway_federation") {
-        if (req.method === "POST") {
-          const methods = rpcMethodsOf(req.body);
-          const refused = methods.length === 0 ? "(none)" : (methods.find((m) => !FEDERATION_PROBE_METHODS.has(m)) ?? null);
-          if (refused !== null) {
-            res.status(403).json({ error: "Forbidden", reason: "federation_probe_only", method: refused });
-            return null;
-          }
-        }
-        return federationClaims(principal);
-      }
-      if (principal.principalKind === "cockpit_system") {
+      if (principal.principalKind !== "operator") {
         // Cockpit does not call its own MCP surface as itself.
         res.status(403).json({ error: "Forbidden", reason: "principal_not_permitted" });
         return null;

@@ -56,9 +56,9 @@ export function boardMutationGuard(): RequestHandler {
       return;
     }
 
-    // A service principal (cockpit-system, gateway-federation) is a process,
-    // not a person: it may read what its probes need and never mutates the
-    // board, whatever route it reached. This is the one place that rule lives.
+    // The cockpit-system principal is a process, not a person: it may read
+    // what its probes need and never mutates the board, whatever route it
+    // reached. This is the one place that rule lives.
     if (req.actor.source === "service_principal") {
       res.status(403).json({ error: "Service principals cannot mutate board state", code: "SERVICE_PRINCIPAL_READ_ONLY" });
       return;

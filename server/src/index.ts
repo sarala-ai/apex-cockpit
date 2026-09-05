@@ -629,29 +629,17 @@ export async function startServer(): Promise<StartedServer> {
     mintGatewayToken = (userId) =>
       mintPrincipalJwtForUser(auth as unknown as PrincipalJwtSigner, db as any, userId);
     registerGatewayTokenMinter(mintGatewayToken);
-    const { mintCockpitSystemJwt, mintGatewayFederationJwt, createCachedTokenSource } = await import("./auth/mint-system-jwt.js");
+    const { mintCockpitSystemJwt, createCachedTokenSource } = await import("./auth/mint-system-jwt.js");
     const { registerCockpitSystemTokenSource } = await import("./gateway/system-credential.js");
     registerCockpitSystemTokenSource(
       createCachedTokenSource(() =>
         mintCockpitSystemJwt(auth as unknown as PrincipalJwtSigner, config.authPublicBaseUrl ?? null),
       ),
     );
-    // The credential the gateway holds to dial cockpit-mcp back. Its lifetime
-    // and the cache's refresh margin are both derived from the registration
-    // sweep's interval — see federationCredentialPolicy for the contract.
-    const { registerGatewayFederationTokenSource } = await import("./mcp/federation-credential.js");
-    const { cockpitMcpRegistrationSweepIntervalMs, federationCredentialPolicy } = await import("./mcp/registration-sweep.js");
-    const federationPolicy = federationCredentialPolicy(cockpitMcpRegistrationSweepIntervalMs());
-    registerGatewayFederationTokenSource(
-      createCachedTokenSource(
-        () => mintGatewayFederationJwt(auth as unknown as PrincipalJwtSigner, { lifetimeSeconds: federationPolicy.lifetimeSeconds }),
-        { refreshMarginMs: federationPolicy.tokenSourceRefreshMarginMs },
-      ),
-    );
     // Cockpit verifies its own principal tokens with the same JWKS it
     // publishes for the gateway (/api/auth/jwks), read in-process.
     const { createPrincipalJwtVerifier } = await import("./auth/verify-principal-jwt.js");
-    const { resolvePrincipalJwtIssuer } = await import("./auth/better-auth.js");
+    const { resolvePrincipalJwtIssuer } = await import("./auth/principal-token.js");
     const jwksApi = auth as unknown as { api: { getJwks: () => Promise<{ keys: Array<Record<string, unknown>> }> } };
     principalJwtVerifier = createPrincipalJwtVerifier({
       getJwks: () => jwksApi.api.getJwks() as Promise<PrincipalJwks>,
@@ -1217,19 +1205,6 @@ export async function startServer(): Promise<StartedServer> {
   const { startEnvironmentLeaseReaper } = await import("./services/environment-lease-reaper.js");
   const stopEnvironmentLeaseReaper = startEnvironmentLeaseReaper(db as any, { pluginWorkerManager });
 
-  // Boot-time cockpit-mcp gateway self-registration (app.ts) runs exactly
-  // once and is never retried on its own — if the gateway was down or
-  // restarting at that moment, cockpit-mcp stays unregistered until the next
-  // deploy. This sweep is the retry: every APEX_MCP_REGISTRATION_SWEEP_SEC
-  // (default 300; 0 disables) it re-attempts, stopping once the registry
-  // read confirms cockpit-mcp registered + reachable.
-  const { startCockpitMcpRegistrationSweep } = await import("./mcp/registration-sweep.js");
-  const stopCockpitMcpRegistrationSweep = startCockpitMcpRegistrationSweep({
-    serverPort: listenPort,
-    publicUrl: config.authPublicBaseUrl ?? null,
-    deploymentMode: config.deploymentMode,
-  });
-
   // Recurring `apex capabilities sync` (spec: capability sync +
   // PATH-canonical resolution, Session B / T4) — pulls configured
   // capability_sources (workflows/skills) into ~/.apex/company/<alias>/ per
@@ -1333,7 +1308,6 @@ export async function startServer(): Promise<StartedServer> {
       stopCriterionReviewSweep();
       stopRunEvalIngestSweep();
       stopEnvironmentLeaseReaper();
-      stopCockpitMcpRegistrationSweep();
       stopCapabilitySyncScheduler();
       await waitForHeartbeatSchedulerIdle();
 
