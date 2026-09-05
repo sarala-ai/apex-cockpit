@@ -18,7 +18,8 @@ import { resolveOperatorAuth, serverIsOperatorWorkstation } from "../apex/setup/
 import { assertBoardOrAgent } from "./authz.js";
 import { readModelAccessState, type ModelAccessState } from "../apex/model-access/index.js";
 import { detectClaudeAuthForOperator, UNKNOWN_CLAUDE_DETECT } from "../apex/model-access/detect-claude.js";
-import { cockpitSystemGatewayClient } from "../gateway/system-credential.js";
+import { gatewayClientForRequest } from "../gateway/operator-gateway-client.js";
+import type { GatewayClient } from "../gateway/gateway-client.js";
 import { gatewayUrl, type GatewayFailure } from "../gateway/gateway-client.js";
 
 type Health = "ok" | "missing" | "expired";
@@ -127,11 +128,11 @@ export interface SetupStateProbes {
 }
 
 /** Real probes over the live DB / gcloud / gateway. Each is self-contained.
- *  Gateway probes run as the cockpit system principal: they describe the
- *  instance, not the signed-in operator. */
+ *  Gateway probes run as the requesting operator: the wizard shows what that
+ *  person is entitled to see. */
 export function defaultProbes(
   db: Db,
-  gateway = cockpitSystemGatewayClient(),
+  gateway: GatewayClient,
   env: NodeJS.ProcessEnv = process.env,
 ): SetupStateProbes {
   return {
@@ -291,11 +292,12 @@ async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
 }
 
 export function apexSetupStateRoutes(db: Db, overrides?: Partial<SetupStateProbes>) {
-  const probes: SetupStateProbes = { ...defaultProbes(db), ...overrides };
+  const probesFor = (req: Parameters<typeof gatewayClientForRequest>[0]): SetupStateProbes => ({ ...defaultProbes(db, gatewayClientForRequest(req)), ...overrides });
   const router = Router();
 
   // GET /setup/state — one failure-isolated snapshot of every prerequisite.
   router.get("/setup/state", async (req, res) => {
+      const probes = probesFor(req);
     assertBoardOrAgent(req);
     const orgId = typeof req.query.orgId === "string" ? req.query.orgId : undefined;
 

@@ -15,6 +15,8 @@
  * pipeline_cases carries a durable PR-link column of its own.
  */
 
+import { gatewayClientForUser } from "../gateway/operator-gateway-client.js";
+import { GatewayClient } from "../gateway/gateway-client.js";
 import { and, eq, isNotNull } from "drizzle-orm";
 import {
   type Db,
@@ -55,7 +57,7 @@ export interface OrgFactsProbes {
   /** releases.releasedAt is set, joined through companies.orgId. */
   deploysLanded: (orgId: string) => Promise<number>;
   /** At least one gateway call is in the gateway's own audit ledger. */
-  gatewayCallAudited: () => Promise<boolean>;
+  gatewayCallAudited: (userId: string | null) => Promise<boolean>;
   /** Active org_memberships rows for this org. */
   orgMemberCount: (orgId: string) => Promise<number>;
   /** Active company_memberships rows across this org's companies. */
@@ -70,8 +72,8 @@ export interface OrgFactsProbes {
 
 /** Real probes over the live DB / gateway. Injectable so computeOrgFacts is
  *  testable without a live DB (see server/src/__tests__/org-facts.test.ts). */
-export function defaultOrgFactsProbes(db: Db): OrgFactsProbes {
-  const setupProbes = defaultProbes(db);
+export function defaultOrgFactsProbes(db: Db, userId: string | null = null): OrgFactsProbes {
+  const setupProbes = defaultProbes(db, gatewayClientForUserOrEnv(userId));
   return {
     async hasRepoOrCloudBinding() {
       const s = await setupProbes.scoping();
@@ -106,9 +108,10 @@ export function defaultOrgFactsProbes(db: Db): OrgFactsProbes {
         .where(and(eq(companies.orgId, orgId), isNotNull(releases.releasedAt)));
       return rows.length;
     },
-    async gatewayCallAudited() {
-      const { cockpitSystemGatewayClient } = await import("../gateway/system-credential.js");
-      const entries = await cockpitSystemGatewayClient().listAudit(1);
+    async gatewayCallAudited(userId) {
+      if (!userId) return false;
+      const { gatewayClientForUser } = await import("../gateway/operator-gateway-client.js");
+      const entries = await gatewayClientForUser(userId).listAudit(1);
       return entries.length > 0;
     },
     async orgMemberCount(orgId) {
@@ -147,12 +150,16 @@ export function defaultOrgFactsProbes(db: Db): OrgFactsProbes {
 
 const EMPTY_RUNS = { started: 0, completed: 0, firstRunAt: null as string | null, live: 0 };
 
+function gatewayClientForUserOrEnv(userId: string | null): GatewayClient {
+  return userId ? gatewayClientForUser(userId) : new GatewayClient();
+}
+
 export async function computeOrgFacts(
   db: Db,
   ctx: { orgId: string; userId?: string | null },
   overrides?: Partial<OrgFactsProbes>,
 ): Promise<OrgFacts> {
-  const probes: OrgFactsProbes = { ...defaultOrgFactsProbes(db), ...overrides };
+  const probes: OrgFactsProbes = { ...defaultOrgFactsProbes(db, ctx.userId ?? null), ...overrides };
   const [
     hasRepoOrCloudBinding,
     runs,
@@ -168,7 +175,7 @@ export async function computeOrgFacts(
     safe(() => probes.runs(ctx.orgId), EMPTY_RUNS),
     safe(() => probes.openPrCount(), 0),
     safe(() => probes.deploysLanded(ctx.orgId), 0),
-    safe(() => probes.gatewayCallAudited(), false),
+    safe(() => probes.gatewayCallAudited(ctx.userId ?? null), false),
     safe(() => probes.orgMemberCount(ctx.orgId), 0),
     safe(() => probes.companyMemberCount(ctx.orgId), 0),
     safe(() => probes.goalCount(ctx.orgId), 0),
