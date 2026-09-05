@@ -9,6 +9,13 @@
 // items are unknown, not failing, and the banner says so instead of prompting.
 // Every remediation shown is an `apex` command or an in-app action — never a raw
 // vendor CLI invocation.
+//
+// `auth`/`onRecheck`/`rechecking` are optional overrides: when the setup wizard
+// renders this as the "auth" step's body it passes its own already-fetched
+// `setup-state` snapshot instead of letting this component poll `/setup/auth`
+// independently — one source of truth for "reported Nh ago" / staleness, so the
+// step body and the status bar chip can never drift apart the way two
+// independently-polled queries can.
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CloudCog, KeyRound, RefreshCw } from "lucide-react";
@@ -44,26 +51,44 @@ function collectPrompts(auth: AuthStatus): ProviderPrompt[] {
   return prompts;
 }
 
+export interface GcloudAuthBannerProps {
+  pollMs?: number;
+  /** Render from this snapshot instead of this component's own `/setup/auth`
+   *  poll — pass the wizard's shared `setup-state` query so the step body and
+   *  every other consumer of that same state agree on staleness. */
+  auth?: AuthStatus;
+  /** Recheck action to use when `auth` is supplied (the caller's own
+   *  invalidate/refetch) — ignored otherwise. */
+  onRecheck?: () => void;
+  /** Whether a recheck triggered via `onRecheck` is in flight — drives the
+   *  "Checking…" state; ignored when `auth` is not supplied. */
+  rechecking?: boolean;
+}
+
 /**
  * Poll `/setup/auth` and prompt for re-auth on expiry. Renders nothing while all
  * credentials are live, so it's safe to mount high in the tree (page header, or
  * any cloud-dependent surface). `pollMs` defaults to 60s; it also refetches on
  * window focus so returning to the tab after a lapse surfaces the prompt promptly.
+ * Pass `auth` to render from an already-fetched snapshot instead (see file header).
  */
-export function GcloudAuthBanner({ pollMs = 60_000 }: { pollMs?: number }) {
+export function GcloudAuthBanner({ pollMs = 60_000, auth: authOverride, onRecheck: onRecheckOverride, rechecking: recheckingOverride }: GcloudAuthBannerProps) {
   const queryClient = useQueryClient();
   const authQuery = useQuery({
     queryKey: ["apex-setup", "auth"],
     queryFn: () => apexSetupApi.auth(),
     refetchInterval: pollMs,
     refetchOnWindowFocus: true,
+    enabled: authOverride == null,
   });
 
-  const auth = authQuery.data;
+  const auth = authOverride ?? authQuery.data;
   if (!auth) return null;
 
   const bridge = (window as unknown as { apexDesktop?: ApexDesktopBridge }).apexDesktop;
-  const recheck = () => void queryClient.invalidateQueries({ queryKey: ["apex-setup", "auth"] });
+  const recheck =
+    onRecheckOverride ?? (() => void queryClient.invalidateQueries({ queryKey: ["apex-setup", "auth"] }));
+  const rechecking = authOverride != null ? (recheckingOverride ?? false) : authQuery.isFetching;
 
   if (auth.source === "none") {
     return (
@@ -105,10 +130,13 @@ export function GcloudAuthBanner({ pollMs = 60_000 }: { pollMs?: number }) {
           {auth.reportedAt ? timeAgo(auth.reportedAt) : "a while ago"}; the cockpit no longer trusts it.
         </div>
         <div className="text-muted-foreground">
-          Re-run{" "}
+          Fix this on your workstation, not this cockpit: re-authenticate — sign in from the APEX desktop app, or run{" "}
+          <code className="rounded bg-muted px-1.5 py-0.5 text-xs">apex connect gcloud</code> in a terminal — then
+          re-report. The desktop app re-reports automatically right after sign-in; from a terminal, run{" "}
           <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
             apex doctor --report --cockpit-url {window.location.origin}
           </code>
+          .
         </div>
         {bridge?.workstation ? (
           <div>
@@ -175,9 +203,9 @@ export function GcloudAuthBanner({ pollMs = 60_000 }: { pollMs?: number }) {
         ) : null}
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <Button size="sm" variant="outline" onClick={recheck} disabled={authQuery.isFetching}>
-          <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${authQuery.isFetching ? "animate-spin" : ""}`} />
-          {authQuery.isFetching ? "Checking…" : "I've re-authenticated — re-check"}
+        <Button size="sm" variant="outline" onClick={recheck} disabled={rechecking}>
+          <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${rechecking ? "animate-spin" : ""}`} />
+          {rechecking ? "Checking…" : "I've re-authenticated — re-check"}
         </Button>
         {auth.source === "workstation" ? (
           bridge?.workstation ? (

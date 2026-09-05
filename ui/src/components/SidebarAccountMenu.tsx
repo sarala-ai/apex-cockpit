@@ -136,10 +136,18 @@ export function SidebarAccountMenu({
     },
   });
 
-  // Prefer a real signed-in name (authenticated mode); otherwise fall back to the
-  // connected gcloud email / GitHub handle; only then to the synthetic "Board".
+  // `triggerLabel` is what the ALWAYS-VISIBLE sidebar button shows. On a hosted
+  // (multi-operator, screen-shareable) instance it must never fall back to the
+  // connected gcloud/GitHub identity — only the signed-in cockpit account, or
+  // "Board" — that richer identity stays fine inside the popover (click to
+  // reveal) via `displayName` below. On a single-operator local_trusted
+  // instance the connected identity IS the useful label (there's no synthetic
+  // "Board" user to distinguish it from), so the fallback stays there.
   const connectedEmail = connectedAuth?.google.account?.trim() || null;
   const connectedGh = connectedAuth?.github.user?.trim() || null;
+  const hosted = deploymentMode === "authenticated";
+  const triggerLabel =
+    session?.user.name?.trim() || (hosted ? null : connectedEmail || connectedGh) || session?.user.email?.trim() || "Board";
   const displayName = session?.user.name?.trim() || connectedEmail || connectedGh || "Board";
   const identityBits = [
     connectedEmail && connectedEmail !== displayName ? connectedEmail : null,
@@ -151,7 +159,9 @@ export function SidebarAccountMenu({
       : session?.user.email?.trim() || (deploymentMode === "authenticated" ? "Signed in" : "Local workspace board");
   const accountBadge = deploymentMode === "authenticated" ? "Account" : "Local";
   // Initials from a name/email; for an email, use the local part so we don't get "CO".
-  const initials = deriveInitials(displayName.includes("@") ? displayName.split("@")[0] : displayName);
+  // Derived from the trigger label (never the connected identity) since the
+  // avatar sits in the always-visible trigger, not just the popover.
+  const initials = deriveInitials(triggerLabel.includes("@") ? triggerLabel.split("@")[0] : triggerLabel);
   const profileHref = `/u/${deriveUserSlug(session?.user.name, session?.user.email, session?.user.id)}`;
 
   function closeNavigationChrome() {
@@ -169,10 +179,10 @@ export function SidebarAccountMenu({
             aria-label="Open account menu"
           >
             <Avatar size="sm">
-              {session?.user.image ? <AvatarImage src={session.user.image} alt={displayName} /> : null}
+              {session?.user.image ? <AvatarImage src={session.user.image} alt={triggerLabel} /> : null}
               <AvatarFallback>{initials}</AvatarFallback>
             </Avatar>
-            <span className={cn("min-w-0 flex-1 truncate", rail && SIDEBAR_RAIL_HIDDEN_LABEL)}>{displayName}</span>
+            <span className={cn("min-w-0 flex-1 truncate", rail && SIDEBAR_RAIL_HIDDEN_LABEL)}>{triggerLabel}</span>
           </button>
         </PopoverTrigger>
         <PopoverContent

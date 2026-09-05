@@ -140,6 +140,41 @@ describe("GcloudAuthBanner", () => {
     expect(container.textContent).toContain("Your workstation's report is stale");
     expect(container.textContent).toContain("apex doctor --report --cockpit-url");
     expect(container.textContent).toContain(window.location.origin);
+    // Unified re-auth + re-report copy: one message, both remediations, both
+    // explicitly on the operator's workstation.
+    expect(container.textContent).toContain("apex connect gcloud");
+    expect(container.textContent).toContain("on your workstation, not this cockpit");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders from an externally-supplied `auth` snapshot instead of polling /setup/auth, and never calls the API", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const onRecheck = vi.fn();
+    const callsBefore = vi.mocked(apexSetupApi.auth).mock.calls.length;
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <GcloudAuthBanner
+            auth={authStatus({
+              source: "stale",
+              reportedAt: new Date(Date.now() - 27 * 60 * 60 * 1000).toISOString(),
+              reportAgeMs: 27 * 60 * 60 * 1000,
+            })}
+            onRecheck={onRecheck}
+            rechecking={false}
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Your workstation's report is stale");
+    expect(vi.mocked(apexSetupApi.auth).mock.calls.length).toBe(callsBefore);
 
     await act(async () => {
       root.unmount();

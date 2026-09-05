@@ -21,7 +21,7 @@ import { Rocket, X } from "lucide-react";
 import { useLocation, useNavigate } from "@/lib/router";
 import { setupStateApi, type SetupState } from "../api/apex-setup-state";
 import { timeAgo } from "../lib/timeAgo";
-import { isSetupComplete, setupStepsProgress } from "../pages/setup/SetupWizard";
+import { isSetupComplete, pendingStepTitles, setupStepsProgress } from "../pages/setup/SetupWizard";
 
 /** Surfaces where the bar must stay hidden (unauthenticated / pre-company). */
 const HIDDEN_PATH_PREFIXES = ["/auth", "/cli-auth", "/invite", "/board-claim", "/ux-lab"];
@@ -100,13 +100,28 @@ function gatewayIndicator(gateway: SetupState["gateway"]): Indicator {
 }
 
 /** MCP pill: a registry read error is a hard "bad" — an empty list must never
- *  be shown as a quiet empty registry. */
+ *  be shown as a quiet empty registry. Once there's a registry to read, the
+ *  chip reflects REACHABLE/registered — not just the registered count — so a
+ *  registry full of dead rows never reads as quietly fine ("MCP: 1" when that
+ *  one row is unreachable was exactly the false-positive this fixes). */
 function mcpIndicator(mcpServers: SetupState["mcpServers"]): Indicator {
-  const count = mcpServers.registered.length;
+  const total = mcpServers.registered.length;
   if (mcpServers.error) {
-    return { key: "mcp", label: "MCP", value: String(count), tone: "bad", title: mcpServers.error };
+    return { key: "mcp", label: "MCP", value: String(total), tone: "bad", title: mcpServers.error };
   }
-  return { key: "mcp", label: "MCP", value: String(count), tone: count > 0 ? "ok" : "muted" };
+  if (total === 0) {
+    return { key: "mcp", label: "MCP", value: "0", tone: "muted", title: "no MCP servers registered" };
+  }
+  const reachable = mcpServers.reachableCount ?? total;
+  const tone: Tone = reachable === total ? "ok" : reachable === 0 ? "bad" : "warn";
+  const probedSuffix = mcpServers.probedAt ? ` (probed ${timeAgo(mcpServers.probedAt)})` : "";
+  return {
+    key: "mcp",
+    label: "MCP",
+    value: `${reachable}/${total} reachable`,
+    tone,
+    title: `${reachable} of ${total} registered upstream MCP server${total === 1 ? "" : "s"} reachable at last probe${probedSuffix}`,
+  };
 }
 
 /** OAuth pill: ok only when the cockpit's own sign-in client is configured;
@@ -138,15 +153,24 @@ function toIndicators(s: SetupState): Indicator[] {
   ];
 }
 
-function StatusItem({ indicator, onClick }: { indicator: Indicator; onClick: () => void }) {
+function StatusItem({
+  indicator,
+  onClick,
+  onSetupPage,
+}: {
+  indicator: Indicator;
+  onClick: () => void;
+  onSetupPage: boolean;
+}) {
   const { label, value, tone, title } = indicator;
+  const openSetupSuffix = onSetupPage ? "" : " — open setup";
   return (
     <button
       type="button"
       data-testid={`setup-status-${indicator.key}`}
       data-tone={tone}
-      onClick={onClick}
-      title={title ? `${label}: ${title}` : `${label}: ${value ?? tone} — open setup`}
+      onClick={onSetupPage ? undefined : onClick}
+      title={title ? `${label}: ${title}` : `${label}: ${value ?? tone}${openSetupSuffix}`}
       className="flex shrink-0 items-center gap-1.5 rounded px-1.5 py-0.5 transition hover:bg-muted/60"
     >
       <span className={`inline-block size-2 rounded-full ${DOT_CLASS[tone]}`} aria-hidden />
@@ -190,9 +214,16 @@ export function SetupStatusBar() {
   const indicators = toIndicators(data);
   const progress = setupStepsProgress(data);
   const complete = isSetupComplete(data);
+  const onSetupPage = location.pathname.startsWith("/setup");
   const goSetup = () => navigate("/setup");
 
-  const showPrompt = !complete && !promptDismissed;
+  // Never nudge into /setup while already there — and never a stale, hardcoded
+  // step list: derive the copy from the actual pending step titles so it can't
+  // drift from what the wizard itself shows.
+  const showPrompt = !complete && !promptDismissed && !onSetupPage;
+  const pending = pendingStepTitles(data);
+  const pendingSummary =
+    pending.length <= 3 ? pending.join(", ") : `${pending.slice(0, 2).join(", ")}, +${pending.length - 2} more`;
 
   return (
     <>
@@ -205,8 +236,8 @@ export function SetupStatusBar() {
           <div className="min-w-0">
             <p className="text-sm font-medium text-sky-900 dark:text-sky-100">Finish setting up APEX</p>
             <p className="mt-0.5 text-xs text-sky-800/80 dark:text-sky-200/70">
-              {progress.total - progress.done} step{progress.total - progress.done === 1 ? "" : "s"} left —
-              cloud auth, org scoping, and MCP capabilities.
+              {progress.total - progress.done} step{progress.total - progress.done === 1 ? "" : "s"} left
+              {pendingSummary ? ` — ${pendingSummary}.` : "."}
             </p>
             <button
               type="button"
@@ -250,8 +281,8 @@ export function SetupStatusBar() {
         <button
           type="button"
           data-testid="setup-status-summary"
-          onClick={goSetup}
-          title="Open setup"
+          onClick={onSetupPage ? undefined : goSetup}
+          title={onSetupPage ? undefined : "Open setup"}
           className={`flex shrink-0 items-center gap-1.5 rounded px-1.5 py-0.5 text-xs font-medium transition hover:bg-muted/60 ${
             complete ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"
           }`}
@@ -261,7 +292,7 @@ export function SetupStatusBar() {
         </button>
         <span className="mx-0.5 h-3.5 w-px shrink-0 bg-border" aria-hidden />
         {indicators.map((ind) => (
-          <StatusItem key={ind.key} indicator={ind} onClick={goSetup} />
+          <StatusItem key={ind.key} indicator={ind} onClick={goSetup} onSetupPage={onSetupPage} />
         ))}
       </div>
     </>

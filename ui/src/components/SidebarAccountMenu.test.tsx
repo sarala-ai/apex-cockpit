@@ -206,4 +206,41 @@ describe("SidebarAccountMenu", () => {
       root.unmount();
     });
   });
+
+  it("never shows the connected gcloud/GitHub identity in the always-visible trigger on a hosted (authenticated) instance", async () => {
+    // Hosted, multi-operator, screen-shareable instance — even with no signed-in
+    // display name, the ALWAYS-VISIBLE trigger must fall back to the cockpit
+    // session's own email or "Board", never the operator's gcloud email / GitHub
+    // handle (that stays behind the click-to-open popover only).
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { id: "session-hosted", userId: "hosted-user" },
+      user: { id: "hosted-user", name: null, email: "hosted-user@example.com", image: null },
+    });
+    mockApexSetupApi.auth.mockResolvedValue({
+      google: { authed: true, account: "coolksrini@gmail.com", live: true },
+      github: { authed: true, user: "srini", live: true },
+    });
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarAccountMenu deploymentMode="authenticated" version="1.2.3" />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    // The always-visible trigger never shows the connected identity.
+    expect(container.textContent).not.toContain("coolksrini@gmail.com");
+    expect(container.textContent).not.toContain("srini");
+    expect(container.textContent).toContain("hosted-user@example.com");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
 });
