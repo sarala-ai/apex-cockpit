@@ -75,6 +75,9 @@ const explicitOpenApiCoverageExclusions = new Set([
   "apex-design.ts",
   "apex-gateway-observe.ts",
   "apex-workflows.ts",
+  // APEX-102 Veil foundations: data + service + REST only, no UI yet — not
+  // part of the public OpenAPI document until the nav lane lands.
+  "surface-flags.ts",
 ]);
 
 function createApp() {

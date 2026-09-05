@@ -139,6 +139,12 @@ export { pluginDatabaseNamespaces, pluginMigrations } from "./plugin_database.js
 export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
+export {
+  orgSurfaceFlags,
+  orgSurfaceFlagEvents,
+  SURFACE_FLAG_SOURCES,
+  type SurfaceFlagSource,
+} from "./org_surface_flags.js";
 export { releases } from "./releases.js";
 export { releaseChanges } from "./release_changes.js";
 export { releaseArtifacts } from "./release_artifacts.js";

@@ -1,4 +1,5 @@
 export * from "./agent-repo-capability.js";
+export * from "./surfaces.js";
 export * from "./observe.js";
 export * from "./gateway.js";
 export * from "./design.js";
@@ -1190,6 +1191,12 @@ export {
   type TrustPresetInput,
   type LowTrustBoundaryInput,
   type TrustAuthorizationPolicyInput,
+  surfaceFlagSourceSchema,
+  putSurfaceFlagSchema,
+  reconcileSurfaceFlagsSchema,
+  type SurfaceFlagSource,
+  type PutSurfaceFlag,
+  type ReconcileSurfaceFlags,
 } from "./validators/index.js";
 
 export {

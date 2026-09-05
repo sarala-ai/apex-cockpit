@@ -1,4 +1,13 @@
 export {
+  surfaceFlagSourceSchema,
+  putSurfaceFlagSchema,
+  reconcileSurfaceFlagsSchema,
+  type SurfaceFlagSource,
+  type PutSurfaceFlag,
+  type ReconcileSurfaceFlags,
+} from "./surfaces.js";
+
+export {
   instanceSettingsSchema,
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,

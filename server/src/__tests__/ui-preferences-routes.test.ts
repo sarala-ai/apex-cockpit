@@ -46,9 +46,10 @@ describe("ui preference routes", () => {
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
     vi.clearAllMocks();
-    mockUiPreferenceService.getForUser.mockResolvedValue({ theme: null, updatedAt: null });
-    mockUiPreferenceService.upsertForUser.mockImplementation(async (_userId: string, theme: string) => ({
-      theme,
+    mockUiPreferenceService.getForUser.mockResolvedValue({ theme: null, showAllSurfaces: false, updatedAt: null });
+    mockUiPreferenceService.upsertForUser.mockImplementation(async (_userId: string, patch: { theme?: string; showAllSurfaces?: boolean }) => ({
+      theme: patch.theme ?? null,
+      showAllSurfaces: patch.showAllSurfaces ?? false,
       updatedAt: null,
     }));
   });
@@ -59,7 +60,7 @@ describe("ui preference routes", () => {
     const res = await request(app).get("/api/ui-preferences/me");
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ theme: null, updatedAt: null });
+    expect(res.body).toEqual({ theme: null, showAllSurfaces: false, updatedAt: null });
     expect(mockUiPreferenceService.getForUser).toHaveBeenCalledWith("user-1");
   });
 
@@ -71,12 +72,32 @@ describe("ui preference routes", () => {
       .send({ theme: "system" });
     expect(putRes.status).toBe(200);
     expect(putRes.body.theme).toBe("system");
-    expect(mockUiPreferenceService.upsertForUser).toHaveBeenCalledWith("user-1", "system");
+    expect(mockUiPreferenceService.upsertForUser).toHaveBeenCalledWith("user-1", { theme: "system" });
 
-    mockUiPreferenceService.getForUser.mockResolvedValue({ theme: "system", updatedAt: null });
+    mockUiPreferenceService.getForUser.mockResolvedValue({ theme: "system", showAllSurfaces: false, updatedAt: null });
     const getRes = await request(app).get("/api/ui-preferences/me");
     expect(getRes.status).toBe(200);
     expect(getRes.body.theme).toBe("system");
+  });
+
+  it("round-trips showAllSurfaces independently of theme", async () => {
+    const app = await createApp(BOARD_ACTOR);
+
+    const putRes = await request(app)
+      .put("/api/ui-preferences/me")
+      .send({ showAllSurfaces: true });
+    expect(putRes.status).toBe(200);
+    expect(putRes.body.showAllSurfaces).toBe(true);
+    expect(mockUiPreferenceService.upsertForUser).toHaveBeenCalledWith("user-1", { showAllSurfaces: true });
+  });
+
+  it("rejects an empty PUT body (neither theme nor showAllSurfaces)", async () => {
+    const app = await createApp(BOARD_ACTOR);
+
+    const res = await request(app).put("/api/ui-preferences/me").send({});
+
+    expect(res.status).toBe(400);
+    expect(mockUiPreferenceService.upsertForUser).not.toHaveBeenCalled();
   });
 
   it("rejects theme values outside the light/dark/system enum", async () => {

@@ -27,7 +27,7 @@ export function uiPreferenceRoutes(db: Db) {
   router.put("/ui-preferences/me", validate(upsertUiPreferencesSchema), async (req, res) => {
     const userId = requireBoardUserId(req, res);
     if (!userId) return;
-    res.json(await svc.upsertForUser(userId, req.body.theme));
+    res.json(await svc.upsertForUser(userId, req.body));
   });
 
   return router;

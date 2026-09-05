@@ -102,6 +102,7 @@ export { dashboardService } from "./dashboard.js";
 export { sidebarBadgeService } from "./sidebar-badges.js";
 export { sidebarPreferenceService } from "./sidebar-preferences.js";
 export { uiPreferenceService } from "./ui-preferences.js";
+export { surfaceFlagsService, type SurfaceFlagRow, type SurfaceListEntry } from "./surface-flags.js";
 export { resourceMembershipService, type ResourceMembershipPolicyHook } from "./resource-memberships.js";
 export { inboxDismissalService } from "./inbox-dismissals.js";
 export { accessService } from "./access.js";
