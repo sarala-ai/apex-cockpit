@@ -22,6 +22,19 @@ export const CAP_DRAFT_WRITE = "draft:write";
 export const CAP_SECRETS_WRITE = "secrets:write";
 
 /**
+ * Explicitly unveil/re-veil a surface (mcp/router.ts's set_surface_veil tool,
+ * over server/src/services/surface-flags.ts). Granted by default to operator
+ * principals authenticated at /mcp (they already hold board:write-equivalent
+ * control over their own org's nav) and to a dispatched run only when a
+ * lifecycle node's `permissions.grantedCapabilities` names it explicitly
+ * (run-policy.ts's declaredCapabilities pass-through — this is NOT in
+ * RUN_TOKEN_FORBIDDEN_CAPABILITIES, unlike secrets:write, because unveiling a
+ * surface reveals nothing sensitive and cannot be used to exfiltrate a
+ * credential).
+ */
+export const CAP_VEIL_WRITE = "veil:write";
+
+/**
  * Capabilities that a RUN-scoped token may never carry, whatever the caller
  * asks for.
  *

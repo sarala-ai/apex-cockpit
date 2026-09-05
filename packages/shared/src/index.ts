@@ -4,6 +4,7 @@ export * from "./observe.js";
 export * from "./gateway.js";
 export * from "./design.js";
 export * from "./workflows.js";
+export * from "./apex-docs.js";
 export * from "./capability-sync.js";
 export * from "./initiative-status.js";
 export * from "./goal-criteria.js";
