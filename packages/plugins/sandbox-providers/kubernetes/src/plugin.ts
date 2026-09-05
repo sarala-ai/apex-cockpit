@@ -20,7 +20,7 @@ import {
   type KubernetesProviderConfig,
   type KubernetesLeaseMetadata,
 } from "./types.js";
-import { createKubeConfig, makeKubeClients } from "./kube-client.js";
+import { createKubeConfig, makeKubeClients, usesKubeconfigOnGcp } from "./kube-client.js";
 import { getAdapterDefaults, buildAdapterEnv, resolveRunAdapterType } from "./adapter-defaults.js";
 import { resolveImage } from "./image-allowlist.js";
 import { buildJobManifest } from "./pod-spec-builder.js";
@@ -130,6 +130,11 @@ const plugin = definePlugin({
     }
     const warnings: string[] = [];
     const cfg = parsed.data;
+    if (usesKubeconfigOnGcp(cfg)) {
+      warnings.push(
+        "This server runs on GCP but the environment would authenticate with a pasted kubeconfig (a stored credential). The hosted default is the server's own service-account identity: set `gke: { cluster, location }` (or PAPERCLIP_GKE_CLUSTER/LOCATION on the deploy) and drop `kubeconfig`.",
+      );
+    }
     const adapterDefaults = getAdapterDefaults(cfg.adapterType, cfg.adapters);
     const totalFqdns = [...adapterDefaults.allowFqdns, ...cfg.egressAllowFqdns];
     if (cfg.egressMode === "standard" && totalFqdns.length > 0) {
@@ -163,11 +168,7 @@ const plugin = definePlugin({
     const namespace = deriveTenantNamespace(config, params.companyId);
 
     try {
-      const kc = await createKubeConfig({
-        inCluster: config.inCluster,
-        kubeconfig: config.kubeconfig,
-        gkeCluster: config.gkeCluster,
-      });
+      const kc = await createKubeConfig(config);
       const clients = makeKubeClients(kc);
       // Reachability check: list pods in the tenant namespace. If the namespace
       // doesn't exist yet this will throw a 404 which we treat as "reachable
@@ -232,11 +233,7 @@ const plugin = definePlugin({
       }
     }
 
-    const kc = await createKubeConfig({
-      inCluster: config.inCluster,
-      kubeconfig: config.kubeconfig,
-      gkeCluster: config.gkeCluster,
-    });
+    const kc = await createKubeConfig(config);
     const clients = makeKubeClients(kc);
 
     // Ensure the tenant namespace and all its RBAC / network policy resources
@@ -364,11 +361,7 @@ const plugin = definePlugin({
         ? params.leaseMetadata.secretName
         : `${params.providerLeaseId}-env`;
 
-    const kc = await createKubeConfig({
-      inCluster: config.inCluster,
-      kubeconfig: config.kubeconfig,
-      gkeCluster: config.gkeCluster,
-    });
+    const kc = await createKubeConfig(config);
     const clients = makeKubeClients(kc);
 
     const check = await checkLeaseResumable(clients, {
@@ -447,11 +440,7 @@ const plugin = definePlugin({
         ? params.leaseMetadata.namespace
         : deriveTenantNamespace(config, params.companyId);
 
-    const kc = await createKubeConfig({
-      inCluster: config.inCluster,
-      kubeconfig: config.kubeconfig,
-      gkeCluster: config.gkeCluster,
-    });
+    const kc = await createKubeConfig(config);
     const clients = makeKubeClients(kc);
 
     const leaseBackend =
@@ -505,15 +494,13 @@ const plugin = definePlugin({
     uploadInterceptorsByLease.delete(params.providerLeaseId);
     readySandboxesByLease.delete(params.providerLeaseId);
 
-    const kc = await createKubeConfig({
-      inCluster: config.inCluster,
-      kubeconfig: config.kubeconfig,
-      gkeCluster: config.gkeCluster,
-    });
+    const kc = await createKubeConfig(config);
     const clients = makeKubeClients(kc);
 
     // Forcibly delete everything acquireLease created (Sandbox CR / Job, pod,
-    // per-run Secret). 404s are success — destroy must be idempotent.
+    // per-run Secret). 404s are success — destroy must be idempotent. A 403 on
+    // the pod is the least-privilege posture (the identity may not delete
+    // pods); the workload's ownerReference cascade removes it.
     await destroyLeaseResources(clients, {
       namespace,
       name: params.providerLeaseId,
@@ -549,11 +536,7 @@ const plugin = definePlugin({
         ? (lease.metadata.backend as "sandbox-cr" | "job")
         : config.backend;
 
-    const kc = await createKubeConfig({
-      inCluster: config.inCluster,
-      kubeconfig: config.kubeconfig,
-      gkeCluster: config.gkeCluster,
-    });
+    const kc = await createKubeConfig(config);
     const clients = makeKubeClients(kc);
 
     const effectiveTimeoutMs =

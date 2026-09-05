@@ -321,7 +321,7 @@ describe("destroyLeaseResources", () => {
         podName: "pc-abc-pod",
         secretName: "pc-abc-env",
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ podDeletion: "not-found" });
     expect(clients.core.deleteNamespacedSecret).toHaveBeenCalled();
   });
 
@@ -344,5 +344,75 @@ describe("destroyLeaseResources", () => {
         secretName: null,
       }),
     ).rejects.toThrow("forbidden");
+  });
+});
+
+describe("destroyLeaseResources under least-privilege RBAC", () => {
+  function forbidden(): Error {
+    return Object.assign(new Error("pods is forbidden"), { code: 403 });
+  }
+
+  it("reports the explicit pod delete as delegated to the owner cascade on 403, and still deletes the Secret", async () => {
+    const clients = {
+      custom: { deleteNamespacedCustomObject: vi.fn().mockResolvedValue({}) },
+      batch: { deleteNamespacedJob: vi.fn() },
+      core: {
+        deleteNamespacedPod: vi.fn().mockRejectedValue(forbidden()),
+        deleteNamespacedSecret: vi.fn().mockResolvedValue({}),
+      },
+    };
+    const outcome = await destroyLeaseResources(clients as never, {
+      namespace: "paperclip-apex",
+      name: "pc-abc",
+      backend: "sandbox-cr",
+      podName: "pc-abc",
+      secretName: "pc-abc-env",
+    });
+    expect(outcome.podDeletion).toBe("forbidden-owner-cascade");
+    expect(clients.custom.deleteNamespacedCustomObject).toHaveBeenCalledOnce();
+    expect(clients.core.deleteNamespacedSecret).toHaveBeenCalledOnce();
+  });
+
+  it("classifies the other pod-delete outcomes", async () => {
+    const base = {
+      custom: { deleteNamespacedCustomObject: vi.fn().mockResolvedValue({}) },
+      batch: { deleteNamespacedJob: vi.fn() },
+    };
+    const input = { namespace: "ns", name: "pc-abc", backend: "sandbox-cr" as const, secretName: null };
+    const deleted = await destroyLeaseResources(
+      { ...base, core: { deleteNamespacedPod: vi.fn().mockResolvedValue({}), deleteNamespacedSecret: vi.fn() } } as never,
+      { ...input, podName: "p" },
+    );
+    expect(deleted.podDeletion).toBe("deleted");
+    const gone = await destroyLeaseResources(
+      { ...base, core: { deleteNamespacedPod: vi.fn().mockRejectedValue(notFound()), deleteNamespacedSecret: vi.fn() } } as never,
+      { ...input, podName: "p" },
+    );
+    expect(gone.podDeletion).toBe("not-found");
+    const skipped = await destroyLeaseResources(
+      { ...base, core: { deleteNamespacedPod: vi.fn(), deleteNamespacedSecret: vi.fn() } } as never,
+      { ...input, podName: null },
+    );
+    expect(skipped.podDeletion).toBe("skipped");
+  });
+
+  it("a 403 elsewhere (Secret delete) is still an error — only the pod delete is delegated", async () => {
+    const clients = {
+      custom: { deleteNamespacedCustomObject: vi.fn().mockResolvedValue({}) },
+      batch: { deleteNamespacedJob: vi.fn() },
+      core: {
+        deleteNamespacedPod: vi.fn().mockResolvedValue({}),
+        deleteNamespacedSecret: vi.fn().mockRejectedValue(forbidden()),
+      },
+    };
+    await expect(
+      destroyLeaseResources(clients as never, {
+        namespace: "ns",
+        name: "pc-abc",
+        backend: "sandbox-cr",
+        podName: "p",
+        secretName: "pc-abc-env",
+      }),
+    ).rejects.toThrow(/forbidden/);
   });
 });

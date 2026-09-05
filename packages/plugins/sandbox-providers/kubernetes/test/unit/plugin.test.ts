@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import plugin from "../../src/plugin.js";
 
 describe("plugin", () => {
@@ -90,5 +90,47 @@ describe("plugin", () => {
     });
     expect(result.ok).toBe(true);
     expect(result.warnings).toBeUndefined();
+  });
+});
+
+describe("plugin config: platform identity (gke)", () => {
+  const saved = { K_SERVICE: process.env.K_SERVICE, PAPERCLIP_GKE_CLUSTER: process.env.PAPERCLIP_GKE_CLUSTER, PAPERCLIP_GKE_LOCATION: process.env.PAPERCLIP_GKE_LOCATION };
+  afterEach(() => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it("validateConfig accepts a gke block naming the cluster", async () => {
+    const result = await plugin.definition.onEnvironmentValidateConfig!({
+      driverKey: "kubernetes",
+      config: { gke: { project: "sarala-cicd", location: "asia-south1-a", cluster: "apex-agent-sandbox" } },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.warnings ?? []).not.toContainEqual(expect.stringMatching(/pasted kubeconfig/));
+  });
+
+  it("validateConfig warns when a hosted server would still use a pasted kubeconfig", async () => {
+    process.env.K_SERVICE = "apex-cockpit";
+    delete process.env.PAPERCLIP_GKE_CLUSTER;
+    delete process.env.PAPERCLIP_GKE_LOCATION;
+    const result = await plugin.definition.onEnvironmentValidateConfig!({
+      driverKey: "kubernetes",
+      config: { kubeconfig: "apiVersion: v1\nkind: Config\n" },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.warnings).toContainEqual(expect.stringMatching(/pasted kubeconfig/));
+  });
+
+  it("validateConfig accepts an empty config on a deploy that names the cluster (hosted default)", async () => {
+    process.env.K_SERVICE = "apex-cockpit";
+    process.env.PAPERCLIP_GKE_CLUSTER = "apex-agent-sandbox";
+    process.env.PAPERCLIP_GKE_LOCATION = "asia-south1-a";
+    const result = await plugin.definition.onEnvironmentValidateConfig!({
+      driverKey: "kubernetes",
+      config: {},
+    });
+    expect(result.ok).toBe(true);
   });
 });

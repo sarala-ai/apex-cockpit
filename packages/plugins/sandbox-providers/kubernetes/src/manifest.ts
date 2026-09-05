@@ -31,10 +31,20 @@ const manifest: PaperclipPluginManifestV1 = {
             description:
               "When true, the plugin uses the in-pod ServiceAccount credentials. Requires paperclip-server to be running inside the target cluster.",
           },
+          gke: {
+            type: "object",
+            description:
+              "Platform-identity GKE access (hosted default): the server's own Google service account authenticates via short-lived metadata-server tokens and the cluster endpoint + CA are read from the GKE API (needs roles/container.clusterViewer). Fields left out fall back to PAPERCLIP_GKE_CLUSTER / PAPERCLIP_GKE_LOCATION / PAPERCLIP_GKE_PROJECT on the server. No secret anywhere; authorization is Kubernetes RBAC on the service-account email.",
+            properties: {
+              project: { type: "string", description: "GCP project of the cluster (default: the server's own project)." },
+              location: { type: "string", description: "Cluster zone or region (e.g. asia-south1-a)." },
+              cluster: { type: "string", description: "GKE cluster name." },
+            },
+          },
           gkeCluster: {
             type: "object",
             description:
-              "Credential-free GKE access using the server's own Google service-account identity (short-lived metadata-server tokens). Endpoint + CA are public cluster facts, not secrets; authorization is the IAM/RBAC grant to the service account.",
+              "Platform-identity GKE access with the cluster endpoint + CA pinned statically (public cluster facts, not secrets). Prefer `gke`, which reads them from the GKE API.",
             properties: {
               endpoint: { type: "string", description: "GKE control-plane endpoint (host or https URL)." },
               caData: { type: "string", description: "Base64 cluster CA certificate (clusterCaCertificate)." },
@@ -120,9 +130,10 @@ const manifest: PaperclipPluginManifestV1 = {
           },
         },
         anyOf: [
+          { required: ["gke"] },
+          { required: ["gkeCluster"] },
           { required: ["inCluster"] },
           { required: ["kubeconfig"] },
-          { required: ["gkeCluster"] },
         ],
       },
     },

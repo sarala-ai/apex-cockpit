@@ -10,11 +10,25 @@ export const kubernetesProviderConfigSchema = z
     kubeconfig: z.string().optional(),
 
     /**
-     * Credential-free GKE access: connect with the server's own Google
-     * identity (Cloud Run/GCE service account) via short-lived tokens from
-     * the metadata server. Nothing here is a secret — endpoint and CA are
-     * public cluster facts; authorization lives in IAM/RBAC grants to the
-     * service account. Mutually exclusive with `kubeconfig`/`inCluster`.
+     * Platform-identity GKE access (the hosted default): the server's own
+     * Google service account authenticates with short-lived metadata-server
+     * tokens, and the cluster endpoint + CA are read from the GKE API. Any
+     * field left out falls back to PAPERCLIP_GKE_{CLUSTER,LOCATION,PROJECT}
+     * on the server (project also from the metadata server), so `gke: {}` is
+     * enough on a deploy that names its cluster. Nothing here is a secret.
+     */
+    gke: z
+      .object({
+        project: z.string().min(1).optional(),
+        /** Zone or region of the cluster (e.g. asia-south1-a). */
+        location: z.string().min(1).optional(),
+        cluster: z.string().min(1).optional(),
+      })
+      .optional(),
+
+    /**
+     * Same identity model as `gke`, with the public cluster facts pinned
+     * statically instead of read from the GKE API. Nothing here is a secret.
      */
     gkeCluster: z
       .object({
@@ -84,10 +98,16 @@ export const kubernetesProviderConfigSchema = z
     backend: z.enum(["sandbox-cr", "job"]).default("sandbox-cr"),
   })
   .refine(
-    (cfg) => cfg.inCluster || cfg.kubeconfig || cfg.gkeCluster,
+    (cfg) =>
+      cfg.inCluster ||
+      cfg.kubeconfig ||
+      cfg.gkeCluster ||
+      cfg.gke ||
+      // Hosted default: the deploy names the cluster, the config can be empty.
+      (process.env.K_SERVICE && process.env.PAPERCLIP_GKE_CLUSTER && process.env.PAPERCLIP_GKE_LOCATION),
     {
       message:
-        "kubernetes provider requires one of `inCluster`, `kubeconfig`, or `gkeCluster`",
+        "kubernetes provider requires one of `inCluster`, `kubeconfig`, `gke`, or `gkeCluster`",
     },
   );
 

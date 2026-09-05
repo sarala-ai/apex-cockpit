@@ -158,6 +158,23 @@ export interface DestroyLeaseInput {
   secretName: string | null;
 }
 
+export interface DestroyLeaseOutcome {
+  /**
+   * How the explicit pod delete ended. `forbidden-owner-cascade` means the
+   * cluster identity is not allowed to delete pods (the least-privilege
+   * posture): the pod is owned by the workload just deleted, so its removal
+   * is delegated to the controller's ownerReference cascade.
+   */
+  podDeletion: "deleted" | "not-found" | "skipped" | "forbidden-owner-cascade";
+}
+
+/** True when a Kubernetes API error means "not allowed" (HTTP 403). */
+export function isKubeForbiddenError(err: unknown): boolean {
+  const code = (err as { code?: number; statusCode?: number }).code
+    ?? (err as { code?: number; statusCode?: number }).statusCode;
+  return code === 403;
+}
+
 /**
  * Forcibly delete every resource acquireLease created for this lease.
  * Workload first (its deletion cascades to the pod and, via ownerReferences,
@@ -168,19 +185,25 @@ export interface DestroyLeaseInput {
 export async function destroyLeaseResources(
   clients: KubeClients,
   input: DestroyLeaseInput,
-): Promise<void> {
+): Promise<DestroyLeaseOutcome> {
   if (input.backend === "sandbox-cr") {
     await ignoreNotFound(deleteSandboxCr(clients, input.namespace, input.name));
   } else {
     await ignoreNotFound(deleteJob(clients, input.namespace, input.name));
   }
+  let podDeletion: DestroyLeaseOutcome["podDeletion"] = "skipped";
   if (input.podName) {
-    await ignoreNotFound(
-      clients.core.deleteNamespacedPod({
+    try {
+      await clients.core.deleteNamespacedPod({
         namespace: input.namespace,
         name: input.podName,
-      }),
-    );
+      });
+      podDeletion = "deleted";
+    } catch (err) {
+      if (isKubeNotFoundError(err)) podDeletion = "not-found";
+      else if (isKubeForbiddenError(err)) podDeletion = "forbidden-owner-cascade";
+      else throw err;
+    }
   }
   if (input.secretName) {
     await ignoreNotFound(
@@ -190,4 +213,5 @@ export async function destroyLeaseResources(
       }),
     );
   }
+  return { podDeletion };
 }

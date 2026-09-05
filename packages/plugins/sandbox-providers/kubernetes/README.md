@@ -10,7 +10,7 @@ First-party Paperclip sandbox-provider plugin for Kubernetes.
 
 1. A Kubernetes cluster running k8s 1.27+
 2. [`kubernetes-sigs/agent-sandbox`](https://github.com/kubernetes-sigs/agent-sandbox) controller installed in the cluster (alpha — installs the `sandboxes.agents.x-k8s.io/v1alpha1` CRD and controller)
-3. Paperclip-server running with access to the cluster (in-cluster via `inCluster: true` or external via `kubeconfig`)
+3. Paperclip-server running with access to the cluster (on GKE via its own service-account identity with `gke`, in-cluster via `inCluster: true`, or external via `kubeconfig`)
 
 ### For `job` backend (stable fallback)
 
@@ -50,11 +50,15 @@ The plugin supports two backend modes, selected via the `backend` config field:
 
 ## Configuration
 
-Create a `sandbox` environment with `driver: kubernetes`. One of these auth fields is required:
+Create a `sandbox` environment with `driver: kubernetes`. Cluster access resolves in this order:
 
+- `gke: { project?, location?, cluster? }` — **hosted default on GCP.** paperclip-server authenticates as its own Google service account (Cloud Run / GCE metadata-server tokens, refreshed before expiry) and reads the cluster endpoint + CA from the GKE API. Nothing is a secret. Fields left out fall back to `PAPERCLIP_GKE_PROJECT` / `PAPERCLIP_GKE_LOCATION` / `PAPERCLIP_GKE_CLUSTER` on the server (project also from the metadata server), so with those set an empty config works. Needs `roles/container.clusterViewer` on the service account; every in-cluster right is Kubernetes RBAC on the SA email (a namespace-scoped Role — see `manifests/` and the apex `gke-agent-sandbox-rbac` workflow for the exact rule set).
+- `gkeCluster: { endpoint, caData }` — same identity model with the public cluster facts pinned statically.
 - `inCluster: true` — use the in-pod ServiceAccount credentials (when paperclip-server runs inside the same cluster).
-- `kubeconfig: <YAML>` — inline kubeconfig (stored as a company secret).
+- `kubeconfig: <YAML>` — inline kubeconfig (stored as a company secret). Local/dev path; on Cloud Run the plugin warns when an environment would still use one.
 - `kubeconfigSecretRef: <secret-uuid>` — reference to an existing Paperclip secret.
+
+Least-privilege note: the cockpit identity is not expected to hold `pods delete` — the Sandbox CR owns its pod and deleting the CR cascades. A 403 on the explicit pod delete during lease destroy is classified as `forbidden-owner-cascade`, not an error.
 
 Common optional fields:
 
