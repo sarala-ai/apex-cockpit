@@ -32,6 +32,14 @@ inputs:
     type: string
     default: "gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1"
     description: "Cloud SQL Auth Proxy sidecar image"
+  sandbox_cluster:
+    type: string
+    default: "apex-agent-sandbox"
+    description: "GKE agent-sandbox cluster the cockpit schedules hosted runs on"
+  sandbox_cluster_location:
+    type: string
+    default: "asia-south1-a"
+    description: "Zone or region of the sandbox cluster"
   org_admin_emails:
     type: string
     default: ""
@@ -103,6 +111,10 @@ steps:
             AUTH_ORG_ADMIN_EMAILS: "${org_admin_emails}"
             APEX_GATEWAY_URL: "${get_gateway_url.url}"
             APEX_EVAL_URL: "${get_eval_url.url}"
+            # Hosted sandboxes run on the org's GKE cluster as this service's
+            # own identity; no kubeconfig or pasted token is involved.
+            PAPERCLIP_GKE_CLUSTER: "${sandbox_cluster}"
+            PAPERCLIP_GKE_LOCATION: "${sandbox_cluster_location}"
           secrets:
             BETTER_AUTH_SECRET: "apex-cockpit-better-auth-secret"
             GOOGLE_CLIENT_ID: "apex-cockpit-google-client-id"
