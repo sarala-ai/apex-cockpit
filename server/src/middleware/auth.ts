@@ -16,6 +16,7 @@ import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { InProcessAuthClient } from "../auth/auth-client.js";
+import { decodeJwtHeader, type PrincipalJwtVerifier, type VerifiedPrincipal } from "../auth/verify-principal-jwt.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
@@ -136,6 +137,58 @@ async function auditAgentKeyMissingResponsibleUser(
 interface ActorMiddlewareOptions {
   deploymentMode: DeploymentMode;
   resolveSession?: (req: Request) => Promise<BetterAuthSessionResult | null>;
+  /** Verifies cockpit-issued principal JWTs against this instance's own JWKS
+   *  (verify-principal-jwt.ts). Absent on local_trusted instances, which mint
+   *  none. */
+  principalJwtVerifier?: PrincipalJwtVerifier;
+}
+
+/**
+ * The board actor for a verified cockpit-issued principal JWT, or null when
+ * the token names nobody this instance knows.
+ *
+ * An operator token resolves to the SAME actor the operator gets through a
+ * session or a board key — memberships and instance-admin come from the DB
+ * (boardAuth.resolveBoardAccess), not from the claims, exactly as the board
+ * key path does; the claims were derived from those rows in the first place
+ * and the DB is the authority in-process. The two service principals carry
+ * no user row: they become a read-only board actor (board-mutation-guard.ts
+ * refuses every mutation for `service_principal`) whose instance-admin bit is
+ * the claim's — true for cockpit-system, false for gateway-federation — so
+ * cockpit-system can read what its probes need and the federation principal
+ * can read nothing company-scoped.
+ */
+export async function resolvePrincipalJwtActor(
+  boardAuth: Pick<ReturnType<typeof boardAuthService>, "resolveBoardAccess">,
+  principal: VerifiedPrincipal,
+  runIdHeader: string | undefined,
+): Promise<Express.Request["actor"] | null> {
+  if (principal.principalKind === "cockpit_system" || principal.principalKind === "gateway_federation") {
+    return {
+      type: "board",
+      userId: principal.sub,
+      userName: principal.sub,
+      userEmail: principal.email,
+      companyIds: [],
+      memberships: [],
+      isInstanceAdmin: principal.instanceAdmin,
+      runId: runIdHeader || undefined,
+      source: "service_principal",
+    };
+  }
+  const access = await boardAuth.resolveBoardAccess(principal.sub);
+  if (!access.user) return null;
+  return {
+    type: "board",
+    userId: principal.sub,
+    userName: access.user.name ?? null,
+    userEmail: access.user.email ?? null,
+    companyIds: access.companyIds,
+    memberships: access.memberships,
+    isInstanceAdmin: access.isInstanceAdmin,
+    runId: runIdHeader || undefined,
+    source: "principal_jwt",
+  };
 }
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
@@ -229,6 +282,19 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     if (!key) {
       const claims = verifyLocalAgentJwt(token);
       if (!claims) {
+        // Not a board key, agent key or agent JWT: the last token kind this
+        // instance issues is a principal JWT. A failed verification leaves
+        // the actor unauthenticated, as every other rejected bearer does —
+        // the route's own gate answers 401.
+        if (opts.principalJwtVerifier && decodeJwtHeader(token)?.alg === "EdDSA") {
+          const verified = await opts.principalJwtVerifier.verify(token);
+          if (verified.ok) {
+            const actor = await resolvePrincipalJwtActor(boardAuth, verified.principal, runIdHeader);
+            if (actor) req.actor = actor;
+          } else {
+            logger.debug({ reason: verified.reason, method: req.method, url: req.originalUrl }, "Rejected principal JWT");
+          }
+        }
         next();
         return;
       }

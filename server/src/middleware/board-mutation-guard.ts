@@ -56,12 +56,21 @@ export function boardMutationGuard(): RequestHandler {
       return;
     }
 
-    // Local-trusted mode, board bearer keys, and trusted Cloud tenant calls are
-    // not browser-session requests.
+    // A service principal (cockpit-system, gateway-federation) is a process,
+    // not a person: it may read what its probes need and never mutates the
+    // board, whatever route it reached. This is the one place that rule lives.
+    if (req.actor.source === "service_principal") {
+      res.status(403).json({ error: "Service principals cannot mutate board state", code: "SERVICE_PRINCIPAL_READ_ONLY" });
+      return;
+    }
+
+    // Local-trusted mode, board bearer keys, operator principal JWTs, and
+    // trusted Cloud tenant calls are not browser-session requests.
     // In these modes, origin/referer headers can be absent; do not block those mutations.
     if (
       req.actor.source === "local_implicit"
       || req.actor.source === "board_key"
+      || req.actor.source === "principal_jwt"
       || req.actor.source === "cloud_tenant"
     ) {
       next();

@@ -28,7 +28,21 @@ declare global {
         keyScope?: AgentApiKeyScope;
         runId?: string;
         onBehalfOfUserId?: string | null;
-        source?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant" | "none";
+        source?:
+          | "local_implicit"
+          | "session"
+          | "board_key"
+          | "agent_key"
+          | "agent_jwt"
+          | "cloud_tenant"
+          // A cockpit-issued operator principal JWT (the token the gateway
+          // forwards, or a desktop/CLI client presents directly): the same
+          // board actor the operator gets from a session or board key.
+          | "principal_jwt"
+          // A cockpit-issued service principal (cockpit-system,
+          // gateway-federation): reads only, never a board mutation.
+          | "service_principal"
+          | "none";
       };
     }
   }

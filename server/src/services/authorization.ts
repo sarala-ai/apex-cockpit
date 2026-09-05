@@ -50,6 +50,8 @@ export type AuthorizationActor =
       | "agent_key"
       | "agent_jwt"
       | "cloud_tenant"
+      | "principal_jwt"
+      | "service_principal"
       | "none";
   };
 

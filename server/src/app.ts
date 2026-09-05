@@ -271,6 +271,7 @@ export async function createApp(
     actorMiddleware(db, {
       deploymentMode: opts.deploymentMode,
       resolveSession: opts.resolveSession,
+      principalJwtVerifier: opts.principalJwtVerifier,
     }),
   );
   app.use("/api/auth", authRoutes(db, { googleAuthEnabled: opts.googleAuthEnabled ?? false }));
