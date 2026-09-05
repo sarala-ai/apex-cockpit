@@ -19,7 +19,13 @@ const healthy: SetupStateProbes = {
   }),
   oauthClient: async () => ({ configured: true, signInClient: "configured", gatewayUpstreams: { total: 1, configured: 1 } }),
   gateway: async () => ({ reachable: true, url: "http://gw.test", authenticated: true, failure: null }),
-  mcpServers: async () => ({ registered: ["gworkspace"], cockpitMcp: { registered: false, reachable: null } }),
+  mcpServers: async () => ({
+    registered: ["gworkspace"],
+    probedAt: "2026-01-01T00:00:00.000Z",
+    reachableCount: 1,
+    details: [{ name: "gworkspace", enabled: true, reachable: true }],
+    cockpitMcp: { registered: false, reachable: null },
+  }),
 };
 
 const modelsNone = async () => ({
@@ -67,7 +73,13 @@ describe("GET /setup/state", () => {
       },
       oauthClient: { configured: true, signInClient: "configured", gatewayUpstreams: { total: 1, configured: 1 } },
       gateway: { reachable: true, url: "http://gw.test", authenticated: true, failure: null },
-      mcpServers: { registered: ["gworkspace"], cockpitMcp: { registered: false, reachable: null } },
+      mcpServers: {
+        registered: ["gworkspace"],
+        probedAt: "2026-01-01T00:00:00.000Z",
+        reachableCount: 1,
+        details: [{ name: "gworkspace", enabled: true, reachable: true }],
+        cockpitMcp: { registered: false, reachable: null },
+      },
       models: await modelsNone(),
     });
   });
@@ -90,7 +102,13 @@ describe("GET /setup/state", () => {
     expect(res.body.auth).toEqual({ gcloud: "missing", gh: "missing", adc: "missing", source: "none", reportedAt: null, reportAgeMs: null });
     expect(res.body.gateway).toMatchObject({ reachable: false, authenticated: null, failure: { kind: "unreachable" } });
     expect(typeof res.body.gateway.url).toBe("string");
-    expect(res.body.mcpServers).toEqual({ registered: [], cockpitMcp: { registered: false, reachable: null } });
+    expect(res.body.mcpServers).toEqual({
+      registered: [],
+      probedAt: null,
+      reachableCount: 0,
+      details: [],
+      cockpitMcp: { registered: false, reachable: null },
+    });
     // Unaffected probes still report their real values.
     expect(res.body.org).toEqual({ present: true, id: "org-1", posture: "individual" });
   });
@@ -194,8 +212,38 @@ describe("defaultProbes gateway probes", () => {
     );
     expect(await probes.mcpServers(true)).toEqual({
       registered: ["cockpit-mcp", "gworkspace"],
+      probedAt: expect.any(String),
+      reachableCount: 1,
+      details: [
+        { name: "cockpit-mcp", enabled: true, reachable: false },
+        { name: "gworkspace", enabled: true, reachable: true },
+      ],
       cockpitMcp: { registered: true, reachable: false, url: "http://cp/mcp" },
     });
+  });
+
+  // Regression: two rows can be REGISTERED (present, enabled) while BOTH answer
+  // unreachable at the last probe — "done" must never read that as fine, and the
+  // reachable count must reflect the true zero, not the registered count.
+  it("reports zero reachable when every registered upstream answers unreachable", async () => {
+    const probes = defaultProbes(
+      {} as unknown as Db,
+      fakeGateway(async () => ({
+        ok: true,
+        value: [
+          { name: "cockpit-mcp", url: "http://cp/mcp", reachable: false },
+          { name: "github-mcp", url: "http://gh/mcp", reachable: false },
+        ],
+      })),
+    );
+    const result = await probes.mcpServers(true);
+    expect(result.registered).toEqual(["cockpit-mcp", "github-mcp"]);
+    expect(result.reachableCount).toBe(0);
+    expect(result.probedAt).toEqual(expect.any(String));
+    expect(result.details).toEqual([
+      { name: "cockpit-mcp", enabled: true, reachable: false },
+      { name: "github-mcp", enabled: true, reachable: false },
+    ]);
   });
 
   it("carries the auth failure instead of reporting an empty registry", async () => {
@@ -206,6 +254,9 @@ describe("defaultProbes gateway probes", () => {
     expect(await probes.mcpServers(true)).toEqual({
       registered: [],
       error: "apex-gateway rejected the credential (401)",
+      probedAt: null,
+      reachableCount: 0,
+      details: [],
       cockpitMcp: { registered: false, reachable: null },
     });
   });
@@ -213,18 +264,38 @@ describe("defaultProbes gateway probes", () => {
   it("skips the registry read when the gateway is down", async () => {
     let called = false;
     const probes = defaultProbes({} as unknown as Db, fakeGateway(async () => { called = true; return { ok: true, value: [] }; }));
-    expect(await probes.mcpServers(false)).toEqual({ registered: [], cockpitMcp: { registered: false, reachable: null } });
+    expect(await probes.mcpServers(false)).toEqual({
+      registered: [],
+      probedAt: null,
+      reachableCount: 0,
+      details: [],
+      cockpitMcp: { registered: false, reachable: null },
+    });
     expect(called).toBe(false);
   });
 
   it("passes the registry error through the route", async () => {
     const res = await request(
       appWith({
-        mcpServers: async () => ({ registered: [], error: "apex-gateway rejected the credential (401)", cockpitMcp: { registered: false, reachable: null } }),
+        mcpServers: async () => ({
+          registered: [],
+          error: "apex-gateway rejected the credential (401)",
+          probedAt: null,
+          reachableCount: 0,
+          details: [],
+          cockpitMcp: { registered: false, reachable: null },
+        }),
         models: modelsNone,
       }),
     ).get("/setup/state");
     expect(res.status).toBe(200);
-    expect(res.body.mcpServers).toEqual({ registered: [], error: "apex-gateway rejected the credential (401)", cockpitMcp: { registered: false, reachable: null } });
+    expect(res.body.mcpServers).toEqual({
+      registered: [],
+      error: "apex-gateway rejected the credential (401)",
+      probedAt: null,
+      reachableCount: 0,
+      details: [],
+      cockpitMcp: { registered: false, reachable: null },
+    });
   });
 });

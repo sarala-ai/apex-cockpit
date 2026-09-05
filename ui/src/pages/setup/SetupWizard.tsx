@@ -23,6 +23,7 @@ import { GuidedStep } from "./GuidedStep";
 import { STEP_HELP, HelpRail, StepInfo } from "./setup-help";
 import { PRODUCT_NAME } from "../../lib/product";
 import { timeAgo } from "../../lib/timeAgo";
+import { Link } from "@/lib/router";
 
 // The cloud-first org→company engineering-setup spine. ORG steps (identity →
 // create org → org cloud → org GitHub) provision the shared substrate; COMPANY
@@ -97,7 +98,13 @@ const STEPS: StepDef[] = [
   {
     key: "mcpServers",
     title: "MCP servers registered",
-    done: (s) => s.mcpServers.cockpitMcp.registered && s.mcpServers.cockpitMcp.reachable !== false,
+    // "Registered" alone is never enough — a row can be enabled in the registry
+    // and still be dead. Done requires every registered upstream to have
+    // answered reachable at the last probe (never mind the empty-registry case).
+    done: (s) =>
+      !s.mcpServers.error &&
+      s.mcpServers.registered.length > 0 &&
+      s.mcpServers.reachableCount === s.mcpServers.registered.length,
   },
   {
     key: "connect",
@@ -167,6 +174,16 @@ export function setupStepsProgress(s: SetupState): { done: number; total: number
   const required = requiredSteps(s);
   const done = required.filter((st) => st.done(s)).length;
   return { done, total: required.length, complete: done === required.length };
+}
+
+/** Titles of the required (role-aware) steps that are NOT yet done, in step
+ *  order — short form (the parenthetical aside dropped) for compact copy like
+ *  the status bar's nudge toast. Never hardcode a step list in a nudge —
+ *  derive it from here so the copy can't drift from what's actually pending. */
+export function pendingStepTitles(s: SetupState): string[] {
+  return requiredSteps(s)
+    .filter((st) => !st.done(s))
+    .map((st) => st.title.replace(/\s*\([^)]*\)\s*$/, ""));
 }
 
 function statusOf(
@@ -299,7 +316,7 @@ export function SetupWizard() {
                 <StatusBadge variant="success">complete</StatusBadge>
               ) : (
                 <StatusBadge variant="info">
-                  {doneCount}/{required.length} done
+                  {doneCount} of {required.length} required done
                 </StatusBadge>
               )}
             </CardTitle>
@@ -413,7 +430,9 @@ export function SetupWizard() {
   );
 }
 
-function StepBody({
+// Exported for isolated testing of the identity-gate/lock-banner logic (see
+// SetupWizard.step-gating.test.tsx) — otherwise only used internally below.
+export function StepBody({
   stepKey,
   state,
   selectedCompanyId,
@@ -439,7 +458,9 @@ function StepBody({
   // The Claude ceremony's identity requirement is the signed-in cockpit
   // session itself (the device-auth approval proves it) — not the machine's
   // gcloud/gh state, which on a cloud cockpit describes the SERVER anyway.
-  if (stepKey !== "auth" && stepKey !== "claudeSession" && !authReady) {
+  // A step that's already DONE must never show the lock banner — the gate only
+  // applies to a step that still needs live identity to actually execute.
+  if (stepKey !== "auth" && stepKey !== "claudeSession" && !done && !authReady) {
     return (
       <div
         className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-600"
@@ -453,7 +474,27 @@ function StepBody({
     case "auth":
       // Actions only — the "why" (this is your Google login, ADC needed, etc.)
       // lives in the help rail / ⓘ. The banner surfaces any expired/missing cred.
-      return <GcloudAuthBanner />;
+      // Pass the wizard's own already-fetched auth snapshot (never a separate
+      // /setup/auth poll) so this step body and the status bar chip can never
+      // show two different "reported Nh ago" ages for the same report. Identity
+      // (gcloud account / GitHub handle) is deliberately left out here — this
+      // surface never needs to name who's connected, only whether it's live.
+      return (
+        <GcloudAuthBanner
+          auth={{
+            google: { authed: state.auth.gcloud !== "missing", account: null, live: state.auth.gcloud === "ok" },
+            github: { authed: state.auth.gh !== "missing", user: null, live: state.auth.gh === "ok" },
+            gcloud: state.auth.gcloud,
+            gh: state.auth.gh,
+            adc: state.auth.adc,
+            source: state.auth.source,
+            reportedAt: state.auth.reportedAt,
+            reportAgeMs: state.auth.reportAgeMs,
+          }}
+          onRecheck={onRecheck}
+          rechecking={rechecking}
+        />
+      );
     case "org":
       // Create the holding Org (you become its owner). Company link/summary too.
       return <OrgScopingSection companyId={selectedCompanyId ?? undefined} slice="org" />;
@@ -500,13 +541,29 @@ function StepBody({
         <OrgScopingSection slice="companyScope" />
       );
     case "oauthClient": {
+      const upstreams = state.oauthClient.gatewayUpstreams;
+      // Done: collapse to a one-line summary + an Edit action — never re-show
+      // the setup runbook for a client that's already configured.
+      if (done) {
+        return (
+          <div className="space-y-2 text-sm">
+            <p className="text-muted-foreground">
+              Sign-in client configured; gateway upstreams {upstreams.configured}/{upstreams.total} configured.
+            </p>
+            <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer">
+              <Button size="sm" variant="outline">
+                Edit →
+              </Button>
+            </a>
+          </div>
+        );
+      }
       const signInLabel =
         state.oauthClient.signInClient === "configured"
           ? "configured"
           : state.oauthClient.signInClient === "not_applicable"
             ? "not needed on a local instance"
             : "missing";
-      const upstreams = state.oauthClient.gatewayUpstreams;
       return (
         <div className="space-y-3">
           <div className="space-y-1 text-sm text-muted-foreground">
@@ -517,12 +574,19 @@ function StepBody({
                 : `Gateway OAuth upstreams: ${upstreams.configured} of ${upstreams.total} configured`}
             </div>
           </div>
+          {/* No APEX workflow automates this yet (a one-time OAuth client is a
+              manual, one-shot Google Cloud console action) — say so plainly
+              instead of pointing at a command that doesn't exist. */}
+          <p className="text-sm text-muted-foreground">
+            This is a one-time setup step on your Google Cloud project, done once by whoever administers it — not
+            something this cockpit runs for you. Create a Web-application OAuth client, then store its client id and
+            secret in Secrets.
+          </p>
           <GuidedStep
             deepLink={{
               href: "https://console.cloud.google.com/apis/credentials",
               label: "Open GCP Credentials →",
             }}
-            command="apex run workflow run --workflow gateway-oauth-bootstrap --execution-mode apply"
             done={done}
             onRecheck={onRecheck}
             rechecking={rechecking}
@@ -572,7 +636,18 @@ function StepBody({
         />
       );
     case "governance":
-      return <GuidedStep done={done} onRecheck={onRecheck} rechecking={rechecking} />;
+      return (
+        <div className="space-y-3 text-sm">
+          <p className="text-muted-foreground">
+            Activates once at least one upstream MCP server is reachable — check reachability on the{" "}
+            <Link to="/gateway" className="underline">
+              Gateway page
+            </Link>
+            .
+          </p>
+          <GuidedStep done={done} onRecheck={onRecheck} rechecking={rechecking} />
+        </div>
+      );
   }
 }
 
@@ -873,7 +948,8 @@ export function McpServersStep({
   onRecheck: () => void;
   rechecking: boolean;
 }) {
-  const { cockpitMcp, error } = state.mcpServers;
+  const { cockpitMcp, error, registered, details = [], reachableCount = 0, probedAt } = state.mcpServers;
+  const unreachable = details.filter((d) => !d.reachable);
   return (
     <div className="space-y-3">
       {error && (
@@ -891,6 +967,36 @@ export function McpServersStep({
         <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
           cockpit-mcp is registered{cockpitMcp.url ? ` at ${cockpitMcp.url}` : ""} but the gateway reports it
           unreachable — check that the gateway can reach this cockpit's public URL.
+        </div>
+      )}
+      {!error && registered.length > 0 && (
+        <div className="space-y-1.5 text-sm">
+          <div className="text-muted-foreground">
+            {reachableCount}/{registered.length} upstream{registered.length === 1 ? "" : "s"} reachable
+            {probedAt ? ` — probed ${timeAgo(probedAt)}` : ""}
+          </div>
+          <ul className="space-y-1">
+            {details.map((d) => (
+              <li key={d.name} className="flex items-center gap-2 text-xs">
+                <span
+                  className={`inline-block size-1.5 rounded-full ${d.reachable ? "bg-emerald-500" : "bg-red-500"}`}
+                  aria-hidden
+                />
+                <span className="font-mono">{d.name}</span>
+                <span className="text-muted-foreground">{d.reachable ? "reachable" : "unreachable"}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {!error && unreachable.length > 0 && (
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
+          {unreachable.length} of {registered.length} registered upstream{unreachable.length === 1 ? "" : "s"}{" "}
+          unreachable at the last probe — check the{" "}
+          <Link to="/gateway" className="underline">
+            Gateway page
+          </Link>
+          .
         </div>
       )}
       <GuidedStep done={done} onRecheck={onRecheck} rechecking={rechecking} />
@@ -1084,6 +1190,13 @@ function ModelsStep({ onRecheck, rechecking }: { onRecheck: () => void; rechecki
 
         {showAdvanced && (
           <div className="mt-3 space-y-4">
+            <p className="text-xs text-muted-foreground">
+              Pasted below, a key is forwarded ONLY to the gateway's encrypted store — or set it directly on the{" "}
+              <Link to="/company/settings/secrets" className="underline">
+                Secrets page
+              </Link>
+              .
+            </p>
             {/* Claude API key */}
             <div className="space-y-2">
               <p className="text-xs font-medium">Claude API key (metered — enables per-token cost attribution)</p>

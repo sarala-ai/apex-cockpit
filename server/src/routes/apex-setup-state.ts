@@ -76,10 +76,25 @@ export interface SetupState {
    *  the gateway's built-in upstream for this cockpit (the gateway derives it
    *  at boot from its COCKPIT_PUBLIC_URL); a pure read — cockpit never
    *  registers itself. `reachable` is the gateway's own health verdict, null
-   *  when it has not reported one. */
+   *  when it has not reported one.
+   *
+   *  `details`/`reachableCount`/`probedAt` cover EVERY registered upstream
+   *  (not just cockpit-mcp): a row being present in `registered` only means
+   *  it's enabled in the registry, never that it's actually callable — "done"
+   *  for the MCP-servers step requires registered AND reachable at the last
+   *  probe, so a row that's registered-but-unreachable must never read as
+   *  quietly fine. `probedAt` is this request's own read (the registry list
+   *  is fetched live), so it doubles as "reachability as of". */
   mcpServers: {
     registered: string[];
     error?: string;
+    /** When this reachability read ran; null when the gateway was unreachable
+     *  or the registry read failed, so there's no fresh verdict to time-stamp. */
+    probedAt: string | null;
+    /** How many of `registered` answered reachable at `probedAt`. */
+    reachableCount: number;
+    /** Per-upstream reachability, in registry order. */
+    details: Array<{ name: string; enabled: boolean; reachable: boolean }>;
     cockpitMcp: {
       registered: boolean;
       reachable: boolean | null;
@@ -236,14 +251,26 @@ export function defaultProbes(
     },
     async mcpServers(gatewayReachable: boolean) {
       const absent = { registered: false, reachable: null };
-      if (!gatewayReachable) return { registered: [], cockpitMcp: absent };
+      if (!gatewayReachable) {
+        return { registered: [], probedAt: null, reachableCount: 0, details: [], cockpitMcp: absent };
+      }
       const res = await gateway.readGateways();
       if (!res.ok) {
-        return { registered: [], error: res.failure.message, cockpitMcp: absent };
+        return { registered: [], error: res.failure.message, probedAt: null, reachableCount: 0, details: [], cockpitMcp: absent };
       }
+      // This registry read IS the reachability probe — it's fetched live on
+      // every /setup/state call, never cached — so "now" is its timestamp.
+      const probedAt = new Date().toISOString();
+      // Default true on a missing flag — matches GatewayClient.readGateways()'s
+      // own normalization (bool(x, true)), and stays defensive here in case a
+      // caller ever bypasses that normalization.
+      const details = res.value.map((g) => ({ name: g.name, enabled: g.enabled ?? true, reachable: g.reachable ?? true }));
       const entry = res.value.find((g) => g.name === COCKPIT_MCP_UPSTREAM_NAME);
       return {
         registered: res.value.map((g) => g.name),
+        probedAt,
+        reachableCount: details.filter((d) => d.reachable).length,
+        details,
         cockpitMcp: entry
           ? { registered: true, reachable: entry.reachable ?? null, ...(entry.url ? { url: entry.url } : {}) }
           : absent,
@@ -313,7 +340,13 @@ export function apexSetupStateRoutes(db: Db, overrides?: Partial<SetupStateProbe
     };
     const [companiesState, mcpServers, membership, models, claudeSession] = await Promise.all([
       safe(() => probes.companies(resolvedOrgId), { count: 0, ids: [] }),
-      safe(() => probes.mcpServers(gateway.reachable), { registered: [], cockpitMcp: { registered: false, reachable: null } }),
+      safe(() => probes.mcpServers(gateway.reachable), {
+        registered: [],
+        probedAt: null,
+        reachableCount: 0,
+        details: [],
+        cockpitMcp: { registered: false, reachable: null },
+      }),
       safe(() => probes.membership(req.actor?.userId ?? null, resolvedOrgId), { present: false }),
       safe(() => probes.models(req.actor?.userId ?? null), defaultModelsState),
       safe(() => probes.claudeSession(req.actor?.userId ?? null), { connected: false, source: null, setAt: null } as const),

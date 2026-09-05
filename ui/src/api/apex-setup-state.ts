@@ -85,6 +85,13 @@ export interface SetupState {
   mcpServers: {
     registered: string[];
     error?: string;
+    /** When the reachability read behind `details`/`reachableCount` ran; null
+     *  when the gateway was unreachable or the registry read failed. */
+    probedAt: string | null;
+    /** How many of `registered` answered reachable at `probedAt`. */
+    reachableCount: number;
+    /** Per-upstream reachability, in registry order. */
+    details: Array<{ name: string; enabled: boolean; reachable: boolean }>;
     cockpitMcp: {
       registered: boolean;
       reachable: boolean | null;
