@@ -37,7 +37,7 @@ env:
   PROJECT_ID: sarala-cicd
   REGION: asia-south1
   IMAGE_REPO: asia-south1-docker.pkg.dev/sarala-cicd/sarala-images/apex-cockpit
-  APEX_CORE_VERSION: "0.10.5"
+  APEX_CORE_VERSION: "0.10.6"
 
 jobs:
   deploy:
