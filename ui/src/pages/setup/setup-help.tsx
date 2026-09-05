@@ -42,7 +42,7 @@ export const STEP_HELP: Record<StepKey, StepHelp> = {
       "Remote sandbox sessions run claude AS YOU, on your Claude subscription. Anthropic requires a human consent for that credential — a ~60-second ceremony, once a year.",
     whatYoullDo: [
       "In the APEX desktop app: click Connect Claude subscription — the whole ceremony runs right here. Open the Anthropic page, approve, paste the shown code into the field below.",
-      "In a plain browser instead: run `apex claude connect --cockpit-url <this cockpit> --company-id <company>` in your own terminal and follow its page (it adds one cockpit CLI-access approval).",
+      "In a plain browser instead: run `apex claude connect --cockpit-url <this cockpit> --org-id <org>` in your own terminal (or `--company-id <company>` if you're not org-scoped yet) and follow its page (it adds one cockpit CLI-access approval).",
       "This step flips to done automatically — the token lands in YOUR per-user secret slot and is injected per-run, then destroyed with each session.",
     ],
     note: "The paste-back is Anthropic's consent design for a year-long subscription token — it stays manual on purpose; everything around it is automated. Metered alternative: a company ANTHROPIC_API_KEY also satisfies this step.",
@@ -51,11 +51,11 @@ export const STEP_HELP: Record<StepKey, StepHelp> = {
     purpose:
       "APEX is tied to your Google Cloud and GitHub identities — connect both to begin.",
     whatYoullDo: [
-      "Open the APEX desktop app: it reports your gcloud/GitHub/ADC state and offers Sign in to Google Cloud.",
-      "Terminal-first? Run `apex doctor --report` to send the same report from the command line.",
+      "Open the APEX desktop app: it reports your gcloud/GitHub/ADC state and offers Sign in to Google Cloud — that sign-in also sets Application Default Credentials (ADC).",
+      "Terminal-first? Run `apex connect gcloud` to sign in and set ADC in one step, then `apex doctor --report` to send the report from the command line.",
       "GitHub connect isn't in-app yet — run `apex connect github`.",
     ],
-    note: "Discovery and the Artifact Registry pull read your local gcloud / gh credentials.",
+    note: "ADC isn't part of identity and never blocks this step — it's set by the same gcloud sign-in above, and it's what the cloud-provisioning steps further down will need once they execute. Discovery and the Artifact Registry pull read your local gcloud / gh credentials.",
   },
   org: {
     purpose:
@@ -105,12 +105,10 @@ export const STEP_HELP: Record<StepKey, StepHelp> = {
     purpose:
       "This step checks two things: the cockpit's own Google sign-in client (`GOOGLE_CLIENT_ID`) and whether the gateway's registered OAuth-typed upstreams carry an OAuth config. One Google OAuth client (Web app) backs both SSO and per-user Workspace access — you consent to your own account later, no service account, no delegation.",
     whatYoullDo: [
-      "Enable the `gmail`, `docs`, `sheets`, and `drive` APIs in the project.",
-      "Set the OAuth consent screen to Internal (sarala.ai). Scopes: `openid`, `userinfo.email`, `userinfo.profile` (identity / SSO); `gmail.modify`; `documents`; `spreadsheets`; `drive.file`.",
-      "Create one OAuth 2.0 Client (Web application). Redirect URIs: `http://localhost:8001/oauth2callback` (dev) plus your planned cloud URL.",
-      "Copy the client id + secret; store the secret in Secret Manager (the APEX workflow does this).",
+      "Once configured, this step just confirms it — the row collapses to a one-line summary with an Edit action.",
+      "Not configured yet: this is a one-time, manual setup on your Google Cloud project (no APEX workflow automates it yet) — create a Web-application OAuth client, then store its client id and secret in Secrets.",
     ],
-    note: "Enabling APIs + creating the client are scriptable via the APEX workflow; the consent screen has a console step. The API path needs the `iam.oauthClientAdmin` role.",
+    note: "Whoever administers the Google Cloud project does this once; it isn't something this cockpit runs for you.",
     links: [
       { label: "Open GCP Credentials", href: "https://console.cloud.google.com/apis/credentials" },
     ],
@@ -125,10 +123,11 @@ export const STEP_HELP: Record<StepKey, StepHelp> = {
   },
   mcpServers: {
     purpose:
-      "Register the MCP servers whose tools your agents should see (e.g. Google Workspace). The gateway federates their tools into one catalog.",
+      "Register the MCP servers whose tools your agents should see (e.g. Google Workspace). The gateway federates their tools into one catalog. Registered alone isn't enough — this step is done only once every registered upstream also answers reachable.",
     whatYoullDo: [
-      "Register an upstream MCP server: POST /gateways with its endpoint + transport.",
-      "The gateway auto-connects, lists its tools, and federates them.",
+      "cockpit-mcp is built in — the gateway derives it automatically, no action needed here.",
+      "For any other upstream: Gateway page → Add upstream, with its endpoint + transport.",
+      "The gateway auto-connects, lists its tools, and federates them — check reachability on the Gateway page if a row shows unreachable.",
     ],
   },
   connect: {
@@ -141,12 +140,12 @@ export const STEP_HELP: Record<StepKey, StepHelp> = {
   },
   models: {
     purpose:
-      "Answer 'how do model calls get paid for and routed here' — provision the subscription bridge (default) or wire an API key (advanced).",
+      "Answer 'how do model calls get paid for and routed here' — on a hosted cockpit that's the connected Claude subscription (next step) or an API key; on a local cockpit it's the subscription bridge.",
     whatYoullDo: [
+      "On a hosted cockpit: model calls use your connected Claude session — see the 'Connect Claude subscription' step below. An API key or OpenRouter (Advanced fold) also works.",
       "On a local cockpit: the default subscription bridge uses the `claude` CLI logged in on that machine — click 'Provision subscription bridge'. The cockpit starts an OpenAI-compatible shim backed by `claude -p`; the gateway gets a provider row and `apex-*` aliases pointing at it.",
-      "On a hosted cockpit: the bridge isn't available — model calls use the connected Claude session (the next step) or an API key (below).",
-      "Advanced (Claude API key): paste a `sk-ant-…` key — it goes ONLY into the gateway's encrypted store, the cockpit never persists it. Enables per-token cost attribution (Costs page).",
-      "Advanced (OpenRouter): paste a `sk-or-…` key to register a BYO-plane provider. Existing `apex-*` aliases stay on Claude subscription; OpenRouter is available as an additional provider.",
+      "Advanced (Claude API key): paste the key here, or set it directly on the Secrets page — either way it's forwarded ONLY to the gateway's encrypted store, the cockpit never persists it. Enables per-token cost attribution (Costs page).",
+      "Advanced (OpenRouter): paste the key here, or set it on the Secrets page, to register a BYO-plane provider. Existing `apex-*` aliases stay on Claude subscription; OpenRouter is available as an additional provider.",
     ],
     note: "Subscription mode uses the Claude Agent SDK under the hood (`claude -p`), which is the sanctioned path for OAuth tokens — the token is NEVER used as a raw chat-completions API key. Trade-off: no per-token cost metering in subscription mode (metering arrives only in API-key mode).",
   },
